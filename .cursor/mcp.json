@@ -2,7 +2,7 @@
   "mcpServers": {
     "runpod": {
       "command": "node",
-      "args": ["your/path/to/runpod-mcp-ts/build/index.js"],
+      "args": ["your/path/to/runpod-mcp/build/index.js"],
       "env": {
         "RUNPOD_API_KEY": "your_api_key_here"
       }

@@ -1,5 +1,5 @@
 # RunPod MCP Server
-[![smithery badge](https://smithery.ai/badge/@runpod/runpod-mcp-ts)](https://smithery.ai/server/@runpod/runpod-mcp-ts)
+[![smithery badge](https://smithery.ai/badge/@runpod/runpod-mcp)](https://smithery.ai/server/@runpod/runpod-mcp)
 
 This Model Context Protocol (MCP) server enables you to interact with the RunPod REST API through Claude or other MCP-compatible clients.
 
@@ -23,10 +23,10 @@ The server provides tools for managing:
 
 ### Installing via Smithery
 
-To install runpod-mcp-ts for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@runpod/runpod-mcp-ts):
+To install runpod-mcp for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@runpod/runpod-mcp):
 
 ```bash
-npx -y @smithery/cli install @runpod/runpod-mcp-ts --client claude
+npx -y @smithery/cli install @runpod/runpod-mcp --client claude
 ```
 
 ### Installation
