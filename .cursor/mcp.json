@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "runpod-test": {
+    "runpod": {
       "command": "node",
       "args": ["build/index.js"],
       "env": {
