@@ -3,6 +3,10 @@
 
 This Model Context Protocol (MCP) server enables you to interact with the RunPod REST API through Claude or other MCP-compatible clients.
 
+<a href="https://glama.ai/mcp/servers/@runpod/runpod-mcp">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@runpod/runpod-mcp/badge" alt="RunPod Server MCP server" />
+</a>
+
 ## Features
 
 The server provides tools for managing:
