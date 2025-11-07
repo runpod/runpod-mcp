@@ -34,11 +34,11 @@ npx -y @smithery/cli install @runpod/runpod-mcp-ts --client claude
 1. Clone the repository
 2. Install dependencies:
    ```
-   npm install
+   pnpm install
    ```
 3. Build the server:
    ```
-   npm run build
+   pnpm build
    ```
 
 ### Configuration
@@ -63,7 +63,7 @@ You can get your API key from the [RunPod console](https://www.runpod.io/console
 Start the server:
 
 ```bash
-npm start
+pnpm start
 ```
 
 ## Setting up with Claude for Desktop
@@ -77,7 +77,7 @@ npm start
   "mcpServers": {
     "runpod": {
       "command": "node",
-      "args": ["/path/to/runpod-mcp-server/build/index.js"],
+      "args": ["/path/to/mcp-server/dist/index.js"],
       "env": {
         "RUNPOD_API_KEY": "your_api_key_here"
       }
@@ -86,7 +86,7 @@ npm start
 }
 ```
 
-Make sure to replace the `"args": ["/path/to/runpod-mcp-server/build/index.js"]` with the path to the build folder in the repository.
+Make sure to replace the `"args": ["/path/to/mcp-server/dist/index.js"]` with the path to the dist folder in the repository.
 
 4. Restart Claude for Desktop
 
@@ -131,4 +131,4 @@ This server requires your RunPod API key, which grants full access to your RunPo
 
 ## License
 
-MIT
+Apache-2.0

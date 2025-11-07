@@ -1,13 +1,36 @@
 {
-  "name": "runpod-mcp-server",
+  "name": "@runpod/mcp-server",
   "version": "1.0.0",
   "description": "MCP server for interacting with RunPod API",
+  "license": "Apache-2.0",
   "type": "module",
-  "main": "build/index.js",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist/**/*",
+    "CHANGELOG.md"
+  ],
   "scripts": {
-    "build": "tsc",
-    "start": "node build/index.js",
-    "dev": "tsx index.ts"
+    "build": "pnpm clean && tsup --tsconfig tsconfig.build.json",
+    "build:watch": "pnpm clean && tsup --watch",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "lint": "eslint \"./**/*.ts*\"",
+    "type-check": "tsc --build",
+    "prettier-check": "prettier --check \"./**/*.ts*\"",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "changeset": "changeset",
+    "changeset:version": "changeset version",
+    "changeset:publish": "changeset publish"
+  },
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.7.0",
@@ -15,8 +38,35 @@
     "zod": "^3.22.4"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.29.6",
     "@types/node": "^20.10.5",
+    "@typescript-eslint/eslint-plugin": "^8.39.1",
+    "@typescript-eslint/parser": "^8.39.1",
+    "eslint": "^9.33.0",
+    "prettier": "^3.6.2",
+    "tsup": "^8.0.0",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3"
-  }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://runpod.io",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/runpod/mcp-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/runpod/mcp-server/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "runpod",
+    "server",
+    "api"
+  ]
 }
