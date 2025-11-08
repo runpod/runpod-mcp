@@ -16,7 +16,7 @@ startCommand:
     |-
     (config) => ({
       command: 'node',
-      args: ['build/index.js'],
+      args: ['dist/index.js'],
       env: { RUNPOD_API_KEY: config.runpodApiKey }
     })
   exampleConfig:
