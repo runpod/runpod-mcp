@@ -60,10 +60,10 @@
   "homepage": "https://runpod.io",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/runpod/mcp-server.git"
+    "url": "git+https://github.com/runpod/runpod-mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/runpod/mcp-server/issues"
+    "url": "https://github.com/runpod/runpod-mcp/issues"
   },
   "keywords": [
     "mcp",
