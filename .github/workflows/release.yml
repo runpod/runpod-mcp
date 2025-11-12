@@ -10,6 +10,7 @@ concurrency: ${{ github.workflow }}-${{ github.ref }}
 permissions:
   contents: write
   pull-requests: write
+  id-token: write # Required for OIDC
 
 jobs:
   release:
@@ -27,8 +28,11 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 18
-          cache: "pnpm"
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Ensure recent npm (OIDC + provenance support)
+        run: npm i -g npm@latest
 
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
@@ -36,15 +40,15 @@ jobs:
       - name: Build package
         run: pnpm run build
 
-      - name: Create Release Pull Request or Publish to npm
+      - name: Create Release Pull Request or Publish to npm (OIDC)
         id: changesets
         uses: changesets/action@v1
         with:
           publish: pnpm changeset:publish
           version: pnpm changeset:version
-          commit: "chore: version packages"
-          title: "chore: version packages"
+          commit: 'chore: version packages'
+          title: 'chore: version packages'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_ACCESS: public # For scoped public packages
 
