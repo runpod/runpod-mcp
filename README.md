@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/runpod-runpod-mcp-ts-badge.png)](https://mseep.ai/app/runpod-runpod-mcp-ts)
+
 # RunPod MCP Server
 [![smithery badge](https://smithery.ai/badge/@runpod/runpod-mcp-ts)](https://smithery.ai/server/@runpod/runpod-mcp-ts)
 
