@@ -23,6 +23,39 @@ const server = new McpServer({
   },
 });
 
+// GraphQL endpoint for public queries (GPU types, data centers)
+const GRAPHQL_URL = 'https://api.runpod.io/graphql';
+
+// Helper function to make GraphQL requests to RunPod
+async function graphqlRequest<T>(
+  query: string
+): Promise<T> {
+  const response = await fetch(GRAPHQL_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ query }),
+  });
+
+  const result = (await response.json()) as {
+    data?: T;
+    errors?: Array<{ message: string }>;
+  };
+
+  if (result.errors && result.errors.length > 0) {
+    throw new Error(
+      `GraphQL Error: ${result.errors.map((e) => e.message).join(', ')}`
+    );
+  }
+
+  if (!result.data) {
+    throw new Error('No data returned from GraphQL query');
+  }
+
+  return result.data;
+}
+
 // Helper function to make authenticated API requests to RunPod
 async function runpodRequest(
   endpoint: string,
@@ -64,6 +97,178 @@ async function runpodRequest(
     throw error;
   }
 }
+
+// ============== INFRASTRUCTURE TOOLS ==============
+
+// List GPU Types
+server.tool(
+  'list-gpu-types',
+  {
+    minMemoryGb: z
+      .number()
+      .optional()
+      .describe('Filter to GPUs with at least this much VRAM in GB'),
+    secureCloudOnly: z
+      .boolean()
+      .optional()
+      .describe('Filter to only GPUs available in secure cloud'),
+    communityCloudOnly: z
+      .boolean()
+      .optional()
+      .describe('Filter to only GPUs available in community cloud'),
+    searchTerm: z
+      .string()
+      .optional()
+      .describe(
+        "Search term to filter GPUs by name (e.g., 'A100', 'RTX 4090')"
+      ),
+    includeUnavailable: z
+      .boolean()
+      .optional()
+      .describe(
+        'Include GPUs that are currently out of stock. Default is false'
+      ),
+  },
+  async (params) => {
+    interface GpuTypesResponse {
+      gpuTypes: Array<{
+        id: string;
+        displayName: string;
+        memoryInGb: number;
+        secureCloud: boolean;
+        communityCloud: boolean;
+        lowestPrice?: { stockStatus: string | null } | null;
+      }>;
+    }
+
+    const data = await graphqlRequest<GpuTypesResponse>(`
+      query {
+        gpuTypes {
+          id
+          displayName
+          memoryInGb
+          secureCloud
+          communityCloud
+          lowestPrice(input: { gpuCount: 1 }) {
+            stockStatus
+          }
+        }
+      }
+    `);
+
+    const stockPriority: Record<string, number> = {
+      High: 3,
+      Medium: 2,
+      Low: 1,
+    };
+
+    const isAvailable = (gpu: GpuTypesResponse['gpuTypes'][number]) => {
+      const status = gpu.lowestPrice?.stockStatus;
+      return !!status && status !== 'Out';
+    };
+
+    let gpuTypes = data.gpuTypes.filter((gpu) => gpu.id !== 'unknown');
+
+    if (!params.includeUnavailable) {
+      gpuTypes = gpuTypes.filter(isAvailable);
+    }
+    if (params.minMemoryGb) {
+      gpuTypes = gpuTypes.filter(
+        (gpu) => gpu.memoryInGb >= params.minMemoryGb!
+      );
+    }
+    if (params.secureCloudOnly) {
+      gpuTypes = gpuTypes.filter((gpu) => gpu.secureCloud);
+    }
+    if (params.communityCloudOnly) {
+      gpuTypes = gpuTypes.filter((gpu) => gpu.communityCloud);
+    }
+    if (params.searchTerm) {
+      const term = params.searchTerm.toLowerCase();
+      gpuTypes = gpuTypes.filter(
+        (gpu) =>
+          gpu.id.toLowerCase().includes(term) ||
+          gpu.displayName.toLowerCase().includes(term)
+      );
+    }
+
+    gpuTypes.sort((a, b) => {
+      const aP = stockPriority[a.lowestPrice?.stockStatus || ''] || 0;
+      const bP = stockPriority[b.lowestPrice?.stockStatus || ''] || 0;
+      if (bP !== aP) return bP - aP;
+      return b.memoryInGb - a.memoryInGb;
+    });
+
+    const result = gpuTypes.map((gpu) => ({
+      id: gpu.id,
+      displayName: gpu.displayName,
+      memoryGb: gpu.memoryInGb,
+      secureCloud: gpu.secureCloud,
+      communityCloud: gpu.communityCloud,
+      stockStatus: gpu.lowestPrice?.stockStatus || 'unavailable',
+      available: isAvailable(gpu),
+    }));
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  }
+);
+
+// List Data Centers
+server.tool(
+  'list-data-centers',
+  {
+    region: z
+      .string()
+      .optional()
+      .describe(
+        "Filter by region/location (e.g., 'United States', 'Europe', 'Canada')"
+      ),
+  },
+  async (params) => {
+    interface DataCentersResponse {
+      dataCenters: Array<{
+        id: string;
+        name: string;
+        location: string;
+      }>;
+    }
+
+    const data = await graphqlRequest<DataCentersResponse>(`
+      query {
+        dataCenters {
+          id
+          name
+          location
+        }
+      }
+    `);
+
+    let dataCenters = data.dataCenters;
+
+    if (params.region) {
+      const term = params.region.toLowerCase();
+      dataCenters = dataCenters.filter((dc) =>
+        dc.location.toLowerCase().includes(term)
+      );
+    }
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(dataCenters, null, 2),
+        },
+      ],
+    };
+  }
+);
 
 // ============== POD MANAGEMENT TOOLS ==============
 
@@ -178,6 +383,7 @@ server.tool(
 // Create Pod
 server.tool(
   'create-pod',
+  'Create a new GPU/CPU pod on RunPod. If the user does not specify a template or image, recommend the "Runpod Pytorch 2.8.0" template (ID: runpod-torch-v280, image: runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404) as the default starting point — it has the most up-to-date CUDA and PyTorch versions.',
   {
     name: z.string().optional().describe('Name for the pod'),
     imageName: z.string().describe('Docker image to use'),
@@ -491,18 +697,46 @@ server.tool(
 // ============== TEMPLATE MANAGEMENT TOOLS ==============
 
 // List Templates
-server.tool('list-templates', {}, async () => {
-  const result = await runpodRequest('/templates');
+server.tool(
+  'list-templates',
+  'List available templates. By default returns only the user\'s own templates. Use includeRunpodTemplates to also include official RunPod templates. The recommended default template for new pods is "Runpod Pytorch 2.8.0" (ID: runpod-torch-v280) — it has the latest CUDA and PyTorch versions.',
+  {
+    includeRunpodTemplates: z
+      .boolean()
+      .optional()
+      .describe('Include official RunPod templates in the response'),
+    includePublicTemplates: z
+      .boolean()
+      .optional()
+      .describe('Include community-made public templates in the response'),
+    includeEndpointBoundTemplates: z
+      .boolean()
+      .optional()
+      .describe(
+        'Include templates bound to Serverless endpoints in the response'
+      ),
+  },
+  async (params) => {
+    const queryParams = new URLSearchParams();
+    if (params.includeRunpodTemplates)
+      queryParams.set('includeRunpodTemplates', 'true');
+    if (params.includePublicTemplates)
+      queryParams.set('includePublicTemplates', 'true');
+    if (params.includeEndpointBoundTemplates)
+      queryParams.set('includeEndpointBoundTemplates', 'true');
+    const query = queryParams.toString();
+    const result = await runpodRequest(`/templates${query ? `?${query}` : ''}`);
 
-  return {
-    content: [
-      {
-        type: 'text',
-        text: JSON.stringify(result, null, 2),
-      },
-    ],
-  };
-});
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  }
+);
 
 // Get Template Details
 server.tool(
