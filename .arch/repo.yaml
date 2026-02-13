@@ -1,0 +1,133 @@
+# .arch/repo.yaml
+# Architecture metadata for runpod-mcp
+# Auto-discovered by architecture-reference build-db.ts
+
+schema_version: "1"
+
+meta:
+  service_id: runpod-mcp
+  name: Runpod MCP Server
+  team: devrel
+  purpose: Standalone MCP server for Claude Desktop/Code - direct Runpod REST API wrapper (no shared infrastructure)
+  repo: runpod/runpod-mcp-ts
+
+ownership:
+  team: devrel
+  slack_channel: "#alerts-runpod-assistant"
+  escalation_path:
+    - devrel
+
+handlers:
+  # --- Pod Management ---
+  - endpoint: tool:list-pods
+    type: mcp_tool
+    file: src/index.ts
+    notes: List all pods
+
+  - endpoint: tool:create-pod
+    type: mcp_tool
+    file: src/index.ts
+    notes: Create a new pod
+
+  - endpoint: tool:get-pod
+    type: mcp_tool
+    file: src/index.ts
+    notes: Get pod details
+
+  - endpoint: tool:start-pod / stop-pod / delete-pod / update-pod
+    type: mcp_tool
+    file: src/index.ts
+    notes: Pod lifecycle management
+
+  # --- Endpoint Management ---
+  - endpoint: tool:list-endpoints / get-endpoint / create-endpoint / update-endpoint / delete-endpoint
+    type: mcp_tool
+    file: src/index.ts
+    notes: Serverless endpoint CRUD
+
+  # --- Serverless Runtime ---
+  - endpoint: tool:run-endpoint / runsync-endpoint
+    type: mcp_tool
+    file: src/index.ts
+    notes: Invoke serverless endpoints (async/sync)
+
+  - endpoint: tool:get-job-status / stream-job / cancel-job / retry-job
+    type: mcp_tool
+    file: src/index.ts
+    notes: Job lifecycle management
+
+  # --- Templates ---
+  - endpoint: tool:list-templates / get-template / create-template / update-template / delete-template
+    type: mcp_tool
+    file: src/index.ts
+    notes: Template CRUD
+
+  # --- Network Volumes ---
+  - endpoint: tool:list-network-volumes / get-network-volume / create-network-volume / update-network-volume / delete-network-volume
+    type: mcp_tool
+    file: src/index.ts
+    notes: Network volume management
+
+  # --- Container Registry ---
+  - endpoint: tool:list-container-registry-auths / get-container-registry-auth / create-container-registry-auth / delete-container-registry-auth
+    type: mcp_tool
+    file: src/index.ts
+    notes: Container registry credential management
+
+service_calls:
+  - target: rest-api
+    type: http
+    protocol: https
+    purpose: All Runpod REST API operations (rest.runpod.io/v1)
+    file: src/index.ts
+
+  - target: serverless-runtime
+    type: http
+    protocol: https
+    purpose: Serverless endpoint invocation (api.runpod.ai/v2)
+    file: src/index.ts
+
+env_vars:
+  - name: RUNPOD_API_KEY
+    required: true
+    source: env
+    description: Runpod API key (Bearer token). Process exits if missing.
+
+conventions:
+  - category: code
+    rule: Single-file architecture (src/index.ts ~1170 lines)
+    rationale: Simple stateless tool - no need for multi-file structure
+
+  - category: code
+    rule: Two API helpers - runpodRequest() for REST, serverlessRequest() for runtime
+    rationale: Different base URLs (rest.runpod.io vs api.runpod.ai)
+
+  - category: code
+    rule: Zod schema validation for all tool parameters
+    rationale: Type-safe MCP tool inputs
+
+  - category: deploy
+    rule: Published as @runpod/mcp-server on npm
+    rationale: Easy install via npx or npm
+
+failure_modes:
+  - trigger: Missing RUNPOD_API_KEY environment variable
+    impact: Process exits immediately with error message
+    detection: Process crash on startup
+
+  - trigger: Runpod API returns non-JSON response
+    impact: "Tool returns {success: true, status} fallback"
+    detection: Unexpected tool responses
+
+  - trigger: HTTP error (4xx/5xx) from Runpod API
+    impact: "Tool throws RunPod API Error with status and text"
+    detection: MCP error response to client
+
+key_files:
+  - path: src/index.ts
+    purpose: Entire MCP server (tool definitions, API helpers, server setup)
+    category: handler
+
+  - path: package.json
+    purpose: npm package config (@runpod/mcp-server)
+    category: config
