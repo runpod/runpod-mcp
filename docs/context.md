@@ -173,13 +173,12 @@ pnpm dev
 
 ### README Structure
 
-1. Title & Badge (Smithery)
+1. Title
 2. Features (list of tool categories)
-3. Setup (prerequisites, installation, configuration)
-4. Smithery Installation (automated setup)
-5. Manual Setup (Claude Desktop config)
-6. Usage Examples (natural language examples)
-7. Security Considerations
+3. Quick start (prerequisites, npx usage)
+4. Setup (Claude Code, Claude Desktop, Cursor, Windsurf, Cline, Gemini CLI, Codex CLI, other clients)
+5. Usage examples (natural language examples)
+6. Security considerations
 
 ### Code Comments
 

@@ -1,5 +1,4 @@
 # Runpod MCP Server
-[![smithery badge](https://smithery.ai/badge/@runpod/runpod-mcp-ts)](https://smithery.ai/server/@runpod/runpod-mcp-ts)
 
 This Model Context Protocol (MCP) server enables you to interact with the Runpod REST API through Claude or other MCP-compatible clients.
 
@@ -7,13 +6,13 @@ This Model Context Protocol (MCP) server enables you to interact with the Runpod
 
 The server provides tools for managing:
 
-- **Pods**: Create, list, get details, update, start, stop, and delete pods
-- **Endpoints**: Create, list, get details, update, and delete serverless endpoints
-- **Templates**: Create, list, get details, update, and delete templates
-- **Network Volumes**: Create, list, get details, update, and delete network volumes
-- **Container Registry Authentications**: Create, list, get details, and delete authentications
+- **Pods**: Create, list, get details, update, start, stop, and delete Pods.
+- **Endpoints**: Create, list, get details, update, and delete Serverless endpoints.
+- **Templates**: Create, list, get details, update, and delete templates.
+- **Network volumes**: Create, list, get details, update, and delete network volumes.
+- **Container registry authentications**: Create, list, get details, and delete authentications.
 
-## Quick Start
+## Quick start
 
 ### Prerequisites
 
@@ -28,17 +27,26 @@ You can run the server directly without installation:
 RUNPOD_API_KEY=your_api_key_here npx @runpod/mcp-server@latest
 ```
 
-### Installing via Smithery
+## Setup
 
-To install for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@runpod/runpod-mcp-ts):
+### Claude Code
+
+Add the Runpod API MCP server to [Claude Code](https://claude.ai/code):
 
 ```bash
-npx -y @smithery/cli install @runpod/runpod-mcp-ts --client claude
+claude mcp add runpod --scope user -e RUNPOD_API_KEY=your_api_key_here -- npx -y @runpod/mcp-server@latest
 ```
 
-## Setting up with Claude for Desktop
+Start Claude Code and verify the connection:
 
-1. Open Claude for Desktop
+```bash
+claude
+/mcp
+```
+
+### Claude Desktop
+
+1. Open Claude Desktop.
 2. Edit the config file:
    - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
    - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
@@ -49,7 +57,7 @@ npx -y @smithery/cli install @runpod/runpod-mcp-ts --client claude
   "mcpServers": {
     "runpod": {
       "command": "npx",
-      "args": ["@runpod/mcp-server@latest"],
+      "args": ["-y", "@runpod/mcp-server@latest"],
       "env": {
         "RUNPOD_API_KEY": "your_api_key_here"
       }
@@ -58,44 +66,138 @@ npx -y @smithery/cli install @runpod/runpod-mcp-ts --client claude
 }
 ```
 
-4. Restart Claude for Desktop
+4. Restart Claude Desktop.
 
-## Usage Examples
+### Cursor
 
-### List all pods
+Add to your `.cursor/mcp.json` file:
+
+```json
+{
+  "mcpServers": {
+    "runpod": {
+      "command": "npx",
+      "args": ["-y", "@runpod/mcp-server@latest"],
+      "env": {
+        "RUNPOD_API_KEY": "your_api_key_here"
+      }
+    }
+  }
+}
+```
+
+### Windsurf
+
+Add to `~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "runpod": {
+      "command": "npx",
+      "args": ["-y", "@runpod/mcp-server@latest"],
+      "env": {
+        "RUNPOD_API_KEY": "your_api_key_here"
+      }
+    }
+  }
+}
+```
+
+### Cline
+
+Open the Cline sidebar in VS Code, click the MCP Servers icon, then select **Configure MCP Servers** to edit `cline_mcp_settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "runpod": {
+      "command": "npx",
+      "args": ["-y", "@runpod/mcp-server@latest"],
+      "env": {
+        "RUNPOD_API_KEY": "your_api_key_here"
+      },
+      "disabled": false
+    }
+  }
+}
+```
+
+### Gemini CLI
+
+Add to `~/.gemini/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "runpod": {
+      "command": "npx",
+      "args": ["-y", "@runpod/mcp-server@latest"],
+      "env": {
+        "RUNPOD_API_KEY": "your_api_key_here"
+      }
+    }
+  }
+}
+```
+
+### OpenAI Codex CLI
+
+Add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.runpod]
+command = "npx"
+args = ["-y", "@runpod/mcp-server@latest"]
+
+[mcp_servers.runpod.env]
+RUNPOD_API_KEY = "your_api_key_here"
+```
+
+### Other clients
+
+For any MCP-compatible client, use the following connection details:
+
+- **Command:** `npx`
+- **Args:** `-y @runpod/mcp-server@latest`
+- **Environment:** `RUNPOD_API_KEY=your_api_key_here`
+
+## Usage examples
+
+### List all Pods
 
 ```
-Can you list all my Runpod pods?
+Can you list all my Runpod Pods?
 ```
 
-### Create a new pod
+### Create a new Pod
 
 ```
-Create a new Runpod pod with the following specifications:
+Create a new Runpod Pod with the following specifications:
 - Name: test-pod
 - Image: runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04
 - GPU Type: NVIDIA GeForce RTX 4090
 - GPU Count: 1
 ```
 
-### Create a serverless endpoint
+### Create a Serverless endpoint
 
 ```
-Create a Runpod serverless endpoint with the following configuration:
+Create a Runpod Serverless endpoint with the following configuration:
 - Name: my-endpoint
 - Template ID: 30zmvf89kd
 - Minimum workers: 0
 - Maximum workers: 3
 ```
 
-## Security Considerations
+## Security considerations
 
 This server requires your Runpod API key, which grants full access to your Runpod account. For security:
 
-- Never share your API key
-- Be cautious about what operations you perform
-- Consider setting up a separate API key with limited permissions
-- Don't use this in a production environment without proper security measures
+- Never share your API key.
+- Be cautious about what operations you perform.
+- Consider setting up a separate API key with limited permissions.
+- Don't use this in a production environment without proper security measures.
 
 ## License
 
