@@ -143,15 +143,8 @@ Add to `~/.gemini/settings.json`:
 
 ### OpenAI Codex CLI
 
-Add to `~/.codex/config.toml`:
-
-```toml
-[mcp_servers.runpod]
-command = "npx"
-args = ["-y", "@runpod/mcp-server@latest"]
-
-[mcp_servers.runpod.env]
-RUNPOD_API_KEY = "your_api_key_here"
+```bash
+codex mcp add runpod --env RUNPOD_API_KEY=your_api_key_here -- npx -y @runpod/mcp-server@latest
 ```
 
 ### Other clients
