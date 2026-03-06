@@ -78,14 +78,9 @@ service_calls:
   - target: rest-api
     type: http
     protocol: https
-    purpose: All Runpod REST API operations (rest.runpod.io/v1)
+    purpose: All Runpod REST API operations including pods, endpoints, templates, network volumes, container registry, and serverless job management — all via https://rest.runpod.io/v1
     file: src/index.ts
-
-  - target: serverless-runtime
-    type: http
-    protocol: https
-    purpose: Serverless endpoint invocation (api.runpod.ai/v2)
-    file: src/index.ts
+    search_pattern: API_BASE_URL
 
 env_vars:
   - name: RUNPOD_API_KEY
@@ -99,8 +94,8 @@ conventions:
     rationale: Simple stateless tool - no need for multi-file structure
 
   - category: code
-    rule: Two API helpers - runpodRequest() for REST, serverlessRequest() for runtime
-    rationale: Different base URLs (rest.runpod.io vs api.runpod.ai)
+    rule: Single API helper - runpodRequest() handles all REST operations via API_BASE_URL (https://rest.runpod.io/v1)
+    rationale: All tools use the same base URL — no separate serverless runtime endpoint
 
   - category: code
     rule: Zod schema validation for all tool parameters
