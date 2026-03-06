@@ -9,7 +9,7 @@ meta:
   name: Runpod MCP Server
   team: devrel
   purpose: Standalone MCP server for Claude Desktop/Code - direct Runpod REST API wrapper (no shared infrastructure)
-  repo: runpod/runpod-mcp-ts
+  repo: runpod/runpod-mcp
 
 ownership:
   team: devrel
