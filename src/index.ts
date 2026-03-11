@@ -924,8 +924,11 @@ server.tool(
       'CANCELLED',
       'TIMED_OUT',
     ]);
+    const MAX_POLL_TIME_MS = 5 * 60 * 1000; // 5 minutes
+    const POLL_INTERVAL_MS = 1000;
     const allChunks: unknown[] = [];
     let finalResult: Record<string, unknown> = {};
+    const startTime = Date.now();
 
     while (true) {
       const result = (await serverlessRequest(
@@ -943,7 +946,14 @@ server.tool(
         break;
       }
 
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      if (Date.now() - startTime > MAX_POLL_TIME_MS) {
+        finalResult.pollingTimedOut = true;
+        finalResult.note =
+          'Polling timed out after 5 minutes. Use get-job-status to check the job later.';
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
     }
 
     return {
