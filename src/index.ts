@@ -743,49 +743,67 @@ server.tool(
 
 // ============== SERVERLESS RUNTIME TOOLS ==============
 
+// Shared schemas for serverless tools
+const endpointIdSchema = z
+  .string()
+  .regex(/^[a-zA-Z0-9_-]+$/, 'Invalid endpoint ID format');
+
+const jobIdSchema = z
+  .string()
+  .regex(/^[a-zA-Z0-9_-]+$/, 'Invalid job ID format');
+
+const inputSchema = z
+  .record(z.unknown())
+  .describe(
+    'Input payload for the worker handler. The expected fields depend on the deployed model or worker.'
+  );
+
+const webhookSchema = z
+  .string()
+  .url()
+  .optional()
+  .describe(
+    'Webhook URL to receive job completion notifications instead of polling'
+  );
+
+const policySchema = z
+  .object({
+    executionTimeout: z
+      .number()
+      .optional()
+      .describe('Maximum execution time in milliseconds'),
+    lowPriority: z
+      .boolean()
+      .optional()
+      .describe('Submit as a low-priority job'),
+    ttl: z
+      .number()
+      .optional()
+      .describe('Time-to-live for the job result in milliseconds'),
+  })
+  .optional()
+  .describe('Execution policy options');
+
+const s3ConfigSchema = z
+  .object({
+    accessId: z.string().describe('S3 access key ID'),
+    accessSecret: z.string().describe('S3 secret access key'),
+    bucketName: z.string().describe('S3 bucket name'),
+    endpointUrl: z.string().describe('S3 endpoint URL'),
+  })
+  .optional()
+  .describe('S3-compatible storage config for large outputs');
+
 // Run Endpoint (Async)
 server.tool(
   'run-endpoint',
   'Submit an asynchronous job to a Serverless endpoint. Returns a job ID immediately — use get-job-status to poll for results. Async results are available for 30 minutes after completion.',
   {
-    endpointId: z.string().describe('ID of the Serverless endpoint to run'),
-    input: z
-      .record(z.unknown())
-      .describe(
-        'Input payload for the worker handler. The expected fields depend on the deployed model or worker.'
-      ),
-    webhook: z
-      .string()
-      .optional()
-      .describe(
-        'Webhook URL to receive job completion notifications instead of polling'
-      ),
-    policy: z
-      .object({
-        executionTimeout: z
-          .number()
-          .optional()
-          .describe('Maximum execution time in milliseconds'),
-        lowPriority: z
-          .boolean()
-          .optional()
-          .describe('Submit as a low-priority job'),
-        ttl: z
-          .number()
-          .optional()
-          .describe('Time-to-live for the job result in milliseconds'),
-      })
-      .optional()
-      .describe('Execution policy options'),
-    s3Config: z
-      .object({
-        accessId: z.string().describe('S3 access key ID'),
-        accessSecret: z.string().describe('S3 secret access key'),
-        bucketName: z.string().describe('S3 bucket name'),
-        endpointUrl: z.string().describe('S3 endpoint URL'),
-      })
-      .optional()
-      .describe('S3-compatible storage config for large outputs'),
+    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint to run'),
+    input: inputSchema,
+    webhook: webhookSchema,
+    policy: policySchema,
+    s3Config: s3ConfigSchema,
   },
   async (params) => {
     const { endpointId, ...body } = params;
@@ -812,14 +830,8 @@ server.tool(
   'runsync-endpoint',
   'Submit a synchronous job to a Serverless endpoint and wait for the result. Best for tasks completing within 90 seconds. If processing exceeds 90 seconds, the response returns a job ID to poll with get-job-status. Max payload: 20 MB. Results expire after 1 minute. Use the wait parameter to extend the server-side wait up to 5 minutes (300000 ms).',
   {
-    endpointId: z
-      .string()
-      .describe('ID of the Serverless endpoint to run synchronously'),
-    input: z
-      .record(z.unknown())
-      .describe(
-        'Input payload for the worker handler. The expected fields depend on the deployed model or worker.'
-      ),
+    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint to run synchronously'),
+    input: inputSchema,
     wait: z
       .number()
       .min(1000)
@@ -828,36 +840,9 @@ server.tool(
       .describe(
         'How long in milliseconds the server should wait for a result before returning a job ID to poll (1000–300000). Defaults to 90000 (90 seconds).'
       ),
-    webhook: z
-      .string()
-      .optional()
-      .describe('Webhook URL to receive completion notifications'),
-    policy: z
-      .object({
-        executionTimeout: z
-          .number()
-          .optional()
-          .describe('Maximum execution time in milliseconds'),
-        lowPriority: z
-          .boolean()
-          .optional()
-          .describe('Submit as a low-priority job'),
-        ttl: z
-          .number()
-          .optional()
-          .describe('Time-to-live for the job result in milliseconds'),
-      })
-      .optional()
-      .describe('Execution policy options'),
-    s3Config: z
-      .object({
-        accessId: z.string().describe('S3 access key ID'),
-        accessSecret: z.string().describe('S3 secret access key'),
-        bucketName: z.string().describe('S3 bucket name'),
-        endpointUrl: z.string().describe('S3 endpoint URL'),
-      })
-      .optional()
-      .describe('S3-compatible storage config for large outputs'),
+    webhook: webhookSchema,
+    policy: policySchema,
+    s3Config: s3ConfigSchema,
   },
   async (params) => {
     const { endpointId, wait, ...body } = params;
@@ -885,10 +870,8 @@ server.tool(
   'get-job-status',
   'Check the status of an asynchronous Serverless job. Returns the current status and output when complete. Job statuses: IN_QUEUE, IN_PROGRESS, COMPLETED, FAILED, CANCELLED, TIMED_OUT.',
   {
-    endpointId: z
-      .string()
-      .describe('ID of the Serverless endpoint the job belongs to'),
-    jobId: z.string().describe('ID of the job to check'),
+    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint the job belongs to'),
+    jobId: jobIdSchema.describe('ID of the job to check'),
   },
   async (params) => {
     const result = await serverlessRequest(
@@ -912,10 +895,8 @@ server.tool(
   'stream-job',
   'Retrieve all streaming output from a Serverless job by polling until the job reaches a terminal state. The worker must support streaming output. Polls /stream/{jobId} repeatedly and collects every chunk until status is COMPLETED, FAILED, CANCELLED, or TIMED_OUT.',
   {
-    endpointId: z
-      .string()
-      .describe('ID of the Serverless endpoint the job belongs to'),
-    jobId: z.string().describe('ID of the job to stream results from'),
+    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint the job belongs to'),
+    jobId: jobIdSchema.describe('ID of the job to stream results from'),
   },
   async (params) => {
     const TERMINAL_STATUSES = new Set([
@@ -926,24 +907,36 @@ server.tool(
     ]);
     const MAX_POLL_TIME_MS = 5 * 60 * 1000; // 5 minutes
     const POLL_INTERVAL_MS = 1000;
+    const MAX_CONSECUTIVE_ERRORS = 5;
     const allChunks: unknown[] = [];
     let finalResult: Record<string, unknown> = {};
+    let consecutiveErrors = 0;
     const startTime = Date.now();
 
     while (true) {
-      const result = (await serverlessRequest(
-        params.endpointId,
-        `/stream/${params.jobId}`
-      )) as Record<string, unknown>;
+      try {
+        const result = (await serverlessRequest(
+          params.endpointId,
+          `/stream/${params.jobId}`
+        )) as Record<string, unknown>;
 
-      if (Array.isArray(result.stream)) {
-        allChunks.push(...result.stream);
-      }
+        consecutiveErrors = 0;
 
-      finalResult = result;
+        if (Array.isArray(result.stream)) {
+          allChunks.push(...result.stream);
+        }
 
-      if (TERMINAL_STATUSES.has(result.status as string)) {
-        break;
+        finalResult = result;
+
+        if (TERMINAL_STATUSES.has(result.status as string)) {
+          break;
+        }
+      } catch (error) {
+        consecutiveErrors++;
+        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+          finalResult.error = `Polling aborted after ${MAX_CONSECUTIVE_ERRORS} consecutive errors: ${error instanceof Error ? error.message : String(error)}`;
+          break;
+        }
       }
 
       if (Date.now() - startTime > MAX_POLL_TIME_MS) {
@@ -976,10 +969,8 @@ server.tool(
   'cancel-job',
   'Cancel a Serverless job that is queued or in progress.',
   {
-    endpointId: z
-      .string()
-      .describe('ID of the Serverless endpoint the job belongs to'),
-    jobId: z.string().describe('ID of the job to cancel'),
+    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint the job belongs to'),
+    jobId: jobIdSchema.describe('ID of the job to cancel'),
   },
   async (params) => {
     const result = await serverlessRequest(
@@ -1004,10 +995,8 @@ server.tool(
   'retry-job',
   'Retry a failed or timed-out Serverless job. Only works for jobs with FAILED or TIMED_OUT status. The previous output is removed and the job is requeued.',
   {
-    endpointId: z
-      .string()
-      .describe('ID of the Serverless endpoint the job belongs to'),
-    jobId: z.string().describe('ID of the job to retry'),
+    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint the job belongs to'),
+    jobId: jobIdSchema.describe('ID of the job to retry'),
   },
   async (params) => {
     const result = await serverlessRequest(
@@ -1032,9 +1021,7 @@ server.tool(
   'endpoint-health',
   'Get the health and operational status of a Serverless endpoint, including worker counts and job statistics.',
   {
-    endpointId: z
-      .string()
-      .describe('ID of the Serverless endpoint to check health for'),
+    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint to check health for'),
   },
   async (params) => {
     const result = await serverlessRequest(params.endpointId, '/health');
@@ -1055,9 +1042,7 @@ server.tool(
   'purge-endpoint-queue',
   'Remove all pending jobs from a Serverless endpoint queue. Only affects queued jobs — in-progress jobs continue running. Use this for error recovery or clearing outdated requests.',
   {
-    endpointId: z
-      .string()
-      .describe('ID of the Serverless endpoint to purge the queue for'),
+    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint to purge the queue for'),
   },
   async (params) => {
     const result = await serverlessRequest(
