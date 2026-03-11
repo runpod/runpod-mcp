@@ -383,7 +383,7 @@ server.tool(
 // Create Pod
 server.tool(
   'create-pod',
-  'Create a new GPU/CPU pod on RunPod. If the user does not specify a template or image, recommend the "Runpod Pytorch 2.8.0" template (ID: runpod-torch-v280, image: runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404) as the default starting point — it has the most up-to-date CUDA and PyTorch versions.',
+  'Create a new GPU/CPU pod on RunPod. If the user does not specify an image, recommend the "Runpod Pytorch 2.8.0" image (runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404) as the default — it has the most up-to-date CUDA and PyTorch versions.',
   {
     name: z.string().optional().describe('Name for the pod'),
     imageName: z.string().describe('Docker image to use'),
