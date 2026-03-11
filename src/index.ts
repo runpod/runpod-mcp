@@ -810,7 +810,7 @@ server.tool(
 // Run Endpoint Sync
 server.tool(
   'runsync-endpoint',
-  'Submit a synchronous job to a Serverless endpoint and wait for the result. Best for tasks completing within 90 seconds. If processing exceeds 90 seconds, the response returns a job ID to poll with get-job-status. Max payload: 20 MB. Results expire after 1 minute.',
+  'Submit a synchronous job to a Serverless endpoint and wait for the result. Best for tasks completing within 90 seconds. If processing exceeds 90 seconds, the response returns a job ID to poll with get-job-status. Max payload: 20 MB. Results expire after 1 minute. Use the wait parameter to extend the server-side wait up to 5 minutes (300000 ms).',
   {
     endpointId: z
       .string()
@@ -819,6 +819,14 @@ server.tool(
       .record(z.unknown())
       .describe(
         'Input payload for the worker handler. The expected fields depend on the deployed model or worker.'
+      ),
+    wait: z
+      .number()
+      .min(1000)
+      .max(300000)
+      .optional()
+      .describe(
+        'How long in milliseconds the server should wait for a result before returning a job ID to poll (1000–300000). Defaults to 90000 (90 seconds).'
       ),
     webhook: z
       .string()
@@ -852,10 +860,11 @@ server.tool(
       .describe('S3-compatible storage config for large outputs'),
   },
   async (params) => {
-    const { endpointId, ...body } = params;
+    const { endpointId, wait, ...body } = params;
+    const path = wait ? `/runsync?wait=${wait}` : '/runsync';
     const result = await serverlessRequest(
       endpointId,
-      '/runsync',
+      path,
       'POST',
       body as Record<string, unknown>
     );
