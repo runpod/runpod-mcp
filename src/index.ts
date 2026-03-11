@@ -810,7 +810,7 @@ server.tool(
 // Run Endpoint Sync
 server.tool(
   'runsync-endpoint',
-  'Submit a synchronous job to a Serverless endpoint and wait for the result. Best for tasks completing within 90 seconds. If processing exceeds 90 seconds, the response returns a job ID to poll with get-job-status. Max payload: 20 MB. Results expire after 1 minute (up to 5 minutes with the wait parameter).',
+  'Submit a synchronous job to a Serverless endpoint and wait for the result. Best for tasks completing within 90 seconds. If processing exceeds 90 seconds, the response returns a job ID to poll with get-job-status. Max payload: 20 MB. Results expire after 1 minute.',
   {
     endpointId: z
       .string()
@@ -901,7 +901,7 @@ server.tool(
 // Stream Job Results
 server.tool(
   'stream-job',
-  'Retrieve incremental streaming results from a Serverless job. The worker must support streaming output. Each chunk is up to 1 MB.',
+  'Retrieve all streaming output from a Serverless job by polling until the job reaches a terminal state. The worker must support streaming output. Polls /stream/{jobId} repeatedly and collects every chunk until status is COMPLETED, FAILED, CANCELLED, or TIMED_OUT.',
   {
     endpointId: z
       .string()
@@ -909,16 +909,43 @@ server.tool(
     jobId: z.string().describe('ID of the job to stream results from'),
   },
   async (params) => {
-    const result = await serverlessRequest(
-      params.endpointId,
-      `/stream/${params.jobId}`
-    );
+    const TERMINAL_STATUSES = new Set([
+      'COMPLETED',
+      'FAILED',
+      'CANCELLED',
+      'TIMED_OUT',
+    ]);
+    const allChunks: unknown[] = [];
+    let finalResult: Record<string, unknown> = {};
+
+    while (true) {
+      const result = (await serverlessRequest(
+        params.endpointId,
+        `/stream/${params.jobId}`
+      )) as Record<string, unknown>;
+
+      if (Array.isArray(result.stream)) {
+        allChunks.push(...result.stream);
+      }
+
+      finalResult = result;
+
+      if (TERMINAL_STATUSES.has(result.status as string)) {
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
 
     return {
       content: [
         {
           type: 'text',
-          text: JSON.stringify(result, null, 2),
+          text: JSON.stringify(
+            { ...finalResult, stream: allChunks },
+            null,
+            2
+          ),
         },
       ],
     };
