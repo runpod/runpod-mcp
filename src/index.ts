@@ -434,6 +434,7 @@ server.tool(
   {
     name: z.string().optional().describe('Name for the pod'),
     imageName: z.string().describe('Docker image to use'),
+    computeType: z.string().optional().describe('Compute type (NVIDIA, CPU) for the pod'),
     cloudType: z
       .enum(['SECURE', 'COMMUNITY'])
       .optional()
@@ -1132,6 +1133,7 @@ server.tool(
   {
     name: z.string().describe('Name for the template'),
     imageName: z.string().describe('Docker image to use'),
+    category: z.string().optional().describe('Compute category (NVIDIA, AMD, CPU) for the template'),
     isServerless: z
       .boolean()
       .optional()
