@@ -1,72 +1,70 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import fetch, { type RequestInit as NodeFetchRequestInit } from 'node-fetch';
+import * as http from 'node:http';
 
-// Base URL for RunPod API
-const API_BASE_URL = 'https://rest.runpod.io/v1';
-
-// Get API key from environment variable
-const API_KEY = process.env.RUNPOD_API_KEY;
-if (!API_KEY) {
-  console.error('RUNPOD_API_KEY environment variable is required');
-  process.exit(1);
-}
-
-// Create an MCP server
-const server = new McpServer({
-  name: 'RunPod API Server',
-  version: '1.0.0',
-  capabilities: {
-    resources: {},
-    tools: {},
-  },
-});
+// Base URL for RunPod API — overridable per stage via env var
+// Dev Lambda → https://rest.runpod.dev/v1 (set by SST)
+// Prod Lambda / stdio → https://rest.runpod.io/v1
+const API_BASE_URL = process.env.RUNPOD_API_BASE_URL ?? 'https://rest.runpod.io/v1';
 
 // GraphQL endpoint for public queries (GPU types, data centers)
 const GRAPHQL_URL = 'https://api.runpod.io/graphql';
 
-// Helper function to make GraphQL requests to RunPod
-async function graphqlRequest<T>(
-  query: string
-): Promise<T> {
-  const response = await fetch(GRAPHQL_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
+export function createRunpodServer(apiKey: string) {
+  // Create an MCP server
+  const server = new McpServer({
+    name: 'RunPod API Server',
+    version: '1.0.0',
+    capabilities: {
+      resources: {},
+      tools: {},
     },
-    body: JSON.stringify({ query }),
   });
 
-  const result = (await response.json()) as {
-    data?: T;
-    errors?: Array<{ message: string }>;
-  };
+  // Helper function to make GraphQL requests to RunPod
+  async function graphqlRequest<T>(
+    query: string
+  ): Promise<T> {
+    const response = await fetch(GRAPHQL_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ query }),
+    });
 
-  if (result.errors && result.errors.length > 0) {
-    throw new Error(
-      `GraphQL Error: ${result.errors.map((e) => e.message).join(', ')}`
-    );
+    const result = (await response.json()) as {
+      data?: T;
+      errors?: Array<{ message: string }>;
+    };
+
+    if (result.errors && result.errors.length > 0) {
+      throw new Error(
+        `GraphQL Error: ${result.errors.map((e) => e.message).join(', ')}`
+      );
+    }
+
+    if (!result.data) {
+      throw new Error('No data returned from GraphQL query');
+    }
+
+    return result.data;
   }
 
-  if (!result.data) {
-    throw new Error('No data returned from GraphQL query');
-  }
-
-  return result.data;
-}
-
-// Helper function to make authenticated API requests to RunPod
-async function runpodRequest(
-  endpoint: string,
-  method: string = 'GET',
-  body?: Record<string, unknown>
-) {
-  const url = `${API_BASE_URL}${endpoint}`;
-  const headers = {
-    Authorization: `Bearer ${API_KEY}`,
-    'Content-Type': 'application/json',
-  };
+  // Helper function to make authenticated API requests to RunPod
+  async function runpodRequest(
+    endpoint: string,
+    method: string = 'GET',
+    body?: Record<string, unknown>
+  ) {
+    const url = `${API_BASE_URL}${endpoint}`;
+    const headers = {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    };
 
   const options: NodeFetchRequestInit = {
     method,
@@ -282,7 +280,7 @@ async function serverlessRequest(
 ) {
   const url = `${SERVERLESS_API_BASE_URL}/${endpointId}${path}`;
   const headers: Record<string, string> = {
-    Authorization: `Bearer ${API_KEY}`,
+    Authorization: `Bearer ${apiKey}`,
     'Content-Type': 'application/json',
   };
 
@@ -1430,6 +1428,73 @@ server.tool(
   }
 );
 
-// Start receiving messages on stdin and sending messages on stdout
-const transport = new StdioServerTransport();
-server.connect(transport);
+  return server;
+}
+
+// ── Transport selection ────────────────────────────────────────────────────
+// Skipped when running inside Lambda (AWS_LAMBDA_FUNCTION_NAME is set by the runtime).
+// Lambda uses src/lambda.ts as its entry point instead.
+//
+// HTTP mode: set PORT env var (self-hosted / local Docker)
+// stdio mode: default (npx usage, RUNPOD_API_KEY env var)
+
+const PORT = process.env.PORT ? Number(process.env.PORT) : null;
+const isLambda = !!process.env.AWS_LAMBDA_FUNCTION_NAME;
+
+if (!isLambda && PORT) {
+  // Self-hosted HTTP mode — one server per request, stateless
+  const httpServer = http.createServer(async (req, res) => {
+    // Health check
+    if (req.method === 'GET' && req.url === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (req.url !== '/mcp') {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+
+    // Extract API key from Authorization header or ?token= query param
+    const authHeader = req.headers.authorization;
+    const tokenParam = new URL(req.url, `http://localhost`).searchParams.get('token');
+    const apiKey = authHeader?.replace(/^Bearer\s+/i, '') ?? tokenParam ?? '';
+
+    if (!apiKey) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing API key. Provide Authorization: Bearer <key> or ?token=<key>' }));
+      return;
+    }
+
+    // Read request body
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    const body = Buffer.concat(chunks);
+
+    // Create a fresh server + transport per request (stateless)
+    const server = createRunpodServer(apiKey);
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined, // stateless — no session tracking
+    });
+    await server.connect(transport);
+    await transport.handleRequest(req, res, body);
+  });
+
+  httpServer.listen(PORT, () => {
+    console.log(`RunPod MCP server listening on port ${PORT}`);
+    console.log(`MCP endpoint: http://localhost:${PORT}/mcp`);
+  });
+} else if (!isLambda) {
+  // stdio mode — existing behavior, unchanged
+  const apiKey = process.env.RUNPOD_API_KEY;
+  if (!apiKey) {
+    console.error('RUNPOD_API_KEY environment variable is required');
+    process.exit(1);
+  }
+
+  const server = createRunpodServer(apiKey);
+  const transport = new StdioServerTransport();
+  server.connect(transport);
+}
