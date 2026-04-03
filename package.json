@@ -37,7 +37,9 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.7.0",
+    "@types/aws-lambda": "^8.10.161",
     "node-fetch": "^3.3.2",
+    "serverless-http": "^4.0.0",
     "zod": "^3.22.4"
   },
   "devDependencies": {

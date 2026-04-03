@@ -1430,13 +1430,17 @@ server.tool(
 }
 
 // ── Transport selection ────────────────────────────────────────────────────
-// HTTP mode: set PORT env var (hosted service, per-request auth via Bearer token)
-// stdio mode: default (local npx usage, RUNPOD_API_KEY env var)
+// Skipped when running inside Lambda (AWS_LAMBDA_FUNCTION_NAME is set by the runtime).
+// Lambda uses src/lambda.ts as its entry point instead.
+//
+// HTTP mode: set PORT env var (self-hosted / local Docker)
+// stdio mode: default (npx usage, RUNPOD_API_KEY env var)
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : null;
+const isLambda = !!process.env.AWS_LAMBDA_FUNCTION_NAME;
 
-if (PORT) {
-  // Hosted HTTP mode — one server per request, stateless
+if (!isLambda && PORT) {
+  // Self-hosted HTTP mode — one server per request, stateless
   const httpServer = http.createServer(async (req, res) => {
     // Health check
     if (req.method === 'GET' && req.url === '/health') {
@@ -1480,7 +1484,7 @@ if (PORT) {
     console.log(`RunPod MCP server listening on port ${PORT}`);
     console.log(`MCP endpoint: http://localhost:${PORT}/mcp`);
   });
-} else {
+} else if (!isLambda) {
   // stdio mode — existing behavior, unchanged
   const apiKey = process.env.RUNPOD_API_KEY;
   if (!apiKey) {
