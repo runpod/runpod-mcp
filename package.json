@@ -25,6 +25,7 @@
     "dev": "tsx src/index.ts",
     "changeset": "changeset",
     "changeset:version": "changeset version",
+    "prepublishOnly": "pnpm build",
     "changeset:publish": "changeset publish"
   },
   "exports": {
