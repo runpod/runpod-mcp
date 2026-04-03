@@ -24,6 +24,17 @@ export const mcpFunction = new sst.aws.Function("McpFunction", {
   },
   environment: {
     DD_API_KEY: ddApiKey.value,
+    // Controls which RunPod API keys are accepted.
+    // Dev stage → api.runpod.dev (dev keys only, safe for internal testing)
+    // Prod stage → api.runpod.io (prod keys)
+    RUNPOD_GRAPHQL_URL:
+      $app.stage === "prod"
+        ? "https://api.runpod.io/graphql"
+        : "https://api.runpod.dev/graphql",
+    RUNPOD_API_BASE_URL:
+      $app.stage === "prod"
+        ? "https://rest.runpod.io/v1"
+        : "https://rest.runpod.dev/v1",
   },
   build: {
     esbuild: {

@@ -2,6 +2,29 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import * as http from 'node:http';
 import { createRunpodServer } from './index.js';
 
+// The RunPod API to validate keys against — set per stage via RUNPOD_GRAPHQL_URL env var.
+// Dev stage → api.runpod.dev (dev keys only)
+// Prod stage → api.runpod.io (prod keys)
+const GRAPHQL_URL = process.env.RUNPOD_GRAPHQL_URL ?? 'https://api.runpod.io/graphql';
+
+async function validateApiKey(apiKey: string): Promise<boolean> {
+  try {
+    const res = await fetch(GRAPHQL_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({ query: '{ myself { id } }' }),
+    });
+    if (!res.ok) return false;
+    const json = await res.json() as { data?: { myself?: { id: string } }; errors?: unknown[] };
+    return !!json.data?.myself?.id;
+  } catch {
+    return false;
+  }
+}
+
 export function createRequestHandler(): http.RequestListener {
   return async (req, res) => {
     // Health check
@@ -28,6 +51,17 @@ export function createRequestHandler(): http.RequestListener {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         error: 'Missing RunPod API key. Provide Authorization: Bearer <key> or ?token=<key>',
+      }));
+      return;
+    }
+
+    // Validate key against the configured RunPod API (dev or prod).
+    // Dev stage points to api.runpod.dev — dev keys pass, prod keys 401.
+    const valid = await validateApiKey(apiKey);
+    if (!valid) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: `Invalid or unauthorized API key. This endpoint requires a ${GRAPHQL_URL.includes('runpod.dev') ? 'dev' : 'prod'} RunPod API key.`,
       }));
       return;
     }

@@ -5,8 +5,10 @@ import { z } from 'zod';
 import fetch, { type RequestInit as NodeFetchRequestInit } from 'node-fetch';
 import * as http from 'node:http';
 
-// Base URL for RunPod API
-const API_BASE_URL = 'https://rest.runpod.io/v1';
+// Base URL for RunPod API — overridable per stage via env var
+// Dev Lambda → https://rest.runpod.dev/v1 (set by SST)
+// Prod Lambda / stdio → https://rest.runpod.io/v1
+const API_BASE_URL = process.env.RUNPOD_API_BASE_URL ?? 'https://rest.runpod.io/v1';
 
 // GraphQL endpoint for public queries (GPU types, data centers)
 const GRAPHQL_URL = 'https://api.runpod.io/graphql';
