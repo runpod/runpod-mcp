@@ -433,7 +433,10 @@ server.tool(
   'Create a new GPU/CPU pod on RunPod. If the user does not specify an image, recommend the "Runpod Pytorch 2.8.0" image (runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404) as the default — it has the most up-to-date CUDA and PyTorch versions.',
   {
     name: z.string().optional().describe('Name for the pod'),
-    imageName: z.string().describe('Docker image to use'),
+    imageName: z
+     .string()
+     .default('runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404')
+     .describe('Docker image to use'),
     cloudType: z
       .enum(['SECURE', 'COMMUNITY'])
       .optional()
