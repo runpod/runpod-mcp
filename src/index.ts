@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import fetch, { type RequestInit as NodeFetchRequestInit } from 'node-fetch';
+import { randomUUID } from 'node:crypto';
 
 // Base URL for RunPod API
 const API_BASE_URL = 'https://rest.runpod.io/v1';
@@ -13,27 +14,109 @@ if (!API_KEY) {
   process.exit(1);
 }
 
+// Server identity — also used in the outbound User-Agent header.
+const MCP_SERVER_NAME = 'RunPod API Server';
+
+// `__PACKAGE_VERSION__` is replaced at build time by tsup's `define` (see
+// tsup.config.ts) with the current `version` from package.json so the User-Agent
+// always matches the published version. Falls back to `'dev'` in environments
+// where the substitution doesn't happen (e.g. `pnpm dev` via tsx).
+declare const __PACKAGE_VERSION__: string;
+const MCP_SERVER_VERSION =
+  typeof __PACKAGE_VERSION__ !== 'undefined' ? __PACKAGE_VERSION__ : 'dev';
+
+// Transport the server is running under. Defaults to 'stdio'; HTTP entrypoints
+// should call `setTransport('http')` before starting the server so the
+// outbound User-Agent reports the correct value.
+let MCP_TRANSPORT: 'stdio' | 'http' = 'stdio';
+export function setTransport(t: 'stdio' | 'http'): void {
+  MCP_TRANSPORT = t;
+}
+
 // Create an MCP server
 const server = new McpServer({
-  name: 'RunPod API Server',
-  version: '1.0.0',
+  name: MCP_SERVER_NAME,
+  version: MCP_SERVER_VERSION,
   capabilities: {
     resources: {},
     tools: {},
   },
 });
 
+// ============== CALLER TRACKING ==============
+// Adds structured caller identification to every outbound API call so the
+// Runpod platform can attribute traffic to a specific MCP client (Claude
+// Code, Cursor, Codex, Gemini CLI, etc.). Pure observability — no tool
+// behavior changes.
+//
+// `clientInfo` is sourced from the `initialize` handshake (MCP spec
+// 2025-06-18 and earlier). The SDK caches the value and exposes it via
+// `server.server.getClientVersion()`.
+
+// One session ID per server process. Anonymous; lets the data side count
+// distinct agent sessions without per-user attribution.
+const SESSION_ID = randomUUID();
+
+/**
+ * Returns the calling MCP client's identity from the `initialize` handshake.
+ * Returns `{ name: 'unknown', version: 'unknown' }` before the handshake
+ * completes or if the client did not send `clientInfo` (the MCP spec
+ * requires it, so this should be rare in practice).
+ */
+function resolveClientInfo(): { name: string; version: string } {
+  const info = server.server.getClientVersion();
+  if (info?.name) {
+    return { name: info.name, version: info.version || 'unknown' };
+  }
+  return { name: 'unknown', version: 'unknown' };
+}
+
+/**
+ * Sanitizes a value for inclusion in a User-Agent token. RFC 7230 reserves
+ * parens and a few other chars; we strip them so the structured UA stays
+ * parseable. Also bounds the length so a hostile or buggy client can't blow
+ * up a header.
+ */
+function sanitizeUaToken(value: string): string {
+  return value.replace(/[()<>@,;:\\"/\[\]?={}\s]/g, '_').slice(0, 64);
+}
+
+/**
+ * Builds the structured User-Agent string for outbound HTTP calls.
+ *
+ *   runpod-mcp-server/<version> (caller=mcp; client=<name>; client_version=<ver>; transport=<stdio|http>)
+ *
+ * Gateway parsers should treat unknown tokens as opaque and key off the
+ * `caller=` / `client=` / `client_version=` / `transport=` pairs.
+ */
+function buildUserAgent(): string {
+  const { name, version } = resolveClientInfo();
+  const safeName = sanitizeUaToken(name);
+  const safeVersion = sanitizeUaToken(version);
+  return `runpod-mcp-server/${MCP_SERVER_VERSION} (caller=mcp; client=${safeName}; client_version=${safeVersion}; transport=${MCP_TRANSPORT})`;
+}
+
+/**
+ * Headers to attach to every outbound HTTP call so the Runpod platform can
+ * attribute traffic to an MCP session and client.
+ */
+function trackingHeaders(): Record<string, string> {
+  return {
+    'User-Agent': buildUserAgent(),
+    'X-Runpod-Session-Id': SESSION_ID,
+  };
+}
+
 // GraphQL endpoint for public queries (GPU types, data centers)
 const GRAPHQL_URL = 'https://api.runpod.io/graphql';
 
 // Helper function to make GraphQL requests to RunPod
-async function graphqlRequest<T>(
-  query: string
-): Promise<T> {
+async function graphqlRequest<T>(query: string): Promise<T> {
   const response = await fetch(GRAPHQL_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      ...trackingHeaders(),
     },
     body: JSON.stringify({ query }),
   });
@@ -66,6 +149,7 @@ async function runpodRequest(
   const headers = {
     Authorization: `Bearer ${API_KEY}`,
     'Content-Type': 'application/json',
+    ...trackingHeaders(),
   };
 
   const options: NodeFetchRequestInit = {
@@ -284,6 +368,7 @@ async function serverlessRequest(
   const headers: Record<string, string> = {
     Authorization: `Bearer ${API_KEY}`,
     'Content-Type': 'application/json',
+    ...trackingHeaders(),
   };
 
   const options: NodeFetchRequestInit = {
@@ -799,7 +884,9 @@ server.tool(
   'run-endpoint',
   'Submit an asynchronous job to a Serverless endpoint. Returns a job ID immediately — use get-job-status to poll for results. Async results are available for 30 minutes after completion.',
   {
-    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint to run'),
+    endpointId: endpointIdSchema.describe(
+      'ID of the Serverless endpoint to run'
+    ),
     input: inputSchema,
     webhook: webhookSchema,
     policy: policySchema,
@@ -830,7 +917,9 @@ server.tool(
   'runsync-endpoint',
   'Submit a synchronous job to a Serverless endpoint and wait for the result. Best for tasks completing within 90 seconds. If processing exceeds 90 seconds, the response returns a job ID to poll with get-job-status. Max payload: 20 MB. Results expire after 1 minute. Use the wait parameter to extend the server-side wait up to 5 minutes (300000 ms).',
   {
-    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint to run synchronously'),
+    endpointId: endpointIdSchema.describe(
+      'ID of the Serverless endpoint to run synchronously'
+    ),
     input: inputSchema,
     wait: z
       .number()
@@ -870,7 +959,9 @@ server.tool(
   'get-job-status',
   'Check the status of an asynchronous Serverless job. Returns the current status and output when complete. Job statuses: IN_QUEUE, IN_PROGRESS, COMPLETED, FAILED, CANCELLED, TIMED_OUT.',
   {
-    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint the job belongs to'),
+    endpointId: endpointIdSchema.describe(
+      'ID of the Serverless endpoint the job belongs to'
+    ),
     jobId: jobIdSchema.describe('ID of the job to check'),
   },
   async (params) => {
@@ -895,7 +986,9 @@ server.tool(
   'stream-job',
   'Retrieve all streaming output from a Serverless job by polling until the job reaches a terminal state. The worker must support streaming output. Polls /stream/{jobId} repeatedly and collects every chunk until status is COMPLETED, FAILED, CANCELLED, or TIMED_OUT.',
   {
-    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint the job belongs to'),
+    endpointId: endpointIdSchema.describe(
+      'ID of the Serverless endpoint the job belongs to'
+    ),
     jobId: jobIdSchema.describe('ID of the job to stream results from'),
   },
   async (params) => {
@@ -953,11 +1046,7 @@ server.tool(
       content: [
         {
           type: 'text',
-          text: JSON.stringify(
-            { ...finalResult, stream: allChunks },
-            null,
-            2
-          ),
+          text: JSON.stringify({ ...finalResult, stream: allChunks }, null, 2),
         },
       ],
     };
@@ -969,7 +1058,9 @@ server.tool(
   'cancel-job',
   'Cancel a Serverless job that is queued or in progress.',
   {
-    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint the job belongs to'),
+    endpointId: endpointIdSchema.describe(
+      'ID of the Serverless endpoint the job belongs to'
+    ),
     jobId: jobIdSchema.describe('ID of the job to cancel'),
   },
   async (params) => {
@@ -995,7 +1086,9 @@ server.tool(
   'retry-job',
   'Retry a failed or timed-out Serverless job. Only works for jobs with FAILED or TIMED_OUT status. The previous output is removed and the job is requeued.',
   {
-    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint the job belongs to'),
+    endpointId: endpointIdSchema.describe(
+      'ID of the Serverless endpoint the job belongs to'
+    ),
     jobId: jobIdSchema.describe('ID of the job to retry'),
   },
   async (params) => {
@@ -1021,7 +1114,9 @@ server.tool(
   'endpoint-health',
   'Get the health and operational status of a Serverless endpoint, including worker counts and job statistics.',
   {
-    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint to check health for'),
+    endpointId: endpointIdSchema.describe(
+      'ID of the Serverless endpoint to check health for'
+    ),
   },
   async (params) => {
     const result = await serverlessRequest(params.endpointId, '/health');
@@ -1042,7 +1137,9 @@ server.tool(
   'purge-endpoint-queue',
   'Remove all pending jobs from a Serverless endpoint queue. Only affects queued jobs — in-progress jobs continue running. Use this for error recovery or clearing outdated requests.',
   {
-    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint to purge the queue for'),
+    endpointId: endpointIdSchema.describe(
+      'ID of the Serverless endpoint to purge the queue for'
+    ),
   },
   async (params) => {
     const result = await serverlessRequest(
