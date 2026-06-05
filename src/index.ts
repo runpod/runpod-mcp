@@ -16,7 +16,22 @@ if (!API_KEY) {
 
 // Server identity — also used in the outbound User-Agent header.
 const MCP_SERVER_NAME = 'RunPod API Server';
-const MCP_SERVER_VERSION = '1.2.0';
+
+// `__PACKAGE_VERSION__` is replaced at build time by tsup's `define` (see
+// tsup.config.ts) with the current `version` from package.json so the User-Agent
+// always matches the published version. Falls back to `'dev'` in environments
+// where the substitution doesn't happen (e.g. `pnpm dev` via tsx).
+declare const __PACKAGE_VERSION__: string;
+const MCP_SERVER_VERSION =
+  typeof __PACKAGE_VERSION__ !== 'undefined' ? __PACKAGE_VERSION__ : 'dev';
+
+// Transport the server is running under. Defaults to 'stdio'; HTTP entrypoints
+// should call `setTransport('http')` before starting the server so the
+// outbound User-Agent reports the correct value.
+let MCP_TRANSPORT: 'stdio' | 'http' = 'stdio';
+export function setTransport(t: 'stdio' | 'http'): void {
+  MCP_TRANSPORT = t;
+}
 
 // Create an MCP server
 const server = new McpServer({
@@ -69,7 +84,7 @@ function sanitizeUaToken(value: string): string {
 /**
  * Builds the structured User-Agent string for outbound HTTP calls.
  *
- *   runpod-mcp-server/<version> (caller=mcp; client=<name>; client_version=<ver>; transport=stdio)
+ *   runpod-mcp-server/<version> (caller=mcp; client=<name>; client_version=<ver>; transport=<stdio|http>)
  *
  * Gateway parsers should treat unknown tokens as opaque and key off the
  * `caller=` / `client=` / `client_version=` / `transport=` pairs.
@@ -78,7 +93,7 @@ function buildUserAgent(): string {
   const { name, version } = resolveClientInfo();
   const safeName = sanitizeUaToken(name);
   const safeVersion = sanitizeUaToken(version);
-  return `runpod-mcp-server/${MCP_SERVER_VERSION} (caller=mcp; client=${safeName}; client_version=${safeVersion}; transport=stdio)`;
+  return `runpod-mcp-server/${MCP_SERVER_VERSION} (caller=mcp; client=${safeName}; client_version=${safeVersion}; transport=${MCP_TRANSPORT})`;
 }
 
 /**
