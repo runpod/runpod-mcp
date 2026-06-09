@@ -22,7 +22,14 @@ Prefer using paragraphs to bullet points unless directly asked. When using bulle
 
 The server communicates with two separate Runpod API backends. The REST API at `https://rest.runpod.io/v1` handles all authenticated CRUD operations for Pods, endpoints, templates, network volumes, and container registry auths. It requires a `RUNPOD_API_KEY` environment variable. The GraphQL API at `https://api.runpod.io/graphql` is public and requires no authentication. It serves read-only discovery queries like GPU types and data centers.
 
-All tools and helpers live in `src/index.ts`. The build produces both an ESM output (`dist/index.mjs`) used by the `bin` field and for local development, and a CJS output (`dist/index.js`) for `require()` consumers. Because `package.json` has `"type": "module"`, always use `dist/index.mjs` when running locally with `node`.
+The source is split by responsibility:
+- `src/stdio.ts` is the local `stdio` entrypoint.
+- `src/http.ts` is the shared Streamable HTTP handler.
+- `src/tools.ts` contains all Runpod tools and API helpers.
+- `src/server.ts` owns shared server metadata and construction.
+- `api/index.ts` is the Vercel adapter.
+
+The build produces `dist/stdio.*`, `dist/http.*`, and `dist/tools.*`. Because `package.json` has `"type": "module"`, always use `dist/stdio.mjs` when running the built local server with `node`.
 
 ## Local development
 
@@ -36,7 +43,7 @@ To point Claude Code to your local build:
 ```bash
 claude mcp add runpod -s user \
   -e RUNPOD_API_KEY=YOUR_API_KEY \
-  -- node /absolute/path/to/runpod-mcp/dist/index.mjs
+  -- node /absolute/path/to/runpod-mcp/dist/stdio.mjs
 ```
 
 After making changes, rebuild with `pnpm build`. If you are in an active Claude Code session, type `/mcp` to reconnect without restarting. You can also use `pnpm build:watch` for auto-rebuilding during development.
@@ -59,7 +66,14 @@ Define parameters with Zod schemas, calling `.describe()` on each field and `.op
 
 All tool handlers should return the same shape: `{ content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }`.
 
-Tools are grouped by section comments in `src/index.ts` (infrastructure, Pod management, endpoint management, template management, network volume management, container registry auth). Add new tools in the appropriate section. If adding a new resource category, follow the same comment style.
+Tools are grouped by section comments in `src/tools.ts` (infrastructure, Pod management, endpoint management, template management, network volume management, container registry auth). Add new tools in the appropriate section. If adding a new resource category, follow the same comment style.
+
+For transport regressions, use:
+
+```bash
+pnpm smoke:stdio
+pnpm smoke:http
+```
 
 ## Known issues
 

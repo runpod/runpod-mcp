@@ -1,14 +1,14 @@
 # Contributing to @runpod/mcp-server
 
-Thank you for your interest in contributing to the RunPod MCP Server! This document outlines the process for making releases and contributing to the project.
+Thank you for your interest in contributing to the Runpod MCP Server. This document outlines the process for making releases and contributing to the project.
 
 ## Development Setup
 
 1. **Clone the repository**
 
    ```bash
-   git clone https://github.com/runpod/mcp-server.git
-   cd mcp-server
+   git clone https://github.com/runpod/runpod-mcp.git
+   cd runpod-mcp
    ```
 
 2. **Install dependencies**
@@ -25,6 +25,12 @@ Thank you for your interest in contributing to the RunPod MCP Server! This docum
 4. **Run the server**
    ```bash
    pnpm start
+   ```
+
+5. **Smoke-test the transports**
+   ```bash
+   RUNPOD_API_KEY=YOUR_API_KEY pnpm smoke:stdio
+   MCP_SERVER_URL=https://YOUR-DEPLOYMENT.vercel.app RUNPOD_API_KEY=YOUR_API_KEY pnpm smoke:http
    ```
 
 ## Making Changes
@@ -46,6 +52,7 @@ Thank you for your interest in contributing to the RunPod MCP Server! This docum
    pnpm type-check
    pnpm lint
    pnpm build
+   pnpm smoke:stdio
    ```
 
 ## Release Process

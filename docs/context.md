@@ -1,316 +1,149 @@
-# Runpod MCP Server - Development Conventions
+# Runpod MCP server development context
 
-This document outlines the core conventions, rules, and best practices for developing and maintaining the Runpod MCP Server.
+This document is the short engineering reference for contributors working on `@runpod/mcp-server`.
 
-## What is this Project?
+## What this project does
 
-### The Model Context Protocol
+The server exposes Runpod operations as MCP tools so LLM clients can manage:
 
-The [Model Context Protocol (MCP)](https://modelcontextprotocol.io) is an open protocol that enables AI assistants to securely access external data sources and tools. MCP servers expose capabilities through standardized interfaces that MCP clients (like Claude Desktop) can consume.
+- Pods.
+- Serverless endpoints.
+- Templates.
+- Network volumes.
+- Container registry authentications.
 
-### Our Server
+It talks to two Runpod backends:
 
-The **Runpod MCP Server** (`@runpod/mcp-server`) is an MCP server implementation that exposes Runpod's REST API as MCP tools. It enables AI assistants to manage Runpod infrastructure (pods, endpoints, templates, volumes) through natural language interactions.
+- REST API: `https://rest.runpod.io/v1` for authenticated CRUD operations.
+- GraphQL API: `https://api.runpod.io/graphql` for public discovery queries such as GPU types and data centers.
 
-### How it Works
+## Runtime architecture
 
-The server runs as a stdio-based MCP server that:
-- Accepts tool calls from MCP clients via stdin
-- Makes authenticated requests to Runpod's REST API (`https://rest.runpod.io/v1`)
-- Returns structured responses via stdout
-- Uses Zod schemas for input validation
+The codebase now has two transport entrypoints and one shared tool registry:
 
-### Value Proposition
+- `src/stdio.ts`: local MCP server over `stdio`.
+- `src/http.ts`: shared Streamable HTTP handler for hosted deployments.
+- `src/tools.ts`: all tool definitions plus REST and GraphQL helpers.
+- `src/server.ts`: shared server metadata and construction.
+- `api/index.ts`: Vercel adapter with CORS handling.
 
-- Natural Language Control: Manage Runpod infrastructure through AI assistants
-- Standardized Interface: MCP protocol ensures compatibility across clients
-- Full API Coverage: Exposes all major Runpod management operations
-- Type Safety: Zod schemas provide runtime validation and type inference
+The npm package exports:
 
-## Project Structure
+- `@runpod/mcp-server`: default `stdio` entrypoint.
+- `@runpod/mcp-server/http`: hosted Streamable HTTP entrypoint.
+- `@runpod/mcp-server/tools`: shared tool registration for custom wrappers.
 
-```
-runpod-mcp/
-├── src/                    # Source code
-│   └── index.ts           # Single-file server implementation
-├── docs/                   # Documentation
-├── dist/                  # Build output (generated)
-├── smithery.yaml         # Smithery deployment config
-└── .changeset/           # Changesets for versioning
-```
+## Current transport model
 
-## Core Principles
+### Local `stdio`
 
-### 1. Branding & Naming
+Use local `stdio` when the MCP client launches a process on the user's machine. This is the path for:
 
-- Always use "Runpod" (not "RunPod", "runpod", or "run-pod") in user-facing text
-- Package name: `@runpod/mcp-server`
-- Server name: "Runpod API Server"
-- Environment variable: `RUNPOD_API_KEY`
+- Claude Desktop local servers.
+- Claude Code.
+- Cursor.
+- Local VS Code MCP configs.
 
-### 2. API Structure
+Authentication comes from the local process environment through `RUNPOD_API_KEY`.
 
-- Base URL: `https://rest.runpod.io/v1`
-- Authentication: Bearer token via `Authorization` header
-- Request format: JSON for POST/PATCH body, query params for filters
-- Response format: JSON with error handling for non-JSON responses
+### Hosted Streamable HTTP
 
-### 3. Tool Organization
+Use hosted HTTP when the MCP client can send authenticated HTTP requests to a public endpoint.
 
-Tools are organized by resource type:
-- Pod Management: `list-pods`, `get-pod`, `create-pod`, `update-pod`, `start-pod`, `stop-pod`, `delete-pod`
-- Endpoint Management: `list-endpoints`, `get-endpoint`, `create-endpoint`, `update-endpoint`, `delete-endpoint`
-- Template Management: `list-templates`, `get-template`, `create-template`, `update-template`, `delete-template`
-- Network Volume Management: `list-network-volumes`, `get-network-volume`, `create-network-volume`, `update-network-volume`, `delete-network-volume`
-- Container Registry Auth: `list-container-registry-auths`, `get-container-registry-auth`, `create-container-registry-auth`, `delete-container-registry-auth`
+Current behavior:
 
-### 4. Error Handling
+- Stateless per request.
+- Caller supplies `Authorization: Bearer <RUNPOD_API_KEY>`.
+- No server-side API-key storage or session affinity.
 
-- Always return structured error messages with HTTP status codes
-- Handle non-JSON responses gracefully
-- Log errors to stderr for debugging
-- Return JSON responses wrapped in MCP content format
+This design is good for generic HTTP MCP clients and custom integrations. It is not a drop-in fit for Claude's current remote connector flow because that flow is designed around authless or OAuth-based remote servers.
 
-## Development Workflow
+## Tool authoring conventions
 
-### Package Management
+Keep tool names in kebab case and aligned to the existing resource patterns:
 
-- Use pnpm as the primary package manager
-- Maintain `pnpm-lock.yaml` (not `package-lock.json`)
-- Support all package managers in documentation
+- `list-pods`, `get-pod`, `create-pod`, `update-pod`, `delete-pod`.
+- `list-endpoints`, `get-endpoint`, `create-endpoint`, `update-endpoint`, `delete-endpoint`.
 
-### Version Management
+Tool parameters should use Zod and every field should have a useful `.describe()` string. Keep descriptions short and operational.
 
-- Use Changesets for version management and releases
-- Never manually edit version numbers or `CHANGELOG.md`
-- Create changesets with: `pnpm changeset`
-- Automated releases via GitHub Actions
-
-### Code Quality
-
-- ESLint: Use `eslint.config.mjs` for Node 18+ compatibility
-- Prettier: Single quotes, 2 spaces, trailing commas
-- TypeScript: Strict mode, full type safety
-- Single-file architecture: Keep implementation in `src/index.ts` for simplicity
-
-## Code Style
-
-### TypeScript
+Handlers should return MCP text content in the existing JSON-stringified shape:
 
 ```typescript
-// Good - Consistent naming and structure
-server.tool(
-  'list-pods',
-  {
-    computeType: z.enum(['GPU', 'CPU']).optional().describe('Filter to only GPU or only CPU Pods'),
-    // ... more params
-  },
-  async (params) => {
-    const result = await runpodRequest(`/pods${queryString}`);
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(result, null, 2),
-        },
-      ],
-    };
-  }
-);
+return {
+  content: [
+    {
+      type: 'text',
+      text: JSON.stringify(result, null, 2),
+    },
+  ],
+};
 ```
 
-### Request Helper Pattern
+## Request helper conventions
 
-```typescript
-// Good - Centralized request handling
-async function runpodRequest(
-  endpoint: string,
-  method: string = 'GET',
-  body?: Record<string, unknown>
-) {
-  const url = `${API_BASE_URL}${endpoint}`;
-  const headers = {
-    Authorization: `Bearer ${API_KEY}`,
-    'Content-Type': 'application/json',
-  };
-  // ... error handling
-}
-```
+`src/tools.ts` owns both request helpers:
 
-### Query Parameter Construction
+- `graphqlRequest<T>()` for public GraphQL reads.
+- `createRunpodRequest(apiKey)` for authenticated REST calls.
 
-```typescript
-// Good - Build query params conditionally
-const queryParams = new URLSearchParams();
-if (params.computeType) queryParams.append('computeType', params.computeType);
-if (params.gpuTypeId) {
-  params.gpuTypeId.forEach((type) => queryParams.append('gpuTypeId', type));
-}
-const queryString = queryParams.toString() ? `?${queryParams.toString()}` : '';
-```
+When adding a new REST-backed tool:
 
-## Testing Standards
+- Reuse the shared request helper.
+- Preserve non-JSON response handling.
+- Keep query-param building explicit.
+- Surface HTTP status and response text in errors.
 
-### Manual Testing
+## Versioning and metadata
 
-- Test each tool with Claude Desktop or MCP client
-- Verify error handling with invalid inputs
-- Test query parameter combinations
-- Validate response format matches MCP spec
+Server metadata is centralized in `src/server.ts`. Do not hardcode server name or version in transport entrypoints.
 
-### Development Testing
+User-facing text should always use `Runpod`, not `RunPod`.
+
+## Development workflow
+
+Install and build:
 
 ```bash
-# Build and run locally
+pnpm install
 pnpm build
-pnpm start
-
-# Or run directly with tsx
-pnpm dev
 ```
 
-## Documentation
-
-### README Structure
-
-1. Title & Badge (Smithery)
-2. Features (list of tool categories)
-3. Setup (prerequisites, installation, configuration)
-4. Smithery Installation (automated setup)
-5. Manual Setup (Claude Desktop config)
-6. Usage Examples (natural language examples)
-7. Security Considerations
-
-### Code Comments
-
-```typescript
-// Good - Explain the "why", not the "what"
-// Some endpoints might not return JSON
-const contentType = response.headers.get('content-type');
-if (contentType && contentType.includes('application/json')) {
-  return await response.json();
-}
-```
-
-## Release Management
-
-- Use Changesets for all releases
-- Never manually edit version numbers or `CHANGELOG.md`
-- Create changeset for any user-facing changes with `pnpm changeset`
-- GitHub Actions handles versioning and publishing automatically
-
-## Common Patterns
-
-### Tool Definition Pattern
-
-```typescript
-server.tool(
-  'resource-action',
-  {
-    resourceId: z.string().describe('ID of the resource'),
-    optionalParam: z.string().optional().describe('Optional parameter'),
-  },
-  async (params) => {
-    const { resourceId, ...rest } = params;
-    const result = await runpodRequest(`/resources/${resourceId}`, 'POST', rest);
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(result, null, 2),
-        },
-      ],
-    };
-  }
-);
-```
-
-### Environment Variable Loading
-
-```typescript
-// Good - Fail fast on missing API key
-const API_KEY = process.env.RUNPOD_API_KEY;
-if (!API_KEY) {
-  console.error('RUNPOD_API_KEY environment variable is required');
-  process.exit(1);
-}
-```
-
-## Common Pitfalls
-
-### Don't Do This
-
-```typescript
-// Bad - Inconsistent naming
-const apiKey = process.env.runpod_api_key;
-
-// Bad - Missing error context
-throw new Error('API error');
-
-// Bad - Hardcoded values
-const url = 'https://rest.runpod.io/v1/pods';
-
-// Bad - Not handling non-JSON responses
-return await response.json();
-```
-
-### Do This Instead
-
-```typescript
-// Good - Consistent naming
-const API_KEY = process.env.RUNPOD_API_KEY;
-
-// Good - Clear error with context
-throw new Error(`Runpod API Error: ${response.status} - ${errorText}`);
-
-// Good - Use constant
-const API_BASE_URL = 'https://rest.runpod.io/v1';
-const url = `${API_BASE_URL}${endpoint}`;
-
-// Good - Handle different response types
-const contentType = response.headers.get('content-type');
-if (contentType && contentType.includes('application/json')) {
-  return await response.json();
-}
-return { success: true, status: response.status };
-```
-
-## Deployment
-
-### Smithery Integration
-
-- Configuration defined in `smithery.yaml`
-- Supports stdio transport
-- Requires `runpodApiKey` in config schema
-- Command function generates node command with env vars
-
-### Manual Deployment
-
-- Build: `pnpm build`
-- Run: `node dist/index.js`
-- Requires `RUNPOD_API_KEY` environment variable
-- Compatible with any MCP client supporting stdio transport
-
-## Development Commands
+Check the repo:
 
 ```bash
-# Development
-pnpm dev          # Run with tsx (watch mode)
-pnpm build        # Production build
-pnpm start        # Run built server
-
-# Code Quality
-pnpm lint         # ESLint checking
-pnpm type-check   # TypeScript checking
-pnpm prettier-check # Prettier checking
-
-# Release Management
-pnpm changeset           # Create changeset
-pnpm changeset:version   # Update versions
-pnpm changeset:publish   # Publish to npm
+pnpm type-check
+pnpm lint
+pnpm build
 ```
 
+Smoke-test both transports:
+
+```bash
+RUNPOD_API_KEY=YOUR_API_KEY pnpm smoke:stdio
+MCP_SERVER_URL=https://YOUR-DEPLOYMENT.vercel.app RUNPOD_API_KEY=YOUR_API_KEY pnpm smoke:http
+```
+
+## Release workflow
+
+This repo uses Changesets.
+
+- Add a changeset for user-facing changes.
+- Do not manually edit `CHANGELOG.md` or published version numbers.
+- Release automation publishes the npm package from `main`.
+
+Changeset template:
+
+```markdown
+---
+"@runpod/mcp-server": minor
 ---
 
-**Remember**: These conventions exist to maintain consistency, quality, and ease of maintenance. When in doubt, follow the existing patterns in the codebase.
+Describe the user-facing change.
+```
 
+## Known edges
+
+- `DELETE` endpoints may return `204 No Content`; the helpers must not assume JSON.
+- Pod networking fields can be empty while a Pod is still initializing.
+- Hosted HTTP smoke tests need a real `RUNPOD_API_KEY` because they validate both GraphQL and REST-backed tools.
