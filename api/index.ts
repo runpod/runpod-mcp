@@ -11,6 +11,65 @@ function getBaseUrl(req: VercelRequest): string {
   return `${proto}://${host}`;
 }
 
+/**
+ * Runpod GraphQL endpoint used by the OAuth authorize flow. Defaults to the
+ * shared dev backend; override in other environments via RUNPOD_GRAPHQL_URL.
+ */
+function getRunpodGraphqlUrl(): string {
+  return (
+    process.env.RUNPOD_GRAPHQL_URL ??
+    'https://timpietrusky-api.runpod.dev/graphql'
+  );
+}
+
+/**
+ * Base URL of the Runpod console that hosts the OAuth handoff (login) page.
+ * Defaults to local dev; override via CONSOLE_BASE_URL.
+ */
+function getConsoleBaseUrl(): string {
+  return process.env.CONSOLE_BASE_URL ?? 'http://localhost:3001';
+}
+
+/**
+ * Register a pending Claude OAuth request with the Runpod backend and return
+ * its id. This is a guest mutation (no auth header). The backend only accepts
+ * a clerkAuthorizeUrl that is absolute HTTPS and whose host matches its
+ * configured CLERK_DOMAIN.
+ */
+async function createClaudeOAuthRequest(
+  clerkAuthorizeUrl: string
+): Promise<string> {
+  const query = `mutation { createClaudeOAuthRequest(input: { clerkAuthorizeUrl: ${JSON.stringify(
+    clerkAuthorizeUrl
+  )} }) { id } }`;
+
+  const response = await fetch(getRunpodGraphqlUrl(), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query }),
+  });
+
+  const result = (await response.json()) as {
+    data?: { createClaudeOAuthRequest?: { id?: string } };
+    errors?: Array<{ message: string }>;
+  };
+
+  if (result.errors && result.errors.length > 0) {
+    throw new Error(
+      `createClaudeOAuthRequest failed: ${result.errors
+        .map((error) => error.message)
+        .join(', ')}`
+    );
+  }
+
+  const id = result.data?.createClaudeOAuthRequest?.id;
+  if (!id) {
+    throw new Error('createClaudeOAuthRequest did not return an id');
+  }
+
+  return id;
+}
+
 function encodeBody(body: VercelRequest['body']): string {
   if (typeof body === 'string') {
     return body;
@@ -38,14 +97,16 @@ async function handleProtectedResourceMetadata(
   res: VercelResponse
 ): Promise<void> {
   const baseUrl = getBaseUrl(req);
-  const metadata = await getOAuthMetadata();
+  // Advertise THIS server as the authorization server so Claude discovers our
+  // /authorize route (which performs the Clerk + Runpod handoff) rather than
+  // talking to Clerk directly.
   console.log('oauth_protected_resource', {
     baseUrl,
-    authorizationServer: metadata.issuer,
+    authorizationServer: baseUrl,
   });
   res.status(200).json({
     resource: `${baseUrl}/`,
-    authorization_servers: [metadata.issuer],
+    authorization_servers: [baseUrl],
     scopes_supported: ['openid', 'profile', 'email', 'offline_access'],
     bearer_methods_supported: ['header'],
     resource_name: 'Runpod MCP server',
@@ -60,13 +121,17 @@ async function handleAuthorizationServerMetadata(
   const metadata = await getOAuthMetadata();
   console.log('oauth_authorization_server', {
     baseUrl,
+    issuer: baseUrl,
+    authorizationEndpoint: `${baseUrl}/authorize`,
     upstreamIssuer: metadata.issuer,
     upstreamAuthorizationEndpoint: metadata.authorization_endpoint,
     upstreamTokenEndpoint: metadata.token_endpoint,
   });
   res.status(200).json({
-    issuer: metadata.issuer,
-    authorization_endpoint: metadata.authorization_endpoint,
+    // This server is the authorization server: issuer must match where this
+    // metadata is served, and authorization_endpoint points at our /authorize.
+    issuer: baseUrl,
+    authorization_endpoint: `${baseUrl}/authorize`,
     token_endpoint: metadata.token_endpoint,
     revocation_endpoint: metadata.revocation_endpoint,
     response_types_supported: metadata.response_types_supported ?? ['code'],
@@ -112,24 +177,62 @@ async function handleAuthorize(
   req: VercelRequest,
   res: VercelResponse
 ): Promise<void> {
-  const metadata = await getOAuthMetadata();
-  if (!metadata.authorization_endpoint) {
-    res.status(500).json({ error: 'Missing authorization endpoint metadata.' });
-    return;
-  }
+  try {
+    const metadata = await getOAuthMetadata();
+    if (!metadata.authorization_endpoint) {
+      res
+        .status(500)
+        .json({ error: 'Missing authorization endpoint metadata.' });
+      return;
+    }
 
-  const target = new URL(metadata.authorization_endpoint);
-  const requestUrl = new URL(req.url ?? '/', getBaseUrl(req));
-  target.search = requestUrl.search;
-  console.log('oauth_authorize_redirect', {
-    target: target.toString(),
-    clientId: requestUrl.searchParams.get('client_id'),
-    redirectUri: requestUrl.searchParams.get('redirect_uri'),
-    responseType: requestUrl.searchParams.get('response_type'),
-    scope: requestUrl.searchParams.get('scope'),
-    resource: requestUrl.searchParams.get('resource'),
-  });
-  res.redirect(302, target.toString());
+    // Build the real Clerk authorize URL from the discovered endpoint,
+    // preserving Claude's OAuth params (client_id, redirect_uri, state,
+    // code_challenge, code_challenge_method, scope, response_type) so that
+    // after Clerk login the browser returns to Claude's redirect_uri.
+    const requestUrl = new URL(req.url ?? '/', getBaseUrl(req));
+    const clerkAuthorizeUrl = new URL(metadata.authorization_endpoint);
+    clerkAuthorizeUrl.search = requestUrl.search;
+
+    console.log('oauth_authorize', {
+      clientId: requestUrl.searchParams.get('client_id'),
+      redirectUri: requestUrl.searchParams.get('redirect_uri'),
+      responseType: requestUrl.searchParams.get('response_type'),
+      scope: requestUrl.searchParams.get('scope'),
+      hasState: !!requestUrl.searchParams.get('state'),
+      hasCodeChallenge: !!requestUrl.searchParams.get('code_challenge'),
+      codeChallengeMethod: requestUrl.searchParams.get('code_challenge_method'),
+      clerkAuthorizeHost: clerkAuthorizeUrl.host,
+    });
+
+    // Register the pending OAuth request with the Runpod backend. The backend
+    // requires clerkAuthorizeUrl to be absolute HTTPS with a host matching its
+    // CLERK_DOMAIN, which the discovered Clerk endpoint satisfies.
+    const requestId = await createClaudeOAuthRequest(
+      clerkAuthorizeUrl.toString()
+    );
+
+    // Hand off to the console login page, which restores the user's session
+    // and then forwards to the Claude integration login page carrying the
+    // request id.
+    const innerRedirect = `/integrations/claude/login?request=${requestId}`;
+    const handoffUrl = `${getConsoleBaseUrl()}/login?redirect=${encodeURIComponent(
+      innerRedirect
+    )}`;
+
+    console.log('oauth_authorize_handoff', { requestId, handoffUrl });
+    res.redirect(302, handoffUrl);
+  } catch (error) {
+    console.error('oauth_authorize_failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    res.status(500).json({
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Failed to start authorization.',
+    });
+  }
 }
 
 async function handleToken(

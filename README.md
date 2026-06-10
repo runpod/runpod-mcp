@@ -136,6 +136,19 @@ In that mode:
 
 This exists only to test remote Claude connectors before switching to the real Runpod Clerk tenant. Keep it clearly marked as temporary infrastructure.
 
+### Sign in with Runpod (authorize flow)
+
+In OAuth mode the hosted server acts as the authorization server for Claude's connector. It advertises itself in `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server`, pointing the `authorization_endpoint` at its own `GET /authorize`.
+
+When Claude opens `/authorize`, the server builds the real Clerk authorize URL from `CLERK_OAUTH_DISCOVERY_URL` (preserving Claude's `client_id`, `redirect_uri`, `state`, `code_challenge`, `code_challenge_method`, `scope`, and `response_type`), registers it with the Runpod backend via the guest `createClaudeOAuthRequest` mutation, and then redirects the browser to the Runpod console handoff page carrying the returned request id.
+
+This flow uses two additional environment variables, both with defaults:
+
+- `RUNPOD_GRAPHQL_URL`: Runpod GraphQL endpoint for `createClaudeOAuthRequest` (default `https://timpietrusky-api.runpod.dev/graphql`).
+- `CONSOLE_BASE_URL`: base URL of the console that hosts the handoff login page (default `http://localhost:3001`).
+
+The Runpod backend only accepts a `clerkAuthorizeUrl` that is absolute HTTPS whose host matches its configured Clerk domain, so `CLERK_OAUTH_DISCOVERY_URL` must point at that same Clerk tenant.
+
 ### Vercel
 
 This repo already contains `vercel.json` and the Vercel handler.
