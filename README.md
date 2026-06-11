@@ -125,22 +125,31 @@ The server forwards the caller's Bearer token directly to the Runpod API as the 
 The token can be either:
 
 - a Runpod API key the caller configured manually, or
-- a token obtained through the OAuth "Sign in with Runpod" flow (see below), which is enabled by setting `CLERK_OAUTH_DISCOVERY_URL`.
+- a Runpod API key obtained through the OAuth "Sign in with Runpod" flow (see below), which is advertised when `MCP_OAUTH_ENABLED=true`.
 
-When `CLERK_OAUTH_DISCOVERY_URL` is set, an unauthenticated request receives a `401` with a `WWW-Authenticate` header pointing at the protected-resource metadata, which is what tells an OAuth-capable client (such as Claude) to start the sign-in flow.
+When `MCP_OAUTH_ENABLED=true`, an unauthenticated request receives a `401` with a `WWW-Authenticate` header pointing at the protected-resource metadata, which is what tells an OAuth-capable client (such as Claude) to start the sign-in flow.
 
 ### Sign in with Runpod (authorize flow)
 
-In OAuth mode the hosted server acts as the authorization server for Claude's connector. It advertises itself in `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server`, pointing the `authorization_endpoint` at its own `GET /authorize`.
+In OAuth mode the hosted server is itself the authorization server for Claude's connector. It advertises itself in `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server`, pointing `authorization_endpoint` at its own `GET /authorize` and `token_endpoint` at its own `POST /token`.
 
-When Claude opens `/authorize`, the server builds the real Clerk authorize URL from `CLERK_OAUTH_DISCOVERY_URL` (preserving Claude's `client_id`, `redirect_uri`, `state`, `code_challenge`, `code_challenge_method`, `scope`, and `response_type`), registers it with the Runpod backend via the guest `createClaudeOAuthRequest` mutation, and then redirects the browser to the Runpod console handoff page carrying the returned request id.
+The flow reuses the Runpod flash auth backend and mints a real Runpod API key:
 
-This flow uses two additional environment variables, both with defaults:
+1. `GET /authorize` calls the guest `createFlashAuthRequest` mutation to get a request id (which serves as the OAuth authorization code), then `302`-redirects the browser to the Runpod console handoff page, carrying the request id plus Claude's `redirect_uri` and `state`.
+2. The user logs in and approves the request in the console. On approval the backend mints a Runpod API key for the request.
+3. The console returns the browser to Claude's `redirect_uri` with `code=<request id>`.
+4. `POST /token` polls the guest `flashAuthRequestStatus` query for that id; once `APPROVED`, it returns the minted `apiKey` as the `access_token`. Claude then sends that key as its bearer token on every MCP request, and the server forwards it to the Runpod API.
 
-- `RUNPOD_GRAPHQL_URL`: Runpod GraphQL endpoint for `createClaudeOAuthRequest` (default `https://timpietrusky-api.runpod.dev/graphql`).
-- `CONSOLE_BASE_URL`: base URL of the console that hosts the handoff login page (default `http://localhost:3001`).
+This flow uses these environment variables:
 
-The Runpod backend only accepts a `clerkAuthorizeUrl` that is absolute HTTPS whose host matches its configured Clerk domain, so `CLERK_OAUTH_DISCOVERY_URL` must point at that same Clerk tenant.
+- `MCP_OAUTH_ENABLED`: set to `true` to advertise the OAuth sign-in flow.
+- `RUNPOD_GRAPHQL_URL`: flash auth backend endpoint (default `https://timpietrusky-api.runpod.dev/graphql`).
+- `CONSOLE_BASE_URL`: base URL of the console that hosts the handoff login page (default `http://localhost:3000`).
+
+Notes and current limitations:
+
+- PKCE (`code_challenge`) is advertised but not enforced server-side; security relies on the single-use, short-lived flash request and the console approval step.
+- The minted key currently shows up named `flash-cli` in the user's Runpod dashboard (hardcoded in the backend). Renaming it to something like `claude-mcp` requires a Runpod backend change; it is not configurable through the API.
 
 ### Vercel
 
@@ -180,7 +189,7 @@ This validates:
 
 Use the local `stdio` integration for Claude Desktop today.
 
-For remote clients such as Claude's connector, deploy the hosted HTTP server with `CLERK_OAUTH_DISCOVERY_URL` set. The client then runs the OAuth "Sign in with Runpod" flow, and the resulting token is forwarded to the Runpod API on each request.
+For remote clients such as Claude's connector, deploy the hosted HTTP server with `MCP_OAUTH_ENABLED=true`. The client then runs the OAuth "Sign in with Runpod" flow, and the resulting Runpod API key is forwarded to the Runpod API on each request.
 
 ## Local development
 

@@ -17,11 +17,12 @@ function extractBearerToken(req: IncomingMessage): string | null {
 
 /**
  * Whether this deployment advertises the OAuth ("Sign in with Runpod") flow.
- * Enabled purely by configuring the Clerk discovery URL — no server-side
- * credential is involved.
+ * Enabled by setting MCP_OAUTH_ENABLED=true. When off, the hosted server still
+ * works as pure token passthrough (the caller supplies a Runpod API key as the
+ * bearer token); it just does not advertise the sign-in challenge.
  */
 function isOAuthEnabled(): boolean {
-  return !!process.env.CLERK_OAUTH_DISCOVERY_URL;
+  return process.env.MCP_OAUTH_ENABLED === 'true';
 }
 
 function getBaseUrl(req: IncomingMessage): string {
