@@ -1,4 +1,3 @@
-import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
 import fetch from 'node-fetch';
 
 interface OAuthServerMetadata {
@@ -17,14 +16,7 @@ interface OAuthServerMetadata {
   code_challenge_methods_supported?: string[];
 }
 
-export interface OAuthUser {
-  subject: string;
-  issuer: string;
-  payload: JWTPayload;
-}
-
 let metadataPromise: Promise<OAuthServerMetadata> | null = null;
-let jwksPromise: Promise<ReturnType<typeof createRemoteJWKSet>> | null = null;
 
 async function loadMetadata(): Promise<OAuthServerMetadata> {
   const discoveryUrl = process.env.CLERK_OAUTH_DISCOVERY_URL;
@@ -65,33 +57,4 @@ async function loadMetadata(): Promise<OAuthServerMetadata> {
 export async function getOAuthMetadata(): Promise<OAuthServerMetadata> {
   metadataPromise ??= loadMetadata();
   return metadataPromise;
-}
-
-async function getRemoteJwks() {
-  jwksPromise ??= getOAuthMetadata().then((metadata) =>
-    createRemoteJWKSet(new URL(metadata.jwks_uri))
-  );
-  return jwksPromise;
-}
-
-export function isLikelyJwt(token: string): boolean {
-  return token.split('.').length === 3;
-}
-
-export async function verifyClerkOAuthToken(token: string): Promise<OAuthUser> {
-  const metadata = await getOAuthMetadata();
-  const jwks = await getRemoteJwks();
-  const { payload } = await jwtVerify(token, jwks, {
-    issuer: metadata.issuer,
-  });
-
-  if (typeof payload.sub !== 'string' || payload.sub.length === 0) {
-    throw new Error('OAuth token is missing a subject');
-  }
-
-  return {
-    subject: payload.sub,
-    issuer: metadata.issuer,
-    payload,
-  };
 }

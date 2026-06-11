@@ -1,6 +1,5 @@
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createServer } from './server.js';
-import { isLikelyJwt, verifyClerkOAuthToken } from './oauth.js';
 import { registerTools } from './tools.js';
 import { IncomingMessage, ServerResponse } from 'node:http';
 
@@ -16,14 +15,13 @@ function extractBearerToken(req: IncomingMessage): string | null {
   return parts[1];
 }
 
-function getHttpUpstreamApiKey(): string | null {
-  return (
-    process.env.RUNPOD_HTTP_SHARED_API_KEY ?? process.env.RUNPOD_API_KEY ?? null
-  );
-}
-
-function isOAuthTranslationModeEnabled(): boolean {
-  return !!process.env.CLERK_OAUTH_DISCOVERY_URL && !!getHttpUpstreamApiKey();
+/**
+ * Whether this deployment advertises the OAuth ("Sign in with Runpod") flow.
+ * Enabled purely by configuring the Clerk discovery URL — no server-side
+ * credential is involved.
+ */
+function isOAuthEnabled(): boolean {
+  return !!process.env.CLERK_OAUTH_DISCOVERY_URL;
 }
 
 function getBaseUrl(req: IncomingMessage): string {
@@ -47,7 +45,9 @@ function writeUnauthorized(
     'Content-Type': 'application/json',
   };
 
-  if (isOAuthTranslationModeEnabled()) {
+  // When OAuth is configured, advertise the protected-resource metadata so
+  // OAuth-capable clients (e.g. Claude) know to start the sign-in flow.
+  if (isOAuthEnabled()) {
     headers['WWW-Authenticate'] =
       `Bearer realm="mcp", resource_metadata="${getBaseUrl(
         req
@@ -61,14 +61,11 @@ function writeUnauthorized(
 /**
  * Handle an incoming HTTP request as a streamable MCP session.
  *
- * Each request gets its own McpServer + transport.
- *
- * Modes:
- * - Default: treat the Bearer token as a direct Runpod API key.
- * - OAuth translation mode: validate Clerk-issued JWTs and translate them to a
- *   server-side Runpod API key for outbound requests. This exists to test
- *   remote OAuth with a non-Runpod Clerk tenant before switching to the real
- *   Runpod identity provider.
+ * Each request gets its own McpServer + transport. The caller's Bearer token
+ * is forwarded directly to the Runpod API as the credential — it may be a
+ * Runpod API key (set manually by the caller) or a token obtained through the
+ * OAuth "Sign in with Runpod" flow. The server holds no credential of its own
+ * and never shares one across users.
  */
 export async function handleMcpRequest(
   req: IncomingMessage,
@@ -79,12 +76,7 @@ export async function handleMcpRequest(
     method: req.method,
     url: req.url,
     hasBearerToken: !!bearerToken,
-    bearerTokenShape: bearerToken
-      ? isLikelyJwt(bearerToken)
-        ? 'jwt'
-        : 'opaque'
-      : 'missing',
-    oauthTranslationMode: isOAuthTranslationModeEnabled(),
+    oauthEnabled: isOAuthEnabled(),
   });
   if (!bearerToken) {
     writeUnauthorized(
@@ -95,49 +87,8 @@ export async function handleMcpRequest(
     return;
   }
 
-  let apiKey = bearerToken;
-
-  if (isOAuthTranslationModeEnabled()) {
-    if (isLikelyJwt(bearerToken)) {
-      try {
-        const user = await verifyClerkOAuthToken(bearerToken);
-        console.log('mcp_oauth_token_verified', {
-          subject: user.subject,
-          issuer: user.issuer,
-        });
-      } catch (error) {
-        console.error('mcp_oauth_token_verification_failed', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        writeUnauthorized(req, res, 'Invalid OAuth bearer token.');
-        return;
-      }
-    } else {
-      console.log('mcp_oauth_opaque_token_received', {
-        translatingWithoutLocalVerification: true,
-      });
-    }
-
-    const upstreamApiKey = getHttpUpstreamApiKey();
-    if (!upstreamApiKey) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          error:
-            'OAuth translation mode is enabled, but RUNPOD_HTTP_SHARED_API_KEY is not configured.',
-        })
-      );
-      return;
-    }
-
-    apiKey = upstreamApiKey;
-    console.log('mcp_oauth_translation_mode', {
-      usingSharedUpstreamApiKey: true,
-    });
-  }
-
   const server = createServer();
-  registerTools(server, { apiKey });
+  registerTools(server, { apiKey: bearerToken });
 
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless — no session persistence

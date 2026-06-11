@@ -49,10 +49,22 @@ async function createClaudeOAuthRequest(
     body: JSON.stringify({ query }),
   });
 
-  const result = (await response.json()) as {
+  // The backend may return a non-JSON body (e.g. an upstream error page or an
+  // SST live-debug notice when the dev session is down). Surface a clear error
+  // instead of a cryptic JSON parse failure.
+  const text = await response.text();
+  let result: {
     data?: { createClaudeOAuthRequest?: { id?: string } };
     errors?: Array<{ message: string }>;
   };
+  try {
+    result = JSON.parse(text);
+  } catch {
+    const snippet = text.slice(0, 200).replace(/\s+/g, ' ').trim();
+    throw new Error(
+      `createClaudeOAuthRequest got a non-JSON response (HTTP ${response.status}) from ${getRunpodGraphqlUrl()}: ${snippet}`
+    );
+  }
 
   if (result.errors && result.errors.length > 0) {
     throw new Error(

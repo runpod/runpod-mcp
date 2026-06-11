@@ -1,14 +1,15 @@
 # Runpod MCP server
+
 [![smithery badge](https://smithery.ai/badge/@runpod/runpod-mcp-ts)](https://smithery.ai/server/@runpod/runpod-mcp-ts)
 
 This is the official Runpod Model Context Protocol (MCP) server, published to npm as `@runpod/mcp-server`.
 
 It supports two deployment modes:
 
-- Local `stdio` for Claude Desktop, Claude Code, Cursor, VS Code, and other MCP clients that launch a local process.
-- Hosted Streamable HTTP for Vercel or other HTTP-capable platforms where the caller sends `Authorization: Bearer <RUNPOD_API_KEY>` on each request.
+- Local `stdio` for Claude Desktop, Claude Code, Cursor, VS Code, and other MCP clients that launch a local process. The caller sets `RUNPOD_API_KEY` in the environment.
+- Hosted Streamable HTTP for Vercel or other HTTP-capable platforms. Each request carries its own `Authorization: Bearer <token>`, which the server forwards directly to the Runpod API. The token can be a Runpod API key or one obtained through the OAuth "Sign in with Runpod" flow.
 
-The hosted path can also run in a temporary OAuth translation mode for remote Claude connector testing with a non-Runpod Clerk tenant.
+The server never holds a credential of its own and never shares one across users.
 
 ## Requirements
 
@@ -114,27 +115,19 @@ The package also exports a Streamable HTTP entrypoint at `@runpod/mcp-server/htt
 The hosted transport is stateless:
 
 - Each request creates a fresh MCP server instance.
-- The caller must send `Authorization: Bearer <RUNPOD_API_KEY>`.
-- No API keys are cached server-side.
+- The caller must send `Authorization: Bearer <token>`.
+- No credentials are cached or shared server-side.
 
-### Hosted auth modes
+### Hosted auth
 
-Default hosted mode:
+The server forwards the caller's Bearer token directly to the Runpod API as the credential for that request. There is no server-side or shared key.
 
-- incoming bearer token: direct Runpod API key
-- outbound bearer token to Runpod: same token
+The token can be either:
 
-Temporary OAuth translation mode:
+- a Runpod API key the caller configured manually, or
+- a token obtained through the OAuth "Sign in with Runpod" flow (see below), which is enabled by setting `CLERK_OAUTH_DISCOVERY_URL`.
 
-- `CLERK_OAUTH_DISCOVERY_URL`: Clerk discovery URL such as `https://clerk.openv.ai/.well-known/openid-configuration`
-- `RUNPOD_HTTP_SHARED_API_KEY`: shared server-side Runpod API key for outbound requests
-
-In that mode:
-
-- incoming bearer token: Clerk-issued OAuth access token
-- outbound bearer token to Runpod: shared server-side API key
-
-This exists only to test remote Claude connectors before switching to the real Runpod Clerk tenant. Keep it clearly marked as temporary infrastructure.
+When `CLERK_OAUTH_DISCOVERY_URL` is set, an unauthenticated request receives a `401` with a `WWW-Authenticate` header pointing at the protected-resource metadata, which is what tells an OAuth-capable client (such as Claude) to start the sign-in flow.
 
 ### Sign in with Runpod (authorize flow)
 
@@ -187,9 +180,7 @@ This validates:
 
 Use the local `stdio` integration for Claude Desktop today.
 
-The current hosted deployment expects a pre-shared bearer token on every request. Claude's remote connector flow is designed for authless or OAuth-based remote MCP servers, so this Vercel deployment is not a drop-in Claude remote connector as-is.
-
-When OAuth translation mode is enabled, the hosted deployment becomes suitable for remote Claude connector testing while still calling Runpod with a shared API key on the backend.
+For remote clients such as Claude's connector, deploy the hosted HTTP server with `CLERK_OAUTH_DISCOVERY_URL` set. The client then runs the OAuth "Sign in with Runpod" flow, and the resulting token is forwarded to the Runpod API on each request.
 
 ## Local development
 
@@ -289,8 +280,7 @@ This server acts with the full permissions of the supplied `RUNPOD_API_KEY`.
 - Never share your API key.
 - Be deliberate about destructive tools.
 - Treat hosted deployments as sensitive infrastructure.
-- Do not expose an authless hosted deployment unless you explicitly intend to share one Runpod account behind it.
-- If you enable OAuth translation mode, all authenticated users share one backend Runpod API key until you replace it with a real per-user Runpod auth strategy.
+- Each request authenticates with its own caller-supplied token, which is forwarded to the Runpod API and never persisted server-side.
 
 ## License
 
