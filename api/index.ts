@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import fetch from 'node-fetch';
+import { randomUUID } from 'node:crypto';
 import { handleMcpRequest } from '../src/http.js';
 
 function getBaseUrl(req: VercelRequest): string {
@@ -12,13 +13,10 @@ function getBaseUrl(req: VercelRequest): string {
 
 /**
  * Runpod GraphQL endpoint used by the OAuth authorize flow (the flash backend).
- * Defaults to the shared dev backend; override via RUNPOD_GRAPHQL_URL.
+ * Defaults to production; override via RUNPOD_GRAPHQL_URL (e.g. a dev backend).
  */
 function getRunpodGraphqlUrl(): string {
-  return (
-    process.env.RUNPOD_GRAPHQL_URL ??
-    'https://timpietrusky-api.runpod.dev/graphql'
-  );
+  return process.env.RUNPOD_GRAPHQL_URL ?? 'https://api.runpod.io/graphql';
 }
 
 /**
@@ -152,10 +150,44 @@ function handleAuthorizationServerMetadata(
     issuer: baseUrl,
     authorization_endpoint: `${baseUrl}/authorize`,
     token_endpoint: `${baseUrl}/token`,
+    registration_endpoint: `${baseUrl}/register`,
     response_types_supported: ['code'],
     grant_types_supported: ['authorization_code'],
     token_endpoint_auth_methods_supported: ['none'],
     code_challenge_methods_supported: ['S256'],
+  });
+}
+
+/**
+ * Minimal OAuth 2.0 Dynamic Client Registration (RFC 7591). MCP clients such as
+ * Claude register before starting the flow. We are a public client with no
+ * client authentication, so we accept the request, echo back the client
+ * metadata, and issue a client_id. Nothing is persisted — the token endpoint
+ * does not authenticate the client (auth comes from the flash approval).
+ */
+function handleRegister(req: VercelRequest, res: VercelResponse): void {
+  const body =
+    req.body && typeof req.body === 'object'
+      ? (req.body as Record<string, unknown>)
+      : {};
+  const redirectUris = Array.isArray(body.redirect_uris)
+    ? body.redirect_uris
+    : [];
+
+  console.log('oauth_register', {
+    clientName: body.client_name,
+    redirectUris,
+  });
+
+  res.status(201).json({
+    client_id: `mcp-${randomUUID()}`,
+    client_id_issued_at: Math.floor(Date.now() / 1000),
+    redirect_uris: redirectUris,
+    token_endpoint_auth_method: 'none',
+    grant_types: ['authorization_code'],
+    response_types: ['code'],
+    client_name:
+      typeof body.client_name === 'string' ? body.client_name : 'mcp-client',
   });
 }
 
@@ -180,13 +212,13 @@ async function handleAuthorize(
       requestId,
     });
 
-    // 2. Hand off to the console login page. We carry Claude's redirect_uri and
-    //    state through so the Claude login page can return the browser to
-    //    Claude (redirect_uri?code=<requestId>&state=<state>) once approved.
+    // 2. Hand off to the console login page. We carry the client's redirect_uri
+    //    and state through so the login page can return the browser to the
+    //    client (redirect_uri?code=<requestId>&state=<state>) once approved.
     const innerParams = new URLSearchParams({ request: requestId });
     if (redirectUri) innerParams.set('redirect_uri', redirectUri);
     if (state) innerParams.set('state', state);
-    const innerRedirect = `/integrations/claude/login?${innerParams.toString()}`;
+    const innerRedirect = `/integrations/mcp/login?${innerParams.toString()}`;
     const handoffUrl = `${getConsoleBaseUrl()}/login?redirect=${encodeURIComponent(
       innerRedirect
     )}`;
@@ -365,6 +397,11 @@ export default async function handler(
 
   if (req.method === 'GET' && pathname === '/authorize') {
     await handleAuthorize(req, res);
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/register') {
+    handleRegister(req, res);
     return;
   }
 

@@ -131,20 +131,24 @@ When `MCP_OAUTH_ENABLED=true`, an unauthenticated request receives a `401` with 
 
 ### Sign in with Runpod (authorize flow)
 
-In OAuth mode the hosted server is itself the authorization server for Claude's connector. It advertises itself in `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server`, pointing `authorization_endpoint` at its own `GET /authorize` and `token_endpoint` at its own `POST /token`.
+In OAuth mode the hosted server is itself the authorization server for Claude's connector. It advertises itself in `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server`, pointing `authorization_endpoint` at its own `GET /authorize`, `token_endpoint` at its own `POST /token`, and `registration_endpoint` at its own `POST /register`.
 
 The flow reuses the Runpod flash auth backend and mints a real Runpod API key:
 
-1. `GET /authorize` calls the guest `createFlashAuthRequest` mutation to get a request id (which serves as the OAuth authorization code), then `302`-redirects the browser to the Runpod console handoff page, carrying the request id plus Claude's `redirect_uri` and `state`.
-2. The user logs in and approves the request in the console. On approval the backend mints a Runpod API key for the request.
-3. The console returns the browser to Claude's `redirect_uri` with `code=<request id>`.
-4. `POST /token` polls the guest `flashAuthRequestStatus` query for that id; once `APPROVED`, it returns the minted `apiKey` as the `access_token`. Claude then sends that key as its bearer token on every MCP request, and the server forwards it to the Runpod API.
+1. The client registers via `POST /register` (OAuth Dynamic Client Registration, RFC 7591) to obtain a `client_id`. This is a public client; no client secret is used.
+2. `GET /authorize` calls the guest `createFlashAuthRequest` mutation to get a request id (which serves as the OAuth authorization code), then `302`-redirects the browser to the console handoff page (`/integrations/mcp/login`), carrying the request id plus the client's `redirect_uri` and `state`.
+3. The user logs in and approves the request in the console. On approval the backend mints a Runpod API key for the request.
+4. The console returns the browser to the client's `redirect_uri` with `code=<request id>`.
+5. `POST /token` polls the guest `flashAuthRequestStatus` query for that id; once `APPROVED`, it returns the minted `apiKey` as the `access_token`. The client then sends that key as its bearer token on every MCP request, and the server forwards it to the Runpod API.
 
 This flow uses these environment variables:
 
 - `MCP_OAUTH_ENABLED`: set to `true` to advertise the OAuth sign-in flow.
-- `RUNPOD_GRAPHQL_URL`: flash auth backend endpoint (default `https://timpietrusky-api.runpod.dev/graphql`).
+- `RUNPOD_GRAPHQL_URL`: flash auth backend endpoint (default `https://api.runpod.io/graphql`).
 - `CONSOLE_BASE_URL`: base URL of the console that hosts the handoff login page (default `http://localhost:3000`).
+- `RUNPOD_REST_API_URL` / `RUNPOD_SERVERLESS_API_URL`: override the REST and Serverless API hosts so a deployment authenticating with non-production keys can target the matching environment.
+
+You can verify the entire flow end to end with `scripts/oauth-e2e.ts` (see `pnpm`-free usage in the file header).
 
 Notes and current limitations:
 

@@ -2,11 +2,15 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import fetch, { type RequestInit as NodeFetchRequestInit } from 'node-fetch';
 
-// Base URL for Runpod REST API
-const API_BASE_URL = 'https://rest.runpod.io/v1';
+// Base URL for Runpod REST API. Override via RUNPOD_REST_API_URL to point at a
+// non-production environment (e.g. when authenticating with a dev API key).
+const API_BASE_URL =
+  process.env.RUNPOD_REST_API_URL ?? 'https://rest.runpod.io/v1';
 
-// Serverless API base URL for endpoint runtime operations (run, status, cancel, etc.)
-const SERVERLESS_API_BASE_URL = 'https://api.runpod.ai/v2';
+// Serverless API base URL for endpoint runtime operations (run, status, cancel, etc.).
+// Override via RUNPOD_SERVERLESS_API_URL for non-production environments.
+const SERVERLESS_API_BASE_URL =
+  process.env.RUNPOD_SERVERLESS_API_URL ?? 'https://api.runpod.ai/v2';
 
 // GraphQL endpoint for public queries (GPU types, data centers)
 const GRAPHQL_URL = 'https://api.runpod.io/graphql';
