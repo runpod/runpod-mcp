@@ -89,7 +89,7 @@ export async function handleMcpRequest(
   }
 
   const server = createServer();
-  registerTools(server, { apiKey: bearerToken });
+  registerTools(server, { apiKey: bearerToken, transport: 'http' });
 
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless — no session persistence

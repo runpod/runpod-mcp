@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import fetch, { type RequestInit as NodeFetchRequestInit } from 'node-fetch';
+import { randomUUID } from 'node:crypto';
 
 // Base URL for Runpod REST API. Override via RUNPOD_REST_API_URL to point at a
 // non-production environment (e.g. when authenticating with a dev API key).
@@ -15,20 +16,71 @@ const SERVERLESS_API_BASE_URL =
 // GraphQL endpoint for public queries (GPU types, data centers)
 const GRAPHQL_URL = 'https://api.runpod.io/graphql';
 
+// ============== CALLER TRACKING ==============
+// Adds structured caller identification to every outbound API call so the
+// Runpod platform can attribute traffic to a specific MCP client (Claude Code,
+// Cursor, Codex, Gemini CLI, etc.) and count distinct agent sessions. Pure
+// observability — no tool behavior changes.
+//
+// `__PACKAGE_VERSION__` is replaced at build time by tsup's `define` with the
+// current `version` from package.json. Falls back to `'dev'` when the
+// substitution doesn't happen (e.g. `pnpm dev` via tsx).
+declare const __PACKAGE_VERSION__: string;
+const MCP_SERVER_VERSION =
+  typeof __PACKAGE_VERSION__ !== 'undefined' ? __PACKAGE_VERSION__ : 'dev';
+
+// One session ID per server process. Anonymous; lets the data side count
+// distinct agent sessions without per-user attribution.
+const SESSION_ID = randomUUID();
+
+/**
+ * Sanitizes a value for inclusion in a User-Agent token. RFC 7230 reserves
+ * parens and a few other chars; strip them so the structured UA stays
+ * parseable, and bound the length so a hostile client can't blow up a header.
+ */
+function sanitizeUaToken(value: string): string {
+  return value.replace(/[()<>@,;:\\"/[\]?={}\s]/g, '_').slice(0, 64);
+}
+
+/**
+ * Builds the headers that identify the calling MCP client and session on every
+ * outbound HTTP call. Client identity comes from the `initialize` handshake's
+ * `clientInfo`, exposed by the SDK via `server.server.getClientVersion()`.
+ */
+function trackingHeaders(
+  server: McpServer,
+  transport: ToolContext['transport']
+): Record<string, string> {
+  const info = server.server.getClientVersion();
+  const name = sanitizeUaToken(info?.name || 'unknown');
+  const version = sanitizeUaToken(info?.version || 'unknown');
+  const userAgent = `runpod-mcp-server/${MCP_SERVER_VERSION} (caller=mcp; client=${name}; client_version=${version}; transport=${transport})`;
+  return {
+    'User-Agent': userAgent,
+    'X-Runpod-Session-Id': SESSION_ID,
+  };
+}
+
 /**
  * Context passed to every tool handler. Contains the API key used to
- * authenticate against the Runpod REST and Serverless APIs.
+ * authenticate against the Runpod REST and Serverless APIs, and the transport
+ * the server is running under (for outbound caller-tracking headers).
  */
 export interface ToolContext {
   apiKey: string;
+  transport: 'stdio' | 'http';
 }
 
 // Helper function to make GraphQL requests to Runpod (public, no auth required)
-async function graphqlRequest<T>(query: string): Promise<T> {
+async function graphqlRequest<T>(
+  query: string,
+  tracking: () => Record<string, string>
+): Promise<T> {
   const response = await fetch(GRAPHQL_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      ...tracking(),
     },
     body: JSON.stringify({ query }),
   });
@@ -52,7 +104,10 @@ async function graphqlRequest<T>(query: string): Promise<T> {
 }
 
 // Helper function to make authenticated API requests to Runpod REST API
-function createRunpodRequest(apiKey: string) {
+function createRunpodRequest(
+  apiKey: string,
+  tracking: () => Record<string, string>
+) {
   return async function runpodRequest(
     endpoint: string,
     method: string = 'GET',
@@ -62,6 +117,7 @@ function createRunpodRequest(apiKey: string) {
     const headers = {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
+      ...tracking(),
     };
 
     const options: NodeFetchRequestInit = {
@@ -96,7 +152,10 @@ function createRunpodRequest(apiKey: string) {
 }
 
 // Helper function to make authenticated requests to the Serverless runtime API
-function createServerlessRequest(apiKey: string) {
+function createServerlessRequest(
+  apiKey: string,
+  tracking: () => Record<string, string>
+) {
   return async function serverlessRequest(
     endpointId: string,
     path: string,
@@ -107,6 +166,7 @@ function createServerlessRequest(apiKey: string) {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
+      ...tracking(),
     };
 
     const options: NodeFetchRequestInit = {
@@ -146,8 +206,9 @@ function createServerlessRequest(apiKey: string) {
  * context supplies the API key that authenticated request helpers will use.
  */
 export function registerTools(server: McpServer, ctx: ToolContext): void {
-  const runpodRequest = createRunpodRequest(ctx.apiKey);
-  const serverlessRequest = createServerlessRequest(ctx.apiKey);
+  const tracking = () => trackingHeaders(server, ctx.transport);
+  const runpodRequest = createRunpodRequest(ctx.apiKey, tracking);
+  const serverlessRequest = createServerlessRequest(ctx.apiKey, tracking);
 
   // ============== INFRASTRUCTURE TOOLS ==============
 
@@ -192,7 +253,8 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         }>;
       }
 
-      const data = await graphqlRequest<GpuTypesResponse>(`
+      const data = await graphqlRequest<GpuTypesResponse>(
+        `
         query {
           gpuTypes {
             id
@@ -205,7 +267,9 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
             }
           }
         }
-      `);
+      `,
+        tracking
+      );
 
       const stockPriority: Record<string, number> = {
         High: 3,
@@ -291,7 +355,8 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         }>;
       }
 
-      const data = await graphqlRequest<DataCentersResponse>(`
+      const data = await graphqlRequest<DataCentersResponse>(
+        `
         query {
           dataCenters {
             id
@@ -299,7 +364,9 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
             location
           }
         }
-      `);
+      `,
+        tracking
+      );
 
       let dataCenters = data.dataCenters;
 

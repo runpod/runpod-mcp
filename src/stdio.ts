@@ -12,7 +12,7 @@ if (!API_KEY) {
 const server = createServer();
 
 // Register all tools with the API key from the environment
-registerTools(server, { apiKey: API_KEY });
+registerTools(server, { apiKey: API_KEY, transport: 'stdio' });
 
 // Start receiving messages on stdin and sending messages on stdout
 const transport = new StdioServerTransport();
