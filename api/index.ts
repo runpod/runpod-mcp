@@ -31,6 +31,17 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Optional name for the minted Runpod API key, shown in the user's dashboard.
+ * Set RUNPOD_API_KEY_NAME (e.g. "runpod-mcp") to pass it through to the flash
+ * backend. Left unset by default because the `apiKeyName` argument only exists
+ * on backends that have shipped it — sending it to one that hasn't fails with
+ * "Unknown argument". Omitting it falls back to the backend's default name.
+ */
+function getApiKeyName(): string | null {
+  return process.env.RUNPOD_API_KEY_NAME ?? null;
+}
+
 interface FlashAuthRequestStatus {
   id: string;
   status: 'PENDING' | 'APPROVED' | 'DENIED' | 'EXPIRED' | 'CONSUMED';
@@ -79,8 +90,10 @@ async function flashGraphql<T>(query: string, field: string): Promise<T> {
  * return its id. The id doubles as the OAuth authorization code.
  */
 async function createFlashAuthRequest(): Promise<string> {
+  const apiKeyName = getApiKeyName();
+  const args = apiKeyName ? `(apiKeyName: ${JSON.stringify(apiKeyName)})` : '';
   const data = await flashGraphql<{ id: string }>(
-    `mutation { createFlashAuthRequest { id } }`,
+    `mutation { createFlashAuthRequest${args} { id } }`,
     'createFlashAuthRequest'
   );
   return data.id;

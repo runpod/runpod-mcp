@@ -147,6 +147,7 @@ This flow uses these environment variables:
 - `RUNPOD_GRAPHQL_URL`: flash auth backend endpoint (default `https://api.runpod.io/graphql`).
 - `CONSOLE_BASE_URL`: base URL of the console that hosts the handoff login page (default `http://localhost:3000`).
 - `RUNPOD_REST_API_URL` / `RUNPOD_SERVERLESS_API_URL`: override the REST and Serverless API hosts so a deployment authenticating with non-production keys can target the matching environment.
+- `RUNPOD_API_KEY_NAME`: optional name for the minted key as shown in the user's dashboard (e.g. `runpod-mcp`). Only send this against a backend that supports the `apiKeyName` argument — backends without it reject the request. Omitted by default, which uses the backend's default name.
 
 You can verify the entire flow end to end with `scripts/oauth-e2e.ts` (see `pnpm`-free usage in the file header).
 
