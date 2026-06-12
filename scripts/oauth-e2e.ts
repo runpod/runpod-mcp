@@ -1,26 +1,23 @@
 /**
  * End-to-end OAuth debug harness for the hosted MCP server.
  *
- * Runs the full "Sign in with Runpod" flow a real client (Claude) would:
- *   discovery -> dynamic client registration -> /authorize -> approve ->
- *   /token -> connect to the MCP with the minted key -> call a tool.
+ * Acts as a faithful MCP OAuth client (like Claude) — it only ever talks to the
+ * MCP deployment, never to the backend directly:
+ *   discovery -> dynamic client registration -> /authorize -> (you approve in a
+ *   browser) -> poll /token for the minted key -> connect to the MCP with that
+ *   key -> call a tool.
  *
- * The ONLY step that needs a Runpod user is the approval. Two modes:
- *   - RUNPOD_DEV_API_KEY set  -> auto-approves via approveFlashAuthRequest (fully headless)
- *   - not set                 -> prints the console URL and polls until you approve in a browser
+ * The only manual step is approving in the console (it requires a logged-in
+ * Runpod user). Whatever backend/stage the deployment is configured for is the
+ * one that mints the key — the harness needs no backend URL or credential.
  *
  * Env:
- *   MCP_SERVER_URL       hosted MCP base URL (required)
- *   RUNPOD_GRAPHQL_URL   flash backend (default https://api.runpod.dev/graphql)
- *   RUNPOD_DEV_API_KEY   optional dev key to auto-approve
+ *   MCP_SERVER_URL   hosted MCP base URL (required)
  */
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 const MCP = process.env.MCP_SERVER_URL;
-const GQL = process.env.RUNPOD_GRAPHQL_URL ?? 'https://api.runpod.dev/graphql';
-const DEV_KEY = process.env.RUNPOD_DEV_API_KEY;
-
 if (!MCP) throw new Error('MCP_SERVER_URL is required');
 const base = MCP.replace(/\/$/, '');
 
@@ -28,32 +25,23 @@ function log(step: string, data: unknown) {
   console.log(`\n[${step}]`, JSON.stringify(data, null, 2));
 }
 
-async function gql<T>(query: string, authToken?: string): Promise<T> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-  if (authToken) headers.authorization = `Bearer ${authToken}`;
-  const res = await fetch(GQL, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ query }),
-  });
-  const text = await res.text();
-  let json: { data?: T; errors?: Array<{ message: string }> };
-  try {
-    json = JSON.parse(text);
-  } catch {
-    throw new Error(
-      `GraphQL non-JSON (HTTP ${res.status}): ${text.slice(0, 200)}`
-    );
-  }
-  if (json.errors?.length)
-    throw new Error(json.errors.map((e) => e.message).join(', '));
-  if (!json.data) throw new Error('GraphQL returned no data');
-  return json.data;
-}
-
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** POST the token endpoint once. Returns the parsed JSON body + HTTP status. */
+async function postToken(code: string) {
+  const res = await fetch(`${base}/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: 'https://example.com/cb',
+      code_verifier: 'x',
+    }).toString(),
+  });
+  const body = (await res.json()) as Record<string, unknown>;
+  return { status: res.status, body };
+}
 
 async function main() {
   // 1. Discovery
@@ -91,51 +79,30 @@ async function main() {
   const code = inner.searchParams.get('request')!;
   log('authorize', { status: authRes.status, code, consoleUrl: location });
 
-  // 4. Approve
-  if (DEV_KEY) {
-    const approved = await gql<{ approveFlashAuthRequest: { status: string } }>(
-      `mutation { approveFlashAuthRequest(flashAuthRequestId: ${JSON.stringify(
-        code
-      )}) { id status } }`,
-      DEV_KEY
-    );
-    log('approve (auto, dev key)', approved.approveFlashAuthRequest);
-  } else {
-    console.log(
-      '\n[approve] No RUNPOD_DEV_API_KEY. Open and approve:\n' + location
-    );
-    process.stdout.write('[approve] polling status');
-    for (let i = 0; i < 60; i++) {
-      const s = await gql<{ flashAuthRequestStatus: { status: string } }>(
-        `query { flashAuthRequestStatus(flashAuthRequestId: ${JSON.stringify(code)}) { status } }`
-      );
-      const st = s.flashAuthRequestStatus.status;
-      if (st === 'APPROVED') break;
-      if (st === 'DENIED' || st === 'EXPIRED') throw new Error(`request ${st}`);
-      process.stdout.write('.');
-      await sleep(3000);
+  // 4. Approve (manual) + 5. poll /token for the minted key. We only call the
+  // MCP's own token endpoint — it polls the backend server-side and returns the
+  // minted key once the request is APPROVED.
+  console.log('\n[approve] Open and approve in your browser:\n' + location);
+  process.stdout.write('[token] polling');
+  let key: string | undefined;
+  for (let i = 0; i < 30; i++) {
+    const { body } = await postToken(code);
+    if (typeof body.access_token === 'string') {
+      key = body.access_token;
+      break;
     }
-    console.log('');
+    if (body.error && body.error !== 'authorization_pending') {
+      throw new Error(`token exchange failed: ${JSON.stringify(body)}`);
+    }
+    process.stdout.write('.');
+    await sleep(2000);
   }
-
-  // 5. /token -> minted Runpod API key as access_token
-  const tokenRes = await fetch(`${base}/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code',
-      code,
-      redirect_uri: 'https://example.com/cb',
-      code_verifier: 'x',
-    }).toString(),
-  });
-  const token = await tokenRes.json();
-  if (!token.access_token)
-    throw new Error(`token exchange failed: ${JSON.stringify(token)}`);
-  const key = token.access_token as string;
+  console.log('');
+  if (!key) throw new Error('timed out waiting for approval');
   log('token', {
-    token_type: token.token_type,
+    token_type: 'Bearer',
     access_token: `${key.slice(0, 6)}...${key.slice(-4)}`,
+    note: 'minted Runpod API key — check the dashboard for its name',
   });
 
   // 6. Connect to the MCP with the minted key and call a tool
@@ -163,7 +130,7 @@ async function main() {
   }
   log('mcp', { toolCount: tools.tools.length, listPods: podSummary });
   await client.close();
-  console.log('\n✅ full chain OK');
+  console.log('\n✅ token minted + MCP connected');
 }
 
 main().catch((e) => {
