@@ -13,8 +13,12 @@ const API_BASE_URL =
 const SERVERLESS_API_BASE_URL =
   process.env.RUNPOD_SERVERLESS_API_URL ?? 'https://api.runpod.ai/v2';
 
-// GraphQL endpoint for public queries (GPU types, data centers)
-const GRAPHQL_URL = 'https://api.runpod.io/graphql';
+// GraphQL endpoint for public queries (GPU types, data centers). Override via
+// RUNPOD_PUBLIC_GRAPHQL_URL for non-production environments. This is distinct
+// from the flash auth backend (RUNPOD_GRAPHQL_URL, used only by the OAuth flow
+// in api/index.ts).
+const GRAPHQL_URL =
+  process.env.RUNPOD_PUBLIC_GRAPHQL_URL ?? 'https://api.runpod.io/graphql';
 
 // ============== CALLER TRACKING ==============
 // Adds structured caller identification to every outbound API call so the
@@ -57,7 +61,11 @@ function trackingHeaders(
   const fallbackName = ctx.clientUserAgent || 'unknown';
   const name = sanitizeUaToken(info?.name || fallbackName);
   const version = sanitizeUaToken(info?.version || 'unknown');
-  const userAgent = `runpod-mcp-server/${MCP_SERVER_VERSION} (caller=mcp; client=${name}; client_version=${version}; transport=${ctx.transport})`;
+  // Prefer a server version supplied by the caller (the hosted entrypoint reads
+  // it from package.json at runtime, since tsup's build-time define does not
+  // run when Vercel compiles api/index.ts). Fall back to the build-time value.
+  const serverVersion = ctx.serverVersion || MCP_SERVER_VERSION;
+  const userAgent = `runpod-mcp-server/${serverVersion} (caller=mcp; client=${name}; client_version=${version}; transport=${ctx.transport})`;
   return {
     'User-Agent': userAgent,
     'X-Runpod-Session-Id': SESSION_ID,
@@ -74,6 +82,7 @@ export interface ToolContext {
   apiKey: string;
   transport: 'stdio' | 'http';
   clientUserAgent?: string;
+  serverVersion?: string;
 }
 
 // Helper function to make GraphQL requests to Runpod (public, no auth required)
@@ -1018,6 +1027,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
       const allChunks: unknown[] = [];
       let finalResult: Record<string, unknown> = {};
       let consecutiveErrors = 0;
+      let lastError: string | undefined;
       const startTime = Date.now();
 
       while (true) {
@@ -1040,8 +1050,9 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           }
         } catch (error) {
           consecutiveErrors++;
+          lastError = error instanceof Error ? error.message : String(error);
           if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-            finalResult.error = `Polling aborted after ${MAX_CONSECUTIVE_ERRORS} consecutive errors: ${error instanceof Error ? error.message : String(error)}`;
+            finalResult.error = `Polling aborted after ${MAX_CONSECUTIVE_ERRORS} consecutive errors: ${lastError}`;
             break;
           }
         }
@@ -1050,6 +1061,10 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
           finalResult.pollingTimedOut = true;
           finalResult.note =
             'Polling timed out after 5 minutes. Use get-job-status to check the job later.';
+          // Surface the most recent error (if any) instead of discarding it —
+          // the last poll may have been failing (e.g. job expired) even though
+          // earlier polls succeeded.
+          if (lastError) finalResult.lastError = lastError;
           break;
         }
 

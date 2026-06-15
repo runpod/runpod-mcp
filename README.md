@@ -263,10 +263,10 @@ Create a Runpod Serverless endpoint with the following configuration:
 The source is now split by responsibility:
 
 - `src/stdio.ts`: local `stdio` entrypoint.
-- `src/http.ts`: shared Streamable HTTP handler.
+- `src/http.ts`: bearer-token extraction and the per-request MCP session for the Streamable HTTP transport.
 - `src/tools.ts`: all Runpod MCP tools.
 - `src/server.ts`: shared server metadata and construction.
-- `api/index.ts`: Vercel adapter.
+- `api/index.ts`: Vercel adapter and the OAuth authorization-server routes (`/.well-known/*`, `/register`, `/authorize`, `/token`).
 
 After changes:
 

@@ -1,13 +1,35 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import fetch from 'node-fetch';
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { handleMcpRequest } from '../src/http.js';
+
+// Read the package version at runtime. tsup's build-time `__PACKAGE_VERSION__`
+// define does not run here because Vercel compiles api/index.ts itself, so the
+// hosted server would otherwise report version "dev" in its outbound User-Agent.
+const PACKAGE_VERSION: string = (() => {
+  try {
+    const { version } = createRequire(import.meta.url)('../package.json') as {
+      version?: string;
+    };
+    return version ?? 'dev';
+  } catch {
+    return 'dev';
+  }
+})();
+
+// Verbose logging gate. The authorize/token flows log request ids (which are
+// live, single-use auth codes) only when MCP_VERBOSE_LOGS=true.
+const VERBOSE = process.env.MCP_VERBOSE_LOGS === 'true';
 
 function getBaseUrl(req: VercelRequest): string {
   const proto =
     (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0] ??
     'https';
   const host = req.headers.host;
+  if (!host) {
+    throw new Error('Missing Host header');
+  }
   return `${proto}://${host}`;
 }
 
@@ -159,6 +181,10 @@ function encodeBody(body: VercelRequest['body']): string {
     return body;
   }
 
+  if (Buffer.isBuffer(body)) {
+    return body.toString();
+  }
+
   if (body && typeof body === 'object') {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(body)) {
@@ -278,7 +304,8 @@ async function handleAuthorize(
       responseType: requestUrl.searchParams.get('response_type'),
       hasState: !!state,
       hasCodeChallenge: !!requestUrl.searchParams.get('code_challenge'),
-      requestId,
+      // requestId is a live, single-use auth code — only log it when verbose.
+      ...(VERBOSE ? { requestId } : {}),
     });
 
     // 2. Hand off to the console login page. We carry the client's redirect_uri
@@ -292,7 +319,12 @@ async function handleAuthorize(
       innerRedirect
     )}`;
 
-    console.log('oauth_authorize_handoff', { requestId, handoffUrl });
+    // Don't log the full handoff URL (it embeds the auth code); log only the
+    // console host, and the code itself only when verbose.
+    console.log('oauth_authorize_handoff', {
+      consoleHost: new URL(getConsoleBaseUrl()).host,
+      ...(VERBOSE ? { requestId } : {}),
+    });
     res.redirect(302, handoffUrl);
   } catch (error) {
     console.error('oauth_authorize_failed', {
@@ -500,6 +532,7 @@ export default async function handler(
 
   await handleMcpRequest(
     req as unknown as import('node:http').IncomingMessage,
-    res as unknown as import('node:http').ServerResponse
+    res as unknown as import('node:http').ServerResponse,
+    { serverVersion: PACKAGE_VERSION }
   );
 }

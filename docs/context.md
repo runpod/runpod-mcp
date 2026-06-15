@@ -22,10 +22,21 @@ It talks to two Runpod backends:
 The codebase now has two transport entrypoints and one shared tool registry:
 
 - `src/stdio.ts`: local MCP server over `stdio`.
-- `src/http.ts`: shared Streamable HTTP handler for hosted deployments.
+- `src/http.ts`: bearer-token extraction and the per-request MCP session for the Streamable HTTP transport.
 - `src/tools.ts`: all tool definitions plus REST and GraphQL helpers.
 - `src/server.ts`: shared server metadata and construction.
-- `api/index.ts`: Vercel adapter with CORS handling.
+- `api/index.ts`: Vercel adapter (CORS) and the OAuth authorization-server routes (`/.well-known/*`, `/register`, `/authorize`, `/token`).
+
+### Hosted/OAuth environment variables
+
+All optional, with production-safe defaults:
+
+- `RUNPOD_GRAPHQL_URL`: flash auth backend for the OAuth flow (default `https://api.runpod.io/graphql`).
+- `CONSOLE_BASE_URL`: console hosting the sign-in handoff page (default `https://console.runpod.io`).
+- `RUNPOD_REST_API_URL` / `RUNPOD_SERVERLESS_API_URL`: override the REST and Serverless API hosts.
+- `RUNPOD_PUBLIC_GRAPHQL_URL`: override the public discovery GraphQL host used by `list-gpu-types`/`list-data-centers`.
+- `RUNPOD_API_KEY_NAME`: name for the minted key (default `runpod-mcp`; `""` to omit).
+- `MCP_VERBOSE_LOGS`: `true` to log OAuth request ids (live auth codes) for debugging.
 
 The npm package exports:
 
@@ -136,7 +147,7 @@ Changeset template:
 
 ```markdown
 ---
-"@runpod/mcp-server": minor
+'@runpod/mcp-server': minor
 ---
 
 Describe the user-facing change.

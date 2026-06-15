@@ -25,6 +25,7 @@
     "dev": "tsx src/stdio.ts",
     "smoke:http": "tsx scripts/smoke.ts http",
     "smoke:stdio": "tsx scripts/smoke.ts stdio",
+    "oauth-e2e": "tsx scripts/oauth-e2e.ts",
     "changeset": "changeset",
     "changeset:version": "changeset version",
     "changeset:publish": "changeset publish"
@@ -65,7 +66,8 @@
     "typescript": "^5.3.3"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=18",
+    "pnpm": ">=10"
   },
   "publishConfig": {
     "access": "public"

@@ -27,10 +27,21 @@ The server communicates with two separate Runpod API backends. The REST API at `
 The source is split by responsibility:
 
 - `src/stdio.ts` is the local `stdio` entrypoint.
-- `src/http.ts` is the shared Streamable HTTP handler.
+- `src/http.ts` does bearer-token extraction and the per-request MCP session for the Streamable HTTP transport.
 - `src/tools.ts` contains all Runpod tools and API helpers.
 - `src/server.ts` owns shared server metadata and construction.
-- `api/index.ts` is the Vercel adapter.
+- `api/index.ts` is the Vercel adapter and hosts the OAuth authorization-server routes (`/.well-known/*`, `/register`, `/authorize`, `/token`).
+
+### Hosted/OAuth environment variables
+
+The hosted HTTP path (`api/index.ts` + `src/http.ts`) reads these, all optional with production-safe defaults:
+
+- `RUNPOD_GRAPHQL_URL`: flash auth backend for the OAuth flow (default `https://api.runpod.io/graphql`).
+- `CONSOLE_BASE_URL`: console that hosts the sign-in handoff page (default `https://console.runpod.io`).
+- `RUNPOD_REST_API_URL` / `RUNPOD_SERVERLESS_API_URL`: override the REST and Serverless API hosts (e.g. for a dev API key).
+- `RUNPOD_PUBLIC_GRAPHQL_URL`: override the public discovery GraphQL host used by `list-gpu-types`/`list-data-centers` (default `https://api.runpod.io/graphql`).
+- `RUNPOD_API_KEY_NAME`: name for the minted key (default `runpod-mcp`; set to `""` to omit for a backend without the `apiKeyName` argument).
+- `MCP_VERBOSE_LOGS`: set to `true` to log OAuth request ids (live auth codes) for debugging.
 
 The build produces `dist/stdio.*`, `dist/http.*`, and `dist/tools.*`. Because `package.json` has `"type": "module"`, always use `dist/stdio.mjs` when running the built local server with `node`.
 

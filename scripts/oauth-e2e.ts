@@ -79,8 +79,9 @@ async function main() {
     { redirect: 'manual' }
   );
   const location = authRes.headers.get('location') ?? '';
+  // `searchParams.get` already decodes the value once — no second decode needed.
   const inner = new URL(
-    decodeURIComponent(new URL(location).searchParams.get('redirect')!),
+    new URL(location).searchParams.get('redirect')!,
     'http://x'
   );
   const code = inner.searchParams.get('request')!;

@@ -57,7 +57,8 @@ function writeUnauthorized(
  */
 export async function handleMcpRequest(
   req: IncomingMessage,
-  res: ServerResponse
+  res: ServerResponse,
+  opts: { serverVersion?: string } = {}
 ): Promise<void> {
   const bearerToken = extractBearerToken(req);
   console.log('mcp_request', {
@@ -82,14 +83,24 @@ export async function handleMcpRequest(
     apiKey: bearerToken,
     transport: 'http',
     clientUserAgent: req.headers['user-agent'],
+    serverVersion: opts.serverVersion,
   });
 
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless — no session persistence
   });
 
+  // This per-request server/transport pair is single-use; dispose it when the
+  // response closes so listeners don't accumulate on a warm serverless instance.
+  res.on('close', () => {
+    transport.close().catch(() => {});
+    server.close().catch(() => {});
+  });
+
   await server.connect(transport);
-  await transport.handleRequest(req, res);
+  // Pass the already-parsed body when the host provides one (e.g. Vercel's
+  // VercelRequest exposes `req.body`); the SDK reads the raw stream otherwise.
+  await transport.handleRequest(req, res, (req as { body?: unknown }).body);
 }
 
 export { registerTools } from './tools.js';
