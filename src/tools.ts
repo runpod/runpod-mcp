@@ -45,16 +45,19 @@ function sanitizeUaToken(value: string): string {
 /**
  * Builds the headers that identify the calling MCP client and session on every
  * outbound HTTP call. Client identity comes from the `initialize` handshake's
- * `clientInfo`, exposed by the SDK via `server.server.getClientVersion()`.
+ * `clientInfo` (exposed by the SDK via `server.server.getClientVersion()`),
+ * which works for the long-lived stdio server. In stateless HTTP that handshake
+ * is on a different request, so we fall back to the inbound HTTP User-Agent.
  */
 function trackingHeaders(
   server: McpServer,
-  transport: ToolContext['transport']
+  ctx: ToolContext
 ): Record<string, string> {
   const info = server.server.getClientVersion();
-  const name = sanitizeUaToken(info?.name || 'unknown');
+  const fallbackName = ctx.clientUserAgent || 'unknown';
+  const name = sanitizeUaToken(info?.name || fallbackName);
   const version = sanitizeUaToken(info?.version || 'unknown');
-  const userAgent = `runpod-mcp-server/${MCP_SERVER_VERSION} (caller=mcp; client=${name}; client_version=${version}; transport=${transport})`;
+  const userAgent = `runpod-mcp-server/${MCP_SERVER_VERSION} (caller=mcp; client=${name}; client_version=${version}; transport=${ctx.transport})`;
   return {
     'User-Agent': userAgent,
     'X-Runpod-Session-Id': SESSION_ID,
@@ -63,12 +66,14 @@ function trackingHeaders(
 
 /**
  * Context passed to every tool handler. Contains the API key used to
- * authenticate against the Runpod REST and Serverless APIs, and the transport
- * the server is running under (for outbound caller-tracking headers).
+ * authenticate against the Runpod REST and Serverless APIs, the transport the
+ * server is running under, and (for stateless HTTP) the inbound client
+ * User-Agent — all used for outbound caller-tracking headers.
  */
 export interface ToolContext {
   apiKey: string;
   transport: 'stdio' | 'http';
+  clientUserAgent?: string;
 }
 
 // Helper function to make GraphQL requests to Runpod (public, no auth required)
@@ -206,7 +211,7 @@ function createServerlessRequest(
  * context supplies the API key that authenticated request helpers will use.
  */
 export function registerTools(server: McpServer, ctx: ToolContext): void {
-  const tracking = () => trackingHeaders(server, ctx.transport);
+  const tracking = () => trackingHeaders(server, ctx);
   const runpodRequest = createRunpodRequest(ctx.apiKey, tracking);
   const serverlessRequest = createServerlessRequest(ctx.apiKey, tracking);
 

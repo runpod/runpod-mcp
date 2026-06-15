@@ -7,6 +7,7 @@ This is the official Runpod MCP (Model Context Protocol) server, published to np
 Always use sentence case for headings and titles.
 
 Always use proper nouns when discussing specific Runpod products and features:
+
 - Runpod (never RunPod).
 - Pod/Pods (never lowercase "pod/pods").
 - Serverless (never lowercase "serverless").
@@ -14,6 +15,7 @@ Always use proper nouns when discussing specific Runpod products and features:
 - Apply proper noun styling only to text that the user will see, not things like image/documentation links.
 
 These are generic terms (use lowercase):
+
 - endpoint, worker, cluster, template, handler, fine-tune, network volume.
 
 Prefer using paragraphs to bullet points unless directly asked. When using bullet points, end each line with a period.
@@ -23,6 +25,7 @@ Prefer using paragraphs to bullet points unless directly asked. When using bulle
 The server communicates with two separate Runpod API backends. The REST API at `https://rest.runpod.io/v1` handles all authenticated CRUD operations for Pods, endpoints, templates, network volumes, and container registry auths. It requires a `RUNPOD_API_KEY` environment variable. The GraphQL API at `https://api.runpod.io/graphql` is public and requires no authentication. It serves read-only discovery queries like GPU types and data centers.
 
 The source is split by responsibility:
+
 - `src/stdio.ts` is the local `stdio` entrypoint.
 - `src/http.ts` is the shared Streamable HTTP handler.
 - `src/tools.ts` contains all Runpod tools and API helpers.
@@ -88,9 +91,10 @@ This project uses [changesets](https://github.com/changesets/changesets) for ver
 The interactive `npx changeset` command does not work in non-TTY environments like Claude Code. Create the changeset file manually instead:
 
 `.changeset/DESCRIPTIVE_NAME.md`
+
 ```markdown
 ---
-"@runpod/mcp-server": minor
+'@runpod/mcp-server': minor
 ---
 
 Description of what changed and why.
@@ -98,7 +102,7 @@ Description of what changed and why.
 
 Use `patch` for bug fixes, `minor` for new tools, params, or features, and `major` for breaking changes to existing tool interfaces.
 
-The `.changeset/` directory is in `.gitignore`, so you must use `git add -f` to stage changeset files.
+The `.changeset/` directory is tracked in git — it is the source the release workflow consumes — so stage changeset files normally with `git add`.
 
 After merging to `main`, the changesets bot opens a "Version Packages" PR that bumps `package.json` and updates `CHANGELOG.md`. Merging that PR triggers `changeset publish` which pushes to npm as `@runpod/mcp-server`.
 

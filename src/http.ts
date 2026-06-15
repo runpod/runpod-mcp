@@ -15,16 +15,6 @@ function extractBearerToken(req: IncomingMessage): string | null {
   return parts[1];
 }
 
-/**
- * Whether this deployment advertises the OAuth ("Sign in with Runpod") flow.
- * Enabled by setting MCP_OAUTH_ENABLED=true. When off, the hosted server still
- * works as pure token passthrough (the caller supplies a Runpod API key as the
- * bearer token); it just does not advertise the sign-in challenge.
- */
-function isOAuthEnabled(): boolean {
-  return process.env.MCP_OAUTH_ENABLED === 'true';
-}
-
 function getBaseUrl(req: IncomingMessage): string {
   const proto =
     (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0] ??
@@ -42,18 +32,15 @@ function writeUnauthorized(
   res: ServerResponse,
   error: string
 ): void {
+  // Always advertise the protected-resource metadata so OAuth-capable clients
+  // (e.g. Claude) know to start the "Sign in with Runpod" flow. Callers who
+  // bring their own API key as the bearer token simply never hit this path.
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
+    'WWW-Authenticate': `Bearer realm="mcp", resource_metadata="${getBaseUrl(
+      req
+    )}/.well-known/oauth-protected-resource"`,
   };
-
-  // When OAuth is configured, advertise the protected-resource metadata so
-  // OAuth-capable clients (e.g. Claude) know to start the sign-in flow.
-  if (isOAuthEnabled()) {
-    headers['WWW-Authenticate'] =
-      `Bearer realm="mcp", resource_metadata="${getBaseUrl(
-        req
-      )}/.well-known/oauth-protected-resource"`;
-  }
 
   res.writeHead(401, headers);
   res.end(JSON.stringify({ error }));
@@ -77,7 +64,6 @@ export async function handleMcpRequest(
     method: req.method,
     url: req.url,
     hasBearerToken: !!bearerToken,
-    oauthEnabled: isOAuthEnabled(),
   });
   if (!bearerToken) {
     writeUnauthorized(
@@ -89,7 +75,14 @@ export async function handleMcpRequest(
   }
 
   const server = createServer();
-  registerTools(server, { apiKey: bearerToken, transport: 'http' });
+  // In stateless HTTP, a tools/call is a separate request from `initialize`, so
+  // the per-request server never sees the MCP `clientInfo`. Fall back to the
+  // inbound HTTP User-Agent so caller-tracking still attributes the client.
+  registerTools(server, {
+    apiKey: bearerToken,
+    transport: 'http',
+    clientUserAgent: req.headers['user-agent'],
+  });
 
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless — no session persistence

@@ -24,7 +24,7 @@ function getRunpodGraphqlUrl(): string {
  * Defaults to local dev; override via CONSOLE_BASE_URL.
  */
 function getConsoleBaseUrl(): string {
-  return process.env.CONSOLE_BASE_URL ?? 'http://localhost:3000';
+  return process.env.CONSOLE_BASE_URL ?? 'https://console.runpod.io';
 }
 
 // Redirect URIs we will hand the authorization code (→ a minted API key) to.
@@ -207,7 +207,9 @@ function handleAuthorizationServerMetadata(
     response_types_supported: ['code'],
     grant_types_supported: ['authorization_code'],
     token_endpoint_auth_methods_supported: ['none'],
-    code_challenge_methods_supported: ['S256'],
+    // Note: PKCE is intentionally not advertised because it is not enforced
+    // server-side (the flash flow has no place to bind the code_challenge).
+    // Security rests on the redirect_uri allowlist + single-use flash approval.
   });
 }
 
@@ -361,9 +363,17 @@ async function handleToken(
   }
 
   try {
-    // The user is redirected back to Claude only after approval, so the request
-    // should already be APPROVED. Poll briefly to absorb any propagation lag.
-    const maxAttempts = 6;
+    // The user is redirected back to the client only after approval, so the
+    // request is usually already APPROVED. We poll for most of the function's
+    // budget (~45s, well under the 60s maxDuration) rather than returning a
+    // non-retryable `authorization_pending` early, since a browser-redirect
+    // client typically treats a token-endpoint 400 as terminal.
+    //
+    // Reading an APPROVED request via the guest `flashAuthRequestStatus` query
+    // atomically transitions it to CONSUMED and returns the minted key exactly
+    // once (backend: model/src/flash/authRequests.ts), so this poll cannot hand
+    // the same key out twice.
+    const maxAttempts = 20;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const status = await getFlashAuthStatus(code);
       console.log('oauth_token_poll', {

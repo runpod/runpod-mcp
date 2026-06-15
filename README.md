@@ -125,9 +125,9 @@ The server forwards the caller's Bearer token directly to the Runpod API as the 
 The token can be either:
 
 - a Runpod API key the caller configured manually, or
-- a Runpod API key obtained through the OAuth "Sign in with Runpod" flow (see below), which is advertised when `MCP_OAUTH_ENABLED=true`.
+- a Runpod API key obtained through the OAuth "Sign in with Runpod" flow (see below).
 
-When `MCP_OAUTH_ENABLED=true`, an unauthenticated request receives a `401` with a `WWW-Authenticate` header pointing at the protected-resource metadata, which is what tells an OAuth-capable client (such as Claude) to start the sign-in flow.
+An unauthenticated request receives a `401` with a `WWW-Authenticate` header pointing at the protected-resource metadata, which tells an OAuth-capable client (such as Claude) to start the sign-in flow. A caller that brings its own API key as the bearer token never hits that path.
 
 ### Sign in with Runpod (authorize flow)
 
@@ -143,9 +143,8 @@ The flow reuses the Runpod flash auth backend and mints a real Runpod API key:
 
 This flow uses these environment variables:
 
-- `MCP_OAUTH_ENABLED`: set to `true` to advertise the OAuth sign-in flow.
 - `RUNPOD_GRAPHQL_URL`: flash auth backend endpoint (default `https://api.runpod.io/graphql`).
-- `CONSOLE_BASE_URL`: base URL of the console that hosts the handoff login page (default `http://localhost:3000`).
+- `CONSOLE_BASE_URL`: base URL of the console that hosts the handoff login page (default `https://console.runpod.io`).
 - `RUNPOD_REST_API_URL` / `RUNPOD_SERVERLESS_API_URL`: override the REST and Serverless API hosts so a deployment authenticating with non-production keys can target the matching environment.
 - `RUNPOD_API_KEY_NAME`: optional name for the minted key as shown in the user's dashboard (e.g. `runpod-mcp`). Only send this against a backend that supports the `apiKeyName` argument — backends without it reject the request. Omitted by default, which uses the backend's default name.
 - `MCP_ALLOWED_REDIRECT_URIS`: comma-separated extra `redirect_uri` values to allow, in addition to the built-in Claude callbacks. Loopback addresses (`localhost`/`127.0.0.1`/`::1`, any port) are always allowed. `/authorize` and `/token` reject any `redirect_uri` not on this list, since the authorization code redeems into a real API key.
@@ -195,7 +194,7 @@ This validates:
 
 Use the local `stdio` integration for Claude Desktop today.
 
-For remote clients such as Claude's connector, deploy the hosted HTTP server with `MCP_OAUTH_ENABLED=true`. The client then runs the OAuth "Sign in with Runpod" flow, and the resulting Runpod API key is forwarded to the Runpod API on each request.
+For remote clients such as Claude's connector, deploy the hosted HTTP server. The client then runs the OAuth "Sign in with Runpod" flow, and the resulting Runpod API key is forwarded to the Runpod API on each request.
 
 ## Local development
 
