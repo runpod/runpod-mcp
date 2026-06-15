@@ -9,10 +9,13 @@ export const SERVER_NAME = 'Runpod API Server';
 export const SERVER_VERSION =
   typeof __PACKAGE_VERSION__ !== 'undefined' ? __PACKAGE_VERSION__ : 'dev';
 
-export function createServer(): McpServer {
+// `version` defaults to the build-time value (correct for the npm/stdio build).
+// The hosted entrypoint passes a runtime value read from package.json, since
+// tsup's define doesn't run when Vercel compiles api/index.ts.
+export function createServer(version: string = SERVER_VERSION): McpServer {
   return new McpServer({
     name: SERVER_NAME,
-    version: SERVER_VERSION,
+    version,
     capabilities: {
       resources: {},
       tools: {},

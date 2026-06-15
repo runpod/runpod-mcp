@@ -75,7 +75,7 @@ export async function handleMcpRequest(
     return;
   }
 
-  const server = createServer();
+  const server = createServer(opts.serverVersion);
   // In stateless HTTP, a tools/call is a separate request from `initialize`, so
   // the per-request server never sees the MCP `clientInfo`. Fall back to the
   // inbound HTTP User-Agent so caller-tracking still attributes the client.
