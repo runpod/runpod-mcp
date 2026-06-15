@@ -35,7 +35,7 @@ async function postToken(code: string) {
     body: new URLSearchParams({
       grant_type: 'authorization_code',
       code,
-      redirect_uri: 'https://example.com/cb',
+      redirect_uri: 'http://localhost:8765/callback',
       code_verifier: 'x',
     }).toString(),
   });
@@ -57,7 +57,7 @@ async function main() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         client_name: 'oauth-e2e-debug',
-        redirect_uris: ['https://example.com/cb'],
+        redirect_uris: ['http://localhost:8765/callback'],
         grant_types: ['authorization_code'],
       }),
     })
@@ -67,7 +67,7 @@ async function main() {
   // 3. /authorize -> capture console handoff + flash request id (= the OAuth code)
   const authRes = await fetch(
     `${base}/authorize?client_id=${reg.client_id}&redirect_uri=${encodeURIComponent(
-      'https://example.com/cb'
+      'http://localhost:8765/callback'
     )}&state=e2e&code_challenge=x&code_challenge_method=S256&response_type=code`,
     { redirect: 'manual' }
   );

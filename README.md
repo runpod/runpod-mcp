@@ -148,8 +148,9 @@ This flow uses these environment variables:
 - `CONSOLE_BASE_URL`: base URL of the console that hosts the handoff login page (default `http://localhost:3000`).
 - `RUNPOD_REST_API_URL` / `RUNPOD_SERVERLESS_API_URL`: override the REST and Serverless API hosts so a deployment authenticating with non-production keys can target the matching environment.
 - `RUNPOD_API_KEY_NAME`: optional name for the minted key as shown in the user's dashboard (e.g. `runpod-mcp`). Only send this against a backend that supports the `apiKeyName` argument — backends without it reject the request. Omitted by default, which uses the backend's default name.
+- `MCP_ALLOWED_REDIRECT_URIS`: comma-separated extra `redirect_uri` values to allow, in addition to the built-in Claude callbacks. Loopback addresses (`localhost`/`127.0.0.1`/`::1`, any port) are always allowed. `/authorize` and `/token` reject any `redirect_uri` not on this list, since the authorization code redeems into a real API key.
 
-You can verify the entire flow end to end with `scripts/oauth-e2e.ts` (see `pnpm`-free usage in the file header).
+You can verify the entire flow end to end with `MCP_SERVER_URL=<deployment-url> npx tsx scripts/oauth-e2e.ts` (the harness uses a loopback callback).
 
 Notes and current limitations:
 

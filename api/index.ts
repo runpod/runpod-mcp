@@ -27,6 +27,46 @@ function getConsoleBaseUrl(): string {
   return process.env.CONSOLE_BASE_URL ?? 'http://localhost:3000';
 }
 
+// Redirect URIs we will hand the authorization code (→ a minted API key) to.
+// Exact-match for hosted clients; loopback is allowed on any port per RFC 8252.
+// Extend via MCP_ALLOWED_REDIRECT_URIS (comma-separated) for other clients/tests.
+const DEFAULT_ALLOWED_REDIRECT_URIS = [
+  'https://claude.ai/api/mcp/auth_callback',
+  'https://claude.com/api/mcp/auth_callback',
+];
+
+function getAllowedRedirectUris(): string[] {
+  const extra = (process.env.MCP_ALLOWED_REDIRECT_URIS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return [...DEFAULT_ALLOWED_REDIRECT_URIS, ...extra];
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  const h = hostname.replace(/^\[|\]$/g, '');
+  return h === 'localhost' || h === '127.0.0.1' || h === '::1';
+}
+
+/**
+ * Whether we may deliver the authorization code to this redirect_uri. Loopback
+ * (http, any port) is always allowed for native clients; everything else must
+ * exactly match the configured allowlist. This stops an attacker from crafting
+ * an /authorize link that ships the code (and thus a real API key) to a host
+ * they control.
+ */
+function isRedirectUriAllowed(redirectUri: string | null): boolean {
+  if (!redirectUri) return false;
+  let url: URL;
+  try {
+    url = new URL(redirectUri);
+  } catch {
+    return false;
+  }
+  if (url.protocol === 'http:' && isLoopbackHost(url.hostname)) return true;
+  return getAllowedRedirectUris().includes(redirectUri);
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -213,6 +253,18 @@ async function handleAuthorize(
     const redirectUri = requestUrl.searchParams.get('redirect_uri');
     const state = requestUrl.searchParams.get('state');
 
+    // Reject before doing anything: the authorization code redeems into a real
+    // API key, so we only ever deliver it to an allowlisted redirect_uri.
+    if (!isRedirectUriAllowed(redirectUri)) {
+      console.warn('oauth_authorize_rejected_redirect_uri', { redirectUri });
+      res.status(400).json({
+        error: 'invalid_request',
+        error_description:
+          'redirect_uri is not allowed. It must be a registered client callback or a loopback address.',
+      });
+      return;
+    }
+
     // 1. Create a guest flash auth request; its id is the OAuth code.
     const requestId = await createFlashAuthRequest();
 
@@ -294,6 +346,17 @@ async function handleToken(
   }
   if (!code) {
     tokenError(res, 400, 'invalid_request', 'Missing code parameter.');
+    return;
+  }
+  // Re-validate the redirect_uri here too: a token request must come from a
+  // client whose callback we trust (defense in depth alongside /authorize).
+  if (!isRedirectUriAllowed(params.get('redirect_uri'))) {
+    tokenError(
+      res,
+      400,
+      'invalid_grant',
+      'redirect_uri is missing or not allowed.'
+    );
     return;
   }
 
