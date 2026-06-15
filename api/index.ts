@@ -72,14 +72,16 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Optional name for the minted Runpod API key, shown in the user's dashboard.
- * Set RUNPOD_API_KEY_NAME (e.g. "runpod-mcp") to pass it through to the flash
- * backend. Left unset by default because the `apiKeyName` argument only exists
- * on backends that have shipped it — sending it to one that hasn't fails with
- * "Unknown argument". Omitting it falls back to the backend's default name.
+ * Name for the minted Runpod API key, shown in the user's dashboard. Defaults
+ * to "runpod-mcp" so keys minted through this server are identifiable and
+ * revocable. Override (or set to empty) via RUNPOD_API_KEY_NAME.
+ *
+ * Note: the `apiKeyName` argument must be deployed on the target flash backend
+ * — sending it to a backend that hasn't shipped it yet fails with "Unknown
+ * argument". Set RUNPOD_API_KEY_NAME="" to suppress it for such a backend.
  */
 function getApiKeyName(): string | null {
-  return process.env.RUNPOD_API_KEY_NAME ?? null;
+  return process.env.RUNPOD_API_KEY_NAME ?? 'runpod-mcp';
 }
 
 interface FlashAuthRequestStatus {

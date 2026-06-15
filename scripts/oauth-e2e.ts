@@ -27,7 +27,14 @@ function log(step: string, data: unknown) {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** POST the token endpoint once. Returns the parsed JSON body + HTTP status. */
+/**
+ * POST the token endpoint once. Returns the parsed JSON body + HTTP status.
+ *
+ * PKCE test: we sent `code_challenge=challenge-abc` at /authorize but send a
+ * deliberately NON-matching `code_verifier` here. If the token is still minted,
+ * the server is not enforcing PKCE (S256 would require the verifier to hash to
+ * the challenge).
+ */
 async function postToken(code: string) {
   const res = await fetch(`${base}/token`, {
     method: 'POST',
@@ -36,7 +43,7 @@ async function postToken(code: string) {
       grant_type: 'authorization_code',
       code,
       redirect_uri: 'http://localhost:8765/callback',
-      code_verifier: 'x',
+      code_verifier: 'this-verifier-does-not-match-the-challenge',
     }).toString(),
   });
   const body = (await res.json()) as Record<string, unknown>;
@@ -68,7 +75,7 @@ async function main() {
   const authRes = await fetch(
     `${base}/authorize?client_id=${reg.client_id}&redirect_uri=${encodeURIComponent(
       'http://localhost:8765/callback'
-    )}&state=e2e&code_challenge=x&code_challenge_method=S256&response_type=code`,
+    )}&state=e2e&code_challenge=challenge-abc&code_challenge_method=S256&response_type=code`,
     { redirect: 'manual' }
   );
   const location = authRes.headers.get('location') ?? '';
