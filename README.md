@@ -146,15 +146,15 @@ This flow uses these environment variables:
 - `RUNPOD_GRAPHQL_URL`: flash auth backend endpoint (default `https://api.runpod.io/graphql`).
 - `CONSOLE_BASE_URL`: base URL of the console that hosts the handoff login page (default `https://console.runpod.io`).
 - `RUNPOD_REST_API_URL` / `RUNPOD_SERVERLESS_API_URL`: override the REST and Serverless API hosts so a deployment authenticating with non-production keys can target the matching environment.
-- `RUNPOD_API_KEY_NAME`: optional name for the minted key as shown in the user's dashboard (e.g. `runpod-mcp`). Only send this against a backend that supports the `apiKeyName` argument — backends without it reject the request. Omitted by default, which uses the backend's default name.
+- `RUNPOD_API_KEY_NAME`: name for the minted key as shown in the user's dashboard. Defaults to `runpod-mcp`. Set it to `""` to omit the name for a backend that does not support the `apiKeyName` argument (such backends reject the request when it is sent).
 - `MCP_ALLOWED_REDIRECT_URIS`: comma-separated extra `redirect_uri` values to allow, in addition to the built-in Claude callbacks. Loopback addresses (`localhost`/`127.0.0.1`/`::1`, any port) are always allowed. `/authorize` and `/token` reject any `redirect_uri` not on this list, since the authorization code redeems into a real API key.
 
 You can verify the entire flow end to end with `MCP_SERVER_URL=<deployment-url> npx tsx scripts/oauth-e2e.ts` (the harness uses a loopback callback).
 
 Notes and current limitations:
 
-- PKCE (`code_challenge`) is advertised but not enforced server-side; security relies on the single-use, short-lived flash request and the console approval step.
-- The minted key currently shows up named `flash-cli` in the user's Runpod dashboard (hardcoded in the backend). Renaming it to something like `claude-mcp` requires a Runpod backend change; it is not configurable through the API.
+- PKCE is not supported: `code_challenge` is neither advertised nor enforced (the flash flow has no place to bind it). Security relies on the `redirect_uri` allowlist and the single-use, short-lived flash approval.
+- The minted key is named via `RUNPOD_API_KEY_NAME` (default `runpod-mcp`), which requires a flash backend that supports the `apiKeyName` argument. Against a backend without it, set `RUNPOD_API_KEY_NAME=""`.
 
 ### Vercel
 
