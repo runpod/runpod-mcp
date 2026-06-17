@@ -1,6 +1,11 @@
 import { execSync } from 'child_process';
 import * as p from '@clack/prompts';
-import { CLIENTS, type McpClient } from './clients.js';
+import {
+  CLIENTS,
+  HOSTED_URL,
+  type AddMode,
+  type McpClient,
+} from './clients.js';
 
 const API_KEYS_URL = 'https://www.runpod.io/console/user/settings';
 
@@ -99,9 +104,31 @@ async function detectAll(): Promise<Map<string, boolean>> {
   return new Map(entries);
 }
 
-async function runAdd(): Promise<void> {
-  const detected = await detectAll();
-  const clients = await selectClients(detected, 'set up');
+// Ask how the server should be wired up, then collect what that mode needs.
+// Hosted is the default: the client signs in with Runpod over OAuth and no key
+// is ever written to disk. Local runs the server via npx with an API key.
+async function selectMode(): Promise<AddMode> {
+  const kind = await p.select({
+    message: 'How do you want to connect to Runpod?',
+    options: [
+      {
+        value: 'hosted',
+        label: 'Sign in with Runpod (recommended)',
+        hint: 'hosted, OAuth, no API key stored',
+      },
+      {
+        value: 'local',
+        label: 'Run locally with an API key',
+        hint: 'runs on this machine via npx',
+      },
+    ],
+    initialValue: 'hosted',
+  });
+  if (p.isCancel(kind)) bail();
+
+  if (kind === 'hosted') {
+    return { kind: 'hosted', url: HOSTED_URL };
+  }
 
   const apiKey = await promptForApiKey();
 
@@ -121,11 +148,19 @@ async function runAdd(): Promise<void> {
     verifySpinner.stop('Could not verify the key (offline?). Continuing.');
   }
 
+  return { kind: 'local', apiKey };
+}
+
+async function runAdd(): Promise<void> {
+  const detected = await detectAll();
+  const clients = await selectClients(detected, 'set up');
+  const mode = await selectMode();
+
   const results: string[] = [];
   for (const client of clients) {
     const spinner = p.spinner();
     spinner.start(`Configuring ${client.name}`);
-    const result = await client.add(apiKey);
+    const result = await client.add(mode);
     if (result.success) {
       spinner.stop(`${client.name} configured.`);
       results.push(`✓ ${client.name} — ${client.describeTarget()}`);
@@ -136,7 +171,11 @@ async function runAdd(): Promise<void> {
   }
 
   p.note(results.join('\n'), 'Results');
-  p.outro('Restart your agent (or reconnect MCP) to load the Runpod tools.');
+  p.outro(
+    mode.kind === 'hosted'
+      ? 'Restart your agent, then complete "Sign in with Runpod" when it connects.'
+      : 'Restart your agent (or reconnect MCP) to load the Runpod tools.'
+  );
 }
 
 async function runRemove(): Promise<void> {

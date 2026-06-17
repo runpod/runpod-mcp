@@ -8,6 +8,19 @@ import * as jsonc from 'jsonc-parser';
 export const SERVER_NAME = 'runpod';
 export const NPM_PACKAGE = '@runpod/mcp-server@latest';
 
+// The hosted Streamable HTTP endpoint. Clients point here and authenticate with
+// the OAuth "Sign in with Runpod" flow — no API key is stored in their config.
+// Overridable so a non-production deployment can be targeted during testing.
+export const HOSTED_URL =
+  process.env.RUNPOD_MCP_URL ?? 'https://runpod-mcp.vercel.app/';
+
+// How the user wants the server wired up:
+// - local: run via npx on this machine, authenticated by an API key in the env.
+// - hosted: connect to the hosted HTTP server and sign in with Runpod (OAuth).
+export type AddMode =
+  | { kind: 'local'; apiKey: string }
+  | { kind: 'hosted'; url: string };
+
 export interface AddResult {
   success: boolean;
   message?: string;
@@ -21,21 +34,35 @@ export interface McpClient {
   // True when the client appears to be installed on this machine.
   detect(): Promise<boolean>;
   // Write (or update) the Runpod server entry in the client's config.
-  add(apiKey: string): Promise<AddResult>;
+  add(mode: AddMode): Promise<AddResult>;
   // Remove the Runpod server entry from the client's config.
   remove(): Promise<AddResult>;
   // Where the config lives, for display and manual fallback.
   describeTarget(): string;
 }
 
-// The stdio server config every JSON-based client shares. Runpod's MCP server
-// runs locally via npx and reads the API key from the environment.
-function serverConfig(apiKey: string) {
+// The local stdio config: Runpod's MCP server runs via npx and reads the API
+// key from the environment.
+function localServerConfig(apiKey: string) {
   return {
     command: 'npx',
     args: ['-y', NPM_PACKAGE],
     env: { RUNPOD_API_KEY: apiKey },
   };
+}
+
+// The hosted config. Clients with native remote-MCP support take the URL
+// directly (VS Code additionally needs `type: 'http'`); the rest reach the
+// hosted server through the `mcp-remote` stdio bridge, which also drives OAuth.
+function hostedServerConfig(
+  strategy: 'http' | 'mcp-remote',
+  serverProperty: string,
+  url: string
+) {
+  if (strategy === 'mcp-remote') {
+    return { command: 'npx', args: ['-y', 'mcp-remote', url] };
+  }
+  return serverProperty === 'servers' ? { type: 'http', url } : { url };
 }
 
 // Read, edit, and write a JSON config while preserving the user's existing
@@ -94,15 +121,19 @@ function exists(p: string): boolean {
   }
 }
 
-// A JSON-config client that differs only in config path and server property.
+// A JSON-config client that differs only in config path, server property, and
+// how it reaches the hosted server.
 function jsonClient(opts: {
   id: string;
   name: string;
   serverProperty?: string;
+  // Native HTTP support, or the `mcp-remote` bridge for stdio-only clients.
+  hostedStrategy?: 'http' | 'mcp-remote';
   configPath: () => string;
   detectPaths?: () => string[];
 }): McpClient {
   const serverProperty = opts.serverProperty ?? 'mcpServers';
+  const hostedStrategy = opts.hostedStrategy ?? 'http';
   return {
     id: opts.id,
     name: opts.name,
@@ -110,14 +141,15 @@ function jsonClient(opts: {
       Promise.resolve(
         (opts.detectPaths?.() ?? [path.dirname(opts.configPath())]).some(exists)
       ),
-    add: (apiKey) =>
-      Promise.resolve(
-        upsertJsonServer(
-          opts.configPath(),
-          serverProperty,
-          serverConfig(apiKey)
-        )
-      ),
+    add: (mode) => {
+      const value =
+        mode.kind === 'local'
+          ? localServerConfig(mode.apiKey)
+          : hostedServerConfig(hostedStrategy, serverProperty, mode.url);
+      return Promise.resolve(
+        upsertJsonServer(opts.configPath(), serverProperty, value)
+      );
+    },
     remove: () =>
       Promise.resolve(removeJsonServer(opts.configPath(), serverProperty)),
     describeTarget: () => opts.configPath(),
@@ -142,13 +174,29 @@ function findClaudeBinary(): string | null {
   }
 }
 
+function runClaude(binary: string, args: string[]): AddResult {
+  try {
+    execSync(`${binary} ${args.map((a) => JSON.stringify(a)).join(' ')}`, {
+      stdio: 'pipe',
+    });
+    return { success: true };
+  } catch (error) {
+    const message = errMessage(error);
+    // Re-running the wizard should be idempotent, not an error.
+    if (message.includes('already exists')) {
+      return { success: true, message: 'already configured' };
+    }
+    return { success: false, message };
+  }
+}
+
 // Claude Code manages its own config, so we drive its CLI rather than writing
 // files directly. This mirrors the documented `claude mcp add` command.
 const claudeCodeClient: McpClient = {
   id: 'claude-code',
   name: 'Claude Code',
   detect: () => Promise.resolve(findClaudeBinary() !== null),
-  add: (apiKey) => {
+  add: (mode) => {
     const binary = findClaudeBinary();
     if (!binary) {
       return Promise.resolve({
@@ -156,35 +204,32 @@ const claudeCodeClient: McpClient = {
         message: 'claude CLI not found',
       });
     }
-    const args = [
-      'mcp',
-      'add',
-      SERVER_NAME,
-      '--scope',
-      'user',
-      '-e',
-      `RUNPOD_API_KEY=${apiKey}`,
-      '--',
-      'npx',
-      '-y',
-      NPM_PACKAGE,
-    ];
-    try {
-      execSync(`${binary} ${args.map((a) => JSON.stringify(a)).join(' ')}`, {
-        stdio: 'pipe',
-      });
-      return Promise.resolve({ success: true });
-    } catch (error) {
-      const message = errMessage(error);
-      // Re-running the wizard should be idempotent, not an error.
-      if (message.includes('already exists')) {
-        return Promise.resolve({
-          success: true,
-          message: 'already configured',
-        });
-      }
-      return Promise.resolve({ success: false, message });
-    }
+    const args =
+      mode.kind === 'local'
+        ? [
+            'mcp',
+            'add',
+            SERVER_NAME,
+            '--scope',
+            'user',
+            '-e',
+            `RUNPOD_API_KEY=${mode.apiKey}`,
+            '--',
+            'npx',
+            '-y',
+            NPM_PACKAGE,
+          ]
+        : [
+            'mcp',
+            'add',
+            '--transport',
+            'http',
+            '--scope',
+            'user',
+            SERVER_NAME,
+            mode.url,
+          ];
+    return Promise.resolve(runClaude(binary, args));
   },
   remove: () => {
     const binary = findClaudeBinary();
@@ -251,12 +296,16 @@ export const CLIENTS: McpClient[] = [
   jsonClient({
     id: 'windsurf',
     name: 'Windsurf',
+    // Windsurf is stdio-only, so it reaches the hosted server via mcp-remote.
+    hostedStrategy: 'mcp-remote',
     configPath: () =>
       path.join(home, '.codeium', 'windsurf', 'mcp_config.json'),
   }),
   jsonClient({
     id: 'claude-desktop',
     name: 'Claude Desktop',
+    // Claude Desktop config files are stdio-only; use the mcp-remote bridge.
+    hostedStrategy: 'mcp-remote',
     configPath: claudeDesktopConfigPath,
     // Detect by the application/support directory, which exists once the app runs.
     detectPaths: () => [path.dirname(claudeDesktopConfigPath())],
