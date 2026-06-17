@@ -7,6 +7,7 @@ This is the official Runpod MCP (Model Context Protocol) server, published to np
 Always use sentence case for headings and titles.
 
 Always use proper nouns when discussing specific Runpod products and features:
+
 - Runpod (never RunPod).
 - Pod/Pods (never lowercase "pod/pods").
 - Serverless (never lowercase "serverless").
@@ -14,6 +15,7 @@ Always use proper nouns when discussing specific Runpod products and features:
 - Apply proper noun styling only to text that the user will see, not things like image/documentation links.
 
 These are generic terms (use lowercase):
+
 - endpoint, worker, cluster, template, handler, fine-tune, network volume.
 
 Prefer using paragraphs to bullet points unless directly asked. When using bullet points, end each line with a period.
@@ -22,7 +24,26 @@ Prefer using paragraphs to bullet points unless directly asked. When using bulle
 
 The server communicates with two separate Runpod API backends. The REST API at `https://rest.runpod.io/v1` handles all authenticated CRUD operations for Pods, endpoints, templates, network volumes, and container registry auths. It requires a `RUNPOD_API_KEY` environment variable. The GraphQL API at `https://api.runpod.io/graphql` is public and requires no authentication. It serves read-only discovery queries like GPU types and data centers.
 
-All tools and helpers live in `src/index.ts`. The build produces both an ESM output (`dist/index.mjs`) used by the `bin` field and for local development, and a CJS output (`dist/index.js`) for `require()` consumers. Because `package.json` has `"type": "module"`, always use `dist/index.mjs` when running locally with `node`.
+The source is split by responsibility:
+
+- `src/stdio.ts` is the local `stdio` entrypoint.
+- `src/http.ts` does bearer-token extraction and the per-request MCP session for the Streamable HTTP transport.
+- `src/tools.ts` contains all Runpod tools and API helpers.
+- `src/server.ts` owns shared server metadata and construction.
+- `api/index.ts` is the Vercel adapter and hosts the OAuth authorization-server routes (`/.well-known/*`, `/register`, `/authorize`, `/token`).
+
+### Hosted/OAuth environment variables
+
+The hosted HTTP path (`api/index.ts` + `src/http.ts`) reads these, all optional with production-safe defaults:
+
+- `RUNPOD_GRAPHQL_URL`: flash auth backend for the OAuth flow (default `https://api.runpod.io/graphql`).
+- `CONSOLE_BASE_URL`: console that hosts the sign-in handoff page (default `https://console.runpod.io`).
+- `RUNPOD_REST_API_URL` / `RUNPOD_SERVERLESS_API_URL`: override the REST and Serverless API hosts (e.g. for a dev API key).
+- `RUNPOD_PUBLIC_GRAPHQL_URL`: override the public discovery GraphQL host used by `list-gpu-types`/`list-data-centers` (default `https://api.runpod.io/graphql`).
+- `RUNPOD_API_KEY_NAME`: name for the minted key (default `runpod-mcp`; set to `""` to omit for a backend without the `apiKeyName` argument).
+- `MCP_VERBOSE_LOGS`: set to `true` to log OAuth request ids (live auth codes) for debugging.
+
+The build produces `dist/stdio.*`, `dist/http.*`, and `dist/tools.*`. Because `package.json` has `"type": "module"`, always use `dist/stdio.mjs` when running the built local server with `node`.
 
 ## Local development
 
@@ -36,7 +57,7 @@ To point Claude Code to your local build:
 ```bash
 claude mcp add runpod -s user \
   -e RUNPOD_API_KEY=YOUR_API_KEY \
-  -- node /absolute/path/to/runpod-mcp/dist/index.mjs
+  -- node /absolute/path/to/runpod-mcp/dist/stdio.mjs
 ```
 
 After making changes, rebuild with `pnpm build`. If you are in an active Claude Code session, type `/mcp` to reconnect without restarting. You can also use `pnpm build:watch` for auto-rebuilding during development.
@@ -59,7 +80,14 @@ Define parameters with Zod schemas, calling `.describe()` on each field and `.op
 
 All tool handlers should return the same shape: `{ content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }`.
 
-Tools are grouped by section comments in `src/index.ts` (infrastructure, Pod management, endpoint management, template management, network volume management, container registry auth). Add new tools in the appropriate section. If adding a new resource category, follow the same comment style.
+Tools are grouped by section comments in `src/tools.ts` (infrastructure, Pod management, endpoint management, template management, network volume management, container registry auth). Add new tools in the appropriate section. If adding a new resource category, follow the same comment style.
+
+For transport regressions, use:
+
+```bash
+pnpm smoke:stdio
+pnpm smoke:http
+```
 
 ## Known issues
 
@@ -74,9 +102,10 @@ This project uses [changesets](https://github.com/changesets/changesets) for ver
 The interactive `npx changeset` command does not work in non-TTY environments like Claude Code. Create the changeset file manually instead:
 
 `.changeset/DESCRIPTIVE_NAME.md`
+
 ```markdown
 ---
-"@runpod/mcp-server": minor
+'@runpod/mcp-server': minor
 ---
 
 Description of what changed and why.
@@ -84,7 +113,7 @@ Description of what changed and why.
 
 Use `patch` for bug fixes, `minor` for new tools, params, or features, and `major` for breaking changes to existing tool interfaces.
 
-The `.changeset/` directory is in `.gitignore`, so you must use `git add -f` to stage changeset files.
+The `.changeset/` directory is tracked in git — it is the source the release workflow consumes — so stage changeset files normally with `git add`.
 
 After merging to `main`, the changesets bot opens a "Version Packages" PR that bumps `package.json` and updates `CHANGELOG.md`. Merging that PR triggers `changeset publish` which pushes to npm as `@runpod/mcp-server`.
 
