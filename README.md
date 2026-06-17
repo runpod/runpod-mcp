@@ -10,6 +10,16 @@ This Model Context Protocol (MCP) server lets you manage Runpod infrastructure t
 - Node.js 18 or higher.
 - A Runpod account and API key ([get your API key](https://www.runpod.io/console/user/settings)).
 
+### Guided install
+
+The fastest way to get set up is the interactive installer. It detects the agents you have installed, asks which ones to configure, helps you grab an API key, and writes the configuration for you:
+
+```bash
+npx @runpod/mcp-server@latest mcp add
+```
+
+It supports Claude Code, Claude Desktop, Cursor, Windsurf, and Visual Studio Code. To undo the changes later, run `npx @runpod/mcp-server@latest mcp remove`.
+
 ### Running with npx
 
 You can run the server directly without installation:

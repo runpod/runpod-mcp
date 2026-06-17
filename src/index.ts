@@ -6,9 +6,16 @@ import fetch, { type RequestInit as NodeFetchRequestInit } from 'node-fetch';
 // Base URL for RunPod API
 const API_BASE_URL = 'https://rest.runpod.io/v1';
 
+// Detect the install wizard subcommand (`mcp add` / `mcp remove`). In this mode
+// we run the interactive installer instead of starting the stdio server, and
+// the API key is collected by the wizard rather than required up front.
+const WIZARD_SUBCOMMANDS = ['add', 'remove'];
+const isWizardMode =
+  process.argv[2] === 'mcp' && WIZARD_SUBCOMMANDS.includes(process.argv[3]);
+
 // Get API key from environment variable
 const API_KEY = process.env.RUNPOD_API_KEY;
-if (!API_KEY) {
+if (!API_KEY && !isWizardMode) {
   console.error('RUNPOD_API_KEY environment variable is required');
   process.exit(1);
 }
@@ -27,9 +34,7 @@ const server = new McpServer({
 const GRAPHQL_URL = 'https://api.runpod.io/graphql';
 
 // Helper function to make GraphQL requests to RunPod
-async function graphqlRequest<T>(
-  query: string
-): Promise<T> {
+async function graphqlRequest<T>(query: string): Promise<T> {
   const response = await fetch(GRAPHQL_URL, {
     method: 'POST',
     headers: {
@@ -799,7 +804,9 @@ server.tool(
   'run-endpoint',
   'Submit an asynchronous job to a Serverless endpoint. Returns a job ID immediately — use get-job-status to poll for results. Async results are available for 30 minutes after completion.',
   {
-    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint to run'),
+    endpointId: endpointIdSchema.describe(
+      'ID of the Serverless endpoint to run'
+    ),
     input: inputSchema,
     webhook: webhookSchema,
     policy: policySchema,
@@ -830,7 +837,9 @@ server.tool(
   'runsync-endpoint',
   'Submit a synchronous job to a Serverless endpoint and wait for the result. Best for tasks completing within 90 seconds. If processing exceeds 90 seconds, the response returns a job ID to poll with get-job-status. Max payload: 20 MB. Results expire after 1 minute. Use the wait parameter to extend the server-side wait up to 5 minutes (300000 ms).',
   {
-    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint to run synchronously'),
+    endpointId: endpointIdSchema.describe(
+      'ID of the Serverless endpoint to run synchronously'
+    ),
     input: inputSchema,
     wait: z
       .number()
@@ -870,7 +879,9 @@ server.tool(
   'get-job-status',
   'Check the status of an asynchronous Serverless job. Returns the current status and output when complete. Job statuses: IN_QUEUE, IN_PROGRESS, COMPLETED, FAILED, CANCELLED, TIMED_OUT.',
   {
-    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint the job belongs to'),
+    endpointId: endpointIdSchema.describe(
+      'ID of the Serverless endpoint the job belongs to'
+    ),
     jobId: jobIdSchema.describe('ID of the job to check'),
   },
   async (params) => {
@@ -895,7 +906,9 @@ server.tool(
   'stream-job',
   'Retrieve all streaming output from a Serverless job by polling until the job reaches a terminal state. The worker must support streaming output. Polls /stream/{jobId} repeatedly and collects every chunk until status is COMPLETED, FAILED, CANCELLED, or TIMED_OUT.',
   {
-    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint the job belongs to'),
+    endpointId: endpointIdSchema.describe(
+      'ID of the Serverless endpoint the job belongs to'
+    ),
     jobId: jobIdSchema.describe('ID of the job to stream results from'),
   },
   async (params) => {
@@ -953,11 +966,7 @@ server.tool(
       content: [
         {
           type: 'text',
-          text: JSON.stringify(
-            { ...finalResult, stream: allChunks },
-            null,
-            2
-          ),
+          text: JSON.stringify({ ...finalResult, stream: allChunks }, null, 2),
         },
       ],
     };
@@ -969,7 +978,9 @@ server.tool(
   'cancel-job',
   'Cancel a Serverless job that is queued or in progress.',
   {
-    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint the job belongs to'),
+    endpointId: endpointIdSchema.describe(
+      'ID of the Serverless endpoint the job belongs to'
+    ),
     jobId: jobIdSchema.describe('ID of the job to cancel'),
   },
   async (params) => {
@@ -995,7 +1006,9 @@ server.tool(
   'retry-job',
   'Retry a failed or timed-out Serverless job. Only works for jobs with FAILED or TIMED_OUT status. The previous output is removed and the job is requeued.',
   {
-    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint the job belongs to'),
+    endpointId: endpointIdSchema.describe(
+      'ID of the Serverless endpoint the job belongs to'
+    ),
     jobId: jobIdSchema.describe('ID of the job to retry'),
   },
   async (params) => {
@@ -1021,7 +1034,9 @@ server.tool(
   'endpoint-health',
   'Get the health and operational status of a Serverless endpoint, including worker counts and job statistics.',
   {
-    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint to check health for'),
+    endpointId: endpointIdSchema.describe(
+      'ID of the Serverless endpoint to check health for'
+    ),
   },
   async (params) => {
     const result = await serverlessRequest(params.endpointId, '/health');
@@ -1042,7 +1057,9 @@ server.tool(
   'purge-endpoint-queue',
   'Remove all pending jobs from a Serverless endpoint queue. Only affects queued jobs — in-progress jobs continue running. Use this for error recovery or clearing outdated requests.',
   {
-    endpointId: endpointIdSchema.describe('ID of the Serverless endpoint to purge the queue for'),
+    endpointId: endpointIdSchema.describe(
+      'ID of the Serverless endpoint to purge the queue for'
+    ),
   },
   async (params) => {
     const result = await serverlessRequest(
@@ -1430,6 +1447,16 @@ server.tool(
   }
 );
 
-// Start receiving messages on stdin and sending messages on stdout
-const transport = new StdioServerTransport();
-server.connect(transport);
+// In wizard mode, hand off to the interactive installer and skip the server.
+// Otherwise, start receiving messages on stdin and sending messages on stdout.
+if (isWizardMode) {
+  import('./install/wizard.js')
+    .then(({ runWizard }) => runWizard(process.argv[3]))
+    .catch((error) => {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    });
+} else {
+  const transport = new StdioServerTransport();
+  server.connect(transport);
+}
