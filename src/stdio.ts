@@ -2,16 +2,16 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { createServer } from './server.js';
 import { registerTools } from './tools.js';
 
-// Detect the install wizard subcommand (`mcp add` / `mcp remove`). In this mode
-// we run the interactive installer instead of starting the stdio server, and
-// the API key is collected by the wizard rather than required up front.
+// Detect the install wizard subcommand (`add` / `remove`). In this mode we run
+// the interactive installer instead of starting the stdio server, and the API
+// key is collected by the wizard rather than required up front.
 const WIZARD_SUBCOMMANDS = ['add', 'remove'];
-const isWizardMode =
-  process.argv[2] === 'mcp' && WIZARD_SUBCOMMANDS.includes(process.argv[3]);
+const subcommand = process.argv[2];
+const isWizardMode = WIZARD_SUBCOMMANDS.includes(subcommand);
 
 if (isWizardMode) {
   import('./install/wizard.js')
-    .then(({ runWizard }) => runWizard(process.argv[3]))
+    .then(({ runWizard }) => runWizard(subcommand))
     .catch((error) => {
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);

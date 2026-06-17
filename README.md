@@ -23,10 +23,10 @@ The server never holds a credential of its own and never shares one across users
 The fastest way to get set up is the interactive installer. It detects the agents you have installed, asks which ones to configure, and writes the configuration for you:
 
 ```bash
-npx @runpod/mcp-server@latest mcp add
+npx @runpod/mcp-server@latest add
 ```
 
-It supports Claude Code, Claude Desktop, Cursor, Windsurf, and Visual Studio Code, and offers two connection modes. The recommended mode points the agent at the hosted server and lets it authenticate with the "Sign in with Runpod" OAuth flow, so no API key is stored on disk. The local mode runs the server through `npx` and stores a `RUNPOD_API_KEY` in the agent's config. To undo the changes later, run `npx @runpod/mcp-server@latest mcp remove`.
+It supports Claude Code, Claude Desktop, Cursor, Windsurf, and Visual Studio Code, and offers two connection modes. The recommended mode points the agent at the hosted server and lets it authenticate with the "Sign in with Runpod" OAuth flow, so no API key is stored on disk. The local mode runs the server through `npx` and stores a `RUNPOD_API_KEY` in the agent's config. To undo the changes later, run `npx @runpod/mcp-server@latest remove`.
 
 ### Run locally with `npx`
 
