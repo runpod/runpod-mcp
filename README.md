@@ -1,38 +1,40 @@
 # Runpod MCP server
+
 [![smithery badge](https://smithery.ai/badge/@runpod/runpod-mcp-ts)](https://smithery.ai/server/@runpod/runpod-mcp-ts)
 
-This Model Context Protocol (MCP) server lets you manage Runpod infrastructure through any MCP-compatible client. It provides tools for working with Pods, Serverless endpoints, templates, network volumes, and container registry authentications.
+This is the official Runpod Model Context Protocol (MCP) server, published to npm as `@runpod/mcp-server`.
+
+It supports two deployment modes:
+
+- Local `stdio` for Claude Desktop, Claude Code, Cursor, VS Code, and other MCP clients that launch a local process. The caller sets `RUNPOD_API_KEY` in the environment.
+- Hosted Streamable HTTP for Vercel or other HTTP-capable platforms. Each request carries its own `Authorization: Bearer <token>`, which the server forwards directly to the Runpod API. The token can be a Runpod API key or one obtained through the OAuth "Sign in with Runpod" flow.
+
+The server never holds a credential of its own and never shares one across users.
+
+## Requirements
+
+- Node.js 18 or higher.
+- A Runpod account and API key: https://www.runpod.io/console/user/settings
 
 ## Quick start
 
-### Requirements
-
-- Node.js 18 or higher.
-- A Runpod account and API key ([get your API key](https://www.runpod.io/console/user/settings)).
-
-### Running with npx
-
-You can run the server directly without installation:
+### Run locally with `npx`
 
 ```bash
-RUNPOD_API_KEY=YOUR_API_KEY npx @runpod/mcp-server@latest
+RUNPOD_API_KEY=YOUR_API_KEY npx -y @runpod/mcp-server@latest
 ```
 
-### Installing via Smithery
-
-To install for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@runpod/runpod-mcp-ts):
+### Install via Smithery
 
 ```bash
 npx -y @smithery/cli install @runpod/runpod-mcp-ts --client claude
 ```
 
-## Setting up with your client
+## Local MCP clients
 
-Most MCP clients use a JSON configuration file with the same general structure. The examples below show the npx approach (recommended for most users) and the local build approach (for development). Replace `YOUR_API_KEY` with your actual Runpod API key.
+Local MCP clients should use the default package entrypoint, which is the `stdio` server.
 
 ### Claude Code
-
-Add the MCP server globally so it's available across all your projects:
 
 ```bash
 claude mcp add runpod -s user \
@@ -40,7 +42,7 @@ claude mcp add runpod -s user \
   -- npx -y @runpod/mcp-server@latest
 ```
 
-Or add it to a specific project (creates a `.mcp.json` file you can commit):
+For a project-local server:
 
 ```bash
 claude mcp add runpod -s project \
@@ -48,11 +50,19 @@ claude mcp add runpod -s project \
   -- npx -y @runpod/mcp-server@latest
 ```
 
-Verify the server is connected with `claude mcp list`. If you're in an active session, type `/mcp` to reconnect without restarting.
+Verify with `claude mcp list`. In an active session, use `/mcp` to reconnect.
 
 ### Claude Desktop
 
-Edit the config file at `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+Local MCP servers in Claude Desktop still use `claude_desktop_config.json`.
+
+macOS:
+
+`~/Library/Application Support/Claude/claude_desktop_config.json`
+
+Windows:
+
+`%APPDATA%\\Claude\\claude_desktop_config.json`
 
 ```json
 {
@@ -72,7 +82,7 @@ Restart Claude Desktop after saving.
 
 ### Cursor
 
-Add the following to `.cursor/mcp.json` in your project directory, or `~/.cursor/mcp.json` for global access:
+Add this to `.cursor/mcp.json` in your project or `~/.cursor/mcp.json` globally:
 
 ```json
 {
@@ -88,73 +98,105 @@ Add the following to `.cursor/mcp.json` in your project directory, or `~/.cursor
 }
 ```
 
-### Windsurf
+### VS Code, Windsurf, Cline, JetBrains, and other local clients
 
-Open Windsurf settings (Cmd+Shift+P → "Open Windsurf Settings"), navigate to the Cascade section, and enable MCP. Then edit `~/.codeium/windsurf/mcp_config.json`:
+Use the same pattern:
 
-```json
-{
-  "mcpServers": {
-    "runpod": {
-      "command": "npx",
-      "args": ["-y", "@runpod/mcp-server@latest"],
-      "env": {
-        "RUNPOD_API_KEY": "YOUR_API_KEY"
-      }
-    }
-  }
-}
+- command: `npx`
+- args: `["-y", "@runpod/mcp-server@latest"]`
+- env: `RUNPOD_API_KEY=YOUR_API_KEY`
+
+For a broader list of MCP clients, see https://modelcontextprotocol.io/clients
+
+## Hosted HTTP deployment
+
+The package also exports a Streamable HTTP entrypoint at `@runpod/mcp-server/http`, and this repo includes a Vercel function in `api/index.ts`.
+
+The hosted transport is stateless:
+
+- Each request creates a fresh MCP server instance.
+- The caller must send `Authorization: Bearer <token>`.
+- No credentials are cached or shared server-side.
+
+### Hosted auth
+
+The server forwards the caller's Bearer token directly to the Runpod API as the credential for that request. There is no server-side or shared key.
+
+The token can be either:
+
+- a Runpod API key the caller configured manually, or
+- a Runpod API key obtained through the OAuth "Sign in with Runpod" flow (see below).
+
+An unauthenticated request receives a `401` with a `WWW-Authenticate` header pointing at the protected-resource metadata, which tells an OAuth-capable client (such as Claude) to start the sign-in flow. A caller that brings its own API key as the bearer token never hits that path.
+
+### Sign in with Runpod (authorize flow)
+
+In OAuth mode the hosted server is itself the authorization server for Claude's connector. It advertises itself in `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server`, pointing `authorization_endpoint` at its own `GET /authorize`, `token_endpoint` at its own `POST /token`, and `registration_endpoint` at its own `POST /register`.
+
+The flow reuses the Runpod flash auth backend and mints a real Runpod API key:
+
+1. The client registers via `POST /register` (OAuth Dynamic Client Registration, RFC 7591) to obtain a `client_id`. This is a public client; no client secret is used.
+2. `GET /authorize` calls the guest `createFlashAuthRequest` mutation to get a request id (which serves as the OAuth authorization code), then `302`-redirects the browser to the console handoff page (`/integrations/mcp/login`), carrying the request id plus the client's `redirect_uri` and `state`.
+3. The user logs in and approves the request in the console. On approval the backend mints a Runpod API key for the request.
+4. The console returns the browser to the client's `redirect_uri` with `code=<request id>`.
+5. `POST /token` polls the guest `flashAuthRequestStatus` query for that id; once `APPROVED`, it returns the minted `apiKey` as the `access_token`. The client then sends that key as its bearer token on every MCP request, and the server forwards it to the Runpod API.
+
+This flow uses these environment variables:
+
+- `RUNPOD_GRAPHQL_URL`: flash auth backend endpoint (default `https://api.runpod.io/graphql`).
+- `CONSOLE_BASE_URL`: base URL of the console that hosts the handoff login page (default `https://console.runpod.io`).
+- `RUNPOD_REST_API_URL` / `RUNPOD_SERVERLESS_API_URL`: override the REST and Serverless API hosts so a deployment authenticating with non-production keys can target the matching environment.
+- `RUNPOD_API_KEY_NAME`: name for the minted key as shown in the user's dashboard. Defaults to `runpod-mcp`. Set it to `""` to omit the name for a backend that does not support the `apiKeyName` argument (such backends reject the request when it is sent).
+- `MCP_ALLOWED_REDIRECT_URIS`: comma-separated extra `redirect_uri` values to allow, in addition to the built-in Claude callbacks. Loopback addresses (`localhost`/`127.0.0.1`/`::1`, any port) are always allowed. `/authorize` and `/token` reject any `redirect_uri` not on this list, since the authorization code redeems into a real API key.
+
+You can verify the entire flow end to end with `MCP_SERVER_URL=<deployment-url> npx tsx scripts/oauth-e2e.ts` (the harness uses a loopback callback).
+
+Notes and current limitations:
+
+- PKCE is not supported: `code_challenge` is neither advertised nor enforced (the flash flow has no place to bind it). Security relies on the `redirect_uri` allowlist and the single-use, short-lived flash approval.
+- The minted key is named via `RUNPOD_API_KEY_NAME` (default `runpod-mcp`), which requires a flash backend that supports the `apiKeyName` argument. Against a backend without it, set `RUNPOD_API_KEY_NAME=""`.
+
+### Vercel
+
+This repo already contains `vercel.json` and the Vercel handler.
+
+Deploy with the Vercel CLI:
+
+```bash
+vercel
+vercel --prod
 ```
 
-### VS Code (GitHub Copilot)
+After deploy, test the endpoint:
 
-MCP works in VS Code's agent mode (requires VS Code 1.101+). Add the following to `.vscode/mcp.json` in your workspace:
-
-```json
-{
-  "mcpServers": {
-    "runpod": {
-      "command": "npx",
-      "args": ["-y", "@runpod/mcp-server@latest"],
-      "env": {
-        "RUNPOD_API_KEY": "YOUR_API_KEY"
-      }
-    }
-  }
-}
+```bash
+curl -i https://YOUR-DEPLOYMENT.vercel.app/
 ```
 
-Click the "Start" button next to the server entry to connect.
+Unauthenticated requests should return `401`.
 
-### Cline
+### Hosted smoke test
 
-Open Cline in VS Code, click the hamburger menu (☰), and go to MCP Servers. You can add servers through the marketplace or manually configure in Cline's settings using the same JSON structure shown above.
-
-### JetBrains IDEs
-
-Create a `mcp.json` file at `~/.junie/mcp.json` (global) or `.junie/mcp/` in your project:
-
-```json
-{
-  "mcpServers": {
-    "runpod": {
-      "command": "npx",
-      "args": ["-y", "@runpod/mcp-server@latest"],
-      "env": {
-        "RUNPOD_API_KEY": "YOUR_API_KEY"
-      }
-    }
-  }
-}
+```bash
+MCP_SERVER_URL=https://YOUR-DEPLOYMENT.vercel.app \
+RUNPOD_API_KEY=YOUR_API_KEY \
+pnpm smoke:http
 ```
 
-### Other clients
+This validates:
 
-This server uses stdio transport and works with any MCP-compatible client. The configuration pattern is the same across all clients — point the command to `npx` with `@runpod/mcp-server@latest` as the argument, and set `RUNPOD_API_KEY` in the environment. For a full list of MCP clients, see the [official MCP clients page](https://modelcontextprotocol.io/clients).
+- MCP initialization.
+- `tools/list`.
+- A public GraphQL-backed tool call.
+- An authenticated REST-backed tool call.
 
-## Using a local build
+## Claude Desktop and hosted MCP
 
-If you want to run from a local clone of the repo (for development or to test unreleased changes):
+Use the local `stdio` integration for Claude Desktop today.
+
+For remote clients such as Claude's connector, deploy the hosted HTTP server. The client then runs the OAuth "Sign in with Runpod" flow, and the resulting Runpod API key is forwarded to the Runpod API on each request.
+
+## Local development
 
 ```bash
 git clone https://github.com/runpod/runpod-mcp.git
@@ -163,28 +205,42 @@ pnpm install
 pnpm build
 ```
 
-Then replace the `command` and `args` in any of the configurations above with:
+Run the local build directly:
+
+```bash
+RUNPOD_API_KEY=YOUR_API_KEY node dist/stdio.mjs
+```
+
+Or point a client at your local build:
 
 ```json
 {
   "command": "node",
-  "args": ["/absolute/path/to/runpod-mcp/dist/index.mjs"]
+  "args": ["/absolute/path/to/runpod-mcp/dist/stdio.mjs"],
+  "env": {
+    "RUNPOD_API_KEY": "YOUR_API_KEY"
+  }
 }
 ```
 
-After making changes to the source, re-run `pnpm build` and restart or reconnect the MCP server for changes to take effect.
+### Local smoke test
+
+```bash
+RUNPOD_API_KEY=YOUR_API_KEY pnpm build
+RUNPOD_API_KEY=YOUR_API_KEY pnpm smoke:stdio
+```
 
 ## Usage examples
 
 ### List all Pods
 
-```
+```text
 Can you list all my Runpod Pods?
 ```
 
 ### Create a new Pod
 
-```
+```text
 Create a new Runpod Pod with the following specifications:
 - Name: test-pod
 - Image: runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04
@@ -194,7 +250,7 @@ Create a new Runpod Pod with the following specifications:
 
 ### Create a Serverless endpoint
 
-```
+```text
 Create a Runpod Serverless endpoint with the following configuration:
 - Name: my-endpoint
 - Template ID: 30zmvf89kd
@@ -204,36 +260,41 @@ Create a Runpod Serverless endpoint with the following configuration:
 
 ## Contributing
 
-To get started with local development, clone the repo and build:
+The source is now split by responsibility:
+
+- `src/stdio.ts`: local `stdio` entrypoint.
+- `src/http.ts`: bearer-token extraction and the per-request MCP session for the Streamable HTTP transport.
+- `src/tools.ts`: all Runpod MCP tools.
+- `src/server.ts`: shared server metadata and construction.
+- `api/index.ts`: Vercel adapter and the OAuth authorization-server routes (`/.well-known/*`, `/register`, `/authorize`, `/token`).
+
+After changes:
 
 ```bash
-git clone https://github.com/runpod/runpod-mcp.git
-cd runpod-mcp
-pnpm install
+pnpm type-check
+pnpm lint
 pnpm build
 ```
 
-After making changes, rebuild with `pnpm build`. In Claude Code, type `/mcp` to reconnect to the updated server without restarting your session. You can also use `pnpm build:watch` for auto-rebuilding during development.
+For transport validation:
 
-All tools live in `src/index.ts`. The server uses two backends: the REST API (`runpodRequest()`) for authenticated CRUD operations, and the GraphQL API (`graphqlRequest()`) for public read-only queries like GPU types and data centers. Follow existing patterns when adding new tools — kebab-case names, Zod schemas with `.describe()`, and JSON stringified responses.
-
-This project uses [changesets](https://github.com/changesets/changesets) for versioning and npm publishing. Every PR with user-facing changes needs a changeset file at `.changeset/DESCRIPTIVE_NAME.md`:
-
-```markdown
----
-"@runpod/mcp-server": minor
----
-
-Description of what changed and why.
+```bash
+pnpm smoke:stdio
+pnpm smoke:http
 ```
 
-Use `patch` for bug fixes, `minor` for new tools or features, and `major` for breaking changes. The `.changeset/` directory is gitignored, so use `git add -f` to stage changeset files.
+This project uses [changesets](https://github.com/changesets/changesets) for versioning and npm publishing. Every PR with user-facing changes needs a changeset file at `.changeset/DESCRIPTIVE_NAME.md`.
 
-See [CLAUDE.md](./CLAUDE.md) for the full development guide including architecture details, tool conventions, and known issues.
+See `CLAUDE.md` and `docs/context.md` for contributor guidance.
 
 ## Security considerations
 
-This server requires your Runpod API key, which grants full access to your Runpod account. Never share your API key. Be cautious about what operations you perform, and consider setting up a separate API key with limited permissions. Do not use this in a production environment without proper security measures.
+This server acts with the full permissions of the supplied `RUNPOD_API_KEY`.
+
+- Never share your API key.
+- Be deliberate about destructive tools.
+- Treat hosted deployments as sensitive infrastructure.
+- Each request authenticates with its own caller-supplied token, which is forwarded to the Runpod API and never persisted server-side.
 
 ## License
 
