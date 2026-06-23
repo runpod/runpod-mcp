@@ -261,21 +261,21 @@ describe('outbound-request golden (v1 unchanged)', () => {
   });
 });
 
-describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
-  // backendFor reads process.env at handler-call time, so set/restore around each.
-  // MUST await the body inside try/finally — otherwise finally restores the env
-  // before the awaited handler runs (the body would then read the wrong version).
-  async function withV2<T>(fn: () => Promise<T>): Promise<T> {
-    const prev = process.env.RUNPOD_REST_VERSION;
-    process.env.RUNPOD_REST_VERSION = 'v2';
-    try {
-      return await fn();
-    } finally {
-      if (prev === undefined) delete process.env.RUNPOD_REST_VERSION;
-      else process.env.RUNPOD_REST_VERSION = prev;
-    }
+// backendFor reads process.env at handler-call time, so set/restore around each.
+// MUST await the body inside try/finally — otherwise finally restores the env
+// before the awaited handler runs (the body would then read the wrong version).
+async function withV2<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = process.env.RUNPOD_REST_VERSION;
+  process.env.RUNPOD_REST_VERSION = 'v2';
+  try {
+    return await fn();
+  } finally {
+    if (prev === undefined) delete process.env.RUNPOD_REST_VERSION;
+    else process.env.RUNPOD_REST_VERSION = prev;
   }
+}
 
+describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
   it('list-pods → GET <v2base>/v2/pods (single /v2, no filter query)', async () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({ jsonBody: { pods: [] } });
@@ -402,6 +402,107 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
       const { handlers, outbound } = harness({ jsonBody: {} });
       await handlers.get('delete-pod')!({ podId: 'pod_x' });
       assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/pods/pod_x');
+      assert.equal(outbound[0].method, 'DELETE');
+    });
+  });
+});
+
+describe('template / network-volume / registry routing under v2', () => {
+  it('list-templates → GET .../v2/templates (no v1 include* query)', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { templates: [] } });
+      await handlers.get('list-templates')!({ includeRunpodTemplates: true });
+      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/templates');
+    });
+  });
+
+  it('create-template → POST .../v2/templates with mapped body (serverless + category)', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('create-template')!({
+        name: 't',
+        imageName: 'i',
+        isServerless: true,
+      });
+      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/templates');
+      const body = JSON.parse(outbound[0].body!);
+      assert.equal(body.image, 'i');
+      assert.equal('imageName' in body, false);
+      assert.equal(body.serverless, true);
+      assert.equal(body.category, 'NVIDIA');
+    });
+  });
+
+  it('list-network-volumes → GET .../v2/network-volumes (hyphen)', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        jsonBody: { networkVolumes: [] },
+      });
+      await handlers.get('list-network-volumes')!({});
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/network-volumes'
+      );
+    });
+  });
+
+  it('create-network-volume → POST .../v2/network-volumes, dataCenterId→dataCenter', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('create-network-volume')!({
+        name: 'v',
+        size: 50,
+        dataCenterId: 'EU-RO-1',
+      });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/network-volumes'
+      );
+      const body = JSON.parse(outbound[0].body!);
+      assert.equal(body.dataCenter, 'EU-RO-1');
+      assert.equal('dataCenterId' in body, false);
+    });
+  });
+
+  it('get-network-volume → GET .../v2/network-volumes/{id}', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('get-network-volume')!({ networkVolumeId: 'nv_1' });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/network-volumes/nv_1'
+      );
+    });
+  });
+
+  it('list-container-registry-auths → GET .../v2/registries (rename)', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { registries: [] } });
+      await handlers.get('list-container-registry-auths')!({});
+      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/registries');
+    });
+  });
+
+  it('create-container-registry-auth → POST .../v2/registries (identity body)', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      const params = { name: 'r', username: 'u', password: 'p' };
+      await handlers.get('create-container-registry-auth')!({ ...params });
+      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/registries');
+      assert.deepEqual(JSON.parse(outbound[0].body!), params);
+    });
+  });
+
+  it('delete-container-registry-auth → DELETE .../v2/registries/{id}', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('delete-container-registry-auth')!({
+        containerRegistryAuthId: 'cra_1',
+      });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/registries/cra_1'
+      );
       assert.equal(outbound[0].method, 'DELETE');
     });
   });
