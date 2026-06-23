@@ -173,6 +173,11 @@ Payoffs: envelope bug dies in `unwrap`; body drift isolated in `mapCreate`; migr
 is one mapping per resource, flippable independently; it's the home PR-side "source
 split" the PRD asks for.
 
+> **Naming note:** the descriptor key `registries` is *internal*; the public MCP tools keep
+> their current names (`list-container-registry-auths`, `create-container-registry-auth`,
+> … `tools.ts:1479-1543`). Do **not** rename public tools — that's a breaking change. Same
+> for `jobs`/`endpoints` keys vs the real `*-endpoint`/`*-job` tool names.
+
 ---
 
 ## Part 3 — Version selection (corrected for hosted HTTP)
@@ -200,7 +205,7 @@ Rules:
   process-global shared across all HTTP requests on a warm instance; the version work
   must not add another (memoized probe, cache map, etc.) in the HTTP path.
 - New env: `RUNPOD_REST_V2_API_URL` (default `https://v2-rest.runpod.io/v2`) alongside
-  the existing base consts at `src/tools.ts:9-22`.
+  the existing base consts at `src/tools.ts:9-21`.
 
 ---
 
@@ -271,20 +276,27 @@ GREEN, or their RED tests have nothing injectable to target. This is stated per-
 - GREEN: `resolveBackend(resource, ctx)` composing A0+A1 + a static v1 descriptor table.
 - REFACTOR: one descriptor object per resource.
 
-**Step A3 — Unified HTTP client, injected `fetch`.**
+**Step A3 — Unified HTTP client, injected `fetch`. (SCOPE: REST + Serverless only — NOT GraphQL.)**
 - PREREQ (GREEN): introduce the `fetch` seam — `createHttpClient({ apiKey, fetch, tracking })`
-  takes `fetch` as a param (today it's a module import); thread it from `stdio.ts`/`http.ts`.
+  takes `fetch` as a param (today it's a module import, `tools.ts:3`); thread from `stdio.ts`/`http.ts`.
 - RED: `tests/http.test.ts`. Inject a fake `fetch`. Cases: builds `base+path`; sets
   `Authorization: Bearer <key>` + tracking headers; serializes body only for POST/PATCH;
-  `!ok → throws` with the configured error prefix; **non-JSON / 204 / empty body →
-  `{success:true,status}`** (covers pod-action responses); JSON → parsed.
+  `!ok → throws` with the configured error prefix (**provisional contract — C2 carves out
+  501 as the one non-throwing case; note that here so C2 amends rather than regresses**);
+  non-JSON / 204 / empty body → `{success:true,status}`; JSON → parsed; **`application/
+  problem+json` (v2's error shape) parses as JSON** — match the `+json` *suffix*, NOT the
+  literal substring `application/json` (`"application/problem+json".includes("application/json")`
+  is **false**, so today's check at `tools.ts:157,207` would silently swallow v2 errors).
 - GREEN: `src/_shared/http.ts`. Move `trackingHeaders` to `src/_shared/tracking.ts` (add a
-  case for its clientInfo-vs-UA fallback). Merge `runpodRequest` + `serverlessRequest` into
-  one client — path is fully resolved by the adapter, so the `endpointId`-split collapses.
-  ⚠️ **Error/log prefix collapses** (`"Runpod Serverless API Error"`→`"Runpod API Error"`,
-  `tools.ts:152` vs `201`): either keep a per-client prefix option, or accept the unified
-  prefix as an intended cosmetic change — and note it so A5's golden diff isn't surprised.
-- REFACTOR: delete the three old in-`tools.ts` helpers; re-point imports.
+  case for its clientInfo-vs-UA fallback). Merge `runpodRequest` + `serverlessRequest` only
+  — path fully resolved by the adapter, so the `endpointId`-split collapses. **Leave
+  `graphqlRequest` a separate helper through Phase A** (it sends no `Authorization`, has its
+  own `{data,errors}` envelope + `"GraphQL Error:"` prefix — merging it would change behavior).
+- ⚠️ **Three error/log prefixes must not silently change in Phase A:** `"Runpod API Error"`
+  (`tools.ts:152`), `"Runpod Serverless API Error"` (`:202`), `"GraphQL Error:"` (`:109`),
+  plus the two `console.error` log strings (`:163`, `:213`). Either keep a per-client prefix
+  option or accept the collapse **explicitly** — A5's golden must reflect the decision.
+- REFACTOR: delete the two merged helpers from `tools.ts`; re-point imports.
 
 **Step A4 — Handlers go through the adapter (integration, faked server + client).**
 - PREREQ (GREEN): introduce the client seam — `register<Resource>(server, ctx, deps)` where
@@ -295,21 +307,29 @@ GREEN, or their RED tests have nothing injectable to target. This is stated per-
   - `list-pods` on a **v2 envelope fixture** `{pods:[…51]}` → unwrap → cap to 20, correct
     `nextCursor`/`truncated` (the composed cursor×unwrap path);
   - **empty envelope** `{pods:[]}` → `[]` → empty page, not raw passthrough;
-  - `create-pod` calls client with `POST` + the (v1-identity) body.
+  - `create-pod` calls client with `POST` + the (v1-identity) body **byte-identical** to
+    today's passthrough (`tools.ts:549` forwards `params` verbatim);
+  - **`stream-job`** (the one stateful tool, `tools.ts:1003-1082`): a `while` poll loop that
+    depends on the client **throwing** on `!ok` to count `consecutiveErrors` (max 5) and on
+    terminal status to break. Assert against the merged client: terminal-status break,
+    consecutive-error abort, timeout. ⚠️ The C2 501 special-case must NOT defang this loop's
+    error counter — 501 mid-stream still needs to surface as an error, not `{unsupported}`.
 - GREEN: split `tools.ts` → `src/tools/{pods,templates,network-volumes,registries,
   catalog,endpoints,jobs}.ts`; each handler calls `resolveBackend(...)` + the client +
   `capListResult`. `registerTools` just calls each `register<Resource>(server, ctx, deps)`.
 - REFACTOR: collapse the duplicated `JSON.stringify` response wrapper into one helper.
 
-**Step A5 — Existing tests stay green + envelope regression locked (regression lock, not a RED cycle).**
+**Step A5 — Existing tests stay green + outbound-request golden (regression lock, not a RED cycle).**
 - add to `tests/pagination.test.ts` a case asserting `capListResult` stays **array-only**
   (its contract didn't change; unwrap is the adapter's job). Confirm
   `tools-registration.test.ts` (`>=30`, `CORE_TOOLS`, list params) still passes.
-- **Offline golden-file proof (NOT live):** capture each tool's output for a **committed
-  fixture input** before the refactor (run against `main` with an injected fixture client),
-  store under `tests/fixtures/golden/`, and diff after. Covers all 36 tools, not just the 5
-  capped lists, and needs no network or key. (The *live* `scripts/smoke-list.ts` run is a
-  separate, optional confidence check in §6 — never the Phase-A gate.)
+- **Offline OUTBOUND-REQUEST golden (NOT output-only, NOT live).** The refactor's whole risk
+  is on the *wire*, so diffing tool *output* against a fixture client proves nothing about
+  headers/query-strings/body. Instead: drive all 36 tools with a fake client that **records
+  `{url, method, headers, body}`** for every call, capture that on `main`, and diff after the
+  refactor. This is what actually catches header reorder/casing, query-param encoding
+  (`list-pods` manual `URLSearchParams` + boolean `.toString()`, `tools.ts:439-462`), and the
+  `create-pod` body passthrough. Store under `tests/fixtures/golden/`. No network, no key.
 - **End of Phase A → PR to main.**
 
 **Step A6 — Wire `pnpm test` into CI (the gate must exist).**
@@ -344,8 +364,12 @@ Each resource is one independent RED→GREEN cycle; order doesn't matter, do pod
   `/v2/catalog/*`) and the correct `unwrap` key; jobs/endpoints still resolve v1.
 - GREEN: fill the `v2` half of each descriptor.
 - REFACTOR: dedupe path-building.
-
-**Step B3 — Template / volume / registry mappers** (same RED→GREEN as B1, committed fixtures).
+- ⚠️ **Decide the lost pod/template filters here** (Part 1.5 names them but no step owned
+  them): `computeType`, `gpuTypeId`, `dataCenterId`, `name` have no v2 query param. Either
+  (a) drop them from the tool schema under v2, or (b) keep them and filter client-side after
+  `unwrap`, before `capListResult`. Expansion flags (`includeMachine`/`includeTemplate`/
+  `includeNetworkVolume`, open #3) can't be faked client-side — confirm whether v2 expands
+  by default, else drop. Pin the choice with a test (pure filter fn or schema assertion). (same RED→GREEN as B1, committed fixtures).
 - Template: `imageName→image`, **`isServerless→serverless`** (rename), `category`/`public`
   added, drop `readme`. ⚠️ **`dockerEntrypoint[]` + `dockerStartCmd[]` → single `args`
   string is lossy** — pin the chosen join semantics (order + separator) in the test, or
@@ -393,10 +417,22 @@ Each resource is one independent RED→GREEN cycle; order doesn't matter, do pod
   "CPU pods not yet supported on v2 REST", and does **not** throw.
 - GREEN: the 501 special-case in the client + the handler mapping.
 
-**Step C3 — Flip the default.** Change `RUNPOD_REST_VERSION` default v1→v2 for
-control-plane resources. **Gated on: v2 PROD returns 200 + the L4 dual-backend smoke is
-green.** This is the **merge gate for this branch.** Serverless stays v1. (PRD cycle 3:
-deprecate GraphQL catalog tools afterward.)
+**Step C3 — Flip the default (per-resource, not one global switch).**
+- ⚠️ **Resolve the routing-vs-control contradiction.** Part 1.6 says routing is per-resource,
+  but a single `RUNPOD_REST_VERSION=v2` flips *all* control-plane resources at once. v2 prod
+  ships staggered (Part 7 milestones) — if pods is live but templates isn't, a global flip
+  routes templates to a 404/501. Add a **per-resource override**: `resolveVersion` consults
+  `RUNPOD_REST_VERSION_<RESOURCE>` (e.g. `RUNPOD_REST_VERSION_PODS=v2`) falling back to the
+  global. RED: `resolveVersion` test — per-resource override beats global; unset resource
+  inherits global. Flip each resource only when *its* v2 prod endpoint returns 200 + its
+  live smoke is green.
+- **Gate:** v2 PROD returns 200 *for that resource* + dual-backend smoke green. Merge gate for the branch.
+- **Rollback.** Hosted HTTP rolls back by env (flip the var). The **published stdio binary
+  bakes the default into the release** — rollback there is a **patch release reverting the
+  default**, NOT an env tweak users can't set. So: soak the v2 default on hosted before it
+  ships in an stdio release.
+- **Pre-Phase-B owners:** assign open #2 (GPU availability) an owner and decide it before
+  Phase B (it's a human decision currently blocking the C3 gate). Serverless stays v1.
 
 ---
 
@@ -422,22 +458,31 @@ deprecate GraphQL catalog tools afterward.)
 - **Offline guard (Part 4 rule):** `tests/` never imports `scripts/smoke*.ts` or
   `src/stdio.ts` and never calls real `fetch`; a test-setup stub makes `globalThis.fetch`
   throw so no live call can leak into the offline suite.
-- **Live CRUD drift gate (dev account, the only network test):** generalize
+- **Live CRUD drift gate (dev account, the only *live* test — separate from the offline
+  suite and from C3's prod-200 gate):** generalize
   `scripts/smoke.ts` (already transport-abstracted) to loop `RUNPOD_REST_VERSION ∈ {v1,v2}`
   with `RUNPOD_REST_V2_API_URL` → dev. It does **real CRUD** against the dev account:
   create → get/list (assert unwrap + cap) → update → delete, plus CPU-pod 501 = clean error.
   One key drives both passes (same auth scheme). Add a `smoke:v2` script. **This dual-run IS
   the "validate before preferring v2" mechanism** and gates the Phase C flip (Step C3).
 - **Cleanup is part of the test (mandatory):**
-  - Every create is paired with a delete in a **`try/finally`** so teardown runs even when
-    an assertion throws mid-test. Track created IDs in a list; `finally` deletes all of them
-    (best-effort, swallow individual delete errors so one failure doesn't strand the rest).
-  - **Unique, identifiable names** — prefix every test resource (e.g.
-    `mcp-smoke-<short-uuid>`) so orphans are obvious and never collide with real dev resources.
-  - **Pre-sweep + post-verify** — at start, list and delete any leftover `mcp-smoke-*`
-    resources from a prior crashed run; at end, assert no `mcp-smoke-*` resources remain.
-  - Order teardown by dependency (e.g. delete pods before the network volumes they mount).
-  - The smoke **exits non-zero** if cleanup leaves anything behind, so a leak fails the gate.
+  - **Name-first, not ID-first.** Generate a unique `mcp-smoke-<uuid>` name *before* the
+    create call and track it; teardown deletes **by name (list→match→delete)**, so a resource
+    is reclaimable even if the create response never parsed or the ID was never captured
+    (closes the create/ID-capture race and the partial-501 half-create).
+  - Every create paired with a delete in a **`try/finally`** so teardown runs on assertion
+    throw. `finally` also **re-runs the prefix sweep** for *this* run (not just at startup).
+  - **Poll-to-terminal then delete, with bounded retry/backoff.** A provisioning pod or an
+    attached volume returns 409 on immediate delete. Delete-pod → poll until gone → then
+    delete its volume. Retry 429/5xx with backoff. Do **not** silently swallow delete
+    failures — a swallowed failure + the leftover check below would contradict.
+  - **Post-verify is fail-closed.** At end, list `mcp-smoke-*`; if any remain **or the list
+    call itself errors** → exit non-zero (unknown = fail, never "empty = pass").
+  - **Out-of-band janitor (mandatory, survives SIGKILL).** A standalone `scripts/sweep.ts`
+    (list+delete all `mcp-smoke-*` across pods/templates/volumes/registries) wired to a
+    **daily CI cron**, independent of the smoke job. `try/finally` cannot run on SIGKILL/
+    timeout-kill, so this is the only thing that catches a hard-killed run's orphans.
+  - Order teardown by dependency (pods before the volumes they mount).
 
 ---
 
@@ -496,3 +541,25 @@ time, not this analysis:
 3. Expansion flags (`includeMachine`/`includeTemplate`/`includeNetworkVolume`) have no v2
    query equivalent and can't be faked client-side — drop on v2, or confirm v2 expands by
    default?
+
+---
+
+## Part 8 — Operational safeguards (long-lived branch + moving spec)
+
+The branch lives weeks→months until v2 prod; the spec moves under us; cleanup must survive
+hard kills. These are not optional once Phase B starts.
+
+- **Spec-drift detection (before Phase B).** Offline fixtures pass green forever even after
+  the live spec changes — there's no built-in trigger for "update the mapper." Add a
+  **scheduled (non-gating) CI job** that fetches `v2-rest.runpod.dev/v2/openapi.yaml` and
+  diffs it against a committed snapshot; on drift it opens an issue / soft-fails. This is the
+  trigger behind every "build against the live spec at implementation time" instruction
+  (esp. the `dataCenter` scalar↔array reversal, `cloud` ALL removal, `category` optionality).
+- **Out-of-band resource janitor.** `scripts/sweep.ts` + daily cron (see Part 6) — the only
+  cleanup that survives a SIGKILL'd smoke run.
+- **Version observability.** Once routing is per-resource, nothing records whether a call hit
+  v1 or v2 — undebuggable in prod. Add `X-Runpod-Rest-Version: <v1|v2>` to the outbound
+  tracking headers (or extend the UA) so logs/data can attribute the version actually used.
+- **Branch cadence.** Phase A merges to `main` immediately (it's behavior-neutral and
+  independently useful). Phase B/C live on this branch — **rebase on `main` weekly** to avoid
+  drift over the long window to prod.
