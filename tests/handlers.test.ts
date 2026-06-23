@@ -255,11 +255,13 @@ describe('outbound-request golden (v1 unchanged)', () => {
 
 describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
   // backendFor reads process.env at handler-call time, so set/restore around each.
-  function withV2<T>(fn: () => T): T {
+  // MUST await the body inside try/finally — otherwise finally restores the env
+  // before the awaited handler runs (the body would then read the wrong version).
+  async function withV2<T>(fn: () => Promise<T>): Promise<T> {
     const prev = process.env.RUNPOD_REST_VERSION;
     process.env.RUNPOD_REST_VERSION = 'v2';
     try {
-      return fn();
+      return await fn();
     } finally {
       if (prev === undefined) delete process.env.RUNPOD_REST_VERSION;
       else process.env.RUNPOD_REST_VERSION = prev;
@@ -288,6 +290,19 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
     });
   });
 
+  it('get-pod → GET <v2base>/v2/pods/{id} with NO query (v1-only filters dropped)', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('get-pod')!({
+        podId: 'pod_7',
+        includeMachine: true,
+        includeNetworkVolume: true,
+      });
+      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/pods/pod_7');
+      assert.equal(outbound[0].method, 'GET');
+    });
+  });
+
   it('create-pod → POST <v2base>/v2/pods with the v2-mapped body', async () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({ jsonBody: {} });
@@ -297,6 +312,8 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
         gpuTypeIds: ['A100', 'H100'],
         gpuCount: 2,
         dataCenterIds: ['US-TX-3'],
+        volumeInGb: 40,
+        volumeMountPath: '/workspace',
       });
       assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/pods');
       assert.equal(outbound[0].method, 'POST');
@@ -305,7 +322,33 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
       assert.equal('imageName' in body, false);
       assert.deepEqual(body.gpu, { id: 'A100', count: 2 });
       assert.equal(body.dataCenter, 'US-TX-3');
+      assert.deepEqual(body.mounts, {
+        persistent: { size: 40, path: '/workspace' },
+      });
     });
+  });
+
+  it('create-pod v2 with a partial volume drops mounts (no size-only mount)', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('create-pod')!({ imageName: 'i', volumeInGb: 40 });
+      const body = JSON.parse(outbound[0].body!);
+      assert.equal('mounts' in body, false);
+    });
+  });
+
+  it('per-resource override (RUNPOD_REST_VERSION_PODS=v2) routes a handler to v2 end-to-end', () => {
+    const prev = process.env.RUNPOD_REST_VERSION_PODS;
+    process.env.RUNPOD_REST_VERSION_PODS = 'v2';
+    try {
+      const { handlers, outbound } = harness({ jsonBody: { pods: [] } });
+      return handlers.get('list-pods')!({}).then(() => {
+        assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/pods');
+      });
+    } finally {
+      if (prev === undefined) delete process.env.RUNPOD_REST_VERSION_PODS;
+      else process.env.RUNPOD_REST_VERSION_PODS = prev;
+    }
   });
 
   it('stop-pod → POST <v2base>/v2/pods/{id}/action {action:"stop"} (B4)', async () => {
