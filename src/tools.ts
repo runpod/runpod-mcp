@@ -796,14 +796,23 @@ export function registerTools(
     }
   );
 
-  // Restart Pod — v2-only state transition (PodAction enum); under v1 this hits
-  // /pods/{id}/restart which the v1 REST API does not implement.
+  // Restart Pod — v2-only state transition (PodAction enum). The v1 REST API has
+  // no restart endpoint, so under v1 we return a clean message instead of firing
+  // a request that would 404 (mirrors the create-pod 501 handling).
   server.tool(
     'restart-pod',
     {
       podId: z.string().describe('ID of the pod to restart'),
     },
     async (params) => {
+      const backend = backendFor('pods');
+      if (backend.version === 'v1') {
+        return jsonReply({
+          error:
+            'restart-pod is only available on the v2 REST API. Set RUNPOD_REST_VERSION=v2 (or stop then start the pod on v1).',
+          status: 501,
+        });
+      }
       const result = await podAction(params.podId, 'restart');
       return jsonReply(result);
     }

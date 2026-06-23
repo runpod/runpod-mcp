@@ -15,6 +15,7 @@ beforeEach(() => {
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerTools } from '../src/tools.js';
+import { HttpError } from '../src/_shared/http.js';
 
 // ============== Handler integration / outbound-request golden ==============
 // Drives the REAL registerTools against a fake McpServer (captures handlers) and
@@ -147,26 +148,41 @@ describe('outbound-request golden (v1 unchanged)', () => {
     assert.equal(outbound[0].method, 'DELETE');
   });
 
-  it('restart-pod registers and → POST <rest>/v1/pods/{id}/restart (v1)', async () => {
+  it('restart-pod registers and under v1 returns a clean "v2 only" message (no request)', async () => {
     const { handlers, outbound } = harness({ jsonBody: {} });
     assert.ok(handlers.has('restart-pod'), 'restart-pod must be registered');
-    await handlers.get('restart-pod')!({ podId: 'pod_r' });
+    const out = (await handlers.get('restart-pod')!({ podId: 'pod_r' })) as {
+      content: Array<{ text: string }>;
+    };
     assert.equal(
-      outbound[0].url,
-      'https://rest.runpod.io/v1/pods/pod_r/restart'
+      outbound.length,
+      0,
+      'v1 restart must not fire a 404-ing request'
     );
-    assert.equal(outbound[0].method, 'POST');
+    const payload = JSON.parse(out.content[0].text);
+    assert.match(payload.error, /only available on the v2 REST API/);
   });
 
-  it('create-pod 501 → clean non-error message (not a throw)', async () => {
+  it('create-pod 501 → clean message, resolves (does not reject)', async () => {
     const { handlers } = harness({ status: 501 });
-    const out = (await handlers.get('create-pod')!({
-      imageName: 'i',
-    })) as { content: Array<{ text: string }>; isError?: boolean };
-    assert.notEqual(out.isError, true);
+    // If create-pod re-threw, this await would reject and fail the test.
+    const out = (await handlers.get('create-pod')!({ imageName: 'i' })) as {
+      content: Array<{ text: string }>;
+    };
     const payload = JSON.parse(out.content[0].text);
     assert.equal(payload.status, 501);
     assert.match(payload.error, /CPU pods are not yet supported/);
+  });
+
+  it('create-pod non-501 errors still REJECT (catch does not over-swallow)', async () => {
+    for (const status of [400, 500]) {
+      const { handlers } = harness({ status });
+      await assert.rejects(
+        () => handlers.get('create-pod')!({ imageName: 'i' }),
+        (err: unknown) => err instanceof HttpError && err.status === status,
+        `status ${status} must propagate`
+      );
+    }
   });
 
   it('list-network-volumes → GET <rest>/v1/networkvolumes (path unchanged from v1)', async () => {
