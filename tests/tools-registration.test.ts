@@ -44,7 +44,9 @@ const LIST_TOOLS = [
 const CORE_TOOLS = [
   'create-pod',
   'get-pod',
+  'start-pod',
   'stop-pod',
+  'restart-pod',
   'list-pods',
   'create-endpoint',
   'run-endpoint',
@@ -74,7 +76,9 @@ describe('tool registration', () => {
   it('registers no duplicate tool names', () => {
     const { names } = captureRegisteredTools();
     const seen = new Set<string>();
-    const dupes = names.filter((n) => (seen.has(n) ? true : (seen.add(n), false)));
+    const dupes = names.filter((n) =>
+      seen.has(n) ? true : (seen.add(n), false)
+    );
     assert.deepEqual(dupes, [], `duplicate tool names: ${dupes.join(', ')}`);
   });
 
