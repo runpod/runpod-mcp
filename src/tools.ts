@@ -1,8 +1,11 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import fetch, { type RequestInit as NodeFetchRequestInit } from 'node-fetch';
+import fetch from 'node-fetch';
 import { randomUUID } from 'node:crypto';
 import { capListResult, listPaginationParams } from './pagination.js';
+import { createHttpClient } from './_shared/http.js';
+import { buildTrackingHeaders } from './_shared/tracking.js';
+import { unwrapList } from './_shared/backend.js';
 
 // Base URL for Runpod REST API. Override via RUNPOD_REST_API_URL to point at a
 // non-production environment (e.g. when authenticating with a dev API key).
@@ -39,38 +42,30 @@ const MCP_SERVER_VERSION =
 const SESSION_ID = randomUUID();
 
 /**
- * Sanitizes a value for inclusion in a User-Agent token. RFC 7230 reserves
- * parens and a few other chars; strip them so the structured UA stays
- * parseable, and bound the length so a hostile client can't blow up a header.
- */
-function sanitizeUaToken(value: string): string {
-  return value.replace(/[()<>@,;:\\"/[\]?={}\s]/g, '_').slice(0, 64);
-}
-
-/**
  * Builds the headers that identify the calling MCP client and session on every
  * outbound HTTP call. Client identity comes from the `initialize` handshake's
  * `clientInfo` (exposed by the SDK via `server.server.getClientVersion()`),
  * which works for the long-lived stdio server. In stateless HTTP that handshake
  * is on a different request, so we fall back to the inbound HTTP User-Agent.
+ *
+ * Resolution of clientInfo → fallback happens here (the SDK touch); the pure
+ * string formatting lives in `_shared/tracking.ts`.
  */
 function trackingHeaders(
   server: McpServer,
   ctx: ToolContext
 ): Record<string, string> {
   const info = server.server.getClientVersion();
-  const fallbackName = ctx.clientUserAgent || 'unknown';
-  const name = sanitizeUaToken(info?.name || fallbackName);
-  const version = sanitizeUaToken(info?.version || 'unknown');
-  // Prefer a server version supplied by the caller (the hosted entrypoint reads
-  // it from package.json at runtime, since tsup's build-time define does not
-  // run when Vercel compiles api/index.ts). Fall back to the build-time value.
-  const serverVersion = ctx.serverVersion || MCP_SERVER_VERSION;
-  const userAgent = `runpod-mcp-server/${serverVersion} (caller=mcp; client=${name}; client_version=${version}; transport=${ctx.transport})`;
-  return {
-    'User-Agent': userAgent,
-    'X-Runpod-Session-Id': SESSION_ID,
-  };
+  return buildTrackingHeaders({
+    clientName: info?.name || ctx.clientUserAgent || 'unknown',
+    clientVersion: info?.version || 'unknown',
+    transport: ctx.transport,
+    // Prefer a server version supplied by the caller (the hosted entrypoint reads
+    // it from package.json at runtime, since tsup's build-time define does not
+    // run when Vercel compiles api/index.ts). Fall back to the build-time value.
+    serverVersion: ctx.serverVersion || MCP_SERVER_VERSION,
+    sessionId: SESSION_ID,
+  });
 }
 
 /**
@@ -119,46 +114,37 @@ async function graphqlRequest<T>(
 }
 
 // Helper function to make authenticated API requests to Runpod REST API
+// The REST + Serverless request helpers now delegate to the unified
+// `createHttpClient` (src/_shared/http.ts). The adapter builds the full URL, so
+// these thin wrappers just preserve the existing call signatures (path-relative
+// for REST, `endpointId`+path for serverless) and the existing `console.error`
+// log + re-throw behavior. The unified client throws `HttpError` (a subclass of
+// Error) with the SAME message string as before, so callers that read
+// `error.message` (e.g. stream-job) are unaffected.
+
+// The fetch implementation the unified client uses. Defaults to node-fetch;
+// tests inject a fake to capture outbound requests offline (the A4 seam).
+type HttpFetch = Parameters<typeof createHttpClient>[0]['fetch'];
+const defaultFetch = fetch as HttpFetch;
+
 function createRunpodRequest(
   apiKey: string,
-  tracking: () => Record<string, string>
+  tracking: () => Record<string, string>,
+  httpFetch: HttpFetch = defaultFetch
 ) {
+  const client = createHttpClient({
+    apiKey,
+    fetch: httpFetch,
+    tracking,
+    errorPrefix: 'Runpod API Error',
+  });
   return async function runpodRequest(
     endpoint: string,
     method: string = 'GET',
     body?: Record<string, unknown>
   ) {
-    const url = `${API_BASE_URL}${endpoint}`;
-    const headers = {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      ...tracking(),
-    };
-
-    const options: NodeFetchRequestInit = {
-      method,
-      headers,
-    };
-
-    if (body && (method === 'POST' || method === 'PATCH')) {
-      options.body = JSON.stringify(body);
-    }
-
     try {
-      const response = await fetch(url, options);
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Runpod API Error: ${response.status} - ${errorText}`);
-      }
-
-      // Some endpoints might not return JSON
-      const contentType = response.headers.get('content-type');
-      if (contentType && contentType.includes('application/json')) {
-        return await response.json();
-      }
-
-      return { success: true, status: response.status };
+      return await client(`${API_BASE_URL}${endpoint}`, method, body);
     } catch (error) {
       console.error('Error calling Runpod API:', error);
       throw error;
@@ -169,46 +155,27 @@ function createRunpodRequest(
 // Helper function to make authenticated requests to the Serverless runtime API
 function createServerlessRequest(
   apiKey: string,
-  tracking: () => Record<string, string>
+  tracking: () => Record<string, string>,
+  httpFetch: HttpFetch = defaultFetch
 ) {
+  const client = createHttpClient({
+    apiKey,
+    fetch: httpFetch,
+    tracking,
+    errorPrefix: 'Runpod Serverless API Error',
+  });
   return async function serverlessRequest(
     endpointId: string,
     path: string,
     method: string = 'GET',
     body?: Record<string, unknown>
   ) {
-    const url = `${SERVERLESS_API_BASE_URL}/${endpointId}${path}`;
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      ...tracking(),
-    };
-
-    const options: NodeFetchRequestInit = {
-      method,
-      headers,
-    };
-
-    if (body && (method === 'POST' || method === 'PATCH')) {
-      options.body = JSON.stringify(body);
-    }
-
     try {
-      const response = await fetch(url, options);
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(
-          `Runpod Serverless API Error: ${response.status} - ${errorText}`
-        );
-      }
-
-      const contentType = response.headers.get('content-type');
-      if (contentType && contentType.includes('application/json')) {
-        return await response.json();
-      }
-
-      return { success: true, status: response.status };
+      return await client(
+        `${SERVERLESS_API_BASE_URL}/${endpointId}${path}`,
+        method,
+        body
+      );
     } catch (error) {
       console.error('Error calling Runpod Serverless API:', error);
       throw error;
@@ -220,10 +187,21 @@ function createServerlessRequest(
  * Register all Runpod tools on the given MCP server instance. The provided
  * context supplies the API key that authenticated request helpers will use.
  */
-export function registerTools(server: McpServer, ctx: ToolContext): void {
+export function registerTools(
+  server: McpServer,
+  ctx: ToolContext,
+  // Optional test seam: inject a fake fetch to capture outbound requests
+  // offline. Production passes nothing → node-fetch.
+  deps: { fetch?: HttpFetch } = {}
+): void {
   const tracking = () => trackingHeaders(server, ctx);
-  const runpodRequest = createRunpodRequest(ctx.apiKey, tracking);
-  const serverlessRequest = createServerlessRequest(ctx.apiKey, tracking);
+  const httpFetch = deps.fetch ?? defaultFetch;
+  const runpodRequest = createRunpodRequest(ctx.apiKey, tracking, httpFetch);
+  const serverlessRequest = createServerlessRequest(
+    ctx.apiKey,
+    tracking,
+    httpFetch
+  );
 
   // ============== INFRASTRUCTURE TOOLS ==============
 
@@ -462,7 +440,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         : '';
       const result = await runpodRequest(`/pods${queryString}`);
 
-      return capListResult(result, {
+      return capListResult(unwrapList('pods', 'v1', result), {
         limit: params.limit,
         cursor: params.cursor,
       });
@@ -692,7 +670,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         : '';
       const result = await runpodRequest(`/endpoints${queryString}`);
 
-      return capListResult(result, {
+      return capListResult(unwrapList('endpoints', 'v1', result), {
         limit: params.limit,
         cursor: params.cursor,
       });
@@ -1223,7 +1201,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         `/templates${query ? `?${query}` : ''}`
       );
 
-      return capListResult(result, {
+      return capListResult(unwrapList('templates', 'v1', result), {
         limit: params.limit,
         cursor: params.cursor,
       });
@@ -1363,7 +1341,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
   server.tool('list-network-volumes', listPaginationParams, async (params) => {
     const result = await runpodRequest('/networkvolumes');
 
-    return capListResult(result, {
+    return capListResult(unwrapList('networkVolumes', 'v1', result), {
       limit: params.limit,
       cursor: params.cursor,
     });
@@ -1481,7 +1459,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
     async (params) => {
       const result = await runpodRequest('/containerregistryauth');
 
-      return capListResult(result, {
+      return capListResult(unwrapList('registries', 'v1', result), {
         limit: params.limit,
         cursor: params.cursor,
       });
