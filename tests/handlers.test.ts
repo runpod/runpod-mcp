@@ -253,6 +253,109 @@ describe('outbound-request golden (v1 unchanged)', () => {
   });
 });
 
+describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
+  // backendFor reads process.env at handler-call time, so set/restore around each.
+  function withV2<T>(fn: () => T): T {
+    const prev = process.env.RUNPOD_REST_VERSION;
+    process.env.RUNPOD_REST_VERSION = 'v2';
+    try {
+      return fn();
+    } finally {
+      if (prev === undefined) delete process.env.RUNPOD_REST_VERSION;
+      else process.env.RUNPOD_REST_VERSION = prev;
+    }
+  }
+
+  it('list-pods → GET <v2base>/v2/pods (single /v2, no filter query)', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { pods: [] } });
+      await handlers.get('list-pods')!({ computeType: 'GPU', name: 'x' });
+      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/pods');
+      assert.equal(outbound[0].method, 'GET');
+    });
+  });
+
+  it('list-pods unwraps the v2 {pods:[…]} envelope before capping', async () => {
+    await withV2(async () => {
+      const items = Array.from({ length: 25 }, (_, i) => ({ id: i }));
+      const { handlers } = harness({ jsonBody: { pods: items } });
+      const out = await handlers.get('list-pods')!({});
+      const env = JSON.parse(
+        (out as { content: Array<{ text: string }> }).content[0].text
+      );
+      assert.equal(env.pagination.total, 25);
+      assert.equal(env.items.length, 20);
+    });
+  });
+
+  it('create-pod → POST <v2base>/v2/pods with the v2-mapped body', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('create-pod')!({
+        name: 'p',
+        imageName: 'img:1',
+        gpuTypeIds: ['A100', 'H100'],
+        gpuCount: 2,
+        dataCenterIds: ['US-TX-3'],
+      });
+      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/pods');
+      assert.equal(outbound[0].method, 'POST');
+      const body = JSON.parse(outbound[0].body!);
+      assert.equal(body.image, 'img:1');
+      assert.equal('imageName' in body, false);
+      assert.deepEqual(body.gpu, { id: 'A100', count: 2 });
+      assert.equal(body.dataCenter, 'US-TX-3');
+    });
+  });
+
+  it('stop-pod → POST <v2base>/v2/pods/{id}/action {action:"stop"} (B4)', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('stop-pod')!({ podId: 'pod_9' });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/pods/pod_9/action'
+      );
+      assert.equal(outbound[0].method, 'POST');
+      assert.deepEqual(JSON.parse(outbound[0].body!), { action: 'stop' });
+    });
+  });
+
+  it('start-pod → POST .../v2/pods/{id}/action {action:"start"} (B4)', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('start-pod')!({ podId: 'pod_1' });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/pods/pod_1/action'
+      );
+      assert.deepEqual(JSON.parse(outbound[0].body!), { action: 'start' });
+    });
+  });
+
+  it('update-pod → PATCH .../v2/pods/{id} with mapped body (no podId)', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('update-pod')!({ podId: 'pod_2', imageName: 'i2' });
+      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/pods/pod_2');
+      assert.equal(outbound[0].method, 'PATCH');
+      const body = JSON.parse(outbound[0].body!);
+      assert.equal(body.image, 'i2');
+      assert.equal('podId' in body, false);
+      assert.equal('imageName' in body, false);
+    });
+  });
+
+  it('delete-pod → DELETE .../v2/pods/{id}', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('delete-pod')!({ podId: 'pod_x' });
+      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/pods/pod_x');
+      assert.equal(outbound[0].method, 'DELETE');
+    });
+  });
+});
+
 describe('stream-job poll loop (sequenced responses)', () => {
   it('polls /v2/{id}/stream/{jobId} until a terminal status', async () => {
     const { handlers, outbound } = harness({

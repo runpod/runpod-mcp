@@ -242,22 +242,25 @@ const CATALOG: ReadonlySet<Resource> = new Set<Resource>([
   'dataCenters',
 ]);
 
-// v2 REST paths (the control-plane resources). Note the renames vs v1:
-// network-volumes (hyphen), registries (was containerregistryauth), catalog/*.
-// Catalog `datacenters` is intentionally NOT hyphenated (matches the spec).
+// v2 REST paths (the control-plane resources). Paths are relative to the v2
+// base which ALREADY includes `/v2` (restV2Base → https://v2-rest.runpod.io/v2),
+// so they do NOT repeat the `/v2` prefix — `base + list` = `.../v2/pods`. (The
+// prober relies on the same convention: `base + /catalog/gpus`.)
+// Renames vs v1: network-volumes (hyphen), registries (was containerregistryauth),
+// catalog/*. Catalog `datacenters` is intentionally NOT hyphenated (matches the spec).
 const V2_REST_PATHS: Partial<
   Record<Resource, { list: string; get?: (id: string) => string }>
 > = {
-  pods: { list: '/v2/pods', get: (id) => `/v2/pods/${id}` },
-  templates: { list: '/v2/templates', get: (id) => `/v2/templates/${id}` },
+  pods: { list: '/pods', get: (id) => `/pods/${id}` },
+  templates: { list: '/templates', get: (id) => `/templates/${id}` },
   networkVolumes: {
-    list: '/v2/network-volumes',
-    get: (id) => `/v2/network-volumes/${id}`,
+    list: '/network-volumes',
+    get: (id) => `/network-volumes/${id}`,
   },
-  registries: { list: '/v2/registries', get: (id) => `/v2/registries/${id}` },
-  gpus: { list: '/v2/catalog/gpus', get: (id) => `/v2/catalog/gpus/${id}` },
-  cpus: { list: '/v2/catalog/cpus' },
-  dataCenters: { list: '/v2/catalog/datacenters' },
+  registries: { list: '/registries', get: (id) => `/registries/${id}` },
+  gpus: { list: '/catalog/gpus', get: (id) => `/catalog/gpus/${id}` },
+  cpus: { list: '/catalog/cpus' },
+  dataCenters: { list: '/catalog/datacenters' },
 };
 
 // v2 request-body mappers per resource (identity where v1==v2, e.g. registries).

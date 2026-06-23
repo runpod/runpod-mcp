@@ -476,15 +476,17 @@ describe('resolveBackend (v2 descriptors)', () => {
   const stdio = { transport: 'stdio' as const };
   const v2env = { RUNPOD_REST_VERSION: 'v2' };
 
-  it('exact v2 paths per resource (renames + catalog)', () => {
+  it('exact v2 paths per resource (relative to /v2 base) + correct COMBINED url', () => {
+    // paths are relative to a base that already includes /v2 — base+list must
+    // NOT double the /v2 (regression guard for the wiring bug).
     const expect: Array<[Resource, string, string | undefined]> = [
-      ['pods', '/v2/pods', '/v2/pods/X'],
-      ['templates', '/v2/templates', '/v2/templates/X'],
-      ['networkVolumes', '/v2/network-volumes', '/v2/network-volumes/X'],
-      ['registries', '/v2/registries', '/v2/registries/X'],
-      ['gpus', '/v2/catalog/gpus', '/v2/catalog/gpus/X'],
-      ['cpus', '/v2/catalog/cpus', undefined],
-      ['dataCenters', '/v2/catalog/datacenters', undefined],
+      ['pods', '/pods', '/pods/X'],
+      ['templates', '/templates', '/templates/X'],
+      ['networkVolumes', '/network-volumes', '/network-volumes/X'],
+      ['registries', '/registries', '/registries/X'],
+      ['gpus', '/catalog/gpus', '/catalog/gpus/X'],
+      ['cpus', '/catalog/cpus', undefined],
+      ['dataCenters', '/catalog/datacenters', undefined],
     ];
     for (const [resource, list, get] of expect) {
       const b = resolveBackend({ resource, env: v2env, ctx: stdio });
@@ -493,6 +495,12 @@ describe('resolveBackend (v2 descriptors)', () => {
       assert.equal(b.kind, 'rest', `${resource} kind (catalog is REST in v2)`);
       assert.equal(b.list, list, `${resource} list`);
       assert.equal(get ? b.get!('X') : b.get, get, `${resource} get`);
+      // the combined URL is exactly one /v2 segment
+      assert.equal(
+        b.base + b.list,
+        `https://v2-rest.runpod.io/v2${list}`,
+        `${resource} combined url`
+      );
     }
   });
 
@@ -538,7 +546,8 @@ describe('resolveBackend (v2 descriptors)', () => {
     const pods = resolveBackend({ resource: 'pods', env, ctx: stdio });
     assert.equal(pods.version, 'v2');
     assert.equal(pods.base, 'https://v2-rest.runpod.io/v2');
-    assert.equal(pods.list, '/v2/pods');
+    assert.equal(pods.list, '/pods');
+    assert.equal(pods.base + pods.list, 'https://v2-rest.runpod.io/v2/pods');
     assert.equal(
       (pods.mapCreate({ imageName: 'i' }) as Record<string, unknown>).image,
       'i'
