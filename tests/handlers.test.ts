@@ -1,5 +1,13 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+
+// Defense-in-depth: the v1 goldens assume the version env vars are unset. Clear
+// them before every test so a leak (from another test or the CI env) can't
+// silently flip v1 goldens to v2.
+beforeEach(() => {
+  delete process.env.RUNPOD_REST_VERSION;
+  delete process.env.RUNPOD_REST_VERSION_PODS;
+});
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerTools } from '../src/tools.js';
