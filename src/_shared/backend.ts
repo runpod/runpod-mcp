@@ -8,6 +8,13 @@
 // with no network and no MCP SDK. The HTTP client (src/_shared/http.ts) and the
 // per-resource tool handlers (src/tools/<resource>.ts) consume this.
 
+import {
+  mapPodCreateToV2,
+  mapPodUpdateToV2,
+  mapTemplateCreateToV2,
+  mapNetworkVolumeCreateToV2,
+} from './mappers.js';
+
 // One canonical resource union used by unwrapList, resolveVersion, and
 // resolveBackend alike — so the steps don't each invent a spelling. The v2
 // list-envelope key happens to equal the resource name.
@@ -235,6 +242,55 @@ const CATALOG: ReadonlySet<Resource> = new Set<Resource>([
   'dataCenters',
 ]);
 
+// v2 REST paths (the control-plane resources). Note the renames vs v1:
+// network-volumes (hyphen), registries (was containerregistryauth), catalog/*.
+// Catalog `datacenters` is intentionally NOT hyphenated (matches the spec).
+const V2_REST_PATHS: Partial<
+  Record<Resource, { list: string; get?: (id: string) => string }>
+> = {
+  pods: { list: '/v2/pods', get: (id) => `/v2/pods/${id}` },
+  templates: { list: '/v2/templates', get: (id) => `/v2/templates/${id}` },
+  networkVolumes: {
+    list: '/v2/network-volumes',
+    get: (id) => `/v2/network-volumes/${id}`,
+  },
+  registries: { list: '/v2/registries', get: (id) => `/v2/registries/${id}` },
+  gpus: { list: '/v2/catalog/gpus', get: (id) => `/v2/catalog/gpus/${id}` },
+  cpus: { list: '/v2/catalog/cpus' },
+  dataCenters: { list: '/v2/catalog/datacenters' },
+};
+
+// v2 request-body mappers per resource (identity where v1==v2, e.g. registries).
+const V2_MAPPERS: Partial<
+  Record<
+    Resource,
+    {
+      create: (body: unknown) => unknown;
+      update: (body: unknown) => unknown;
+    }
+  >
+> = {
+  pods: {
+    create: (b) =>
+      mapPodCreateToV2(b as Parameters<typeof mapPodCreateToV2>[0]),
+    update: (b) =>
+      mapPodUpdateToV2(b as Parameters<typeof mapPodUpdateToV2>[0]),
+  },
+  templates: {
+    create: (b) =>
+      mapTemplateCreateToV2(b as Parameters<typeof mapTemplateCreateToV2>[0]),
+    update: identity,
+  },
+  networkVolumes: {
+    create: (b) =>
+      mapNetworkVolumeCreateToV2(
+        b as Parameters<typeof mapNetworkVolumeCreateToV2>[0]
+      ),
+    update: identity,
+  },
+  registries: { create: identity, update: identity },
+};
+
 export function resolveBackend(opts: {
   resource: Resource;
   env: Env;
@@ -247,11 +303,23 @@ export function resolveBackend(opts: {
     unwrapList(resource, version, raw);
 
   if (version === 'v2') {
-    // Filled in Phase B (B2/B1/B3/B5). Throwing here keeps the v1-only Phase A
-    // honest: nothing routes to v2 until the mappers + paths exist.
-    throw new Error(
-      `v2 backend for "${resource}" not implemented until Phase B`
-    );
+    // jobs/endpoints never reach here (pinned v1 by resolveVersion). Catalog v2
+    // is REST (not GraphQL); CRUD resources use their v2 paths + body mappers.
+    const v2Paths = V2_REST_PATHS[resource];
+    if (!v2Paths) {
+      throw new Error(`no v2 REST paths for resource "${resource}"`);
+    }
+    const mappers = V2_MAPPERS[resource];
+    return {
+      kind: 'rest',
+      version,
+      base: restV2Base(env),
+      list: v2Paths.list,
+      get: v2Paths.get,
+      unwrap,
+      mapCreate: mappers?.create ?? identity,
+      mapUpdate: mappers?.update ?? identity,
+    };
   }
 
   // ---- v1 ----

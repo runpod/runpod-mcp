@@ -1,0 +1,26 @@
+{
+  "v1Input": {
+    "name": "training-pod",
+    "imageName": "runpod/pytorch:1.0.2",
+    "cloudType": "SECURE",
+    "gpuTypeIds": ["NVIDIA A100", "NVIDIA H100"],
+    "gpuCount": 2,
+    "containerDiskInGb": 20,
+    "volumeInGb": 50,
+    "volumeMountPath": "/workspace",
+    "ports": ["8888/http", "22/tcp"],
+    "env": { "FOO": "bar" },
+    "dataCenterIds": ["US-TX-3", "EU-RO-1"]
+  },
+  "v2Expected": {
+    "image": "runpod/pytorch:1.0.2",
+    "disk": 20,
+    "ports": ["8888/http", "22/tcp"],
+    "env": { "FOO": "bar" },
+    "mounts": { "persistent": { "size": 50, "path": "/workspace" } },
+    "name": "training-pod",
+    "cloud": "SECURE",
+    "dataCenter": "US-TX-3",
+    "gpu": { "id": "NVIDIA A100", "count": 2 }
+  }
+}
