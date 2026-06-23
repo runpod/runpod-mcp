@@ -177,6 +177,15 @@ split" the PRD asks for.
 > their current names (`list-container-registry-auths`, `create-container-registry-auth`,
 > … `tools.ts:1479-1543`). Do **not** rename public tools — that's a breaking change. Same
 > for `jobs`/`endpoints` keys vs the real `*-endpoint`/`*-job` tool names.
+>
+> **Canonical `Resource` type (define once in `_shared/backend.ts`):** one union
+> (`'pods'|'templates'|'networkVolumes'|'registries'|'gpus'|'cpus'|'dataCenters'|'endpoints'|'jobs'`)
+> used by `unwrapList`, `resolveVersion`, and `resolveBackend` alike — so the steps don't each
+> invent a spelling. The v2 unwrap key happens to equal the resource name here.
+>
+> **Catalog caveat:** in this sketch catalog looks like any adapter resource, but its **v1
+> entry is GraphQL via a separate helper** (not the unified REST client) **through Phase A**;
+> it only folds into the adapter's REST path at Step B5.
 
 ---
 
@@ -204,6 +213,10 @@ Rules:
 - ⚠️ **No new module-level mutable state.** `SESSION_ID` (`tools.ts:39`) is already a
   process-global shared across all HTTP requests on a warm instance; the version work
   must not add another (memoized probe, cache map, etc.) in the HTTP path.
+- **Per-resource override (matches C3):** `resolveVersion` checks
+  `RUNPOD_REST_VERSION_<RESOURCE>` (e.g. `RUNPOD_REST_VERSION_PODS=v2`) first, falling back to
+  the global `RUNPOD_REST_VERSION`. This lets a staggered v2 prod (pods live, templates not)
+  flip one resource at a time. `auto` rules apply per-resolution the same way.
 - New env: `RUNPOD_REST_V2_API_URL` (default `https://v2-rest.runpod.io/v2`) alongside
   the existing base consts at `src/tools.ts:9-21`.
 
@@ -225,6 +238,14 @@ L4 v2 mappings → L5 new tools → L6 flip. v2 logic is written and tested (aga
 *before* prod exists; only the live smoke (L4/§6) needs the running API.
 
 Harness is already in place: `node --import tsx --test tests/*.test.ts`. Keep units pure.
+
+**Core vs optional (right-sizing).** The goal is: envelope bug fixed, v2 routable, v1
+unchanged. **Core path:** A0, A1, A2, A3, A4, A5, A6, B1–B6, C3. **Deferrable (nice-to-have,
+cut if time-boxed):** A1b (the `auto` probe — hosted pins explicitly, stdio users can set
+`=v2`), C1 (new tools `restart`/`list-cpu-types`/`get-gpu-type` — additive features, not the
+migration), C2 (clean 501 — UX nicety; CPU pods don't work on v2 regardless). The A5 golden
+can be scoped to the **~8 high-risk tools** (5 lists + `create-pod`/`create-template` +
+`stream-job`) rather than all 36 — the rest are trivial GET/fixed-POST covered by registration tests.
 
 **🔒 Local-only rule (hard constraint).** Everything under `tests/` runs offline with no
 network, no live API, no credentials. A `tests/` file must **never** import
@@ -277,7 +298,13 @@ GREEN, or their RED tests have nothing injectable to target. This is stated per-
 - REFACTOR: one descriptor object per resource.
 
 **Step A3 — Unified HTTP client, injected `fetch`. (SCOPE: REST + Serverless only — NOT GraphQL.)**
-- PREREQ (GREEN): introduce the `fetch` seam — `createHttpClient({ apiKey, fetch, tracking })`
+- **CONTRACT (pin this first — it threads through A3→A4→B4→C2):** the client is **low-level**,
+  signature `client(path, method?='GET', body?): Promise<unknown>` (mirrors today's
+  `runpodRequest`, `tools.ts:126-130`). On `!ok` it **throws** (stream-job's loop depends on
+  it, A4) — **except 501**, which it returns as `{unsupported:true,status:501}` (C2). It takes
+  a per-client `errorPrefix` option so `"Runpod API Error"` / `"Runpod Serverless API Error"`
+  / `"GraphQL Error:"` are preserved (decide here, not at A5).
+- PREREQ (GREEN): introduce the `fetch` seam — `createHttpClient({ apiKey, fetch, tracking, errorPrefix })`
   takes `fetch` as a param (today it's a module import, `tools.ts:3`); thread from `stdio.ts`/`http.ts`.
 - RED: `tests/http.test.ts`. Inject a fake `fetch`. Cases: builds `base+path`; sets
   `Authorization: Bearer <key>` + tracking headers; serializes body only for POST/PATCH;
@@ -478,10 +505,10 @@ Each resource is one independent RED→GREEN cycle; order doesn't matter, do pod
     failures — a swallowed failure + the leftover check below would contradict.
   - **Post-verify is fail-closed.** At end, list `mcp-smoke-*`; if any remain **or the list
     call itself errors** → exit non-zero (unknown = fail, never "empty = pass").
-  - **Out-of-band janitor (mandatory, survives SIGKILL).** A standalone `scripts/sweep.ts`
-    (list+delete all `mcp-smoke-*` across pods/templates/volumes/registries) wired to a
-    **daily CI cron**, independent of the smoke job. `try/finally` cannot run on SIGKILL/
-    timeout-kill, so this is the only thing that catches a hard-killed run's orphans.
+  - **Out-of-band janitor (optional — see Part 8).** A standalone `scripts/sweep.ts`
+    (list+delete all `mcp-smoke-*`) as a **manual** cleanup for the rare SIGKILL'd run that
+    skips `finally`. A standing daily cron is overkill for a dev-account test — the next
+    run's pre-sweep self-heals. Add the cron only if this becomes an always-on gate.
   - Order teardown by dependency (pods before the volumes they mount).
 
 ---
@@ -544,22 +571,26 @@ time, not this analysis:
 
 ---
 
-## Part 8 — Operational safeguards (long-lived branch + moving spec)
+## Part 8 — Operational safeguards (right-sized)
 
-The branch lives weeks→months until v2 prod; the spec moves under us; cleanup must survive
-hard kills. These are not optional once Phase B starts.
+The branch lives weeks→months until v2 prod and the spec moves under us. But this is a
+single-process npm wrapper hand-driven against a **dev** account, not a production service —
+so keep these light. Keepers are cheap and earn their weight; the rest are deferred.
 
-- **Spec-drift detection (before Phase B).** Offline fixtures pass green forever even after
-  the live spec changes — there's no built-in trigger for "update the mapper." Add a
-  **scheduled (non-gating) CI job** that fetches `v2-rest.runpod.dev/v2/openapi.yaml` and
-  diffs it against a committed snapshot; on drift it opens an issue / soft-fails. This is the
-  trigger behind every "build against the live spec at implementation time" instruction
-  (esp. the `dataCenter` scalar↔array reversal, `cloud` ALL removal, `category` optionality).
-- **Out-of-band resource janitor.** `scripts/sweep.ts` + daily cron (see Part 6) — the only
-  cleanup that survives a SIGKILL'd smoke run.
-- **Version observability.** Once routing is per-resource, nothing records whether a call hit
-  v1 or v2 — undebuggable in prod. Add `X-Runpod-Rest-Version: <v1|v2>` to the outbound
-  tracking headers (or extend the UA) so logs/data can attribute the version actually used.
-- **Branch cadence.** Phase A merges to `main` immediately (it's behavior-neutral and
-  independently useful). Phase B/C live on this branch — **rebase on `main` weekly** to avoid
-  drift over the long window to prod.
+**Keep (cheap, real value):**
+- **Branch cadence.** Phase A merges to `main` immediately (behavior-neutral, independently
+  useful). Phase B/C live on this branch — **rebase on `main` weekly**.
+- **Version observability.** Add `X-Runpod-Rest-Version: <v1|v2>` to the outbound tracking
+  headers (one line in `_shared/tracking.ts`) so logs can attribute the version used once
+  routing is per-resource.
+- **Manual spec re-check.** A line in the Phase B checklist: *re-pull the live spec before
+  writing each mapper* (catches the `dataCenter` scalar↔array reversal, `cloud` ALL removal,
+  `category` optionality). Optionally a hand-run `pnpm spec:check` diff script.
+
+**Optional / defer (only if the branch outlives expectations):**
+- A **scheduled spec-drift CI job** (auto-diff dev openapi, open issues) — overkill while a
+  human is actively driving; the checklist line above covers it.
+- An **out-of-band cron janitor** — `try/finally` name-first teardown + fail-closed
+  post-verify (Part 6) already cover ~all cases; a SIGKILL'd run leaks a few `mcp-smoke-*`
+  dev pods costing pennies, self-healed by the next run's pre-sweep. Keep `scripts/sweep.ts`
+  as a **manual** cleanup if wanted; skip the standing daily cron.
