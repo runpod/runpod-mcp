@@ -21,6 +21,8 @@ interface OutboundRecord {
 function harness(opts?: {
   // What the fake fetch returns (defaults to an empty JSON array — a v1 list).
   jsonBody?: unknown;
+  // A queue of bodies returned one-per-call (for poll loops like stream-job).
+  jsonBodies?: unknown[];
   status?: number;
   contentType?: string;
 }) {
@@ -29,12 +31,10 @@ function harness(opts?: {
 
   const fakeServer = {
     // registerTools calls server.tool(name, [description], schema, handler).
-    // The handler is the last function argument.
+    // The handler is always the LAST argument.
     tool(name: string, ...args: unknown[]) {
-      const handler = args.filter((a) => typeof a === 'function').pop() as
-        | Handler
-        | undefined;
-      if (handler) handlers.set(name, handler);
+      const last = args.at(-1);
+      if (typeof last === 'function') handlers.set(name, last as Handler);
     },
     // trackingHeaders reads this per request.
     server: {
@@ -43,11 +43,15 @@ function harness(opts?: {
   } as unknown as McpServer;
 
   const status = opts?.status ?? 200;
+  const queue = opts?.jsonBodies ? [...opts.jsonBodies] : null;
   const fakeFetch = async (
     url: string,
     init: { method: string; headers: Record<string, string>; body?: string }
   ) => {
     outbound.push({ url, method: init.method, body: init.body });
+    const jsonBody = queue
+      ? (queue.shift() ?? opts?.jsonBody ?? [])
+      : (opts?.jsonBody ?? []);
     return {
       ok: status >= 200 && status < 300,
       status,
@@ -57,7 +61,7 @@ function harness(opts?: {
             ? (opts?.contentType ?? 'application/json')
             : null,
       },
-      json: async () => opts?.jsonBody ?? [],
+      json: async () => jsonBody,
       text: async () => '',
     };
   };
@@ -154,6 +158,120 @@ describe('outbound-request golden (v1 unchanged)', () => {
     });
     assert.equal(outbound[0].url, 'https://api.runpod.ai/v2/ep_1/run');
     assert.equal(outbound[0].method, 'POST');
+  });
+
+  it('update-pod → PATCH <rest>/v1/pods/{id}, body EXCLUDES podId (id-strip)', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    await handlers.get('update-pod')!({
+      podId: 'pod_1',
+      name: 'renamed',
+      env: { K: 'V' },
+    });
+    assert.equal(outbound[0].url, 'https://rest.runpod.io/v1/pods/pod_1');
+    assert.equal(outbound[0].method, 'PATCH');
+    const body = JSON.parse(outbound[0].body!);
+    assert.equal('podId' in body, false, 'podId must be stripped from body');
+    assert.deepEqual(body, { name: 'renamed', env: { K: 'V' } });
+  });
+
+  it('update-network-volume → PATCH <rest>/v1/networkvolumes/{id}, body excludes id', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    await handlers.get('update-network-volume')!({
+      networkVolumeId: 'nv_1',
+      size: 100,
+    });
+    assert.equal(
+      outbound[0].url,
+      'https://rest.runpod.io/v1/networkvolumes/nv_1'
+    );
+    assert.equal(outbound[0].method, 'PATCH');
+    const body = JSON.parse(outbound[0].body!);
+    assert.equal('networkVolumeId' in body, false);
+  });
+
+  it('create-template → POST <rest>/v1/templates, body byte-identical', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    const params = { name: 't', imageName: 'img', isServerless: false };
+    await handlers.get('create-template')!({ ...params });
+    assert.equal(outbound[0].url, 'https://rest.runpod.io/v1/templates');
+    assert.equal(outbound[0].method, 'POST');
+    assert.equal(outbound[0].body, JSON.stringify(params));
+  });
+
+  it('create-network-volume → POST <rest>/v1/networkvolumes, body byte-identical', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    const params = { name: 'v', size: 50, dataCenterId: 'EU-RO-1' };
+    await handlers.get('create-network-volume')!({ ...params });
+    assert.equal(outbound[0].url, 'https://rest.runpod.io/v1/networkvolumes');
+    assert.equal(outbound[0].body, JSON.stringify(params));
+  });
+
+  it('runsync-endpoint with wait → POST /v2/{id}/runsync?wait=N, wait NOT in body', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    await handlers.get('runsync-endpoint')!({
+      endpointId: 'ep_2',
+      input: { x: 1 },
+      wait: 120000,
+    });
+    assert.equal(
+      outbound[0].url,
+      'https://api.runpod.ai/v2/ep_2/runsync?wait=120000'
+    );
+    const body = JSON.parse(outbound[0].body!);
+    assert.equal('wait' in body, false, 'wait must not leak into the body');
+    assert.equal('endpointId' in body, false);
+  });
+
+  it('runsync-endpoint without wait → POST /v2/{id}/runsync (no query)', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    await handlers.get('runsync-endpoint')!({
+      endpointId: 'ep_3',
+      input: { x: 1 },
+    });
+    assert.equal(outbound[0].url, 'https://api.runpod.ai/v2/ep_3/runsync');
+  });
+
+  it('get-job-status → GET <serverless>/v2/{id}/status/{jobId}', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    await handlers.get('get-job-status')!({ endpointId: 'ep', jobId: 'j1' });
+    assert.equal(outbound[0].url, 'https://api.runpod.ai/v2/ep/status/j1');
+    assert.equal(outbound[0].method, 'GET');
+  });
+
+  it('cancel-job → POST <serverless>/v2/{id}/cancel/{jobId}', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    await handlers.get('cancel-job')!({ endpointId: 'ep', jobId: 'j1' });
+    assert.equal(outbound[0].url, 'https://api.runpod.ai/v2/ep/cancel/j1');
+    assert.equal(outbound[0].method, 'POST');
+  });
+
+  it('start-pod → POST <rest>/v1/pods/{id}/start', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    await handlers.get('start-pod')!({ podId: 'pod_s' });
+    assert.equal(outbound[0].url, 'https://rest.runpod.io/v1/pods/pod_s/start');
+    assert.equal(outbound[0].method, 'POST');
+  });
+});
+
+describe('stream-job poll loop (sequenced responses)', () => {
+  it('polls /v2/{id}/stream/{jobId} until a terminal status', async () => {
+    const { handlers, outbound } = harness({
+      jsonBodies: [
+        { status: 'IN_PROGRESS', stream: [{ output: 1 }] },
+        { status: 'COMPLETED', stream: [{ output: 2 }] },
+      ],
+    });
+    const out = await handlers.get('stream-job')!({
+      endpointId: 'ep',
+      jobId: 'jX',
+    });
+    // every poll hits the stream URL
+    for (const rec of outbound) {
+      assert.equal(rec.url, 'https://api.runpod.ai/v2/ep/stream/jX');
+      assert.equal(rec.method, 'GET');
+    }
+    assert.ok(outbound.length >= 2, 'should poll until terminal status');
+    assert.ok(out, 'returns a result');
   });
 });
 

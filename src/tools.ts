@@ -5,7 +5,6 @@ import { randomUUID } from 'node:crypto';
 import { capListResult, listPaginationParams } from './pagination.js';
 import { createHttpClient } from './_shared/http.js';
 import { buildTrackingHeaders } from './_shared/tracking.js';
-import { unwrapList } from './_shared/backend.js';
 
 // Base URL for Runpod REST API. Override via RUNPOD_REST_API_URL to point at a
 // non-production environment (e.g. when authenticating with a dev API key).
@@ -440,7 +439,7 @@ export function registerTools(
         : '';
       const result = await runpodRequest(`/pods${queryString}`);
 
-      return capListResult(unwrapList('pods', 'v1', result), {
+      return capListResult(result, {
         limit: params.limit,
         cursor: params.cursor,
       });
@@ -670,7 +669,7 @@ export function registerTools(
         : '';
       const result = await runpodRequest(`/endpoints${queryString}`);
 
-      return capListResult(unwrapList('endpoints', 'v1', result), {
+      return capListResult(result, {
         limit: params.limit,
         cursor: params.cursor,
       });
@@ -1201,7 +1200,7 @@ export function registerTools(
         `/templates${query ? `?${query}` : ''}`
       );
 
-      return capListResult(unwrapList('templates', 'v1', result), {
+      return capListResult(result, {
         limit: params.limit,
         cursor: params.cursor,
       });
@@ -1341,7 +1340,7 @@ export function registerTools(
   server.tool('list-network-volumes', listPaginationParams, async (params) => {
     const result = await runpodRequest('/networkvolumes');
 
-    return capListResult(unwrapList('networkVolumes', 'v1', result), {
+    return capListResult(result, {
       limit: params.limit,
       cursor: params.cursor,
     });
@@ -1459,7 +1458,7 @@ export function registerTools(
     async (params) => {
       const result = await runpodRequest('/containerregistryauth');
 
-      return capListResult(unwrapList('registries', 'v1', result), {
+      return capListResult(result, {
         limit: params.limit,
         cursor: params.cursor,
       });
