@@ -647,6 +647,125 @@ describe('template / network-volume / registry routing under v2', () => {
   });
 });
 
+describe('catalog routing (B5)', () => {
+  it('list-gpu-types v2 → GET .../v2/catalog/gpus, unwraps + filters on v2 fields', async () => {
+    await withV2(async () => {
+      const gpus = [
+        {
+          id: 'a100',
+          name: 'A100',
+          memory: 80,
+          secure: true,
+          community: false,
+        },
+        {
+          id: 'rtx',
+          name: 'RTX 4090',
+          memory: 24,
+          secure: false,
+          community: true,
+        },
+      ];
+      const { handlers, outbound } = harness({ jsonBody: { gpus } });
+      const out = (await handlers.get('list-gpu-types')!({
+        minMemoryGb: 40,
+        secureCloudOnly: true,
+      })) as { content: Array<{ text: string }> };
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/catalog/gpus'
+      );
+      const payload = JSON.parse(out.content[0].text);
+      assert.equal(payload.length, 1);
+      assert.equal(payload[0].id, 'a100');
+    });
+  });
+
+  it('list-gpu-types v2 searchTerm matches id/name', async () => {
+    await withV2(async () => {
+      const gpus = [
+        { id: 'a100', name: 'A100', memory: 80 },
+        { id: 'rtx', name: 'RTX 4090', memory: 24 },
+      ];
+      const { handlers } = harness({ jsonBody: { gpus } });
+      const out = (await handlers.get('list-gpu-types')!({
+        searchTerm: '4090',
+      })) as { content: Array<{ text: string }> };
+      const payload = JSON.parse(out.content[0].text);
+      assert.equal(payload.length, 1);
+      assert.equal(payload[0].id, 'rtx');
+    });
+  });
+
+  it('list-data-centers v2 → GET .../v2/catalog/datacenters, region filter on enum', async () => {
+    await withV2(async () => {
+      const dataCenters = [
+        { id: 'US-TX-3', region: 'NORTH_AMERICA' },
+        { id: 'EU-RO-1', region: 'EUROPE' },
+      ];
+      const { handlers, outbound } = harness({ jsonBody: { dataCenters } });
+      const out = (await handlers.get('list-data-centers')!({
+        region: 'europe',
+      })) as { content: Array<{ text: string }> };
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/catalog/datacenters'
+      );
+      const payload = JSON.parse(out.content[0].text);
+      assert.equal(payload.length, 1);
+      assert.equal(payload[0].id, 'EU-RO-1');
+    });
+  });
+
+  it('list-cpu-types: v1 → clean "v2 only" message (no request); v2 → GET .../v2/catalog/cpus', async () => {
+    // v1
+    const v1 = harness({ jsonBody: {} });
+    assert.ok(v1.handlers.has('list-cpu-types'));
+    const v1out = (await v1.handlers.get('list-cpu-types')!({})) as {
+      content: Array<{ text: string }>;
+    };
+    assert.equal(v1.outbound.length, 0);
+    assert.match(
+      JSON.parse(v1out.content[0].text).error,
+      /only available on the v2/
+    );
+    // v2
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        jsonBody: { cpus: [{ id: 'cpu5c' }] },
+      });
+      const out = (await handlers.get('list-cpu-types')!({})) as {
+        content: Array<{ text: string }>;
+      };
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/catalog/cpus'
+      );
+      assert.deepEqual(JSON.parse(out.content[0].text), [{ id: 'cpu5c' }]);
+    });
+  });
+
+  it('get-gpu-type: v1 → clean message; v2 → GET .../v2/catalog/gpus/{id}', async () => {
+    const v1 = harness({ jsonBody: {} });
+    const v1out = (await v1.handlers.get('get-gpu-type')!({
+      gpuTypeId: 'a100',
+    })) as { content: Array<{ text: string }> };
+    assert.equal(v1.outbound.length, 0);
+    assert.match(
+      JSON.parse(v1out.content[0].text).error,
+      /only available on the v2/
+    );
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'a100' } });
+      await handlers.get('get-gpu-type')!({ gpuTypeId: 'a100' });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/catalog/gpus/a100'
+      );
+    });
+  });
+});
+
 describe('stream-job poll loop (sequenced responses)', () => {
   it('polls /v2/{id}/stream/{jobId} until a terminal status', async () => {
     const { handlers, outbound } = harness({
