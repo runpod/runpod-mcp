@@ -3,7 +3,7 @@ import { z } from 'zod';
 import fetch from 'node-fetch';
 import { randomUUID } from 'node:crypto';
 import { capListResult, listPaginationParams } from './pagination.js';
-import { createHttpClient } from './_shared/http.js';
+import { createHttpClient, HttpError } from './_shared/http.js';
 import { buildTrackingHeaders } from './_shared/tracking.js';
 import { resolveBackend, type Env, type Backend } from './_shared/backend.js';
 
@@ -248,7 +248,7 @@ export function registerTools(
   // unifies them under POST /pods/{id}/action with an `{action}` body.
   const podAction = async (
     podId: string,
-    action: 'start' | 'stop'
+    action: 'start' | 'stop' | 'restart'
   ): Promise<unknown> => {
     const backend = backendFor('pods');
     const podPath = backend.get!(podId);
@@ -582,12 +582,25 @@ export function registerTools(
     async (params) => {
       const backend = backendFor('pods');
       const body = backend.mapCreate(params) as Record<string, unknown>;
-      const result = await callRestUrl(
-        `${backend.base}${backend.list}`,
-        'POST',
-        body
-      );
-      return jsonReply(result);
+      try {
+        const result = await callRestUrl(
+          `${backend.base}${backend.list}`,
+          'POST',
+          body
+        );
+        return jsonReply(result);
+      } catch (error) {
+        // C2: v2 stubs CPU-pod creation with 501 (AE-2991). Surface a clean,
+        // non-error message instead of a raw stack so the agent understands.
+        if (error instanceof HttpError && error.status === 501) {
+          return jsonReply({
+            error:
+              'CPU pods are not yet supported on the v2 REST API. Use a GPU pod, or create the CPU pod via the v1 API (set RUNPOD_REST_VERSION=v1).',
+            status: 501,
+          });
+        }
+        throw error;
+      }
     }
   );
 
@@ -646,6 +659,19 @@ export function registerTools(
     },
     async (params) => {
       const result = await podAction(params.podId, 'stop');
+      return jsonReply(result);
+    }
+  );
+
+  // Restart Pod — v2-only state transition (PodAction enum); under v1 this hits
+  // /pods/{id}/restart which the v1 REST API does not implement.
+  server.tool(
+    'restart-pod',
+    {
+      podId: z.string().describe('ID of the pod to restart'),
+    },
+    async (params) => {
+      const result = await podAction(params.podId, 'restart');
       return jsonReply(result);
     }
   );
