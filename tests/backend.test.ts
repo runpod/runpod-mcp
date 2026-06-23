@@ -495,12 +495,24 @@ describe('resolveBackend (v2 descriptors)', () => {
       assert.equal(b.kind, 'rest', `${resource} kind (catalog is REST in v2)`);
       assert.equal(b.list, list, `${resource} list`);
       assert.equal(get ? b.get!('X') : b.get, get, `${resource} get`);
-      // the combined URL is exactly one /v2 segment
+      // the combined URL is exactly one /v2 segment (list AND get + action)
       assert.equal(
         b.base + b.list,
         `https://v2-rest.runpod.io/v2${list}`,
-        `${resource} combined url`
+        `${resource} combined list url`
       );
+      if (b.get) {
+        assert.equal(
+          b.base + b.get('X'),
+          `https://v2-rest.runpod.io/v2${get}`,
+          `${resource} combined get url`
+        );
+        assert.equal(
+          (b.base + b.get('X') + '/action').includes('/v2/v2'),
+          false,
+          `${resource} action url must not double /v2`
+        );
+      }
     }
   });
 
