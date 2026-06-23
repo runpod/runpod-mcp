@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import fetch, { type RequestInit as NodeFetchRequestInit } from 'node-fetch';
 import { randomUUID } from 'node:crypto';
+import { capListResult, listPaginationParams } from './pagination.js';
 
 // Base URL for Runpod REST API. Override via RUNPOD_REST_API_URL to point at a
 // non-production environment (e.g. when authenticating with a dev API key).
@@ -408,6 +409,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
   server.tool(
     'list-pods',
     {
+      ...listPaginationParams,
       computeType: z
         .enum(['GPU', 'CPU'])
         .optional()
@@ -460,14 +462,10 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         : '';
       const result = await runpodRequest(`/pods${queryString}`);
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return capListResult(result, {
+        limit: params.limit,
+        cursor: params.cursor,
+      });
     }
   );
 
@@ -668,6 +666,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
   server.tool(
     'list-endpoints',
     {
+      ...listPaginationParams,
       includeTemplate: z
         .boolean()
         .optional()
@@ -693,14 +692,10 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         : '';
       const result = await runpodRequest(`/endpoints${queryString}`);
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return capListResult(result, {
+        limit: params.limit,
+        cursor: params.cursor,
+      });
     }
   );
 
@@ -1199,6 +1194,7 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
     'list-templates',
     'List available templates. By default returns only the user\'s own templates. Use includeRunpodTemplates to also include official Runpod templates. The recommended default template for new pods is "Runpod Pytorch 2.8.0" (ID: runpod-torch-v280) — it has the latest CUDA and PyTorch versions.',
     {
+      ...listPaginationParams,
       includeRunpodTemplates: z
         .boolean()
         .optional()
@@ -1227,14 +1223,10 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         `/templates${query ? `?${query}` : ''}`
       );
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return capListResult(result, {
+        limit: params.limit,
+        cursor: params.cursor,
+      });
     }
   );
 
@@ -1368,17 +1360,13 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
   // ============== NETWORK VOLUME MANAGEMENT TOOLS ==============
 
   // List Network Volumes
-  server.tool('list-network-volumes', {}, async () => {
+  server.tool('list-network-volumes', listPaginationParams, async (params) => {
     const result = await runpodRequest('/networkvolumes');
 
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify(result, null, 2),
-        },
-      ],
-    };
+    return capListResult(result, {
+      limit: params.limit,
+      cursor: params.cursor,
+    });
   });
 
   // Get Network Volume Details
@@ -1487,18 +1475,18 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
   // ============== CONTAINER REGISTRY AUTH TOOLS ==============
 
   // List Container Registry Auths
-  server.tool('list-container-registry-auths', {}, async () => {
-    const result = await runpodRequest('/containerregistryauth');
+  server.tool(
+    'list-container-registry-auths',
+    listPaginationParams,
+    async (params) => {
+      const result = await runpodRequest('/containerregistryauth');
 
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify(result, null, 2),
-        },
-      ],
-    };
-  });
+      return capListResult(result, {
+        limit: params.limit,
+        cursor: params.cursor,
+      });
+    }
+  );
 
   // Get Container Registry Auth Details
   server.tool(

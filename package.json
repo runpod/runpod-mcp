@@ -20,6 +20,7 @@
     "clean": "rm -rf dist *.tsbuildinfo",
     "lint": "eslint \"./**/*.ts*\"",
     "type-check": "tsc --noEmit -p tsconfig.json",
+    "test": "node --import tsx --test tests/*.test.ts",
     "prettier-check": "prettier --check \"./**/*.ts*\"",
     "start": "node dist/stdio.mjs",
     "dev": "tsx src/stdio.ts",
