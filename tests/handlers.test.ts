@@ -5,14 +5,11 @@ import assert from 'node:assert/strict';
 // them before every test so a leak (from another test or the CI env) can't
 // silently flip v1 goldens to v2.
 beforeEach(() => {
-  for (const k of [
-    'RUNPOD_REST_VERSION',
-    'RUNPOD_REST_VERSION_PODS',
-    'RUNPOD_REST_VERSION_TEMPLATES',
-    'RUNPOD_REST_VERSION_NETWORK_VOLUMES',
-    'RUNPOD_REST_VERSION_REGISTRIES',
-  ]) {
-    delete process.env[k];
+  // Clear the global flag AND every per-resource override (RUNPOD_REST_VERSION_*)
+  // so a leak from CI/shell can't flip v1 goldens to v2 (or route a v1 catalog
+  // test to the real-network GraphQL path).
+  for (const k of Object.keys(process.env)) {
+    if (k.startsWith('RUNPOD_REST_VERSION')) delete process.env[k];
   }
 });
 
@@ -731,6 +728,49 @@ describe('catalog routing (B5)', () => {
     });
   });
 
+  it('list-gpu-types v2 communityCloudOnly filters on g.community', async () => {
+    await withV2(async () => {
+      const gpus = [
+        { id: 'a', name: 'A', community: false },
+        { id: 'b', name: 'B', community: true },
+      ];
+      const { handlers } = harness({ jsonBody: { gpus } });
+      const out = (await handlers.get('list-gpu-types')!({
+        communityCloudOnly: true,
+      })) as { content: Array<{ text: string }> };
+      const payload = JSON.parse(out.content[0].text);
+      assert.deepEqual(
+        payload.map((g: { id: string }) => g.id),
+        ['b']
+      );
+    });
+  });
+
+  it('list-gpu-types v2 includeUnavailable is a no-op (does not filter)', async () => {
+    await withV2(async () => {
+      const gpus = [
+        { id: 'a', name: 'A' },
+        { id: 'b', name: 'B' },
+      ];
+      const { handlers } = harness({ jsonBody: { gpus } });
+      const out = (await handlers.get('list-gpu-types')!({
+        includeUnavailable: false,
+      })) as { content: Array<{ text: string }> };
+      assert.equal(JSON.parse(out.content[0].text).length, 2);
+    });
+  });
+
+  it('list-gpu-types v2 no filters → returns all (unwrap only)', async () => {
+    await withV2(async () => {
+      const gpus = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+      const { handlers } = harness({ jsonBody: { gpus } });
+      const out = (await handlers.get('list-gpu-types')!({})) as {
+        content: Array<{ text: string }>;
+      };
+      assert.equal(JSON.parse(out.content[0].text).length, 3);
+    });
+  });
+
   it('list-gpu-types v2 searchTerm matches id/name', async () => {
     await withV2(async () => {
       const gpus = [
@@ -806,12 +846,21 @@ describe('catalog routing (B5)', () => {
       /only available on the v2/
     );
     await withV2(async () => {
-      const { handlers, outbound } = harness({ jsonBody: { id: 'a100' } });
-      await handlers.get('get-gpu-type')!({ gpuTypeId: 'a100' });
+      const { handlers, outbound } = harness({
+        jsonBody: { id: 'a100', memory: 80 },
+      });
+      const out = (await handlers.get('get-gpu-type')!({
+        gpuTypeId: 'a100',
+      })) as { content: Array<{ text: string }> };
       assert.equal(
         outbound[0].url,
         'https://v2-rest.runpod.io/v2/catalog/gpus/a100'
       );
+      // raw passthrough (no unwrap) — body preserved
+      assert.deepEqual(JSON.parse(out.content[0].text), {
+        id: 'a100',
+        memory: 80,
+      });
     });
   });
 });
