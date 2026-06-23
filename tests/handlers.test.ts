@@ -5,8 +5,15 @@ import assert from 'node:assert/strict';
 // them before every test so a leak (from another test or the CI env) can't
 // silently flip v1 goldens to v2.
 beforeEach(() => {
-  delete process.env.RUNPOD_REST_VERSION;
-  delete process.env.RUNPOD_REST_VERSION_PODS;
+  for (const k of [
+    'RUNPOD_REST_VERSION',
+    'RUNPOD_REST_VERSION_PODS',
+    'RUNPOD_REST_VERSION_TEMPLATES',
+    'RUNPOD_REST_VERSION_NETWORK_VOLUMES',
+    'RUNPOD_REST_VERSION_REGISTRIES',
+  ]) {
+    delete process.env[k];
+  }
 });
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -204,6 +211,103 @@ describe('outbound-request golden (v1 unchanged)', () => {
     assert.equal(outbound[0].url, 'https://rest.runpod.io/v1/templates');
     assert.equal(outbound[0].method, 'POST');
     assert.equal(outbound[0].body, JSON.stringify(params));
+  });
+
+  // --- v1 wire-locks for the rerouted handlers (silent-regression guard) ---
+  it('list-templates forwards v1 include* query params', async () => {
+    const { handlers, outbound } = harness({ jsonBody: [] });
+    await handlers.get('list-templates')!({
+      includeRunpodTemplates: true,
+      includePublicTemplates: true,
+    });
+    assert.equal(
+      outbound[0].url,
+      'https://rest.runpod.io/v1/templates?includeRunpodTemplates=true&includePublicTemplates=true'
+    );
+  });
+
+  it('get-template → GET <rest>/v1/templates/{id}', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    await handlers.get('get-template')!({ templateId: 't_1' });
+    assert.equal(outbound[0].url, 'https://rest.runpod.io/v1/templates/t_1');
+    assert.equal(outbound[0].method, 'GET');
+    assert.equal(outbound[0].body, undefined);
+  });
+
+  it('update-template → PATCH <rest>/v1/templates/{id}, body excludes templateId, imageName preserved', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    await handlers.get('update-template')!({
+      templateId: 't_1',
+      imageName: 'img2',
+    });
+    assert.equal(outbound[0].url, 'https://rest.runpod.io/v1/templates/t_1');
+    assert.equal(outbound[0].method, 'PATCH');
+    const body = JSON.parse(outbound[0].body!);
+    assert.equal('templateId' in body, false);
+    assert.equal(body.imageName, 'img2'); // v1 identity keeps imageName
+  });
+
+  it('delete-template → DELETE <rest>/v1/templates/{id}', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    await handlers.get('delete-template')!({ templateId: 't_1' });
+    assert.equal(outbound[0].url, 'https://rest.runpod.io/v1/templates/t_1');
+    assert.equal(outbound[0].method, 'DELETE');
+  });
+
+  it('get-network-volume → GET <rest>/v1/networkvolumes/{id}', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    await handlers.get('get-network-volume')!({ networkVolumeId: 'nv_1' });
+    assert.equal(
+      outbound[0].url,
+      'https://rest.runpod.io/v1/networkvolumes/nv_1'
+    );
+    assert.equal(outbound[0].method, 'GET');
+  });
+
+  it('delete-network-volume → DELETE <rest>/v1/networkvolumes/{id}', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    await handlers.get('delete-network-volume')!({ networkVolumeId: 'nv_1' });
+    assert.equal(
+      outbound[0].url,
+      'https://rest.runpod.io/v1/networkvolumes/nv_1'
+    );
+    assert.equal(outbound[0].method, 'DELETE');
+  });
+
+  it('get-container-registry-auth → GET <rest>/v1/containerregistryauth/{id}', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    await handlers.get('get-container-registry-auth')!({
+      containerRegistryAuthId: 'cra_1',
+    });
+    assert.equal(
+      outbound[0].url,
+      'https://rest.runpod.io/v1/containerregistryauth/cra_1'
+    );
+    assert.equal(outbound[0].method, 'GET');
+  });
+
+  it('create-container-registry-auth → POST <rest>/v1/containerregistryauth, body byte-identical', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    const params = { name: 'r', username: 'u', password: 'p' };
+    await handlers.get('create-container-registry-auth')!({ ...params });
+    assert.equal(
+      outbound[0].url,
+      'https://rest.runpod.io/v1/containerregistryauth'
+    );
+    assert.equal(outbound[0].method, 'POST');
+    assert.equal(outbound[0].body, JSON.stringify(params));
+  });
+
+  it('delete-container-registry-auth → DELETE <rest>/v1/containerregistryauth/{id}', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    await handlers.get('delete-container-registry-auth')!({
+      containerRegistryAuthId: 'cra_1',
+    });
+    assert.equal(
+      outbound[0].url,
+      'https://rest.runpod.io/v1/containerregistryauth/cra_1'
+    );
+    assert.equal(outbound[0].method, 'DELETE');
   });
 
   it('create-network-volume → POST <rest>/v1/networkvolumes, body byte-identical', async () => {
@@ -472,6 +576,41 @@ describe('template / network-volume / registry routing under v2', () => {
         outbound[0].url,
         'https://v2-rest.runpod.io/v2/network-volumes/nv_1'
       );
+    });
+  });
+
+  it('update-template → PATCH .../v2/templates/{id}, imageName→image (NOT identity), no templateId', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('update-template')!({
+        templateId: 't_1',
+        imageName: 'img2',
+      });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/templates/t_1'
+      );
+      assert.equal(outbound[0].method, 'PATCH');
+      const body = JSON.parse(outbound[0].body!);
+      assert.equal(body.image, 'img2'); // v2 mapper maps it
+      assert.equal('imageName' in body, false);
+      assert.equal('templateId' in body, false);
+    });
+  });
+
+  it('update-network-volume → PATCH .../v2/network-volumes/{id}, body excludes id', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('update-network-volume')!({
+        networkVolumeId: 'nv_1',
+        size: 100,
+      });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/network-volumes/nv_1'
+      );
+      assert.equal(outbound[0].method, 'PATCH');
+      assert.equal('networkVolumeId' in JSON.parse(outbound[0].body!), false);
     });
   });
 

@@ -12,6 +12,7 @@ import {
   mapPodCreateToV2,
   mapPodUpdateToV2,
   mapTemplateCreateToV2,
+  mapTemplateUpdateToV2,
   mapNetworkVolumeCreateToV2,
 } from './mappers.js';
 
@@ -282,7 +283,8 @@ const V2_MAPPERS: Partial<
   templates: {
     create: (b) =>
       mapTemplateCreateToV2(b as Parameters<typeof mapTemplateCreateToV2>[0]),
-    update: identity,
+    update: (b) =>
+      mapTemplateUpdateToV2(b as Parameters<typeof mapTemplateUpdateToV2>[0]),
   },
   networkVolumes: {
     create: (b) =>

@@ -149,6 +149,25 @@ export function mapTemplateCreateToV2(
   };
 }
 
+interface V1TemplateUpdate {
+  name?: string;
+  imageName?: string;
+  ports?: string[];
+  env?: Record<string, string>;
+  // readme has no v2 equivalent — dropped.
+}
+// Update has no required `category`; just flatten ContainerConfig + name. Crucial:
+// this maps imageName→image (an identity mapper would wrongly send `imageName` to
+// v2, which expects `image`).
+export function mapTemplateUpdateToV2(
+  params: V1TemplateUpdate
+): Record<string, unknown> {
+  return {
+    ...containerConfigToV2(params),
+    ...compact({ name: params.name }),
+  };
+}
+
 // Registry create is unchanged between v1 and v2 (name/username/password) →
 // identity. Exposed for symmetry so the descriptor table is uniform.
 export function identityMapper(body: unknown): unknown {
