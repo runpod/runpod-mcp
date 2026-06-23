@@ -369,8 +369,10 @@ Each resource is one independent RED→GREEN cycle; order doesn't matter, do pod
   cap them — desirable (catalogs are large), but make it a **deliberate** choice with a
   test, not an accidental output change. Resolve open #2 (availability) before C3.
 
-**Step B6 — Live smoke (the only network test).** `scripts/smoke.ts` looped over
-`RUNPOD_REST_VERSION ∈ {v1,v2}` against `v2-rest.runpod.dev` (§6). Not in CI.
+**Step B6 — Live CRUD smoke against the dev account (with mandatory cleanup).**
+`scripts/smoke.ts` looped over `RUNPOD_REST_VERSION ∈ {v1,v2}` against `v2-rest.runpod.dev`
+(§6). Live create/update/delete is OK on the dev account — but every created resource
+**must be torn down**, even on assertion failure. Not in CI; not part of `pnpm test`.
 
 ---
 
@@ -420,12 +422,22 @@ deprecate GraphQL catalog tools afterward.)
 - **Offline guard (Part 4 rule):** `tests/` never imports `scripts/smoke*.ts` or
   `src/stdio.ts` and never calls real `fetch`; a test-setup stub makes `globalThis.fetch`
   throw so no live call can leak into the offline suite.
-- **Live drift gate (the only network test):** generalize `scripts/smoke.ts` (already
-  transport-abstracted) to loop `RUNPOD_REST_VERSION ∈ {v1, v2}` with
-  `RUNPOD_REST_V2_API_URL` → dev. Assert: every list unwraps + caps; create/update bodies
-  accepted live; CPU-pod 501 = clean error. One key drives both passes (same auth scheme).
-  Add a `smoke:v2` script. **This dual-run IS the "validate before preferring v2"
-  mechanism**, and gates the Phase C flip (Step C3).
+- **Live CRUD drift gate (dev account, the only network test):** generalize
+  `scripts/smoke.ts` (already transport-abstracted) to loop `RUNPOD_REST_VERSION ∈ {v1,v2}`
+  with `RUNPOD_REST_V2_API_URL` → dev. It does **real CRUD** against the dev account:
+  create → get/list (assert unwrap + cap) → update → delete, plus CPU-pod 501 = clean error.
+  One key drives both passes (same auth scheme). Add a `smoke:v2` script. **This dual-run IS
+  the "validate before preferring v2" mechanism** and gates the Phase C flip (Step C3).
+- **Cleanup is part of the test (mandatory):**
+  - Every create is paired with a delete in a **`try/finally`** so teardown runs even when
+    an assertion throws mid-test. Track created IDs in a list; `finally` deletes all of them
+    (best-effort, swallow individual delete errors so one failure doesn't strand the rest).
+  - **Unique, identifiable names** — prefix every test resource (e.g.
+    `mcp-smoke-<short-uuid>`) so orphans are obvious and never collide with real dev resources.
+  - **Pre-sweep + post-verify** — at start, list and delete any leftover `mcp-smoke-*`
+    resources from a prior crashed run; at end, assert no `mcp-smoke-*` resources remain.
+  - Order teardown by dependency (e.g. delete pods before the network volumes they mount).
+  - The smoke **exits non-zero** if cleanup leaves anything behind, so a leak fails the gate.
 
 ---
 
