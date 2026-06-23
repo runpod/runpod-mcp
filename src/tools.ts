@@ -292,6 +292,34 @@ export function registerTools(
         ),
     },
     async (params) => {
+      const backend = backendFor('gpus');
+      if (backend.version === 'v2') {
+        // v2 REST: GET /v2/catalog/gpus → { gpus: [...] }. Filters re-applied
+        // against v2 field names (memory/secure/community/name). v2 has no
+        // realtime stockStatus, so `includeUnavailable` is a documented no-op.
+        const raw = await callRestUrl(`${backend.base}${backend.list}`);
+        let gpus = backend.unwrap(raw) as Array<Record<string, unknown>>;
+        if (params.minMemoryGb !== undefined)
+          gpus = gpus.filter(
+            (g) => Number(g.memory ?? 0) >= params.minMemoryGb!
+          );
+        if (params.secureCloudOnly) gpus = gpus.filter((g) => g.secure);
+        if (params.communityCloudOnly) gpus = gpus.filter((g) => g.community);
+        if (params.searchTerm) {
+          const t = params.searchTerm.toLowerCase();
+          gpus = gpus.filter(
+            (g) =>
+              String(g.id ?? '')
+                .toLowerCase()
+                .includes(t) ||
+              String(g.name ?? '')
+                .toLowerCase()
+                .includes(t)
+          );
+        }
+        return jsonReply(gpus);
+      }
+
       interface GpuTypesResponse {
         gpuTypes: Array<{
           id: string;
@@ -390,6 +418,23 @@ export function registerTools(
         ),
     },
     async (params) => {
+      const backend = backendFor('dataCenters');
+      if (backend.version === 'v2') {
+        // v2 REST: GET /v2/catalog/datacenters → { dataCenters: [...] }. v2 uses
+        // a `region` enum (vs v1 free-text `location`); region filter matches it.
+        const raw = await callRestUrl(`${backend.base}${backend.list}`);
+        let dcs = backend.unwrap(raw) as Array<Record<string, unknown>>;
+        if (params.region) {
+          const t = params.region.toLowerCase();
+          dcs = dcs.filter((dc) =>
+            String(dc.region ?? '')
+              .toLowerCase()
+              .includes(t)
+          );
+        }
+        return jsonReply(dcs);
+      }
+
       interface DataCentersResponse {
         dataCenters: Array<{
           id: string;
@@ -421,6 +466,42 @@ export function registerTools(
       }
 
       return jsonReply(dataCenters);
+    }
+  );
+
+  // List CPU Types (v2-only — v2 catalog REST has no v1/GraphQL equivalent)
+  server.tool('list-cpu-types', {}, async () => {
+    const backend = backendFor('cpus');
+    if (backend.version === 'v1') {
+      return jsonReply({
+        error:
+          'list-cpu-types is only available on the v2 REST API. Set RUNPOD_REST_VERSION=v2.',
+        status: 501,
+      });
+    }
+    const raw = await callRestUrl(`${backend.base}${backend.list}`);
+    return jsonReply(backend.unwrap(raw));
+  });
+
+  // Get GPU Type by id (v2-only — GET /v2/catalog/gpus/{id})
+  server.tool(
+    'get-gpu-type',
+    {
+      gpuTypeId: z.string().describe('ID of the GPU type to retrieve'),
+    },
+    async (params) => {
+      const backend = backendFor('gpus');
+      if (backend.version === 'v1') {
+        return jsonReply({
+          error:
+            'get-gpu-type is only available on the v2 REST API. Set RUNPOD_REST_VERSION=v2 (or use list-gpu-types on v1).',
+          status: 501,
+        });
+      }
+      const result = await callRestUrl(
+        `${backend.base}${backend.get!(params.gpuTypeId)}`
+      );
+      return jsonReply(result);
     }
   );
 
