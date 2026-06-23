@@ -99,18 +99,26 @@ v2 introduces a shared `ContainerConfig` (`image`, `args`, `disk`, `ports`, `env
   **zero query params** (verified: `?limit=1` ignored live). v1's `computeType`,
   `gpuTypeId`, `dataCenterId`, `name`, `includeMachine`, `includeTemplate`, etc. have
   no v2 equivalent → drop, or filter client-side.
-- **GPU availability (`stockStatus`/`includeUnavailable`) cannot be reproduced** from
-  v2 catalog — no availability field. Either keep GraphQL for that one signal or accept
-  the regression.
+- **GPU live stock signal partially lost.** v2 `GpuType` has **no real-time
+  `stockStatus`** (the High/Medium/Low/Out signal behind today's `includeUnavailable`),
+  so that filter can't be reproduced. BUT per-cloud availability **survives** as the
+  `secure`/`community` booleans + `maxCount.{secure,community}` — the B5 mapper must keep
+  those. Decision (open #2): accept losing only the realtime stock signal, or keep one
+  GraphQL call for it.
 - **DataCenter `location` (free string) → `region` (continental enum).** The current
   client-side region substring filter breaks; rewrite against the enum.
 
-### 1.6 Coverage hole — v2 has no serverless
-v2 REST has **zero** endpoint/job operations. These 13 MCP tools have **no v2 home**
-and stay on v1 / `api.runpod.ai/v2` forever (until v2 adds them):
-`list/get/create/update/delete-endpoint`, `run-endpoint`, `runsync-endpoint`,
-`get-job-status`, `stream-job`, `cancel-job`, `retry-job`, `endpoint-health`,
-`purge-endpoint-queue`. → **Version routing must be per-resource, never global.**
+### 1.6 Coverage hole — v2 has no serverless (and endpoint-CRUD ≠ serverless base)
+v2 REST has **zero** endpoint/job operations. Two different v1 bases are involved — keep
+them straight or the adapter will POST to the wrong host:
+- **Endpoint CRUD (5 tools)** — `list/get/create/update/delete-endpoint` — call
+  `runpodRequest` on the **REST base** (`rest.runpod.io/v1/endpoints`). When v2 ships
+  `/v2/endpoints` these route like pods. `endpoints` descriptor base = **REST v1**, not serverless.
+- **Serverless runtime (8 tools)** — `run-endpoint`, `runsync-endpoint`, `get-job-status`,
+  `stream-job`, `cancel-job`, `retry-job`, `endpoint-health`, `purge-endpoint-queue` —
+  call `serverlessRequest` on `api.runpod.ai/v2`. Permanent v1; `jobs` descriptor base = serverless.
+
+→ **Version routing must be per-resource, never global.**
 
 ### 1.7 New in v2 — tools to add
 `restart` pod action · `list-cpu-types` (`/v2/catalog/cpus`) · `get-gpu-type`
@@ -131,8 +139,8 @@ src/
     network-volumes.ts
     registries.ts
     catalog.ts
-    endpoints.ts     ← serverless config (v1-only)
-    jobs.ts          ← serverless runtime (v1-only)
+    endpoints.ts     ← endpoint CRUD (v1-only, REST base rest.runpod.io/v1)
+    jobs.ts          ← serverless runtime (v1-only, base api.runpod.ai/v2)
   _shared/
     http.ts          ← one HTTP client (merges runpodRequest/serverlessRequest/graphql)
     backend.ts       ← resolveBackend(resource, ctx): base, path, mapRequest, unwrap
@@ -157,8 +165,8 @@ pods: {
   v2: { base: REST_V2, list: '/v2/pods',  get: id => `/v2/pods/${id}`,
         unwrap: r => r.pods,      mapCreate: mapPodCreateToV2 },       // envelope + body remap
 },
-jobs:      { v1Only: true },     // serverless runtime — always v1
-endpoints: { v1Only: true },     // serverless config  — always v1
+jobs:      { v1Only: true, base: SERVERLESS },  // runtime — api.runpod.ai/v2, always v1
+endpoints: { v1Only: true, base: REST_V1 },     // endpoint CRUD — REST v1, NOT serverless base
 ```
 
 Payoffs: envelope bug dies in `unwrap`; body drift isolated in `mapCreate`; migration
@@ -185,9 +193,12 @@ Rules:
 - `RUNPOD_REST_VERSION = v1 | v2 | auto`, default `v1`.
   - `v1` / `v2`: explicit, no probe — just read env (env is global config, safe to share).
   - `auto`: **stdio only** — probe once per process (one key) and cache. For **hosted
-    HTTP, treat `auto` as v1** (or pin the deployment to `v2` explicitly) — do not probe
-    per request in the hot path inside the 60s budget unless cached by a hash of the
-    bearer with a short TTL.
+    HTTP, treat `auto` as v1** (or pin the deployment to `v2` explicitly). **Do NOT add a
+    bearer-hash probe cache** — any module-level map keyed by token is itself cross-user
+    state on a shared warm instance, the exact leak this section exists to prevent.
+- ⚠️ **No new module-level mutable state.** `SESSION_ID` (`tools.ts:39`) is already a
+  process-global shared across all HTTP requests on a warm instance; the version work
+  must not add another (memoized probe, cache map, etc.) in the HTTP path.
 - New env: `RUNPOD_REST_V2_API_URL` (default `https://v2-rest.runpod.io/v2`) alongside
   the existing base consts at `src/tools.ts:9-22`.
 
@@ -210,6 +221,19 @@ L4 v2 mappings → L5 new tools → L6 flip. v2 logic is written and tested (aga
 
 Harness is already in place: `node --import tsx --test tests/*.test.ts`. Keep units pure.
 
+**🔒 Local-only rule (hard constraint).** Everything under `tests/` runs offline with no
+network, no live API, no credentials. A `tests/` file must **never** import
+`scripts/smoke*.ts` or `src/stdio.ts`, and never call the real `fetch` — network reaches
+units only via an injected fake `fetch`. The single network-touching check is the live
+smoke **script** (Step B6), which is not part of `pnpm test`. Add a setup guard that makes
+`globalThis.fetch` throw inside the test process so a live call can never silently leak in.
+
+**DI seams are a Phase-A deliverable, not today's code.** Today `fetch` is a module-level
+`node-fetch` import (`tools.ts:3`) closed over inside `registerTools`, and handlers close
+over the request fn — neither is injectable yet. Steps A3/A4 must *build* the seams
+(`fetch` as a param; client passed into `register<Resource>(server, ctx, deps)`) as part of
+GREEN, or their RED tests have nothing injectable to target. This is stated per-step below.
+
 ---
 
 ### Phase A — Refactor to a tested, v1-only adapter (MERGEABLE TO MAIN; no behavior change)
@@ -231,6 +255,14 @@ Harness is already in place: `node --import tsx --test tests/*.test.ts`. Keep un
 - GREEN: `resolveVersion({ resource, env, ctx, probe })`.
 - REFACTOR: extract the v1-only resource set to a const.
 
+**Step A1b — The real `auto` probe's decision logic (injected `fetch`, offline).**
+- RED: `tests/backend.test.ts` → `describe('probeV2')`. Inject a fake `fetch` returning a
+  canned `Response`: `200/2xx → true`; `401 → false`; `fetch throws → false`; second call
+  reuses the cached verdict (fetch called once per process). No real network.
+- GREEN: `probeV2({ fetch, baseUrl })` with per-process memoization (stdio only — never
+  wired into the HTTP path, per Part 3).
+- REFACTOR: none. (Live confirmation that the probe hits a real v2 happens in Step B6, not here.)
+
 **Step A2 — `resolveBackend` returns the right descriptor.**
 - RED: `tests/backend.test.ts` → `describe('resolveBackend')`. For each resource assert the
   v1 entry's `base` + `list`/`get(id)` paths **exactly match today's strings**
@@ -240,33 +272,50 @@ Harness is already in place: `node --import tsx --test tests/*.test.ts`. Keep un
 - REFACTOR: one descriptor object per resource.
 
 **Step A3 — Unified HTTP client, injected `fetch`.**
+- PREREQ (GREEN): introduce the `fetch` seam — `createHttpClient({ apiKey, fetch, tracking })`
+  takes `fetch` as a param (today it's a module import); thread it from `stdio.ts`/`http.ts`.
 - RED: `tests/http.test.ts`. Inject a fake `fetch`. Cases: builds `base+path`; sets
   `Authorization: Bearer <key>` + tracking headers; serializes body only for POST/PATCH;
-  `!ok → throws "Runpod API Error: <status> - <body>"`; non-JSON content-type →
-  `{success:true,status}`; JSON → parsed.
-- GREEN: `src/_shared/http.ts` → `createHttpClient({ apiKey, fetch, tracking })`. Move
-  `trackingHeaders` to `src/_shared/tracking.ts`. Merge `runpodRequest` +
-  `serverlessRequest` into one client (path is fully resolved by the adapter, so the
-  `endpointId`-split shape collapses into the path).
+  `!ok → throws` with the configured error prefix; **non-JSON / 204 / empty body →
+  `{success:true,status}`** (covers pod-action responses); JSON → parsed.
+- GREEN: `src/_shared/http.ts`. Move `trackingHeaders` to `src/_shared/tracking.ts` (add a
+  case for its clientInfo-vs-UA fallback). Merge `runpodRequest` + `serverlessRequest` into
+  one client — path is fully resolved by the adapter, so the `endpointId`-split collapses.
+  ⚠️ **Error/log prefix collapses** (`"Runpod Serverless API Error"`→`"Runpod API Error"`,
+  `tools.ts:152` vs `201`): either keep a per-client prefix option, or accept the unified
+  prefix as an intended cosmetic change — and note it so A5's golden diff isn't surprised.
 - REFACTOR: delete the three old in-`tools.ts` helpers; re-point imports.
 
 **Step A4 — Handlers go through the adapter (integration, faked server + client).**
-- RED: `tests/handlers.test.ts`. Build a fake `McpServer` (extend the existing capture
-  harness to also store handlers) + an injected client returning fixtures. Cases per list
-  tool: `list-pods` on a v1 fixture → unwrap → `capListResult` caps to limit, envelope
-  shape correct; `create-pod` calls client with `POST` + the (v1-identity) body.
+- PREREQ (GREEN): introduce the client seam — `register<Resource>(server, ctx, deps)` where
+  `deps.client` is injectable (built from `ctx` in production, faked in tests).
+- RED: `tests/handlers.test.ts`. Fake `McpServer` (extend the capture harness to store
+  handlers) + an injected client returning fixtures. Cases:
+  - `list-pods` on a **v1 array fixture** → unwrap → cap to limit, envelope shape correct;
+  - `list-pods` on a **v2 envelope fixture** `{pods:[…51]}` → unwrap → cap to 20, correct
+    `nextCursor`/`truncated` (the composed cursor×unwrap path);
+  - **empty envelope** `{pods:[]}` → `[]` → empty page, not raw passthrough;
+  - `create-pod` calls client with `POST` + the (v1-identity) body.
 - GREEN: split `tools.ts` → `src/tools/{pods,templates,network-volumes,registries,
   catalog,endpoints,jobs}.ts`; each handler calls `resolveBackend(...)` + the client +
-  `capListResult`. `registerTools` just calls each `register<Resource>(server, ctx)`.
+  `capListResult`. `registerTools` just calls each `register<Resource>(server, ctx, deps)`.
 - REFACTOR: collapse the duplicated `JSON.stringify` response wrapper into one helper.
 
-**Step A5 — Existing tests stay green + envelope regression locked.**
-- RED: add to `tests/pagination.test.ts` a case asserting `capListResult` stays
-  **array-only** (its contract didn't change; unwrap is the adapter's job). Confirm
+**Step A5 — Existing tests stay green + envelope regression locked (regression lock, not a RED cycle).**
+- add to `tests/pagination.test.ts` a case asserting `capListResult` stays **array-only**
+  (its contract didn't change; unwrap is the adapter's job). Confirm
   `tools-registration.test.ts` (`>=30`, `CORE_TOOLS`, list params) still passes.
-- GREEN: no new code — this step is the safety net.
-- REFACTOR: golden-file check — `scripts/smoke-list.ts` output diff vs `main` is empty
-  (proves zero behavior change). **End of Phase A → PR to main.**
+- **Offline golden-file proof (NOT live):** capture each tool's output for a **committed
+  fixture input** before the refactor (run against `main` with an injected fixture client),
+  store under `tests/fixtures/golden/`, and diff after. Covers all 36 tools, not just the 5
+  capped lists, and needs no network or key. (The *live* `scripts/smoke-list.ts` run is a
+  separate, optional confidence check in §6 — never the Phase-A gate.)
+- **End of Phase A → PR to main.**
+
+**Step A6 — Wire `pnpm test` into CI (the gate must exist).**
+- Today `.github/workflows/ci.yml` runs only `type-check`, `lint`, `build` — **not the
+  tests**. Add a `Test` step running `pnpm test` before Build (across the existing Node
+  matrix). Without this, "tests gate the merge" is fiction. Offline suite only; no secrets.
 
 ---
 
@@ -279,9 +328,12 @@ Each resource is one independent RED→GREEN cycle; order doesn't matter, do pod
 - RED: `tests/mappers.test.ts` → `mapPodCreateToV2`. Cases (from Part 1.4):
   `imageName→image`, `containerDiskInGb→disk`, `volumeInGb/volumeMountPath →
   mounts.persistent.{size,path}`, `gpuTypeIds[0]→gpu.id` + `gpuCount→gpu.count`,
-  `cloudType→cloud`, `dataCenterIds[0]→dataCenter`; unknown keys dropped; round-trip a
-  full v1 body → expected v2 JSON fixture. ⚠️ See Part 7 spec-volatility — assert against
-  the **live** spec at build time (`dataCenter` may be `dataCenterIds[]`).
+  `cloudType→cloud`, `dataCenterIds[0]→dataCenter`; unknown keys dropped; **never emits
+  both `gpu` and `cpu`** (v2 enforces exactly one); round-trip a full v1 body → expected v2
+  JSON. Assert against a **committed fixture** `tests/fixtures/v2-create-pod.json` (offline).
+  ⚠️ Spec-volatility (Part 7: `dataCenter` scalar may revert to `dataCenterIds[]`, `cloud`
+  may drop `ALL`): when the live spec moves, **update the fixture in a dedicated commit** —
+  tests never reach the network to discover this.
 - GREEN: `mapPodCreateToV2` + `mapPodUpdateToV2` in `src/_shared/mappers.ts`; wire as the
   pod descriptor's `mapCreate`/`mapUpdate` v2 entry.
 - REFACTOR: share the `ContainerConfig` flatten between create + update + templates.
@@ -293,18 +345,29 @@ Each resource is one independent RED→GREEN cycle; order doesn't matter, do pod
 - GREEN: fill the `v2` half of each descriptor.
 - REFACTOR: dedupe path-building.
 
-**Step B3 — Template / volume / registry mappers** (same RED→GREEN as B1: `category`,
-`serverless`, drop `dockerEntrypoint/readme`; `dataCenterId→dataCenter`).
+**Step B3 — Template / volume / registry mappers** (same RED→GREEN as B1, committed fixtures).
+- Template: `imageName→image`, **`isServerless→serverless`** (rename), `category`/`public`
+  added, drop `readme`. ⚠️ **`dockerEntrypoint[]` + `dockerStartCmd[]` → single `args`
+  string is lossy** — pin the chosen join semantics (order + separator) in the test, or
+  surface a warning; don't leave it implicit.
+- Volume: `dataCenterId→dataCenter`. Registry: unchanged.
 
 **Step B4 — Pod actions: start/stop → `podAction` under v2.**
 - RED: handler test — under v2, `stop-pod` calls `POST /v2/pods/{id}/action` body
   `{action:'stop'}`; under v1, `POST /pods/{id}/stop`. Same for start.
 - GREEN: branch in the pods descriptor.
 
-**Step B5 — Catalog GraphQL→REST under v2.**
+**Step B5 — Catalog GraphQL→REST under v2 (+ filter regression).**
 - RED: mapper tests for GPU/datacenter field renames (`displayName→name`,
-  `location→region` enum); handler resolves GraphQL under v1, REST under v2.
+  `location`→`region` enum), and that the v2 mapper **keeps `secure`/`community` +
+  `maxCount`** (per-cloud availability survives; only realtime `stockStatus` is lost).
+  Pure filter-fn tests: `filterDataCentersByRegion` (v1 substring on `location` vs v2 enum
+  match) and `filterGpuTypes`; handler resolves GraphQL under v1, REST under v2.
 - GREEN: add v2 REST catalog descriptors; keep GraphQL as the v1 entry.
+- ⚠️ **Decide capping:** today `list-gpu-types`/`list-data-centers` bypass `capListResult`
+  (raw `JSON.stringify`, `tools.ts:342-349`). Routing them through the adapter will newly
+  cap them — desirable (catalogs are large), but make it a **deliberate** choice with a
+  test, not an accidental output change. Resolve open #2 (availability) before C3.
 
 **Step B6 — Live smoke (the only network test).** `scripts/smoke.ts` looped over
 `RUNPOD_REST_VERSION ∈ {v1,v2}` against `v2-rest.runpod.dev` (§6). Not in CI.
@@ -318,10 +381,15 @@ Each resource is one independent RED→GREEN cycle; order doesn't matter, do pod
   `list-cpu-types`, `get-gpu-type` register; the `>=30` + no-dupes checks still hold.
 - GREEN: add them via the adapter.
 
-**Step C2 — CPU-pod 501 → clean error.**
-- RED: handler test — injected client returns `501`; assert the tool returns a clean
-  message ("CPU pods not yet supported on v2 REST") and does **not** throw.
-- GREEN: map 501 in the pods create handler.
+**Step C2 — CPU-pod 501 → clean error (pin the contract — fake must match real).**
+- ⚠️ Today the client **throws** on any `!ok` (`tools.ts:150`), so 501 would throw, not
+  "return". Pick one and make the fake match: have `createHttpClient` **special-case 501
+  before the generic throw**, returning `{ unsupported: true, status: 501 }`; the
+  create-pod handler maps that to the clean message.
+- RED: `tests/handlers.test.ts` — injected client returns the `{unsupported:true,status:501}`
+  shape; assert the tool result is **non-error content** (`isError` falsy) containing
+  "CPU pods not yet supported on v2 REST", and does **not** throw.
+- GREEN: the 501 special-case in the client + the handler mapping.
 
 **Step C3 — Flip the default.** Change `RUNPOD_REST_VERSION` default v1→v2 for
 control-plane resources. **Gated on: v2 PROD returns 200 + the L4 dual-backend smoke is
@@ -345,7 +413,13 @@ deprecate GraphQL catalog tools afterward.)
 - **Unit/integration tests are defined test-first in Part 4** (the RED step of each
   cycle): `tests/backend.test.ts`, `http.test.ts`, `mappers.test.ts`, `handlers.test.ts`,
   plus the existing `pagination.test.ts` / `tools-registration.test.ts`. All offline,
-  pure or DI-faked, run by `pnpm test` (`node --import tsx --test tests/*.test.ts`) → CI gate.
+  pure or DI-faked, run by `pnpm test` (`node --import tsx --test tests/*.test.ts`).
+- ⚠️ **`pnpm test` is not in CI today** — `ci.yml` runs only type-check/lint/build.
+  **Step A6 adds the test step** so the suite actually gates merges. Until then it's a
+  local gate only.
+- **Offline guard (Part 4 rule):** `tests/` never imports `scripts/smoke*.ts` or
+  `src/stdio.ts` and never calls real `fetch`; a test-setup stub makes `globalThis.fetch`
+  throw so no live call can leak into the offline suite.
 - **Live drift gate (the only network test):** generalize `scripts/smoke.ts` (already
   transport-abstracted) to loop `RUNPOD_REST_VERSION ∈ {v1, v2}` with
   `RUNPOD_REST_V2_API_URL` → dev. Assert: every list unwraps + caps; create/update bodies
