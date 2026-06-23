@@ -155,14 +155,23 @@ export function wantsAutoProbe(env: Env): boolean {
 // exact shape the prober needs (just `{ status }`), instead of casting.
 export type FetchLike = (
   url: string,
-  init?: { method?: string; headers?: Record<string, string> }
+  init?: {
+    method?: string;
+    headers?: Record<string, string>;
+    signal?: AbortSignal;
+  }
 ) => Promise<{ status: number }>;
 
 export interface ProbeDeps {
   fetch: FetchLike;
   baseUrl: string;
   apiKey: string;
+  timeoutMs?: number;
 }
+
+// Bound the startup probe so a slow-but-reachable v2 host can't hang stdio
+// startup forever — an abort throws, which runV2Probe degrades to a transient.
+export const PROBE_TIMEOUT_MS = 4000;
 
 // Classify a probe response status into a definitive verdict, or `undefined` for
 // a transient failure (5xx) that must NOT be cached.
@@ -172,12 +181,13 @@ function classifyProbeStatus(status: number): boolean | undefined {
 }
 
 // One probe attempt. Returns a definitive verdict, or `undefined` when the
-// attempt was transient (network throw / 5xx) and should be retried.
+// attempt was transient (network throw / timeout / 5xx) and should be retried.
 async function runV2Probe(deps: ProbeDeps): Promise<boolean | undefined> {
   try {
     const res = await deps.fetch(`${deps.baseUrl}/catalog/gpus`, {
       method: 'GET',
       headers: { Authorization: `Bearer ${deps.apiKey}` },
+      signal: AbortSignal.timeout(deps.timeoutMs ?? PROBE_TIMEOUT_MS),
     });
     return classifyProbeStatus(res.status);
   } catch {

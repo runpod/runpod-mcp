@@ -18,11 +18,18 @@ describe('wantsAutoProbe', () => {
   it('true when a per-resource override is auto', () => {
     assert.equal(wantsAutoProbe({ RUNPOD_REST_VERSION_PODS: 'auto' }), true);
   });
-  it('false for v1/v2/unset/bogus', () => {
+  it('false for v1/v2/unset/bogus/empty', () => {
     assert.equal(wantsAutoProbe({ RUNPOD_REST_VERSION: 'v2' }), false);
     assert.equal(wantsAutoProbe({ RUNPOD_REST_VERSION: 'v1' }), false);
     assert.equal(wantsAutoProbe({}), false);
     assert.equal(wantsAutoProbe({ RUNPOD_REST_VERSION: 'foo' }), false);
+    assert.equal(wantsAutoProbe({ RUNPOD_REST_VERSION: '' }), false);
+  });
+  it('startsWith matches any suffix incl. V1_ONLY (intentional over-match; harmless)', () => {
+    assert.equal(
+      wantsAutoProbe({ RUNPOD_REST_VERSION_ENDPOINTS: 'auto' }),
+      true
+    );
   });
 });
 
@@ -246,6 +253,21 @@ describe('createV2Prober', () => {
         `status ${status} should not be available`
       );
     }
+  });
+
+  it('passes an AbortSignal (timeout) and degrades an aborted probe to false', async () => {
+    let sawSignal = false;
+    const probe = createV2Prober({
+      fetch: async (_url, init) => {
+        sawSignal = init?.signal instanceof AbortSignal;
+        throw new Error('aborted'); // simulate a timeout abort
+      },
+      baseUrl: 'x',
+      apiKey: 'k',
+      timeoutMs: 10,
+    });
+    assert.equal(await probe(), false);
+    assert.equal(sawSignal, true, 'probe must pass a timeout signal');
   });
 
   it('fetch throws → false', async () => {
