@@ -299,11 +299,14 @@ GREEN, or their RED tests have nothing injectable to target. This is stated per-
 
 **Step A3 — Unified HTTP client, injected `fetch`. (SCOPE: REST + Serverless only — NOT GraphQL.)**
 - **CONTRACT (pin this first — it threads through A3→A4→B4→C2):** the client is **low-level**,
-  signature `client(path, method?='GET', body?): Promise<unknown>` (mirrors today's
-  `runpodRequest`, `tools.ts:126-130`). On `!ok` it **throws** (stream-job's loop depends on
-  it, A4) — **except 501**, which it returns as `{unsupported:true,status:501}` (C2). It takes
-  a per-client `errorPrefix` option so `"Runpod API Error"` / `"Runpod Serverless API Error"`
-  / `"GraphQL Error:"` are preserved (decide here, not at A5).
+  signature `client(url, method?='GET', body?): Promise<unknown>` (takes a fully-resolved URL;
+  the adapter builds base+path). On `!ok` it **throws `HttpError`** carrying `.status` + `.body`
+  — for **all** non-OK responses including 501. This is a superset of today's "throw on any
+  !ok", so stream-job's consecutive-error loop keeps working AND create-pod (C2) can branch on
+  `err.status === 501` for a clean message. (This supersedes the earlier provisional idea of
+  *returning* `{unsupported}` on 501 — that would have defanged stream-job's error counter.)
+  Per-client `errorPrefix` keeps `"Runpod API Error"` / `"Runpod Serverless API Error"`
+  attributable. Content-type matches the `+json` suffix (v2 problem+json parsed, not swallowed).
 - PREREQ (GREEN): introduce the `fetch` seam — `createHttpClient({ apiKey, fetch, tracking, errorPrefix })`
   takes `fetch` as a param (today it's a module import, `tools.ts:3`); thread from `stdio.ts`/`http.ts`.
 - RED: `tests/http.test.ts`. Inject a fake `fetch`. Cases: builds `base+path`; sets
@@ -434,15 +437,15 @@ Each resource is one independent RED→GREEN cycle; order doesn't matter, do pod
   `list-cpu-types`, `get-gpu-type` register; the `>=30` + no-dupes checks still hold.
 - GREEN: add them via the adapter.
 
-**Step C2 — CPU-pod 501 → clean error (pin the contract — fake must match real).**
-- ⚠️ Today the client **throws** on any `!ok` (`tools.ts:150`), so 501 would throw, not
-  "return". Pick one and make the fake match: have `createHttpClient` **special-case 501
-  before the generic throw**, returning `{ unsupported: true, status: 501 }`; the
-  create-pod handler maps that to the clean message.
-- RED: `tests/handlers.test.ts` — injected client returns the `{unsupported:true,status:501}`
-  shape; assert the tool result is **non-error content** (`isError` falsy) containing
-  "CPU pods not yet supported on v2 REST", and does **not** throw.
-- GREEN: the 501 special-case in the client + the handler mapping.
+**Step C2 — CPU-pod 501 → clean error (reconciled with A3's HttpError design).**
+- The client throws `HttpError` on all `!ok` (A3), so the create-pod handler **catches
+  `HttpError` and branches on `err.status === 501`** → returns a clean message. (No
+  `{unsupported}` return — `HttpError.status` is exactly the field that enables this, and
+  keeping 501 a throw means stream-job still counts it.)
+- RED: `tests/handlers.test.ts` — injected client throws `new HttpError('...', 501, '...')`;
+  assert the create-pod tool result is **non-error content** (`isError` falsy) containing
+  "CPU pods not yet supported on v2 REST", and does **not** re-throw.
+- GREEN: the try/catch + `err.status === 501` branch in the create-pod handler.
 
 **Step C3 — Flip the default (per-resource, not one global switch).**
 - ⚠️ **Resolve the routing-vs-control contradiction.** Part 1.6 says routing is per-resource,

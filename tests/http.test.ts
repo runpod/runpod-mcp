@@ -108,8 +108,8 @@ describe('createHttpClient — request shape', () => {
     }
   });
 
-  it('does NOT serialize a body for GET/DELETE', async () => {
-    for (const method of ['GET', 'DELETE']) {
+  it('does NOT serialize a body for GET/DELETE/PUT (gate is POST/PATCH only)', async () => {
+    for (const method of ['GET', 'DELETE', 'PUT']) {
       const cap: Captured = {};
       const client = createHttpClient({
         apiKey: 'k',
@@ -120,6 +120,36 @@ describe('createHttpClient — request shape', () => {
       await client('http://x/pods', method, { name: 'a' });
       assert.equal(cap.init?.body, undefined, method);
     }
+  });
+
+  it('invokes tracking() on every request (not memoized) — session id stays per-call', async () => {
+    let n = 0;
+    const client = createHttpClient({
+      apiKey: 'k',
+      fetch: fakeFetch(fakeResponse({ jsonBody: {} })),
+      tracking: () => ({ 'X-Runpod-Session-Id': String(++n) }),
+      errorPrefix: 'p',
+    });
+    // capture per call
+    const seen: string[] = [];
+    const capClient = createHttpClient({
+      apiKey: 'k',
+      fetch: async (_url, init) => {
+        seen.push(init.headers['X-Runpod-Session-Id']);
+        return fakeResponse({ jsonBody: {} });
+      },
+      tracking: () => ({ 'X-Runpod-Session-Id': String(++n) }),
+      errorPrefix: 'p',
+    });
+    await client('http://x');
+    await capClient('http://x');
+    await capClient('http://x');
+    assert.equal(seen.length, 2);
+    assert.notEqual(
+      seen[0],
+      seen[1],
+      'tracking must be re-evaluated per request'
+    );
   });
 });
 
@@ -137,17 +167,59 @@ describe('createHttpClient — response handling', () => {
     assert.deepEqual(out, { id: 'p1' });
   });
 
-  it('parses an application/problem+json body (v2 errors are JSON, not swallowed)', async () => {
-    // ok:true here just to prove the +json content-type routes to json(); the
-    // error-status path is covered separately below.
+  it('parses a generic +json vendor content-type on success', async () => {
     const out = await mk(
       fakeResponse({
         status: 200,
-        contentType: 'application/problem+json',
-        jsonBody: { detail: 'x' },
+        contentType: 'application/vnd.api+json',
+        jsonBody: { data: 1 },
       })
     )('http://x');
-    assert.deepEqual(out, { detail: 'x' });
+    assert.deepEqual(out, { data: 1 });
+  });
+
+  it('matches application/json with a charset suffix, case-insensitively', async () => {
+    const a = await mk(
+      fakeResponse({
+        contentType: 'application/json; charset=utf-8',
+        jsonBody: { a: 1 },
+      })
+    )('http://x');
+    assert.deepEqual(a, { a: 1 });
+    const b = await mk(
+      fakeResponse({ contentType: 'Application/JSON', jsonBody: { b: 2 } })
+    )('http://x');
+    assert.deepEqual(b, { b: 2 });
+  });
+
+  it('!ok with problem+json: reads body via .text(), never .json(), surfaces it on HttpError.body', async () => {
+    let jsonCalls = 0;
+    const resp = {
+      ok: false,
+      status: 400,
+      headers: { get: () => 'application/problem+json' },
+      json: async () => {
+        jsonCalls++;
+        return { detail: 'should not be read' };
+      },
+      text: async () => '{"detail":"bad request","status":400}',
+    };
+    const client = createHttpClient({
+      apiKey: 'k',
+      fetch: async () => resp,
+      tracking: noTracking,
+      errorPrefix: 'Runpod API Error',
+    });
+    await assert.rejects(
+      () => client('http://x'),
+      (err: unknown) => {
+        assert.ok(err instanceof HttpError);
+        assert.equal(err.status, 400);
+        assert.equal(err.body, '{"detail":"bad request","status":400}');
+        return true;
+      }
+    );
+    assert.equal(jsonCalls, 0, 'error path must not call .json()');
   });
 
   it('204 / empty / non-JSON → { success: true, status }', async () => {
@@ -170,6 +242,7 @@ describe('createHttpClient — response handling', () => {
       () => client('http://x'),
       (err: unknown) => {
         assert.ok(err instanceof HttpError);
+        assert.equal(err.name, 'HttpError');
         assert.equal(err.status, 404);
         assert.equal(err.body, 'not found');
         assert.match(err.message, /^Runpod API Error: 404 - not found$/);
@@ -208,6 +281,27 @@ describe('tracking headers', () => {
   it('sanitizeUaToken strips reserved chars and bounds length', () => {
     assert.equal(sanitizeUaToken('claude (code)'), 'claude__code_');
     assert.equal(sanitizeUaToken('a'.repeat(100)).length, 64);
+  });
+
+  it('sanitizeUaToken: 64 passes unchanged, 65 truncates to 64 (boundary)', () => {
+    assert.equal(sanitizeUaToken('a'.repeat(64)), 'a'.repeat(64));
+    assert.equal(sanitizeUaToken('a'.repeat(65)).length, 64);
+  });
+
+  it('sanitizeUaToken: all-reserved → underscores, empty → empty', () => {
+    assert.equal(sanitizeUaToken('(),;'), '____');
+    assert.equal(sanitizeUaToken(''), '');
+  });
+
+  it('uses unknown for an empty-string clientName/clientVersion (|| not ??)', () => {
+    const h = buildTrackingHeaders({
+      clientName: '',
+      clientVersion: '',
+      transport: 'stdio',
+      serverVersion: '1.0.0',
+      sessionId: 's',
+    });
+    assert.match(h['User-Agent'], /client=unknown; client_version=unknown/);
   });
 
   it('builds the structured UA + session id', () => {
