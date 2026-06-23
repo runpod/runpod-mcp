@@ -450,8 +450,7 @@ describe('resolveBackend (v1)', () => {
     }
   });
 
-  it('forwards v2Available through to resolveVersion (auto+stdio)', () => {
-    // auto + no v2Available → v1 → resolves (does not throw)
+  it('auto + no v2Available → v1 descriptor (does not throw)', () => {
     assert.doesNotThrow(() =>
       resolveBackend({
         resource: 'pods',
@@ -459,28 +458,91 @@ describe('resolveBackend (v1)', () => {
         ctx: stdio,
       })
     );
-    // auto + v2Available:true → v2 → throws (Phase B not implemented)
-    assert.throws(
-      () =>
-        resolveBackend({
-          resource: 'pods',
-          env: { RUNPOD_REST_VERSION: 'auto' },
-          ctx: stdio,
-          v2Available: true,
-        }),
-      /not implemented until Phase B/
-    );
   });
 
-  it('v2 resolution throws until Phase B (keeps Phase A v1-only honest)', () => {
-    assert.throws(
-      () =>
-        resolveBackend({
-          resource: 'pods',
-          env: { RUNPOD_REST_VERSION: 'v2' },
-          ctx: stdio,
-        }),
-      /not implemented until Phase B/
-    );
+  it('forwards v2Available through to resolveVersion (auto+stdio→v2 descriptor)', () => {
+    const b = resolveBackend({
+      resource: 'pods',
+      env: { RUNPOD_REST_VERSION: 'auto' },
+      ctx: stdio,
+      v2Available: true,
+    });
+    assert.equal(b.version, 'v2');
+    assert.equal(b.base, 'https://v2-rest.runpod.io/v2');
+  });
+});
+
+describe('resolveBackend (v2 descriptors)', () => {
+  const stdio = { transport: 'stdio' as const };
+  const v2env = { RUNPOD_REST_VERSION: 'v2' };
+
+  it('exact v2 paths per resource (renames + catalog)', () => {
+    const expect: Array<[Resource, string, string | undefined]> = [
+      ['pods', '/v2/pods', '/v2/pods/X'],
+      ['templates', '/v2/templates', '/v2/templates/X'],
+      ['networkVolumes', '/v2/network-volumes', '/v2/network-volumes/X'],
+      ['registries', '/v2/registries', '/v2/registries/X'],
+      ['gpus', '/v2/catalog/gpus', '/v2/catalog/gpus/X'],
+      ['cpus', '/v2/catalog/cpus', undefined],
+      ['dataCenters', '/v2/catalog/datacenters', undefined],
+    ];
+    for (const [resource, list, get] of expect) {
+      const b = resolveBackend({ resource, env: v2env, ctx: stdio });
+      assert.equal(b.version, 'v2', `${resource} version`);
+      assert.equal(b.base, 'https://v2-rest.runpod.io/v2', `${resource} base`);
+      assert.equal(b.kind, 'rest', `${resource} kind (catalog is REST in v2)`);
+      assert.equal(b.list, list, `${resource} list`);
+      assert.equal(get ? b.get!('X') : b.get, get, `${resource} get`);
+    }
+  });
+
+  it('v2 base is env-overridable', () => {
+    const b = resolveBackend({
+      resource: 'pods',
+      env: {
+        RUNPOD_REST_VERSION: 'v2',
+        RUNPOD_REST_V2_API_URL: 'http://local/v2',
+      },
+      ctx: stdio,
+    });
+    assert.equal(b.base, 'http://local/v2');
+  });
+
+  it('v2 unwrap pulls the envelope key', () => {
+    const b = resolveBackend({ resource: 'pods', env: v2env, ctx: stdio });
+    assert.deepEqual(b.unwrap({ pods: [{ id: 'p' }] }), [{ id: 'p' }]);
+    const t = resolveBackend({ resource: 'templates', env: v2env, ctx: stdio });
+    assert.deepEqual(t.unwrap({ templates: [1, 2] }), [1, 2]);
+  });
+
+  it('v2 mapCreate is wired (pods remap; registries identity)', () => {
+    const pods = resolveBackend({ resource: 'pods', env: v2env, ctx: stdio });
+    const mapped = pods.mapCreate({ imageName: 'i' }) as Record<
+      string,
+      unknown
+    >;
+    assert.equal(mapped.image, 'i');
+    assert.equal('imageName' in mapped, false);
+
+    const reg = resolveBackend({
+      resource: 'registries',
+      env: v2env,
+      ctx: stdio,
+    });
+    const body = { name: 'r', username: 'u', password: 'p' };
+    assert.deepEqual(reg.mapCreate(body), body); // identity
+  });
+
+  it('jobs/endpoints stay v1 even under RUNPOD_REST_VERSION=v2', () => {
+    const jobs = resolveBackend({ resource: 'jobs', env: v2env, ctx: stdio });
+    assert.equal(jobs.version, 'v1');
+    assert.equal(jobs.base, 'https://api.runpod.ai/v2'); // serverless, not v2 REST
+    const ep = resolveBackend({
+      resource: 'endpoints',
+      env: v2env,
+      ctx: stdio,
+    });
+    assert.equal(ep.version, 'v1');
+    assert.equal(ep.base, 'https://rest.runpod.io/v1');
   });
 });
