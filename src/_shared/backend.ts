@@ -85,11 +85,17 @@ export function unwrapList(
 }
 
 // ---- A1: resolve which version a given resource call should use ----
-// Pure: env, transport, and the (already-resolved) probe verdict are injected.
+// Pure: env, transport, and the already-resolved v2 probe verdict are injected.
 // Precedence: v1-only resources → v1; else RUNPOD_REST_VERSION_<RESOURCE> →
 // RUNPOD_REST_VERSION → default 'v1'. `auto` probes only on stdio (one process =
 // one key); on hosted HTTP `auto` is treated as v1 (a warm instance serves many
 // keys, so a cached probe verdict would leak across users).
+//
+// `v2Available` is a *resolved boolean*, NOT a thunk or a promise: the caller
+// awaits createV2Prober() once at startup (stdio only) and passes the boolean
+// in. This is deliberate — a `() => Promise<boolean>` would be truthy even when
+// the probe failed, silently forcing v2. Keeping it a plain boolean removes that
+// footgun. When omitted under `auto`, we conservatively resolve to v1.
 export interface VersionCtx {
   transport: 'stdio' | 'http';
 }
@@ -98,9 +104,9 @@ export function resolveVersion(opts: {
   resource: Resource;
   env: Env;
   ctx: VersionCtx;
-  probe?: () => boolean;
+  v2Available?: boolean;
 }): RestVersion {
-  const { resource, env, ctx, probe } = opts;
+  const { resource, env, ctx, v2Available } = opts;
   if (V1_ONLY.has(resource)) return 'v1';
 
   const perResource = env[`RUNPOD_REST_VERSION_${RESOURCE_ENV_KEY[resource]}`];
@@ -113,14 +119,21 @@ export function resolveVersion(opts: {
   if (setting === 'v2') return 'v2';
   if (setting === 'auto') {
     if (ctx.transport === 'http') return 'v1';
-    return probe && probe() ? 'v2' : 'v1';
+    return v2Available === true ? 'v2' : 'v1';
   }
   return 'v1';
 }
 
 // ---- A1b: the real `auto` probe (decision logic, injected fetch) ----
-// Returns a thunk that resolves the v2 verdict once and memoizes it for the
-// process. stdio-only: never wire this into the HTTP path (see resolveVersion).
+// Returns an async resolver that probes once and memoizes the verdict for the
+// process. The startup wiring (stdio only) awaits this once, then passes the
+// resulting boolean to resolveVersion as `v2Available`. Never wire into the HTTP
+// path (see resolveVersion).
+//
+// Only *definitive* verdicts are cached: a reachable endpoint (any non-5xx
+// response) pins true/false, but a transient failure (thrown error or 5xx) is
+// NOT cached — it returns false for this call and re-probes next time, so a
+// one-time startup network blip doesn't pin the process to v1 forever.
 type FetchLike = (
   url: string,
   init?: { method?: string; headers?: Record<string, string> }
@@ -132,18 +145,29 @@ export function createV2Prober(deps: {
   apiKey: string;
 }): () => Promise<boolean> {
   let cached: boolean | undefined;
-  return async function probeV2(): Promise<boolean> {
-    if (cached !== undefined) return cached;
-    try {
-      const res = await deps.fetch(`${deps.baseUrl}/catalog/gpus`, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${deps.apiKey}` },
-      });
-      cached = res.status >= 200 && res.status < 300;
-    } catch {
-      cached = false;
-    }
-    return cached;
+  let inFlight: Promise<boolean> | undefined;
+
+  return function probeV2(): Promise<boolean> {
+    if (cached !== undefined) return Promise.resolve(cached);
+    // Coalesce concurrent first-calls onto one in-flight probe.
+    if (inFlight) return inFlight;
+
+    inFlight = (async () => {
+      try {
+        const res = await deps.fetch(`${deps.baseUrl}/catalog/gpus`, {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${deps.apiKey}` },
+        });
+        if (res.status >= 500) return false; // transient — do not cache
+        cached = res.status >= 200 && res.status < 300;
+        return cached;
+      } catch {
+        return false; // transient — do not cache
+      } finally {
+        inFlight = undefined;
+      }
+    })();
+    return inFlight;
   };
 }
 
@@ -193,7 +217,7 @@ export function resolveBackend(opts: {
   resource: Resource;
   env: Env;
   ctx: VersionCtx;
-  probe?: () => boolean;
+  v2Available?: boolean;
 }): Backend {
   const { resource, env } = opts;
   const version = resolveVersion(opts);
