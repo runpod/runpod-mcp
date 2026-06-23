@@ -311,8 +311,9 @@ GREEN, or their RED tests have nothing injectable to target. This is stated per-
   takes `fetch` as a param (today it's a module import, `tools.ts:3`); thread from `stdio.ts`/`http.ts`.
 - RED: `tests/http.test.ts`. Inject a fake `fetch`. Cases: builds `base+path`; sets
   `Authorization: Bearer <key>` + tracking headers; serializes body only for POST/PATCH;
-  `!ok → throws` with the configured error prefix (**provisional contract — C2 carves out
-  501 as the one non-throwing case; note that here so C2 amends rather than regresses**);
+  `!ok → throws HttpError` (carrying `.status` + `.body`) for **all** non-OK responses
+  including 501 — C2 *catches* the 501 throw and branches on `err.status`, so stream-job's
+  error counter still fires on a mid-poll 501;
   non-JSON / 204 / empty body → `{success:true,status}`; JSON → parsed; **`application/
   problem+json` (v2's error shape) parses as JSON** — match the `+json` *suffix*, NOT the
   literal substring `application/json` (`"application/problem+json".includes("application/json")`
