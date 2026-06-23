@@ -58,14 +58,44 @@ async function call(
   return parse(await client.callTool({ name, arguments: args }));
 }
 
-// Pull an array out of either a v1 bare array or the MCP capped envelope
-// (`{ items: [...] }`).
-function asItems(payload: unknown): Array<Record<string, unknown>> {
-  if (Array.isArray(payload)) return payload as Array<Record<string, unknown>>;
-  const env = payload as { items?: unknown };
-  return Array.isArray(env?.items)
-    ? (env.items as Array<Record<string, unknown>>)
-    : [];
+// List a tool's FULL result, paging through the MCP cap envelope until
+// `truncated` is false. Critical for leak detection: the list tools cap at 20
+// items by default, so a single capped page would hide a leak (or orphan) that
+// sits beyond index 20 on a busy dev account. Throws if a page errors — the
+// caller treats that as fail-closed (a verify we can't complete is a failure,
+// never a silent "clean").
+async function listAll(
+  client: Client,
+  tool: string
+): Promise<Array<Record<string, unknown>>> {
+  const all: Array<Record<string, unknown>> = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const args: Record<string, unknown> = { limit: 100 };
+    if (cursor) args.cursor = cursor;
+    const payload = await call(client, tool, args);
+    if (payload == null || typeof payload === 'string') {
+      throw new Error(`${tool} returned no parseable list payload`);
+    }
+    if (Array.isArray(payload)) {
+      all.push(...(payload as Array<Record<string, unknown>>));
+      break; // bare array (uncapped) — nothing more to page
+    }
+    const env = payload as {
+      items?: unknown[];
+      pagination?: { truncated?: boolean; nextCursor?: string | null };
+    };
+    if (!Array.isArray(env.items)) {
+      throw new Error(`${tool} payload missing items[]`);
+    }
+    all.push(...(env.items as Array<Record<string, unknown>>));
+    if (env.pagination?.truncated && env.pagination.nextCursor) {
+      cursor = env.pagination.nextCursor;
+      continue;
+    }
+    break;
+  }
+  return all;
 }
 
 function idOf(obj: unknown): string | undefined {
@@ -74,9 +104,7 @@ function idOf(obj: unknown): string | undefined {
 }
 
 async function sweepRegistries(client: Client): Promise<void> {
-  const items = asItems(
-    await call(client, 'list-container-registry-auths', {})
-  );
+  const items = await listAll(client, 'list-container-registry-auths');
   for (const r of items) {
     if (typeof r.name === 'string' && r.name.startsWith(PREFIX) && r.id) {
       await call(client, 'delete-container-registry-auth', {
@@ -87,7 +115,7 @@ async function sweepRegistries(client: Client): Promise<void> {
 }
 
 async function sweepTemplates(client: Client): Promise<void> {
-  const items = asItems(await call(client, 'list-templates', {}));
+  const items = await listAll(client, 'list-templates');
   for (const t of items) {
     if (typeof t.name === 'string' && t.name.startsWith(PREFIX) && t.id) {
       await call(client, 'delete-template', { templateId: t.id });
@@ -154,15 +182,31 @@ async function runVersion(version: string): Promise<void> {
       }
     }
 
-    // Fail-closed post-verify: list calls that error are treated as unknown→fail.
-    const regItems = asItems(
-      await call(client, 'list-container-registry-auths', {})
-    );
-    const tplItems = asItems(await call(client, 'list-templates', {}));
-    const leaked = [...regItems, ...tplItems].filter(
-      (x) => typeof x.name === 'string' && (x.name as string).startsWith(runId)
-    );
-    await client.close();
+    // Fail-closed post-verify: listAll pages the full list and THROWS if any
+    // page errors (an unverifiable list is a failure, not a silent "clean").
+    let leaked: Array<Record<string, unknown>> = [];
+    let verifyError: unknown;
+    try {
+      const regItems = await listAll(client, 'list-container-registry-auths');
+      const tplItems = await listAll(client, 'list-templates');
+      leaked = [...regItems, ...tplItems].filter(
+        (x) =>
+          typeof x.name === 'string' && (x.name as string).startsWith(runId)
+      );
+    } catch (e) {
+      verifyError = e;
+    }
+
+    // Always close the transport, regardless of verify outcome.
+    try {
+      await client.close();
+    } catch {
+      /* ignore close errors */
+    }
+
+    if (verifyError) {
+      throw new Error(`post-verify could not complete: ${String(verifyError)}`);
+    }
     if (leaked.length > 0) {
       throw new Error(
         `LEAK: ${leaked.length} ${runId}-* resource(s) remain after teardown`
