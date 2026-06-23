@@ -147,6 +147,28 @@ describe('outbound-request golden (v1 unchanged)', () => {
     assert.equal(outbound[0].method, 'DELETE');
   });
 
+  it('restart-pod registers and → POST <rest>/v1/pods/{id}/restart (v1)', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    assert.ok(handlers.has('restart-pod'), 'restart-pod must be registered');
+    await handlers.get('restart-pod')!({ podId: 'pod_r' });
+    assert.equal(
+      outbound[0].url,
+      'https://rest.runpod.io/v1/pods/pod_r/restart'
+    );
+    assert.equal(outbound[0].method, 'POST');
+  });
+
+  it('create-pod 501 → clean non-error message (not a throw)', async () => {
+    const { handlers } = harness({ status: 501 });
+    const out = (await handlers.get('create-pod')!({
+      imageName: 'i',
+    })) as { content: Array<{ text: string }>; isError?: boolean };
+    assert.notEqual(out.isError, true);
+    const payload = JSON.parse(out.content[0].text);
+    assert.equal(payload.status, 501);
+    assert.match(payload.error, /CPU pods are not yet supported/);
+  });
+
   it('list-network-volumes → GET <rest>/v1/networkvolumes (path unchanged from v1)', async () => {
     const { handlers, outbound } = harness({ jsonBody: [] });
     await handlers.get('list-network-volumes')!({});
@@ -482,6 +504,18 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
         'https://v2-rest.runpod.io/v2/pods/pod_1/action'
       );
       assert.deepEqual(JSON.parse(outbound[0].body!), { action: 'start' });
+    });
+  });
+
+  it('restart-pod → POST .../v2/pods/{id}/action {action:"restart"} (C1/B4)', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('restart-pod')!({ podId: 'pod_1' });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/pods/pod_1/action'
+      );
+      assert.deepEqual(JSON.parse(outbound[0].body!), { action: 'restart' });
     });
   });
 
