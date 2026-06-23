@@ -193,36 +193,140 @@ Rules:
 
 ---
 
-## Part 4 — Step-by-step (each step is its own PR)
+## Part 4 — TDD build plan (layer by layer, bottom-up)
 
-**Phase A — Refactor only, still v1, MERGEABLE TO MAIN NOW (no behavior change).**
-1. Extract the 3 HTTP helpers + `trackingHeaders` into `src/_shared/http.ts` +
-   `tracking.ts`. Pure move, tools.ts imports them.
-2. Add `src/_shared/backend.ts` with `resolveBackend(resource, ctx)` returning **only
-   v1** entries (paths exactly as today, `unwrap: r => r`, `mapCreate: p => p`).
-3. Route every tool through the adapter. List tools now do `unwrap` → `capListResult`.
-   **This hardens the envelope assumption before v2 ever lands.**
-4. Split `tools.ts` into `src/tools/<resource>.ts`; `registerTools` just calls each.
-5. Tests stay green (`>=30` tools, `CORE_TOOLS`, list params). Add envelope unit cases
-   to `pagination.test.ts` (feed `{pods:[…]}` → assert it caps).
+**Method.** Every step is a strict **RED → GREEN → REFACTOR** cycle:
+1. **RED** — write the test(s) named below *first*, run `pnpm test`, watch them **fail**
+   (proves the test exercises the unit, not a tautology).
+2. **GREEN** — write the minimum code to pass. No extra scope.
+3. **REFACTOR** — clean up with tests green. Commit at the end of each step.
 
-**Phase B — Add v2 mappings per resource (behind flag, default still v1).**
-6. For each control-plane resource (pods, templates, network-volumes, registries,
-   catalog), add the `v2` adapter entry: path, `unwrap`, and `mapCreate`/`mapUpdate`
-   (the ContainerConfig flattening + array→scalar for pods). Validate each live against
-   `v2-rest.runpod.dev`.
-7. Catalog: switch `list-gpu-types`/`list-data-centers` to REST under v2 (keep GraphQL
-   as the v1 entry). Decide the availability-signal question (Part 6).
-8. Map `start-pod`/`stop-pod` → `podAction` under v2; keep separate v1 paths.
+**Why bottom-up.** Each layer is pure and depends only on layers below it, so it's unit-
+testable in isolation with **no network and no MCP SDK**. Network and the SDK are pushed
+to the edges and faked via dependency injection (an injected `fetch`, a fake `server`).
+Build order = dependency order: L0 helpers → L1 adapter → L2 HTTP client → L3 handlers →
+L4 v2 mappings → L5 new tools → L6 flip. v2 logic is written and tested (against fixtures)
+*before* prod exists; only the live smoke (L4/§6) needs the running API.
 
-**Phase C — New tools + flip.**
-9. Add `restart`, `list-cpu-types`, `get-gpu-type` (additive — tests stay green).
-10. Surface CPU-pod `501` as a clean tool error ("CPU pods not yet supported on v2"),
-    not a crash.
-11. **Flip default to `v2` for control-plane resources — only after v2 PROD is live and
-    the dual-backend live suite is green. This is the merge gate for this branch.**
-12. Serverless stays v1. (PRD cycle 3: deprecate GraphQL catalog tools once v2 REST is
-    the default.)
+Harness is already in place: `node --import tsx --test tests/*.test.ts`. Keep units pure.
+
+---
+
+### Phase A — Refactor to a tested, v1-only adapter (MERGEABLE TO MAIN; no behavior change)
+
+**Step A0 — Unwrap is a pure unit (the envelope bug, killed first).**
+- RED: `tests/backend.test.ts` → `describe('unwrapList')`. Cases:
+  `v1 bare array → same array`; `v2 {pods:[…]} → inner array`; each resource key
+  (`templates`,`networkVolumes`,`registries`,`gpus`,`cpus`,`dataCenters`); `missing key → []`;
+  `non-object → []`.
+- GREEN: `src/_shared/backend.ts` → `export function unwrapList(resource, version, raw)`.
+- REFACTOR: table-drive the resource→key map.
+
+**Step A1 — Version resolution is a pure unit.**
+- RED: `tests/backend.test.ts` → `describe('resolveVersion')`. Cases:
+  `jobs → 'v1'` and `endpoints → 'v1'` *regardless of env*; control-plane follows
+  `RUNPOD_REST_VERSION` (`v1`/`v2`); unset → `'v1'`; `auto` + `transport:'http'` → `'v1'`;
+  `auto` + `transport:'stdio'` → calls the injected `probe()` (mock returns true → `'v2'`,
+  false → `'v1'`). Pass env + ctx + probe as **arguments** (no globals) so it's pure.
+- GREEN: `resolveVersion({ resource, env, ctx, probe })`.
+- REFACTOR: extract the v1-only resource set to a const.
+
+**Step A2 — `resolveBackend` returns the right descriptor.**
+- RED: `tests/backend.test.ts` → `describe('resolveBackend')`. For each resource assert the
+  v1 entry's `base` + `list`/`get(id)` paths **exactly match today's strings**
+  (`/pods`, `/networkvolumes`, `/containerregistryauth`, GraphQL for catalog), `unwrap`
+  is wired, `mapCreate`/`mapUpdate` default to identity under v1.
+- GREEN: `resolveBackend(resource, ctx)` composing A0+A1 + a static v1 descriptor table.
+- REFACTOR: one descriptor object per resource.
+
+**Step A3 — Unified HTTP client, injected `fetch`.**
+- RED: `tests/http.test.ts`. Inject a fake `fetch`. Cases: builds `base+path`; sets
+  `Authorization: Bearer <key>` + tracking headers; serializes body only for POST/PATCH;
+  `!ok → throws "Runpod API Error: <status> - <body>"`; non-JSON content-type →
+  `{success:true,status}`; JSON → parsed.
+- GREEN: `src/_shared/http.ts` → `createHttpClient({ apiKey, fetch, tracking })`. Move
+  `trackingHeaders` to `src/_shared/tracking.ts`. Merge `runpodRequest` +
+  `serverlessRequest` into one client (path is fully resolved by the adapter, so the
+  `endpointId`-split shape collapses into the path).
+- REFACTOR: delete the three old in-`tools.ts` helpers; re-point imports.
+
+**Step A4 — Handlers go through the adapter (integration, faked server + client).**
+- RED: `tests/handlers.test.ts`. Build a fake `McpServer` (extend the existing capture
+  harness to also store handlers) + an injected client returning fixtures. Cases per list
+  tool: `list-pods` on a v1 fixture → unwrap → `capListResult` caps to limit, envelope
+  shape correct; `create-pod` calls client with `POST` + the (v1-identity) body.
+- GREEN: split `tools.ts` → `src/tools/{pods,templates,network-volumes,registries,
+  catalog,endpoints,jobs}.ts`; each handler calls `resolveBackend(...)` + the client +
+  `capListResult`. `registerTools` just calls each `register<Resource>(server, ctx)`.
+- REFACTOR: collapse the duplicated `JSON.stringify` response wrapper into one helper.
+
+**Step A5 — Existing tests stay green + envelope regression locked.**
+- RED: add to `tests/pagination.test.ts` a case asserting `capListResult` stays
+  **array-only** (its contract didn't change; unwrap is the adapter's job). Confirm
+  `tools-registration.test.ts` (`>=30`, `CORE_TOOLS`, list params) still passes.
+- GREEN: no new code — this step is the safety net.
+- REFACTOR: golden-file check — `scripts/smoke-list.ts` output diff vs `main` is empty
+  (proves zero behavior change). **End of Phase A → PR to main.**
+
+---
+
+### Phase B — Add v2 mappings per resource (behind the flag, default still v1)
+
+Each resource is one independent RED→GREEN cycle; order doesn't matter, do pods first
+(highest risk). All mappers are **pure** → fixture-tested before touching the network.
+
+**Step B1 — Pod request mappers (pure, the riskiest unit).**
+- RED: `tests/mappers.test.ts` → `mapPodCreateToV2`. Cases (from Part 1.4):
+  `imageName→image`, `containerDiskInGb→disk`, `volumeInGb/volumeMountPath →
+  mounts.persistent.{size,path}`, `gpuTypeIds[0]→gpu.id` + `gpuCount→gpu.count`,
+  `cloudType→cloud`, `dataCenterIds[0]→dataCenter`; unknown keys dropped; round-trip a
+  full v1 body → expected v2 JSON fixture. ⚠️ See Part 7 spec-volatility — assert against
+  the **live** spec at build time (`dataCenter` may be `dataCenterIds[]`).
+- GREEN: `mapPodCreateToV2` + `mapPodUpdateToV2` in `src/_shared/mappers.ts`; wire as the
+  pod descriptor's `mapCreate`/`mapUpdate` v2 entry.
+- REFACTOR: share the `ContainerConfig` flatten between create + update + templates.
+
+**Step B2 — v2 descriptors + unwrap keys per resource.**
+- RED: extend `resolveBackend` tests: under `RUNPOD_REST_VERSION=v2`, each resource
+  resolves the v2 base + path (`/v2/pods`, `/v2/network-volumes`, `/v2/registries`,
+  `/v2/catalog/*`) and the correct `unwrap` key; jobs/endpoints still resolve v1.
+- GREEN: fill the `v2` half of each descriptor.
+- REFACTOR: dedupe path-building.
+
+**Step B3 — Template / volume / registry mappers** (same RED→GREEN as B1: `category`,
+`serverless`, drop `dockerEntrypoint/readme`; `dataCenterId→dataCenter`).
+
+**Step B4 — Pod actions: start/stop → `podAction` under v2.**
+- RED: handler test — under v2, `stop-pod` calls `POST /v2/pods/{id}/action` body
+  `{action:'stop'}`; under v1, `POST /pods/{id}/stop`. Same for start.
+- GREEN: branch in the pods descriptor.
+
+**Step B5 — Catalog GraphQL→REST under v2.**
+- RED: mapper tests for GPU/datacenter field renames (`displayName→name`,
+  `location→region` enum); handler resolves GraphQL under v1, REST under v2.
+- GREEN: add v2 REST catalog descriptors; keep GraphQL as the v1 entry.
+
+**Step B6 — Live smoke (the only network test).** `scripts/smoke.ts` looped over
+`RUNPOD_REST_VERSION ∈ {v1,v2}` against `v2-rest.runpod.dev` (§6). Not in CI.
+
+---
+
+### Phase C — New tools, error handling, then flip
+
+**Step C1 — New tools (additive, test-first).**
+- RED: `tools-registration.test.ts` asserts `restart`-capable pod action,
+  `list-cpu-types`, `get-gpu-type` register; the `>=30` + no-dupes checks still hold.
+- GREEN: add them via the adapter.
+
+**Step C2 — CPU-pod 501 → clean error.**
+- RED: handler test — injected client returns `501`; assert the tool returns a clean
+  message ("CPU pods not yet supported on v2 REST") and does **not** throw.
+- GREEN: map 501 in the pods create handler.
+
+**Step C3 — Flip the default.** Change `RUNPOD_REST_VERSION` default v1→v2 for
+control-plane resources. **Gated on: v2 PROD returns 200 + the L4 dual-backend smoke is
+green.** This is the **merge gate for this branch.** Serverless stays v1. (PRD cycle 3:
+deprecate GraphQL catalog tools afterward.)
 
 ---
 
@@ -238,15 +342,16 @@ Rules:
 ---
 
 ## Part 6 — Testing / drift gate
-- `pnpm test` is **offline only** today (`node --test tests/*.test.ts`).
-- Unit: parametrize the fake-server test to assert the adapter resolves the right
-  path/base per resource under `RUNPOD_REST_VERSION=v1` and `=v2`, and that
-  jobs/endpoints resolve v1 regardless. Add envelope cases to `pagination.test.ts`.
-- Live drift gate: generalize `scripts/smoke.ts` (already transport-abstracted) to loop
-  `RUNPOD_REST_VERSION ∈ {v1, v2}` with `RUNPOD_REST_V2_API_URL` → dev. Assert: every
-  list unwraps + caps; create/update bodies accepted live; CPU-pod 501 = clean error.
-  One key drives both passes (same auth scheme). Add `smoke:v2` script. **This dual-run
-  IS the "validate before preferring v2" mechanism.**
+- **Unit/integration tests are defined test-first in Part 4** (the RED step of each
+  cycle): `tests/backend.test.ts`, `http.test.ts`, `mappers.test.ts`, `handlers.test.ts`,
+  plus the existing `pagination.test.ts` / `tools-registration.test.ts`. All offline,
+  pure or DI-faked, run by `pnpm test` (`node --import tsx --test tests/*.test.ts`) → CI gate.
+- **Live drift gate (the only network test):** generalize `scripts/smoke.ts` (already
+  transport-abstracted) to loop `RUNPOD_REST_VERSION ∈ {v1, v2}` with
+  `RUNPOD_REST_V2_API_URL` → dev. Assert: every list unwraps + caps; create/update bodies
+  accepted live; CPU-pod 501 = clean error. One key drives both passes (same auth scheme).
+  Add a `smoke:v2` script. **This dual-run IS the "validate before preferring v2"
+  mechanism**, and gates the Phase C flip (Step C3).
 
 ---
 
