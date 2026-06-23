@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { capListResult, listPaginationParams } from './pagination.js';
 import { createHttpClient } from './_shared/http.js';
 import { buildTrackingHeaders } from './_shared/tracking.js';
+import { resolveBackend, type Env, type Backend } from './_shared/backend.js';
 
 // Base URL for Runpod REST API. Override via RUNPOD_REST_API_URL to point at a
 // non-production environment (e.g. when authenticating with a dev API key).
@@ -193,8 +194,10 @@ export function registerTools(
   server: McpServer,
   ctx: ToolContext,
   // Optional test seam: inject a fake fetch to capture outbound requests
-  // offline. Production passes nothing → node-fetch.
-  deps: { fetch?: HttpFetch } = {}
+  // offline. Production passes nothing → node-fetch. `v2Available` is the
+  // already-resolved stdio `auto`-probe verdict (see backend.resolveVersion);
+  // omitted → `auto` resolves to v1.
+  deps: { fetch?: HttpFetch; v2Available?: boolean } = {}
 ): void {
   const tracking = () => trackingHeaders(server, ctx);
   const httpFetch = deps.fetch ?? defaultFetch;
@@ -204,6 +207,55 @@ export function registerTools(
     tracking,
     httpFetch
   );
+
+  // ---- v2-aware REST routing (keystone) ----
+  // A full-URL REST client (the adapter resolves base+path per version) +
+  // helpers to resolve a resource's backend and format the standard JSON reply.
+  const restClient = createHttpClient({
+    apiKey: ctx.apiKey,
+    fetch: httpFetch,
+    tracking,
+    errorPrefix: 'Runpod API Error',
+  });
+  const callRestUrl = async (
+    url: string,
+    method: string = 'GET',
+    body?: Record<string, unknown>
+  ): Promise<unknown> => {
+    try {
+      return await restClient(url, method, body);
+    } catch (error) {
+      console.error('Error calling Runpod API:', error);
+      throw error;
+    }
+  };
+  const backendFor = (
+    resource: Parameters<typeof resolveBackend>[0]['resource']
+  ): Backend =>
+    resolveBackend({
+      resource,
+      env: process.env as Env,
+      ctx: { transport: ctx.transport },
+      v2Available: deps.v2Available,
+    });
+  const jsonReply = (result: unknown) => ({
+    content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+  });
+  // B4: pod state transition. v1 has dedicated subpaths (/start, /stop); v2
+  // unifies them under POST /pods/{id}/action with an `{action}` body.
+  const podAction = async (
+    podId: string,
+    action: 'start' | 'stop'
+  ): Promise<unknown> => {
+    const backend = backendFor('pods');
+    const podPath = backend.get!(podId);
+    if (backend.version === 'v2') {
+      return callRestUrl(`${backend.base}${podPath}/action`, 'POST', {
+        action,
+      });
+    }
+    return callRestUrl(`${backend.base}${podPath}/${action}`, 'POST');
+  };
 
   // ============== INFRASTRUCTURE TOOLS ==============
 
@@ -416,33 +468,44 @@ export function registerTools(
         .describe('Include information about attached network volumes'),
     },
     async (params) => {
-      const queryParams = new URLSearchParams();
+      const backend = backendFor('pods');
 
-      if (params.computeType)
-        queryParams.append('computeType', params.computeType);
-      if (params.gpuTypeId)
-        params.gpuTypeId.forEach((type) =>
-          queryParams.append('gpuTypeId', type)
-        );
-      if (params.dataCenterId)
-        params.dataCenterId.forEach((dc) =>
-          queryParams.append('dataCenterId', dc)
-        );
-      if (params.name) queryParams.append('name', params.name);
-      if (params.includeMachine)
-        queryParams.append('includeMachine', params.includeMachine.toString());
-      if (params.includeNetworkVolume)
-        queryParams.append(
-          'includeNetworkVolume',
-          params.includeNetworkVolume.toString()
-        );
+      // v1 supports query-param filters; v2 has none (the spec declares no query
+      // params and ignores them), so we only build the query string under v1.
+      let queryString = '';
+      if (backend.version === 'v1') {
+        const queryParams = new URLSearchParams();
+        if (params.computeType)
+          queryParams.append('computeType', params.computeType);
+        if (params.gpuTypeId)
+          params.gpuTypeId.forEach((type) =>
+            queryParams.append('gpuTypeId', type)
+          );
+        if (params.dataCenterId)
+          params.dataCenterId.forEach((dc) =>
+            queryParams.append('dataCenterId', dc)
+          );
+        if (params.name) queryParams.append('name', params.name);
+        if (params.includeMachine)
+          queryParams.append(
+            'includeMachine',
+            params.includeMachine.toString()
+          );
+        if (params.includeNetworkVolume)
+          queryParams.append(
+            'includeNetworkVolume',
+            params.includeNetworkVolume.toString()
+          );
+        queryString = queryParams.toString()
+          ? `?${queryParams.toString()}`
+          : '';
+      }
 
-      const queryString = queryParams.toString()
-        ? `?${queryParams.toString()}`
-        : '';
-      const result = await runpodRequest(`/pods${queryString}`);
+      const result = await callRestUrl(
+        `${backend.base}${backend.list}${queryString}`
+      );
 
-      return capListResult(result, {
+      return capListResult(backend.unwrap(result), {
         limit: params.limit,
         cursor: params.cursor,
       });
@@ -464,29 +527,31 @@ export function registerTools(
         .describe('Include information about attached network volumes'),
     },
     async (params) => {
-      const queryParams = new URLSearchParams();
+      const backend = backendFor('pods');
 
-      if (params.includeMachine)
-        queryParams.append('includeMachine', params.includeMachine.toString());
-      if (params.includeNetworkVolume)
-        queryParams.append(
-          'includeNetworkVolume',
-          params.includeNetworkVolume.toString()
-        );
+      // v1-only expansion query params (v2 has no query params on get).
+      let queryString = '';
+      if (backend.version === 'v1') {
+        const queryParams = new URLSearchParams();
+        if (params.includeMachine)
+          queryParams.append(
+            'includeMachine',
+            params.includeMachine.toString()
+          );
+        if (params.includeNetworkVolume)
+          queryParams.append(
+            'includeNetworkVolume',
+            params.includeNetworkVolume.toString()
+          );
+        queryString = queryParams.toString()
+          ? `?${queryParams.toString()}`
+          : '';
+      }
 
-      const queryString = queryParams.toString()
-        ? `?${queryParams.toString()}`
-        : '';
-      const result = await runpodRequest(`/pods/${params.podId}${queryString}`);
-
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      const result = await callRestUrl(
+        `${backend.base}${backend.get!(params.podId)}${queryString}`
+      );
+      return jsonReply(result);
     }
   );
 
@@ -526,16 +591,14 @@ export function registerTools(
         .describe('List of data centers'),
     },
     async (params) => {
-      const result = await runpodRequest('/pods', 'POST', params);
-
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      const backend = backendFor('pods');
+      const body = backend.mapCreate(params) as Record<string, unknown>;
+      const result = await callRestUrl(
+        `${backend.base}${backend.list}`,
+        'POST',
+        body
+      );
+      return jsonReply(result);
     }
   );
 
@@ -563,60 +626,38 @@ export function registerTools(
     },
     async (params) => {
       const { podId, ...updateParams } = params;
-      const result = await runpodRequest(
-        `/pods/${podId}`,
+      const backend = backendFor('pods');
+      const body = backend.mapUpdate(updateParams) as Record<string, unknown>;
+      const result = await callRestUrl(
+        `${backend.base}${backend.get!(podId)}`,
         'PATCH',
-        updateParams
+        body
       );
-
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
-  // Start Pod
+  // Start Pod — v1: POST /pods/{id}/start ; v2: POST /pods/{id}/action {action:'start'}
   server.tool(
     'start-pod',
     {
       podId: z.string().describe('ID of the pod to start'),
     },
     async (params) => {
-      const result = await runpodRequest(`/pods/${params.podId}/start`, 'POST');
-
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      const result = await podAction(params.podId, 'start');
+      return jsonReply(result);
     }
   );
 
-  // Stop Pod
+  // Stop Pod — v1: POST /pods/{id}/stop ; v2: POST /pods/{id}/action {action:'stop'}
   server.tool(
     'stop-pod',
     {
       podId: z.string().describe('ID of the pod to stop'),
     },
     async (params) => {
-      const result = await runpodRequest(`/pods/${params.podId}/stop`, 'POST');
-
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      const result = await podAction(params.podId, 'stop');
+      return jsonReply(result);
     }
   );
 
@@ -627,16 +668,12 @@ export function registerTools(
       podId: z.string().describe('ID of the pod to delete'),
     },
     async (params) => {
-      const result = await runpodRequest(`/pods/${params.podId}`, 'DELETE');
-
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      const backend = backendFor('pods');
+      const result = await callRestUrl(
+        `${backend.base}${backend.get!(params.podId)}`,
+        'DELETE'
+      );
+      return jsonReply(result);
     }
   );
 
