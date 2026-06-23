@@ -1129,19 +1129,23 @@ export function registerTools(
         ),
     },
     async (params) => {
-      const queryParams = new URLSearchParams();
-      if (params.includeRunpodTemplates)
-        queryParams.set('includeRunpodTemplates', 'true');
-      if (params.includePublicTemplates)
-        queryParams.set('includePublicTemplates', 'true');
-      if (params.includeEndpointBoundTemplates)
-        queryParams.set('includeEndpointBoundTemplates', 'true');
-      const query = queryParams.toString();
-      const result = await runpodRequest(
-        `/templates${query ? `?${query}` : ''}`
+      const backend = backendFor('templates');
+      let query = '';
+      if (backend.version === 'v1') {
+        const queryParams = new URLSearchParams();
+        if (params.includeRunpodTemplates)
+          queryParams.set('includeRunpodTemplates', 'true');
+        if (params.includePublicTemplates)
+          queryParams.set('includePublicTemplates', 'true');
+        if (params.includeEndpointBoundTemplates)
+          queryParams.set('includeEndpointBoundTemplates', 'true');
+        query = queryParams.toString() ? `?${queryParams.toString()}` : '';
+      }
+      const result = await callRestUrl(
+        `${backend.base}${backend.list}${query}`
       );
 
-      return capListResult(result, {
+      return capListResult(backend.unwrap(result), {
         limit: params.limit,
         cursor: params.cursor,
       });
@@ -1155,8 +1159,10 @@ export function registerTools(
       templateId: z.string().describe('ID of the template to retrieve'),
     },
     async (params) => {
-      const result = await runpodRequest(`/templates/${params.templateId}`);
-
+      const backend = backendFor('templates');
+      const result = await callRestUrl(
+        `${backend.base}${backend.get!(params.templateId)}`
+      );
       return jsonReply(result);
     }
   );
@@ -1196,8 +1202,13 @@ export function registerTools(
         .describe('README content in markdown format'),
     },
     async (params) => {
-      const result = await runpodRequest('/templates', 'POST', params);
-
+      const backend = backendFor('templates');
+      const body = backend.mapCreate(params) as Record<string, unknown>;
+      const result = await callRestUrl(
+        `${backend.base}${backend.list}`,
+        'POST',
+        body
+      );
       return jsonReply(result);
     }
   );
@@ -1221,12 +1232,13 @@ export function registerTools(
     },
     async (params) => {
       const { templateId, ...updateParams } = params;
-      const result = await runpodRequest(
-        `/templates/${templateId}`,
+      const backend = backendFor('templates');
+      const body = backend.mapUpdate(updateParams) as Record<string, unknown>;
+      const result = await callRestUrl(
+        `${backend.base}${backend.get!(templateId)}`,
         'PATCH',
-        updateParams
+        body
       );
-
       return jsonReply(result);
     }
   );
@@ -1238,11 +1250,11 @@ export function registerTools(
       templateId: z.string().describe('ID of the template to delete'),
     },
     async (params) => {
-      const result = await runpodRequest(
-        `/templates/${params.templateId}`,
+      const backend = backendFor('templates');
+      const result = await callRestUrl(
+        `${backend.base}${backend.get!(params.templateId)}`,
         'DELETE'
       );
-
       return jsonReply(result);
     }
   );
@@ -1251,9 +1263,10 @@ export function registerTools(
 
   // List Network Volumes
   server.tool('list-network-volumes', listPaginationParams, async (params) => {
-    const result = await runpodRequest('/networkvolumes');
+    const backend = backendFor('networkVolumes');
+    const result = await callRestUrl(`${backend.base}${backend.list}`);
 
-    return capListResult(result, {
+    return capListResult(backend.unwrap(result), {
       limit: params.limit,
       cursor: params.cursor,
     });
@@ -1268,10 +1281,10 @@ export function registerTools(
         .describe('ID of the network volume to retrieve'),
     },
     async (params) => {
-      const result = await runpodRequest(
-        `/networkvolumes/${params.networkVolumeId}`
+      const backend = backendFor('networkVolumes');
+      const result = await callRestUrl(
+        `${backend.base}${backend.get!(params.networkVolumeId)}`
       );
-
       return jsonReply(result);
     }
   );
@@ -1285,8 +1298,13 @@ export function registerTools(
       dataCenterId: z.string().describe('Data center ID'),
     },
     async (params) => {
-      const result = await runpodRequest('/networkvolumes', 'POST', params);
-
+      const backend = backendFor('networkVolumes');
+      const body = backend.mapCreate(params) as Record<string, unknown>;
+      const result = await callRestUrl(
+        `${backend.base}${backend.list}`,
+        'POST',
+        body
+      );
       return jsonReply(result);
     }
   );
@@ -1306,12 +1324,13 @@ export function registerTools(
     },
     async (params) => {
       const { networkVolumeId, ...updateParams } = params;
-      const result = await runpodRequest(
-        `/networkvolumes/${networkVolumeId}`,
+      const backend = backendFor('networkVolumes');
+      const body = backend.mapUpdate(updateParams) as Record<string, unknown>;
+      const result = await callRestUrl(
+        `${backend.base}${backend.get!(networkVolumeId)}`,
         'PATCH',
-        updateParams
+        body
       );
-
       return jsonReply(result);
     }
   );
@@ -1325,11 +1344,11 @@ export function registerTools(
         .describe('ID of the network volume to delete'),
     },
     async (params) => {
-      const result = await runpodRequest(
-        `/networkvolumes/${params.networkVolumeId}`,
+      const backend = backendFor('networkVolumes');
+      const result = await callRestUrl(
+        `${backend.base}${backend.get!(params.networkVolumeId)}`,
         'DELETE'
       );
-
       return jsonReply(result);
     }
   );
@@ -1341,9 +1360,10 @@ export function registerTools(
     'list-container-registry-auths',
     listPaginationParams,
     async (params) => {
-      const result = await runpodRequest('/containerregistryauth');
+      const backend = backendFor('registries');
+      const result = await callRestUrl(`${backend.base}${backend.list}`);
 
-      return capListResult(result, {
+      return capListResult(backend.unwrap(result), {
         limit: params.limit,
         cursor: params.cursor,
       });
@@ -1359,10 +1379,10 @@ export function registerTools(
         .describe('ID of the container registry auth to retrieve'),
     },
     async (params) => {
-      const result = await runpodRequest(
-        `/containerregistryauth/${params.containerRegistryAuthId}`
+      const backend = backendFor('registries');
+      const result = await callRestUrl(
+        `${backend.base}${backend.get!(params.containerRegistryAuthId)}`
       );
-
       return jsonReply(result);
     }
   );
@@ -1376,12 +1396,13 @@ export function registerTools(
       password: z.string().describe('Registry password'),
     },
     async (params) => {
-      const result = await runpodRequest(
-        '/containerregistryauth',
+      const backend = backendFor('registries');
+      const body = backend.mapCreate(params) as Record<string, unknown>;
+      const result = await callRestUrl(
+        `${backend.base}${backend.list}`,
         'POST',
-        params
+        body
       );
-
       return jsonReply(result);
     }
   );
@@ -1395,11 +1416,11 @@ export function registerTools(
         .describe('ID of the container registry auth to delete'),
     },
     async (params) => {
-      const result = await runpodRequest(
-        `/containerregistryauth/${params.containerRegistryAuthId}`,
+      const backend = backendFor('registries');
+      const result = await callRestUrl(
+        `${backend.base}${backend.get!(params.containerRegistryAuthId)}`,
         'DELETE'
       );
-
       return jsonReply(result);
     }
   );
