@@ -169,6 +169,10 @@ split" the PRD asks for.
 
 ## Part 3 — Version selection (corrected for hosted HTTP)
 
+> ✅ **DECIDED:** version is controlled by the `RUNPOD_REST_VERSION` env var
+> (`v1 | v2 | auto`), per the rules below. Hosted deployments pin it explicitly;
+> `auto` (probe-and-detect) is stdio-only.
+
 > ⚠️ **The naive "probe v2 once at process startup and cache" is WRONG for hosted HTTP.**
 > A warm Vercel instance serves many users/keys; `registerTools` runs fresh per request
 > with that request's key. A process-global cached verdict would leak one user's v2
@@ -246,11 +250,58 @@ Rules:
 
 ---
 
-## Part 7 — Open questions
-1. v2 **prod** cutover date — gates this branch's merge.
-2. CPU pods (501/AE-2991): expose with "not yet supported", or hide CPU path until v2 implements?
-3. GPU availability signal: keep GraphQL for `stockStatus`, or accept the regression on v2?
-4. Lost list filters (`computeType`, `name`, …): drop on v2, or reimplement client-side
-   after the (uncapped) fetch?
-5. Hosted HTTP `auto` mode: pin per-deployment to v1/v2, or build per-key probe caching?
-   (Recommend: pin per deployment; reserve `auto`-probe for stdio.)
+## Part 7 — Known gaps & upstream (Linear) status
+
+Cross-checked against the producer project **[ROCK] API_2026 Q2: Public REST API v2**
+(`rock-api-2026-q2-public-rest-api-v2-aacf7ba84474`, lead Brody Kellish, Core APIs).
+**We are not filing tickets there** — this is a read-only cross-reference of where each
+gap already lives. The producer side is `rphttp2` (the v2 service); the MCP is a consumer.
+
+### Decided
+- **Version control:** `RUNPOD_REST_VERSION = v1 | v2 | auto` env var (Part 3). Hosted
+  pins explicitly; `auto`-probe is stdio-only. Closed.
+
+### Consumer gaps (MCP-side, ours to handle in this branch)
+| Gap | Handling | Where |
+|---|---|---|
+| Envelope bug (`capListResult` no-ops on `{pods:[…]}`) | `unwrap` in the adapter before capping | Part 2, Phase A |
+| Request-body remap (`imageName→image`, `gpuTypeIds[]→gpu.id`, ContainerConfig flatten) | `mapCreate`/`mapUpdate` per resource | Part 1.4, Phase B |
+| Lost client filters (`computeType`, `name`, …) | filter client-side after unwrap, before cap | Part 1.5 |
+| CPU-pod `501` surfaced raw | catch → clean tool error | Phase C |
+
+### Producer gaps — already tracked upstream (do NOT re-file)
+| Our gap | Upstream Linear ticket(s) | Note |
+|---|---|---|
+| CPU pods stubbed (501 / AE-2991) | "Support CPU-only pod creation on /v2/pods (deployCpuPod)"; "Add per-DC CPU pricing/availability" | v2 will implement; until then MCP shows "not yet supported" |
+| GPU availability / `stockStatus` absent | "Add per-DC GPU/CPU availability to /v2/catalog"; "Add additional catalog filters for availability" | regression is temporary — availability is coming to /v2/catalog |
+| List filters + pagination missing | Epic "Cursor pagination + filtering across list endpoints (R5)" + R5.1–R5.4 | confirms PRD forward-compat: v2 *will* add cursor/filter; client-side filter is the bridge |
+| Serverless absent from v2 REST | "Basic serverless endpoint CRUD"; "/v2/serverless/{id}/jobs"; "/workers" subroutes (`/serverless` milestone, ~15%) | serverless IS coming to v2 (`/v2/serverless/*`, `/v2/endpoints`) — our 13 v1-only tools get a v2 home later |
+
+### ⚠️ Spec is mid-flight — do NOT hardcode against today's snapshot
+The frozen `openapi.yaml` we mapped has fields the producer team is actively changing.
+Build the Phase-B `mapCreate`/`mapUpdate` against the **live** spec at implementation
+time, not this analysis:
+- **`dataCenter` scalar → `dataCenterIds` array** — epic "Migrate dataCenterId from CSV
+  string to String[]" (PR 1–6). My array→scalar mapping for create-pod **reverses**.
+- **`cloud` enum drops `ALL`** — "Remove ALL from pod-create cloud enum; default SECURE".
+- **Template `category`** — "Make category optional … then deprecate & remove". Won't
+  stay required; don't force it.
+- **Network-volume size bounds** — min 1→10, max 4000→4096 ("size constraints wrong in spec").
+- **CreatePodRequest** — "missing SSH key / startScript support" (fields will be added).
+
+### MCP-relevant upstream items (consumer coordination, not ours to file)
+- Milestone **"MCP Usability Issues"** (0%, no target) — natural home if the producer
+  team wants the MCP-facing gaps tracked; flag to Brody rather than filing ourselves.
+- "Add migration assistant (Claude skill) for moving from v1 to v2".
+- "[placeholder] migrate CLI from V1 to V2" (runpodctl parity — PRD cycle 2).
+- Milestone "Deprecation notice for rphttp (REST v1)" targets **2026-08-03**; "Public beta
+  launch" **2026-07-20** — i.e. v1 won't vanish at v2 launch, so the dual-backend adapter
+  is the right shape through the overlap.
+
+### Still open (need a human decision)
+1. v2 **prod** cutover date — gates this branch's merge. *(you said don't worry about it)*
+2. GPU availability: accept the temporary regression on v2 (recommended — availability
+   ticket exists), or keep one GraphQL call for `stockStatus` during the gap?
+3. Expansion flags (`includeMachine`/`includeTemplate`/`includeNetworkVolume`) have no v2
+   query equivalent and can't be faked client-side — drop on v2, or confirm v2 expands by
+   default?
