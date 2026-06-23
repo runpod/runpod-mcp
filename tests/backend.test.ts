@@ -533,6 +533,26 @@ describe('resolveBackend (v2 descriptors)', () => {
     assert.deepEqual(reg.mapCreate(body), body); // identity
   });
 
+  it('per-resource override yields a v2 descriptor while siblings stay v1', () => {
+    const env = { RUNPOD_REST_VERSION: 'v1', RUNPOD_REST_VERSION_PODS: 'v2' };
+    const pods = resolveBackend({ resource: 'pods', env, ctx: stdio });
+    assert.equal(pods.version, 'v2');
+    assert.equal(pods.base, 'https://v2-rest.runpod.io/v2');
+    assert.equal(pods.list, '/v2/pods');
+    assert.equal(
+      (pods.mapCreate({ imageName: 'i' }) as Record<string, unknown>).image,
+      'i'
+    );
+    const templates = resolveBackend({
+      resource: 'templates',
+      env,
+      ctx: stdio,
+    });
+    assert.equal(templates.version, 'v1');
+    assert.equal(templates.base, 'https://rest.runpod.io/v1');
+    assert.equal(templates.list, '/templates');
+  });
+
   it('jobs/endpoints stay v1 even under RUNPOD_REST_VERSION=v2', () => {
     const jobs = resolveBackend({ resource: 'jobs', env: v2env, ctx: stdio });
     assert.equal(jobs.version, 'v1');

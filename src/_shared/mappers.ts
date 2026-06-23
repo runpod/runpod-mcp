@@ -8,7 +8,8 @@
 // Known pending upstream changes that will require updating these + the fixtures:
 //   - `dataCenter` (scalar) may revert to `dataCenterIds` (array)
 //   - `cloud` enum may drop `ALL`
-//   - template `category` may become optional / be removed
+//   - template `category` may become optional / be removed (we currently emit it
+//     with an NVIDIA default since the committed spec marks it required)
 // When the live spec changes, update the mapper AND its fixture in one commit.
 
 // v1 params accepted by the create-pod / update-pod tool schemas (the fields the
@@ -52,13 +53,15 @@ function containerConfigToV2(p: {
     ports: p.ports,
     env: p.env,
   });
-  // volumeInGb / volumeMountPath → mounts.persistent.{size,path}
-  if (p.volumeInGb !== undefined || p.volumeMountPath !== undefined) {
-    const persistent = compact({
-      size: p.volumeInGb,
-      path: p.volumeMountPath,
-    });
-    out.mounts = { persistent };
+  // volumeInGb / volumeMountPath → mounts.persistent.{size,path}.
+  // v2 PersistentMount requires BOTH size and path (additionalProperties:false,
+  // 422 on a partial). So only emit the mount when both are present; a partial
+  // v1 input (size-only or path-only) is dropped rather than producing a body
+  // the API rejects. (Tool-schema validation should require both together.)
+  if (p.volumeInGb !== undefined && p.volumeMountPath !== undefined) {
+    out.mounts = {
+      persistent: { size: p.volumeInGb, path: p.volumeMountPath },
+    };
   }
   return out;
 }
@@ -73,12 +76,12 @@ export function mapPodCreateToV2(params: V1PodParams): Record<string, unknown> {
       dataCenter: params.dataCenterIds?.[0],
     }),
   };
-  // gpuTypeIds[] + gpuCount → gpu: { id, count }
-  if (params.gpuTypeIds?.length || params.gpuCount !== undefined) {
-    body.gpu = compact({
-      id: params.gpuTypeIds?.[0],
-      count: params.gpuCount,
-    });
+  // gpuTypeIds[] + gpuCount → gpu: { id, count }. v2 GpuConfig requires `id`, so
+  // only emit `gpu` when a concrete id is present — a count-only input would
+  // produce an idless gpu the API rejects (422). count is optional (defaults 1).
+  const gpuId = params.gpuTypeIds?.[0];
+  if (gpuId !== undefined) {
+    body.gpu = compact({ id: gpuId, count: params.gpuCount });
   }
   return body;
 }
@@ -119,6 +122,10 @@ interface V1TemplateCreate {
   containerDiskInGb?: number;
   volumeInGb?: number;
   volumeMountPath?: string;
+  // v2 CreateTemplateRequest requires `category` (CPU/NVIDIA/AMD). The v1 tool
+  // has no such field; default to NVIDIA (the documented default) so the body is
+  // valid, and accept an explicit override once the tool schema exposes it.
+  category?: 'CPU' | 'NVIDIA' | 'AMD';
 }
 export function mapTemplateCreateToV2(
   params: V1TemplateCreate
@@ -129,6 +136,8 @@ export function mapTemplateCreateToV2(
       name: params.name,
       serverless: params.isServerless,
     }),
+    // Required by v2 — always emit, defaulting to NVIDIA.
+    category: params.category ?? 'NVIDIA',
   };
 }
 
