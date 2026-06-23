@@ -6,8 +6,25 @@ import {
   resolveVersion,
   createV2Prober,
   resolveBackend,
+  wantsAutoProbe,
   type Resource,
 } from '../src/_shared/backend.js';
+
+describe('wantsAutoProbe', () => {
+  it('true when the global flag is auto (any case)', () => {
+    assert.equal(wantsAutoProbe({ RUNPOD_REST_VERSION: 'auto' }), true);
+    assert.equal(wantsAutoProbe({ RUNPOD_REST_VERSION: 'AUTO' }), true);
+  });
+  it('true when a per-resource override is auto', () => {
+    assert.equal(wantsAutoProbe({ RUNPOD_REST_VERSION_PODS: 'auto' }), true);
+  });
+  it('false for v1/v2/unset/bogus', () => {
+    assert.equal(wantsAutoProbe({ RUNPOD_REST_VERSION: 'v2' }), false);
+    assert.equal(wantsAutoProbe({ RUNPOD_REST_VERSION: 'v1' }), false);
+    assert.equal(wantsAutoProbe({}), false);
+    assert.equal(wantsAutoProbe({ RUNPOD_REST_VERSION: 'foo' }), false);
+  });
+});
 
 // ============== A0: unwrapList ==============
 describe('unwrapList', () => {

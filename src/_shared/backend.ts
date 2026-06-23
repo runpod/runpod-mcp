@@ -132,6 +132,15 @@ export function resolveVersion(opts: {
   return 'v1';
 }
 
+// True if any version setting (global or per-resource) is `auto` — i.e. the
+// stdio entrypoint should run the v2 probe once at startup. Pure.
+export function wantsAutoProbe(env: Env): boolean {
+  return Object.entries(env).some(
+    ([k, v]) =>
+      k.startsWith('RUNPOD_REST_VERSION') && (v ?? '').toLowerCase() === 'auto'
+  );
+}
+
 // ---- A1b: the real `auto` probe (decision logic, injected fetch) ----
 // Returns an async resolver that probes once and memoizes the verdict for the
 // process. The startup wiring (stdio only) awaits this once, then passes the
