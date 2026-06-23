@@ -8,6 +8,7 @@ import {
   mapPodUpdateToV2,
   mapNetworkVolumeCreateToV2,
   mapTemplateCreateToV2,
+  mapTemplateUpdateToV2,
 } from '../src/_shared/mappers.js';
 
 const fixture = JSON.parse(
@@ -163,5 +164,14 @@ describe('mapTemplateCreateToV2', () => {
   it('accepts an explicit category override', () => {
     const out = mapTemplateCreateToV2({ name: 't', category: 'CPU' });
     assert.equal(out.category, 'CPU');
+  });
+});
+
+describe('mapTemplateUpdateToV2', () => {
+  it('maps imageName→image (not identity), keeps name, no category forced', () => {
+    const out = mapTemplateUpdateToV2({ name: 'n', imageName: 'i' });
+    assert.deepEqual(out, { image: 'i', name: 'n' });
+    assert.equal('imageName' in out, false);
+    assert.equal('category' in out, false);
   });
 });
