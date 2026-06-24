@@ -146,11 +146,23 @@ async function withApiErrorLog<T>(
 // Every tool returns this shape, so it lives at module scope.
 function jsonReply(result: unknown) {
   return {
-    content: [
-      { type: 'text' as const, text: JSON.stringify(result, null, 2) },
-    ],
+    content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
   };
 }
+
+// Shared MCP tool-annotation presets (advisory hints clients use to label tools
+// and gate confirmations). `openWorldHint` is true on all of these — every tool
+// talks to the external Runpod API. READ_ONLY = pure reads; WRITE = creates/
+// mutations; DESTRUCTIVE = deletes (also idempotent: re-deleting a gone resource
+// is a no-op). Spread a preset and add a per-tool `title`.
+const READ_ONLY = { readOnlyHint: true, openWorldHint: true };
+const WRITE = { readOnlyHint: false, openWorldHint: true };
+const DESTRUCTIVE = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: true,
+  openWorldHint: true,
+};
 
 function createRunpodRequest(
   apiKey: string,
@@ -265,6 +277,7 @@ export function registerTools(
   // List GPU Types
   server.tool(
     'list-gpu-types',
+    'List available GPU types with stock/pricing and capability filters (minimum VRAM, secure/community cloud, name search). Use this to discover valid gpuTypeIds before creating a pod or endpoint. On v2 the realtime stock filter is a no-op.',
     {
       minMemoryGb: z
         .number()
@@ -291,6 +304,7 @@ export function registerTools(
           'Include GPUs that are currently out of stock. Default is false'
         ),
     },
+    { title: 'List GPU types', ...READ_ONLY },
     async (params) => {
       const backend = backendFor('gpus');
       if (backend.version === 'v2') {
@@ -409,6 +423,7 @@ export function registerTools(
   // List Data Centers
   server.tool(
     'list-data-centers',
+    'List Runpod data centers (id, name, region/location). Use this to discover valid dataCenterIds for placing pods, endpoints, or network volumes.',
     {
       region: z
         .string()
@@ -417,6 +432,7 @@ export function registerTools(
           "Filter by region/location (e.g., 'United States', 'Europe', 'Canada')"
         ),
     },
+    { title: 'List data centers', ...READ_ONLY },
     async (params) => {
       const backend = backendFor('dataCenters');
       if (backend.version === 'v2') {
@@ -470,25 +486,33 @@ export function registerTools(
   );
 
   // List CPU Types (v2-only — v2 catalog REST has no v1/GraphQL equivalent)
-  server.tool('list-cpu-types', {}, async () => {
-    const backend = backendFor('cpus');
-    if (backend.version === 'v1') {
-      return jsonReply({
-        error:
-          'list-cpu-types is only available on the v2 REST API. Set RUNPOD_REST_VERSION=v2.',
-        status: 501,
-      });
+  server.tool(
+    'list-cpu-types',
+    'List available CPU flavor types for CPU pods/endpoints. v2-only — returns a 501 notice on the v1 API.',
+    {},
+    { title: 'List CPU types', ...READ_ONLY },
+    async () => {
+      const backend = backendFor('cpus');
+      if (backend.version === 'v1') {
+        return jsonReply({
+          error:
+            'list-cpu-types is only available on the v2 REST API. Set RUNPOD_REST_VERSION=v2.',
+          status: 501,
+        });
+      }
+      const raw = await callRestUrl(`${backend.base}${backend.list}`);
+      return jsonReply(backend.unwrap(raw));
     }
-    const raw = await callRestUrl(`${backend.base}${backend.list}`);
-    return jsonReply(backend.unwrap(raw));
-  });
+  );
 
   // Get GPU Type by id (v2-only — GET /v2/catalog/gpus/{id})
   server.tool(
     'get-gpu-type',
+    'Get details for a single GPU type by id. v2-only — returns a 501 notice on the v1 API (use list-gpu-types there).',
     {
       gpuTypeId: z.string().describe('ID of the GPU type to retrieve'),
     },
+    { title: 'Get GPU type', ...READ_ONLY },
     async (params) => {
       const backend = backendFor('gpus');
       if (backend.version === 'v1') {
@@ -510,6 +534,7 @@ export function registerTools(
   // List Pods
   server.tool(
     'list-pods',
+    'List your pods (running and stopped) with optional filters — compute type, GPU type, data center, name — plus machine/network-volume expansion. Paginated via limit/cursor.',
     {
       ...listPaginationParams,
       computeType: z
@@ -537,6 +562,7 @@ export function registerTools(
         .optional()
         .describe('Include information about attached network volumes'),
     },
+    { title: 'List pods', ...READ_ONLY },
     async (params) => {
       const backend = backendFor('pods');
 
@@ -585,6 +611,7 @@ export function registerTools(
   // Get Pod Details
   server.tool(
     'get-pod',
+    'Get full details for one pod by id, optionally expanding machine and attached network-volume info.',
     {
       podId: z.string().describe('ID of the pod to retrieve'),
       includeMachine: z
@@ -596,6 +623,7 @@ export function registerTools(
         .optional()
         .describe('Include information about attached network volumes'),
     },
+    { title: 'Get pod', ...READ_ONLY },
     async (params) => {
       const backend = backendFor('pods');
 
@@ -660,6 +688,7 @@ export function registerTools(
         .optional()
         .describe('List of data centers'),
     },
+    { title: 'Create pod', ...WRITE },
     async (params) => {
       const backend = backendFor('pods');
       const body = backend.mapCreate(params) as Record<string, unknown>;
@@ -675,6 +704,7 @@ export function registerTools(
   // Update Pod
   server.tool(
     'update-pod',
+    "Update a pod's mutable fields (name, image, container disk, volume, ports, env). Only the fields you provide change.",
     {
       podId: z.string().describe('ID of the pod to update'),
       name: z.string().optional().describe('New name for the pod'),
@@ -694,6 +724,7 @@ export function registerTools(
         .optional()
         .describe('New environment variables'),
     },
+    { title: 'Update pod', ...WRITE, idempotentHint: true },
     async (params) => {
       const { podId, ...updateParams } = params;
       const backend = backendFor('pods');
@@ -710,9 +741,11 @@ export function registerTools(
   // Start Pod — v1: POST /pods/{id}/start ; v2: POST /pods/{id}/action {action:'start'}
   server.tool(
     'start-pod',
+    'Start a stopped pod (resumes the same pod and its billing).',
     {
       podId: z.string().describe('ID of the pod to start'),
     },
+    { title: 'Start pod', ...WRITE, idempotentHint: true },
     async (params) => {
       const result = await podAction(params.podId, 'start');
       return jsonReply(result);
@@ -722,9 +755,11 @@ export function registerTools(
   // Stop Pod — v1: POST /pods/{id}/stop ; v2: POST /pods/{id}/action {action:'stop'}
   server.tool(
     'stop-pod',
+    'Stop a running pod. The pod and its disk persist; GPU billing stops.',
     {
       podId: z.string().describe('ID of the pod to stop'),
     },
+    { title: 'Stop pod', ...WRITE, idempotentHint: true },
     async (params) => {
       const result = await podAction(params.podId, 'stop');
       return jsonReply(result);
@@ -734,9 +769,11 @@ export function registerTools(
   // Delete Pod
   server.tool(
     'delete-pod',
+    'Permanently delete a pod and its data. This cannot be undone.',
     {
       podId: z.string().describe('ID of the pod to delete'),
     },
+    { title: 'Delete pod', ...DESTRUCTIVE },
     async (params) => {
       const backend = backendFor('pods');
       const result = await callRestUrl(
@@ -752,6 +789,7 @@ export function registerTools(
   // List Endpoints
   server.tool(
     'list-endpoints',
+    'List your Serverless endpoints, optionally expanding template and worker details. Paginated via limit/cursor.',
     {
       ...listPaginationParams,
       includeTemplate: z
@@ -763,6 +801,7 @@ export function registerTools(
         .optional()
         .describe('Include information about workers'),
     },
+    { title: 'List endpoints', ...READ_ONLY },
     async (params) => {
       const queryParams = new URLSearchParams();
 
@@ -789,6 +828,7 @@ export function registerTools(
   // Get Endpoint Details
   server.tool(
     'get-endpoint',
+    'Get one Serverless endpoint by id, optionally expanding template and worker details.',
     {
       endpointId: z.string().describe('ID of the endpoint to retrieve'),
       includeTemplate: z
@@ -800,6 +840,7 @@ export function registerTools(
         .optional()
         .describe('Include information about workers'),
     },
+    { title: 'Get endpoint', ...READ_ONLY },
     async (params) => {
       const queryParams = new URLSearchParams();
 
@@ -825,6 +866,7 @@ export function registerTools(
   // Create Endpoint
   server.tool(
     'create-endpoint',
+    'Create a Serverless endpoint from a template, with GPU/CPU compute and worker min/max autoscaling.',
     {
       name: z.string().optional().describe('Name for the endpoint'),
       templateId: z.string().describe('Template ID to use'),
@@ -844,6 +886,7 @@ export function registerTools(
         .optional()
         .describe('List of data centers'),
     },
+    { title: 'Create endpoint', ...WRITE },
     async (params) => {
       const result = await runpodRequest('/endpoints', 'POST', params);
 
@@ -854,6 +897,7 @@ export function registerTools(
   // Update Endpoint
   server.tool(
     'update-endpoint',
+    "Update a Serverless endpoint's scaling/config (worker min/max, idle timeout, scaler type/value, name). Only provided fields change.",
     {
       endpointId: z.string().describe('ID of the endpoint to update'),
       name: z.string().optional().describe('New name for the endpoint'),
@@ -875,6 +919,7 @@ export function registerTools(
         .describe('Scaler type'),
       scalerValue: z.number().optional().describe('Scaler value'),
     },
+    { title: 'Update endpoint', ...WRITE, idempotentHint: true },
     async (params) => {
       const { endpointId, ...updateParams } = params;
       const result = await runpodRequest(
@@ -890,9 +935,11 @@ export function registerTools(
   // Delete Endpoint
   server.tool(
     'delete-endpoint',
+    'Permanently delete a Serverless endpoint. This cannot be undone.',
     {
       endpointId: z.string().describe('ID of the endpoint to delete'),
     },
+    { title: 'Delete endpoint', ...DESTRUCTIVE },
     async (params) => {
       const result = await runpodRequest(
         `/endpoints/${params.endpointId}`,
@@ -969,6 +1016,7 @@ export function registerTools(
       policy: policySchema,
       s3Config: s3ConfigSchema,
     },
+    { title: 'Run endpoint (async)', ...WRITE },
     async (params) => {
       const { endpointId, ...body } = params;
       const result = await serverlessRequest(
@@ -1003,6 +1051,7 @@ export function registerTools(
       policy: policySchema,
       s3Config: s3ConfigSchema,
     },
+    { title: 'Run endpoint (sync)', ...WRITE },
     async (params) => {
       const { endpointId, wait, ...body } = params;
       const path = wait ? `/runsync?wait=${wait}` : '/runsync';
@@ -1027,6 +1076,7 @@ export function registerTools(
       ),
       jobId: jobIdSchema.describe('ID of the job to check'),
     },
+    { title: 'Get job status', ...READ_ONLY },
     async (params) => {
       const result = await serverlessRequest(
         params.endpointId,
@@ -1047,6 +1097,7 @@ export function registerTools(
       ),
       jobId: jobIdSchema.describe('ID of the job to stream results from'),
     },
+    { title: 'Stream job', ...READ_ONLY },
     async (params) => {
       const TERMINAL_STATUSES = new Set([
         'COMPLETED',
@@ -1118,6 +1169,7 @@ export function registerTools(
       ),
       jobId: jobIdSchema.describe('ID of the job to cancel'),
     },
+    { title: 'Cancel job', ...WRITE, idempotentHint: true },
     async (params) => {
       const result = await serverlessRequest(
         params.endpointId,
@@ -1139,6 +1191,7 @@ export function registerTools(
       ),
       jobId: jobIdSchema.describe('ID of the job to retry'),
     },
+    { title: 'Retry job', ...WRITE },
     async (params) => {
       const result = await serverlessRequest(
         params.endpointId,
@@ -1159,6 +1212,7 @@ export function registerTools(
         'ID of the Serverless endpoint to check health for'
       ),
     },
+    { title: 'Endpoint health', ...READ_ONLY },
     async (params) => {
       const result = await serverlessRequest(params.endpointId, '/health');
 
@@ -1175,6 +1229,7 @@ export function registerTools(
         'ID of the Serverless endpoint to purge the queue for'
       ),
     },
+    { title: 'Purge endpoint queue', ...WRITE, idempotentHint: true },
     async (params) => {
       const result = await serverlessRequest(
         params.endpointId,
@@ -1209,6 +1264,7 @@ export function registerTools(
           'Include templates bound to Serverless endpoints in the response'
         ),
     },
+    { title: 'List templates', ...READ_ONLY },
     async (params) => {
       const backend = backendFor('templates');
       let query = '';
@@ -1236,9 +1292,11 @@ export function registerTools(
   // Get Template Details
   server.tool(
     'get-template',
+    'Get one template by id (image, env, ports, disk/volume config).',
     {
       templateId: z.string().describe('ID of the template to retrieve'),
     },
+    { title: 'Get template', ...READ_ONLY },
     async (params) => {
       const backend = backendFor('templates');
       const result = await callRestUrl(
@@ -1251,6 +1309,7 @@ export function registerTools(
   // Create Template
   server.tool(
     'create-template',
+    'Create a reusable pod/endpoint template (image, ports, env, disk/volume). On v2 a category is required and defaults to NVIDIA.',
     {
       name: z.string().describe('Name for the template'),
       imageName: z.string().describe('Docker image to use'),
@@ -1282,6 +1341,7 @@ export function registerTools(
         .optional()
         .describe('README content in markdown format'),
     },
+    { title: 'Create template', ...WRITE },
     async (params) => {
       const backend = backendFor('templates');
       const body = backend.mapCreate(params) as Record<string, unknown>;
@@ -1297,6 +1357,7 @@ export function registerTools(
   // Update Template
   server.tool(
     'update-template',
+    "Update a template's mutable fields (name, image, ports, env, readme). Only provided fields change.",
     {
       templateId: z.string().describe('ID of the template to update'),
       name: z.string().optional().describe('New name for the template'),
@@ -1311,6 +1372,7 @@ export function registerTools(
         .optional()
         .describe('New README content in markdown format'),
     },
+    { title: 'Update template', ...WRITE, idempotentHint: true },
     async (params) => {
       const { templateId, ...updateParams } = params;
       const backend = backendFor('templates');
@@ -1327,9 +1389,11 @@ export function registerTools(
   // Delete Template
   server.tool(
     'delete-template',
+    'Permanently delete a template. This cannot be undone.',
     {
       templateId: z.string().describe('ID of the template to delete'),
     },
+    { title: 'Delete template', ...DESTRUCTIVE },
     async (params) => {
       const backend = backendFor('templates');
       const result = await callRestUrl(
@@ -1343,24 +1407,32 @@ export function registerTools(
   // ============== NETWORK VOLUME MANAGEMENT TOOLS ==============
 
   // List Network Volumes
-  server.tool('list-network-volumes', listPaginationParams, async (params) => {
-    const backend = backendFor('networkVolumes');
-    const result = await callRestUrl(`${backend.base}${backend.list}`);
+  server.tool(
+    'list-network-volumes',
+    'List your network volumes (persistent storage attachable to pods). Paginated via limit/cursor.',
+    listPaginationParams,
+    { title: 'List network volumes', ...READ_ONLY },
+    async (params) => {
+      const backend = backendFor('networkVolumes');
+      const result = await callRestUrl(`${backend.base}${backend.list}`);
 
-    return capListResult(backend.unwrap(result), {
-      limit: params.limit,
-      cursor: params.cursor,
-    });
-  });
+      return capListResult(backend.unwrap(result), {
+        limit: params.limit,
+        cursor: params.cursor,
+      });
+    }
+  );
 
   // Get Network Volume Details
   server.tool(
     'get-network-volume',
+    'Get one network volume by id (name, size, data center).',
     {
       networkVolumeId: z
         .string()
         .describe('ID of the network volume to retrieve'),
     },
+    { title: 'Get network volume', ...READ_ONLY },
     async (params) => {
       const backend = backendFor('networkVolumes');
       const result = await callRestUrl(
@@ -1373,11 +1445,15 @@ export function registerTools(
   // Create Network Volume
   server.tool(
     'create-network-volume',
+    'Create a persistent network volume in a data center (size 1–4000 GB) that pods can mount.',
     {
       name: z.string().describe('Name for the network volume'),
       size: z.number().describe('Size in GB (1-4000)'),
-      dataCenterId: z.string().describe('Data center ID'),
+      dataCenterId: z
+        .string()
+        .describe('Data center ID (see list-data-centers)'),
     },
+    { title: 'Create network volume', ...WRITE },
     async (params) => {
       const backend = backendFor('networkVolumes');
       const body = backend.mapCreate(params) as Record<string, unknown>;
@@ -1393,6 +1469,7 @@ export function registerTools(
   // Update Network Volume
   server.tool(
     'update-network-volume',
+    'Update a network volume (rename, or grow size — the new size must exceed the current size). Only provided fields change.',
     {
       networkVolumeId: z
         .string()
@@ -1403,6 +1480,7 @@ export function registerTools(
         .optional()
         .describe('New size in GB (must be larger than current)'),
     },
+    { title: 'Update network volume', ...WRITE, idempotentHint: true },
     async (params) => {
       const { networkVolumeId, ...updateParams } = params;
       const backend = backendFor('networkVolumes');
@@ -1419,11 +1497,13 @@ export function registerTools(
   // Delete Network Volume
   server.tool(
     'delete-network-volume',
+    'Permanently delete a network volume and its data. This cannot be undone.',
     {
       networkVolumeId: z
         .string()
         .describe('ID of the network volume to delete'),
     },
+    { title: 'Delete network volume', ...DESTRUCTIVE },
     async (params) => {
       const backend = backendFor('networkVolumes');
       const result = await callRestUrl(
@@ -1439,7 +1519,9 @@ export function registerTools(
   // List Container Registry Auths
   server.tool(
     'list-container-registry-auths',
+    'List your saved container-registry credentials (private image-pull auth). Paginated via limit/cursor.',
     listPaginationParams,
+    { title: 'List container registry auths', ...READ_ONLY },
     async (params) => {
       const backend = backendFor('registries');
       const result = await callRestUrl(`${backend.base}${backend.list}`);
@@ -1454,11 +1536,13 @@ export function registerTools(
   // Get Container Registry Auth Details
   server.tool(
     'get-container-registry-auth',
+    'Get one saved container-registry credential by id (the secret/password is not returned).',
     {
       containerRegistryAuthId: z
         .string()
         .describe('ID of the container registry auth to retrieve'),
     },
+    { title: 'Get container registry auth', ...READ_ONLY },
     async (params) => {
       const backend = backendFor('registries');
       const result = await callRestUrl(
@@ -1471,11 +1555,15 @@ export function registerTools(
   // Create Container Registry Auth
   server.tool(
     'create-container-registry-auth',
+    'Save container-registry credentials (username + password/token) so pods and endpoints can pull private images.',
     {
       name: z.string().describe('Name for the container registry auth'),
       username: z.string().describe('Registry username'),
-      password: z.string().describe('Registry password'),
+      password: z
+        .string()
+        .describe('Registry password or access token (stored as a secret)'),
     },
+    { title: 'Create container registry auth', ...WRITE },
     async (params) => {
       const backend = backendFor('registries');
       const body = backend.mapCreate(params) as Record<string, unknown>;
@@ -1491,11 +1579,13 @@ export function registerTools(
   // Delete Container Registry Auth
   server.tool(
     'delete-container-registry-auth',
+    'Permanently delete a saved container-registry credential. This cannot be undone.',
     {
       containerRegistryAuthId: z
         .string()
         .describe('ID of the container registry auth to delete'),
     },
+    { title: 'Delete container registry auth', ...DESTRUCTIVE },
     async (params) => {
       const backend = backendFor('registries');
       const result = await callRestUrl(
