@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import * as p from '@clack/prompts';
 import {
   CLIENTS,
@@ -11,14 +11,16 @@ const API_KEYS_URL = 'https://www.runpod.io/console/user/settings';
 
 // Open a URL in the user's default browser. Best-effort and non-fatal.
 function openBrowser(url: string): void {
-  const command =
-    process.platform === 'darwin'
-      ? 'open'
-      : process.platform === 'win32'
-        ? 'start ""'
-        : 'xdg-open';
   try {
-    execSync(`${command} ${JSON.stringify(url)}`, { stdio: 'ignore' });
+    // No shell: pass the URL as a literal arg. On Windows the opener is the cmd
+    // built-in `start` (first quoted arg is the window title, hence the empty '').
+    if (process.platform === 'darwin') {
+      execFileSync('open', [url], { stdio: 'ignore' });
+    } else if (process.platform === 'win32') {
+      execFileSync('cmd', ['/c', 'start', '', url], { stdio: 'ignore' });
+    } else {
+      execFileSync('xdg-open', [url], { stdio: 'ignore' });
+    }
   } catch {
     // Ignore — the user can open the URL manually.
   }
@@ -29,7 +31,8 @@ function openBrowser(url: string): void {
 // (offline, etc.) so we can warn without blocking.
 async function verifyApiKey(apiKey: string): Promise<boolean | null> {
   try {
-    const response = await fetch('https://rest.runpod.io/v1/pods', {
+    const base = process.env.RUNPOD_REST_API_URL ?? 'https://rest.runpod.io/v1';
+    const response = await fetch(`${base}/pods`, {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
     if (response.ok) return true;
@@ -201,7 +204,7 @@ async function runRemove(): Promise<void> {
   p.outro('Done.');
 }
 
-// Entry point for `npx @runpod/mcp-server mcp <add|remove>`.
+// Entry point for `npx @runpod/mcp-server <add|remove>`.
 export async function runWizard(subcommand: string): Promise<void> {
   p.intro('Runpod MCP server installer');
 

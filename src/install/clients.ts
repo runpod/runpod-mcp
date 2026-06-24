@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import * as jsonc from 'jsonc-parser';
 
 // The npm package and the name the server is registered under in client config.
@@ -42,13 +42,15 @@ export interface McpClient {
 }
 
 // The local stdio config: Runpod's MCP server runs via npx and reads the API
-// key from the environment.
-function localServerConfig(apiKey: string) {
-  return {
+// key from the environment. VS Code's `servers` map requires an explicit
+// transport type for stdio servers (mcpServers-style clients infer it).
+function localServerConfig(apiKey: string, serverProperty: string) {
+  const config = {
     command: 'npx',
     args: ['-y', NPM_PACKAGE],
     env: { RUNPOD_API_KEY: apiKey },
   };
+  return serverProperty === 'servers' ? { type: 'stdio', ...config } : config;
 }
 
 // The hosted config. Clients with native remote-MCP support take the URL
@@ -144,7 +146,7 @@ function jsonClient(opts: {
     add: (mode) => {
       const value =
         mode.kind === 'local'
-          ? localServerConfig(mode.apiKey)
+          ? localServerConfig(mode.apiKey, serverProperty)
           : hostedServerConfig(hostedStrategy, serverProperty, mode.url);
       return Promise.resolve(
         upsertJsonServer(opts.configPath(), serverProperty, value)
@@ -176,9 +178,9 @@ function findClaudeBinary(): string | null {
 
 function runClaude(binary: string, args: string[]): AddResult {
   try {
-    execSync(`${binary} ${args.map((a) => JSON.stringify(a)).join(' ')}`, {
-      stdio: 'pipe',
-    });
+    // execFileSync (no shell) — args pass directly, so an API key with shell
+    // metacharacters can't be interpreted by a shell.
+    execFileSync(binary, args, { stdio: 'pipe' });
     return { success: true };
   } catch (error) {
     const message = errMessage(error);
@@ -240,7 +242,7 @@ const claudeCodeClient: McpClient = {
       });
     }
     try {
-      execSync(`${binary} mcp remove --scope user ${SERVER_NAME}`, {
+      execFileSync(binary, ['mcp', 'remove', '--scope', 'user', SERVER_NAME], {
         stdio: 'pipe',
       });
       return Promise.resolve({ success: true });
