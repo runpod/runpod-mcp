@@ -1,7 +1,5 @@
 # Runpod MCP server
 
-[![smithery badge](https://smithery.ai/badge/@runpod/runpod-mcp-ts)](https://smithery.ai/server/@runpod/runpod-mcp-ts)
-
 This is the official Runpod Model Context Protocol (MCP) server, published to npm as `@runpod/mcp-server`.
 
 It supports two deployment modes:
@@ -22,12 +20,6 @@ The server never holds a credential of its own and never shares one across users
 
 ```bash
 RUNPOD_API_KEY=YOUR_API_KEY npx -y @runpod/mcp-server@latest
-```
-
-### Install via Smithery
-
-```bash
-npx -y @smithery/cli install @runpod/runpod-mcp-ts --client claude
 ```
 
 ## Local MCP clients
