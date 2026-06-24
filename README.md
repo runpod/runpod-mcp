@@ -20,13 +20,13 @@ The server never holds a credential of its own and never shares one across users
 
 The server can target either the v1 REST API (`rest.runpod.io/v1`) or the newer v2 REST API (`v2-rest.runpod.io/v2`). It **defaults to v1**; v2 is opt-in. These environment variables are read once at startup:
 
-| Variable | Values | Default | Effect |
-|----------|--------|---------|--------|
-| `RUNPOD_REST_VERSION` | `v1` \| `v2` \| `auto` | `v1` | Version used for all resources. |
-| `RUNPOD_REST_VERSION_<RESOURCE>` | `v1` \| `v2` \| `auto` | — | Per-resource override (e.g. `RUNPOD_REST_VERSION_PODS=v2`). Takes precedence over the global setting. |
-| `RUNPOD_REST_V2_API_URL` | URL | `https://v2-rest.runpod.io/v2` | v2 base URL. Override to target a non-prod host. |
-| `RUNPOD_REST_API_URL` | URL | `https://rest.runpod.io/v1` | v1 base URL. |
-| `RUNPOD_SERVERLESS_API_URL` | URL | `https://api.runpod.ai/v2` | Serverless runtime base URL. |
+| Variable                         | Values                 | Default                        | Effect                                                                                                |
+| -------------------------------- | ---------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `RUNPOD_REST_VERSION`            | `v1` \| `v2` \| `auto` | `v1`                           | Version used for all resources.                                                                       |
+| `RUNPOD_REST_VERSION_<RESOURCE>` | `v1` \| `v2` \| `auto` | —                              | Per-resource override (e.g. `RUNPOD_REST_VERSION_PODS=v2`). Takes precedence over the global setting. |
+| `RUNPOD_REST_V2_API_URL`         | URL                    | `https://v2-rest.runpod.io/v2` | v2 base URL. Override to target a non-prod host.                                                      |
+| `RUNPOD_REST_API_URL`            | URL                    | `https://rest.runpod.io/v1`    | v1 base URL.                                                                                          |
+| `RUNPOD_SERVERLESS_API_URL`      | URL                    | `https://api.runpod.ai/v2`     | Serverless runtime base URL.                                                                          |
 
 Notes:
 
@@ -328,6 +328,21 @@ pnpm build
 ```
 
 `pnpm test` runs the offline unit suite (outbound-request goldens, adapter, mappers, http client) — no network or API key required.
+
+### v2 spec parity gate
+
+`tests/spec-parity.test.ts` walks every operation in the vendored v2 OpenAPI spec (`tests/fixtures/v2-openapi.yaml`) and fails if a v2 endpoint has no MCP tool covering it (and isn't explicitly allowlisted) — the drift gate that flags when the API grows an endpoint we don't expose yet. It also runs the reverse check (no tool is left unaccounted for). It's part of `pnpm test`, hermetic (parses the committed spec; no network, no API key).
+
+Refresh the vendored spec when the v2 API changes:
+
+```bash
+pnpm tsx scripts/fetch-v2-spec.ts   # re-fetch tests/fixtures/v2-openapi.yaml
+pnpm test                           # parity test shows any newly-uncovered endpoint
+```
+
+The serverless runtime tools (`run-endpoint`, `get-job-status`, …) target `api.runpod.ai/v2`, which is a different service from the v2 REST control plane, so they are allowlisted as intentionally spec-unmapped. The spec has no logs/artifacts endpoints, so there are no such tools.
+
+An optional live shape check (skipped by default) verifies the live endpoints still return the envelopes the list tools unwrap; run it with `MCP_LIVE_V2_KEY=<dev-key> pnpm test` (optionally `MCP_LIVE_V2_BASE`).
 
 For transport validation:
 
