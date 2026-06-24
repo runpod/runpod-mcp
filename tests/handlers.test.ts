@@ -490,11 +490,12 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
     });
   });
 
-  it('create-pod v2 with NO gpuTypeIds (CPU pod) transparently routes to v1 + flags it', async () => {
+  it('create-pod v2 CPU pod (computeType:"CPU") transparently routes to v1 + flags it', async () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({ jsonBody: { id: 'pod_cpu' } });
       const out = (await handlers.get('create-pod')!({
         imageName: 'i',
+        computeType: 'CPU',
         containerDiskInGb: 10,
       })) as { content: Array<{ text: string }> };
       // routed to v1 (v1 passthrough body), NOT v2
@@ -506,7 +507,7 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
     });
   });
 
-  it('create-pod v2 with gpuCount but NO gpuTypeIds → 400, fires no request (not silently a CPU pod)', async () => {
+  it('create-pod v2 with gpuCount but NO gpuTypeIds → 400, fires no request (under-specified GPU)', async () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({ jsonBody: {} });
       const out = (await handlers.get('create-pod')!({
@@ -516,7 +517,35 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
       assert.equal(outbound.length, 0, 'must not fire a request');
       const payload = JSON.parse(out.content[0].text);
       assert.equal(payload.status, 400);
-      assert.match(payload.error, /gpuCount is set but gpuTypeIds is missing/);
+      assert.match(payload.error, /A GPU pod needs gpuTypeIds/);
+    });
+  });
+
+  it('create-pod v2 with no GPU and no computeType → 400, no request (no silent CPU pod)', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      const out = (await handlers.get('create-pod')!({ imageName: 'i' })) as {
+        content: Array<{ text: string }>;
+      };
+      assert.equal(outbound.length, 0, 'absence must not silently create a pod');
+      const payload = JSON.parse(out.content[0].text);
+      assert.equal(payload.status, 400);
+      assert.match(payload.error, /No pod type specified/);
+    });
+  });
+
+  it('create-pod v2 contradiction (gpuTypeIds + computeType:"CPU") → 400, no request', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      const out = (await handlers.get('create-pod')!({
+        imageName: 'i',
+        gpuTypeIds: ['A100'],
+        computeType: 'CPU',
+      })) as { content: Array<{ text: string }> };
+      assert.equal(outbound.length, 0);
+      const payload = JSON.parse(out.content[0].text);
+      assert.equal(payload.status, 400);
+      assert.match(payload.error, /not both/);
     });
   });
 

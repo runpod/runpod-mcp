@@ -678,10 +678,16 @@ export function registerTools(
   // Create Pod
   server.tool(
     'create-pod',
-    'Create a new GPU/CPU pod on Runpod. If the user does not specify an image, recommend the "Runpod Pytorch 2.8.0" image (runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404) as the default — it has the most up-to-date CUDA and PyTorch versions.',
+    'Create a new GPU/CPU pod on Runpod. Pass gpuTypeIds for a GPU pod, or computeType:"CPU" for a CPU pod (CPU pods are served by the v1 API for now). If the user does not specify an image, recommend the "Runpod Pytorch 2.8.0" image (runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404) as the default — it has the most up-to-date CUDA and PyTorch versions.',
     {
       name: z.string().optional().describe('Name for the pod'),
       imageName: z.string().describe('Docker image to use'),
+      computeType: z
+        .enum(['GPU', 'CPU'])
+        .optional()
+        .describe(
+          "Pod type. On v2, required when not passing gpuTypeIds. 'CPU' is served by the v1 API for now (v2 has no CPU pods yet)."
+        ),
       cloudType: z
         .enum(['SECURE', 'COMMUNITY'])
         .optional()
@@ -714,38 +720,52 @@ export function registerTools(
     async (params) => {
       const backend = backendFor('pods');
 
+      // Pod type is decided by STATED intent, never inferred from the absence of
+      // GPU fields (absence used to silently downgrade a misspecified GPU request
+      // into a CPU pod). On v2 we require an explicit, non-contradictory choice;
+      // v1 keeps its passthrough behavior (it validates the body itself).
       const hasGpuTypes = (params.gpuTypeIds?.length ?? 0) > 0;
       const hasGpuCount = (params.gpuCount ?? 0) > 0;
+      const wantsCpu = params.computeType === 'CPU';
+      const wantsGpu =
+        hasGpuTypes || hasGpuCount || params.computeType === 'GPU';
 
-      // gpuCount set but gpuTypeIds missing is an under-specified GPU request —
-      // don't silently downgrade it to a CPU pod (the v1 fallback below); make
-      // the caller fix it. (Gated to v2, matching the CPU-routing guard; v1
-      // validates this itself.)
-      if (backend.version === 'v2' && hasGpuCount && !hasGpuTypes) {
-        return jsonReply({
-          error:
-            'gpuCount is set but gpuTypeIds is missing. For a GPU pod, pass gpuTypeIds (see list-gpu-types). Omit gpuCount to create a CPU pod.',
-          status: 400,
-        });
-      }
-
-      // v2 has no CPU pods yet (AE-2991): a GPU-less create is rejected by v2
-      // ("exactly one of gpu or cpu must be set"). v1 supports CPU pods, so rather
-      // than fail, transparently route a GPU-less request to v1 (an identity
-      // passthrough) and tell the caller which API actually served it. A genuine
-      // CPU pod = no GPU requested at all (no types and no count).
-      const isCpuPod = !hasGpuTypes && !hasGpuCount;
-      if (backend.version === 'v2' && isCpuPod) {
-        const result = (await callRestUrl(
-          `${restV1Base(process.env as Env)}/pods`,
-          'POST',
-          params as Record<string, unknown>
-        )) as Record<string, unknown>;
-        return jsonReply({
-          ...result,
-          _servedBy: 'v1',
-          _note: 'CPU pod (no GPU requested): created on the v1 API, because the v2 REST API does not support CPU pods yet.',
-        });
+      if (backend.version === 'v2') {
+        if (wantsGpu && wantsCpu) {
+          return jsonReply({
+            error:
+              "Specify a GPU pod (gpuTypeIds or computeType:'GPU') OR a CPU pod (computeType:'CPU'), not both.",
+            status: 400,
+          });
+        }
+        if (!wantsGpu && !wantsCpu) {
+          return jsonReply({
+            error:
+              "No pod type specified. Pass gpuTypeIds (see list-gpu-types) for a GPU pod, or computeType:'CPU' for a CPU pod.",
+            status: 400,
+          });
+        }
+        if (wantsGpu && !hasGpuTypes) {
+          return jsonReply({
+            error:
+              'A GPU pod needs gpuTypeIds (see list-gpu-types); gpuCount or computeType alone is under-specified.',
+            status: 400,
+          });
+        }
+        // v2 has no CPU pods yet (AE-2991): serve a CPU pod from v1 (which supports
+        // them) instead of failing, and tell the caller which API answered.
+        if (wantsCpu) {
+          const result = (await callRestUrl(
+            `${restV1Base(process.env as Env)}/pods`,
+            'POST',
+            params as Record<string, unknown>
+          )) as Record<string, unknown>;
+          return jsonReply({
+            ...result,
+            _servedBy: 'v1',
+            _note: 'CPU pod: created on the v1 API, because the v2 REST API does not support CPU pods yet.',
+          });
+        }
       }
 
       const body = backend.mapCreate(params) as Record<string, unknown>;
