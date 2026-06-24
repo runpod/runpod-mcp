@@ -801,9 +801,11 @@ export function registerTools(
   // a request that would 404 (mirrors the create-pod 501 handling).
   server.tool(
     'restart-pod',
+    'Restart a running pod (single PodAction call). v2-only — on the v1 API returns a 501 notice (stop then start the pod instead).',
     {
       podId: z.string().describe('ID of the pod to restart'),
     },
+    { title: 'Restart pod', ...WRITE },
     async (params) => {
       const backend = backendFor('pods');
       if (backend.version === 'v1') {
