@@ -714,11 +714,27 @@ export function registerTools(
     async (params) => {
       const backend = backendFor('pods');
 
+      const hasGpuTypes = (params.gpuTypeIds?.length ?? 0) > 0;
+      const hasGpuCount = (params.gpuCount ?? 0) > 0;
+
+      // gpuCount set but gpuTypeIds missing is an under-specified GPU request —
+      // don't silently downgrade it to a CPU pod (the v1 fallback below); make
+      // the caller fix it. (Gated to v2, matching the CPU-routing guard; v1
+      // validates this itself.)
+      if (backend.version === 'v2' && hasGpuCount && !hasGpuTypes) {
+        return jsonReply({
+          error:
+            'gpuCount is set but gpuTypeIds is missing. For a GPU pod, pass gpuTypeIds (see list-gpu-types). Omit gpuCount to create a CPU pod.',
+          status: 400,
+        });
+      }
+
       // v2 has no CPU pods yet (AE-2991): a GPU-less create is rejected by v2
       // ("exactly one of gpu or cpu must be set"). v1 supports CPU pods, so rather
       // than fail, transparently route a GPU-less request to v1 (an identity
-      // passthrough) and tell the caller which API actually served it.
-      const isCpuPod = !params.gpuTypeIds || params.gpuTypeIds.length === 0;
+      // passthrough) and tell the caller which API actually served it. A genuine
+      // CPU pod = no GPU requested at all (no types and no count).
+      const isCpuPod = !hasGpuTypes && !hasGpuCount;
       if (backend.version === 'v2' && isCpuPod) {
         const result = (await callRestUrl(
           `${restV1Base(process.env as Env)}/pods`,

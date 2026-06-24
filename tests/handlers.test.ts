@@ -506,6 +506,20 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
     });
   });
 
+  it('create-pod v2 with gpuCount but NO gpuTypeIds → 400, fires no request (not silently a CPU pod)', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      const out = (await handlers.get('create-pod')!({
+        imageName: 'i',
+        gpuCount: 1,
+      })) as { content: Array<{ text: string }> };
+      assert.equal(outbound.length, 0, 'must not fire a request');
+      const payload = JSON.parse(out.content[0].text);
+      assert.equal(payload.status, 400);
+      assert.match(payload.error, /gpuCount is set but gpuTypeIds is missing/);
+    });
+  });
+
   it('per-resource override (RUNPOD_REST_VERSION_PODS=v2) routes a handler to v2 end-to-end', () => {
     const prev = process.env.RUNPOD_REST_VERSION_PODS;
     process.env.RUNPOD_REST_VERSION_PODS = 'v2';
