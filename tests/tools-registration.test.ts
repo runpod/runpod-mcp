@@ -57,12 +57,74 @@ const CORE_TOOLS = [
   ...LIST_TOOLS,
 ];
 
+// The full registered surface, frozen. The source is split across
+// src/tools/<resource>.ts and assembled by registerTools; this snapshot is the
+// guard that a per-resource refactor (or a dropped registrar import) can't
+// silently remove a tool. Update deliberately when adding/removing a tool.
+const EXPECTED_TOOLS = [
+  // catalog
+  'list-gpu-types',
+  'list-data-centers',
+  'list-cpu-types',
+  'get-gpu-type',
+  // pods
+  'list-pods',
+  'get-pod',
+  'create-pod',
+  'update-pod',
+  'start-pod',
+  'stop-pod',
+  'restart-pod',
+  'delete-pod',
+  // endpoints
+  'list-endpoints',
+  'get-endpoint',
+  'create-endpoint',
+  'update-endpoint',
+  'delete-endpoint',
+  // serverless runtime (jobs)
+  'run-endpoint',
+  'runsync-endpoint',
+  'get-job-status',
+  'stream-job',
+  'cancel-job',
+  'retry-job',
+  'endpoint-health',
+  'purge-endpoint-queue',
+  // templates
+  'list-templates',
+  'get-template',
+  'create-template',
+  'update-template',
+  'delete-template',
+  // network volumes
+  'list-network-volumes',
+  'get-network-volume',
+  'create-network-volume',
+  'update-network-volume',
+  'delete-network-volume',
+  // container registry auth
+  'list-container-registry-auths',
+  'get-container-registry-auth',
+  'create-container-registry-auth',
+  'delete-container-registry-auth',
+];
+
 describe('tool registration', () => {
   it('registers a non-trivial number of tools', () => {
     const { names } = captureRegisteredTools();
     assert.ok(
       names.length >= 30,
       `expected at least 30 tools, got ${names.length}`
+    );
+  });
+
+  it('registers exactly the expected tool surface (no silent add/drop)', () => {
+    const { names } = captureRegisteredTools();
+    assert.deepEqual(
+      [...names].sort(),
+      [...EXPECTED_TOOLS].sort(),
+      'registered tool surface drifted from the frozen snapshot'
     );
   });
 

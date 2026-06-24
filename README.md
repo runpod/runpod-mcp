@@ -308,7 +308,9 @@ The source is now split by responsibility:
 
 - `src/stdio.ts`: local `stdio` entrypoint (runs the v2 probe at startup for `auto` mode).
 - `src/http.ts`: bearer-token extraction and the per-request MCP session for the Streamable HTTP transport.
-- `src/tools.ts`: all Runpod MCP tools (each with a description + MCP annotations).
+- `src/tools.ts`: thin orchestrator — builds the shared runtime and calls each per-resource registrar.
+- `src/tools/<resource>.ts`: the tools for one resource (`pods`, `endpoints`, `jobs`, `templates`, `network-volumes`, `registries`, `catalog`), each with a description + MCP annotations.
+- `src/tools/runtime.ts`: the shared per-server runtime (caller-tracking, the authenticated REST/Serverless/GraphQL clients, the v1/v2 backend resolver) threaded into every registrar.
 - `src/server.ts`: shared server metadata and construction.
 - `src/_shared/backend.ts`: v1/v2 routing adapter — version resolution, per-resource paths, list-envelope unwrap, and the v2 probe.
 - `src/_shared/http.ts`: unified authenticated JSON client + `HttpError`.
