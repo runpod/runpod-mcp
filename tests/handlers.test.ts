@@ -527,7 +527,11 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
       const out = (await handlers.get('create-pod')!({ imageName: 'i' })) as {
         content: Array<{ text: string }>;
       };
-      assert.equal(outbound.length, 0, 'absence must not silently create a pod');
+      assert.equal(
+        outbound.length,
+        0,
+        'absence must not silently create a pod'
+      );
       const payload = JSON.parse(out.content[0].text);
       assert.equal(payload.status, 400);
       assert.match(payload.error, /No pod type specified/);
@@ -1012,4 +1016,252 @@ describe('list tools: unwrap + cap (v1 bare array)', () => {
     const out = await handlers.get('list-pods')!({ limit: 3 });
     assert.equal(parse(out).items.length, 3);
   });
+});
+
+// ============== NEW v2-only tools (tags, billing, workers, catalog gets) ==============
+// Each is v2-only: on v1 it must return a clean 501 WITHOUT firing a request;
+// on v2 it hits the documented path. Wire-locks mirror the spec endpoints.
+function parseText(out: unknown): Record<string, unknown> {
+  return JSON.parse(
+    (out as { content: Array<{ text: string }> }).content[0].text
+  );
+}
+
+describe('tags tools (v2-only)', () => {
+  it('list-tags: v1 → 501 no request; v2 → GET /v2/tags, includeResources adds ?include=resources', async () => {
+    const v1 = harness({ jsonBody: {} });
+    const v1out = await v1.handlers.get('list-tags')!({});
+    assert.equal(v1.outbound.length, 0);
+    assert.equal(parseText(v1out).status, 501);
+
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        jsonBody: { tags: [{ id: 't1', key: 'k', value: 'v' }] },
+      });
+      const out = await handlers.get('list-tags')!({ includeResources: true });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/tags?include=resources'
+      );
+      assert.deepEqual(parseText(out).items, [
+        { id: 't1', key: 'k', value: 'v' },
+      ]);
+    });
+  });
+
+  it('get-tag → GET /v2/tags/{id} (no include when not requested)', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 't1' } });
+      await handlers.get('get-tag')!({ tagId: 't1' });
+      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/tags/t1');
+      assert.equal(outbound[0].method, 'GET');
+    });
+  });
+
+  it('create-tag → POST /v2/tags with {key,value,resources}', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('create-tag')!({
+        key: 'project',
+        value: 'gpt',
+        resources: [{ id: 'pod_1', type: 'POD' }],
+      });
+      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/tags');
+      assert.equal(outbound[0].method, 'POST');
+      assert.deepEqual(JSON.parse(outbound[0].body!), {
+        key: 'project',
+        value: 'gpt',
+        resources: [{ id: 'pod_1', type: 'POD' }],
+      });
+    });
+  });
+
+  it('update-tag → PATCH /v2/tags/{id}, body excludes tagId', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('update-tag')!({ tagId: 't1', value: 'new' });
+      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/tags/t1');
+      assert.equal(outbound[0].method, 'PATCH');
+      const body = JSON.parse(outbound[0].body!);
+      assert.equal('tagId' in body, false);
+      assert.deepEqual(body, { value: 'new' });
+    });
+  });
+
+  it('delete-tag → DELETE /v2/tags/{id}', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('delete-tag')!({ tagId: 't1' });
+      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/tags/t1');
+      assert.equal(outbound[0].method, 'DELETE');
+    });
+  });
+
+  it('attach-tag → PUT /v2/tags/{id}/resources/{type}/{id}', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('attach-tag')!({
+        tagId: 't1',
+        resourceType: 'SERVERLESS_ENDPOINT',
+        resourceId: 'ep_9',
+      });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/tags/t1/resources/SERVERLESS_ENDPOINT/ep_9'
+      );
+      assert.equal(outbound[0].method, 'PUT');
+    });
+  });
+
+  it('detach-tag → DELETE /v2/tags/{id}/resources/{type}/{id}', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('detach-tag')!({
+        tagId: 't1',
+        resourceType: 'POD',
+        resourceId: 'pod_2',
+      });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/tags/t1/resources/POD/pod_2'
+      );
+      assert.equal(outbound[0].method, 'DELETE');
+    });
+  });
+});
+
+describe('billing tool (v2-only)', () => {
+  it('get-billing: v1 → 501 no request', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    const out = await handlers.get('get-billing')!({});
+    assert.equal(outbound.length, 0);
+    assert.equal(parseText(out).status, 501);
+  });
+
+  it('get-billing v2 scope=all → GET /v2/billing, caps records, preserves metadata', async () => {
+    await withV2(async () => {
+      const records = Array.from({ length: 25 }, (_, i) => ({ cost: i }));
+      const { handlers, outbound } = harness({
+        jsonBody: { records, metadata: { total: 123 } },
+      });
+      const out = await handlers.get('get-billing')!({});
+      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/billing');
+      const env = parseText(out);
+      assert.equal((env.pagination as { total: number }).total, 25);
+      assert.equal((env.items as unknown[]).length, 20);
+      assert.deepEqual(env.metadata, { total: 123 });
+    });
+  });
+
+  it('get-billing v2 scope=pods + lastN → GET /v2/billing/pods?lastN=5', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        jsonBody: { records: [], metadata: {} },
+      });
+      await handlers.get('get-billing')!({ scope: 'pods', lastN: 5 });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/billing/pods?lastN=5'
+      );
+    });
+  });
+});
+
+describe('list-endpoint-workers (v2-only)', () => {
+  it('v1 → 501 no request', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    const out = await handlers.get('list-endpoint-workers')!({
+      endpointId: 'ep_1',
+    });
+    assert.equal(outbound.length, 0);
+    assert.equal(parseText(out).status, 501);
+  });
+
+  it('v2 → GET /v2/serverless/{id}/workers, caps workers, preserves summary', async () => {
+    await withV2(async () => {
+      const workers = Array.from({ length: 3 }, (_, i) => ({ id: `w${i}` }));
+      const { handlers, outbound } = harness({
+        jsonBody: { workers, summary: { ready: 3 }, endpointVersion: 4 },
+      });
+      const out = await handlers.get('list-endpoint-workers')!({
+        endpointId: 'ep_1',
+      });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/serverless/ep_1/workers'
+      );
+      const env = parseText(out);
+      assert.equal((env.items as unknown[]).length, 3);
+      assert.deepEqual(env.summary, { ready: 3 });
+      assert.equal(env.endpointVersion, 4);
+    });
+  });
+});
+
+describe('catalog gets (v2-only)', () => {
+  it('get-cpu-type: v1 → 501; v2 → GET /v2/catalog/cpus/{id}', async () => {
+    const v1 = harness({ jsonBody: {} });
+    const v1out = await v1.handlers.get('get-cpu-type')!({
+      cpuTypeId: 'cpu5c',
+    });
+    assert.equal(v1.outbound.length, 0);
+    assert.equal(parseText(v1out).status, 501);
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'cpu5c' } });
+      await handlers.get('get-cpu-type')!({ cpuTypeId: 'cpu5c' });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/catalog/cpus/cpu5c'
+      );
+    });
+  });
+
+  it('get-data-center: v1 → 501; v2 → GET /v2/catalog/datacenters/{id}', async () => {
+    const v1 = harness({ jsonBody: {} });
+    const v1out = await v1.handlers.get('get-data-center')!({
+      dataCenterId: 'EU-RO-1',
+    });
+    assert.equal(v1.outbound.length, 0);
+    assert.equal(parseText(v1out).status, 501);
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'EU-RO-1' } });
+      await handlers.get('get-data-center')!({ dataCenterId: 'EU-RO-1' });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/catalog/datacenters/EU-RO-1'
+      );
+    });
+  });
+});
+
+// Uniform guard: EVERY v2-only tool must, on v1, return status 501 and fire NO
+// outbound request (a stray v1 call would 404/500). Covers the per-tool 501
+// path that the individual wire-locks above only spot-check.
+describe('all v2-only tools: v1 → 501 with no request', () => {
+  const V2_ONLY_CALLS: Array<[string, Record<string, unknown>]> = [
+    ['list-tags', {}],
+    ['get-tag', { tagId: 't1' }],
+    ['create-tag', { key: 'k', value: 'v' }],
+    ['update-tag', { tagId: 't1', value: 'v' }],
+    ['delete-tag', { tagId: 't1' }],
+    ['attach-tag', { tagId: 't1', resourceType: 'POD', resourceId: 'p1' }],
+    ['detach-tag', { tagId: 't1', resourceType: 'POD', resourceId: 'p1' }],
+    ['get-billing', {}],
+    ['list-endpoint-workers', { endpointId: 'ep_1' }],
+    ['get-cpu-type', { cpuTypeId: 'cpu5c' }],
+    ['get-data-center', { dataCenterId: 'EU-RO-1' }],
+    ['list-cpu-types', {}],
+    ['get-gpu-type', { gpuTypeId: 'a100' }],
+    ['restart-pod', { podId: 'pod_1' }],
+  ];
+
+  for (const [tool, args] of V2_ONLY_CALLS) {
+    it(`${tool} → 501, no request on v1`, async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      assert.ok(handlers.has(tool), `${tool} must be registered`);
+      const out = await handlers.get(tool)!(args);
+      assert.equal(outbound.length, 0, `${tool} must not fire a v1 request`);
+      assert.equal(parseText(out).status, 501, `${tool} must return 501`);
+    });
+  }
 });

@@ -108,4 +108,27 @@ describe('capListResult', () => {
     assert.equal(out.pagination.truncated, false);
     assert.equal(out.pagination.nextCursor, null);
   });
+
+  it('merges `extra` sibling fields alongside the capped page', () => {
+    const out = parse(
+      capListResult(makeItems(25), { limit: 5 }, { metadata: { total: 999 } })
+    );
+    assert.equal(out.items.length, 5);
+    assert.equal(out.pagination.total, 25);
+    assert.deepEqual(out.metadata, { total: 999 });
+  });
+
+  it('does not let `extra` shadow items/pagination', () => {
+    const out = parse(
+      capListResult(
+        makeItems(3),
+        {},
+        { items: 'HACK', pagination: 'HACK', summary: 'kept' }
+      )
+    );
+    assert.equal(Array.isArray(out.items), true);
+    assert.equal(out.items.length, 3);
+    assert.equal(typeof out.pagination, 'object');
+    assert.equal(out.summary, 'kept');
+  });
 });

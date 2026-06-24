@@ -470,6 +470,8 @@ describe('resolveBackend (v1)', () => {
   });
 
   it('every resource resolves under v1 default env without throwing', () => {
+    // Includes the v2-only resources (tags/workers/billing): under v1 they must
+    // resolve to the stub backend, NOT throw on a missing v1 path table entry.
     const all: Resource[] = [
       'pods',
       'templates',
@@ -480,12 +482,24 @@ describe('resolveBackend (v1)', () => {
       'dataCenters',
       'endpoints',
       'jobs',
+      'tags',
+      'workers',
+      'billing',
     ];
     for (const resource of all) {
       assert.doesNotThrow(
         () => resolveBackend({ resource, env, ctx: stdio }),
         `${resource} should resolve under v1`
       );
+    }
+  });
+
+  it('v2-only resources resolve to a v1 stub (version v1, no list/get) under v1', () => {
+    for (const resource of ['tags', 'workers', 'billing'] as Resource[]) {
+      const b = resolveBackend({ resource, env, ctx: stdio });
+      assert.equal(b.version, 'v1', `${resource} version`);
+      assert.equal(b.list, undefined, `${resource} has no v1 list path`);
+      assert.equal(b.get, undefined, `${resource} has no v1 get path`);
     }
   });
 
@@ -524,8 +538,11 @@ describe('resolveBackend (v2 descriptors)', () => {
       ['networkVolumes', '/network-volumes', '/network-volumes/X'],
       ['registries', '/registries', '/registries/X'],
       ['gpus', '/catalog/gpus', '/catalog/gpus/X'],
-      ['cpus', '/catalog/cpus', undefined],
-      ['dataCenters', '/catalog/datacenters', undefined],
+      ['cpus', '/catalog/cpus', '/catalog/cpus/X'],
+      ['dataCenters', '/catalog/datacenters', '/catalog/datacenters/X'],
+      ['tags', '/tags', '/tags/X'],
+      ['workers', '/serverless', undefined],
+      ['billing', '/billing', undefined],
     ];
     for (const [resource, list, get] of expect) {
       const b = resolveBackend({ resource, env: v2env, ctx: stdio });

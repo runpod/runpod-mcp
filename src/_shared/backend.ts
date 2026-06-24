@@ -28,7 +28,10 @@ export type Resource =
   | 'cpus'
   | 'dataCenters'
   | 'endpoints'
-  | 'jobs';
+  | 'jobs'
+  | 'tags'
+  | 'workers'
+  | 'billing';
 
 export type RestVersion = 'v1' | 'v2';
 
@@ -38,6 +41,8 @@ export type RestVersion = 'v1' | 'v2';
 const V1_ONLY: ReadonlySet<Resource> = new Set<Resource>(['jobs', 'endpoints']);
 
 // The key each v2 list response is wrapped in: `{ pods: [...] }`, etc.
+// `billing` wraps its rows under `records` (not the resource name); `workers`
+// under `workers`.
 const V2_UNWRAP_KEY: Record<Resource, string> = {
   pods: 'pods',
   templates: 'templates',
@@ -48,6 +53,9 @@ const V2_UNWRAP_KEY: Record<Resource, string> = {
   dataCenters: 'dataCenters',
   endpoints: 'endpoints',
   jobs: 'jobs',
+  tags: 'tags',
+  workers: 'workers',
+  billing: 'records',
 };
 
 // Env-var suffix for the per-resource version override (RUNPOD_REST_VERSION_<KEY>).
@@ -61,6 +69,9 @@ const RESOURCE_ENV_KEY: Record<Resource, string> = {
   dataCenters: 'DATA_CENTERS',
   endpoints: 'ENDPOINTS',
   jobs: 'JOBS',
+  tags: 'TAGS',
+  workers: 'WORKERS',
+  billing: 'BILLING',
 };
 
 // ---- Base URLs (resolved from env, with the same defaults tools.ts uses) ----
@@ -262,6 +273,16 @@ const CATALOG: ReadonlySet<Resource> = new Set<Resource>([
   'dataCenters',
 ]);
 
+// Resources that exist ONLY on v2 REST — no v1 REST path and no v1 GraphQL
+// equivalent. Under v1 they resolve to a stub backend (version 'v1', no paths)
+// so the tool emits a clean "v2 only" 501 notice instead of throwing on a
+// missing path table entry (mirrors how get-gpu-type/list-cpu-types degrade).
+const V2_ONLY: ReadonlySet<Resource> = new Set<Resource>([
+  'tags',
+  'workers',
+  'billing',
+]);
+
 // v2 REST paths (the control-plane resources). Paths are relative to the v2
 // base which ALREADY includes `/v2` (restV2Base → https://v2-rest.runpod.io/v2),
 // so they do NOT repeat the `/v2` prefix — `base + list` = `.../v2/pods`. (The
@@ -279,8 +300,16 @@ const V2_REST_PATHS: Partial<
   },
   registries: { list: '/registries', get: (id) => `/registries/${id}` },
   gpus: { list: '/catalog/gpus', get: (id) => `/catalog/gpus/${id}` },
-  cpus: { list: '/catalog/cpus' },
-  dataCenters: { list: '/catalog/datacenters' },
+  cpus: { list: '/catalog/cpus', get: (id) => `/catalog/cpus/${id}` },
+  dataCenters: {
+    list: '/catalog/datacenters',
+    get: (id) => `/catalog/datacenters/${id}`,
+  },
+  tags: { list: '/tags', get: (id) => `/tags/${id}` },
+  // workers/billing build their own sub-paths in the tool from `base`; the
+  // list entry just satisfies buildV2Backend (which requires a paths entry).
+  workers: { list: '/serverless' },
+  billing: { list: '/billing' },
 };
 
 // v2 request-body mappers per resource (identity where v1==v2, e.g. registries).
@@ -344,6 +373,18 @@ function buildV1Backend(resource: Resource, env: Env, unwrap: Unwrap): Backend {
       kind: 'rest',
       version: 'v1',
       base: serverlessBase(env),
+      unwrap,
+      mapCreate: identity,
+      mapUpdate: identity,
+    };
+  }
+  // v2-only resources have no v1 home: return a stub so the tool sees
+  // version 'v1' and returns a clean 501 (it never reads list/get on this).
+  if (V2_ONLY.has(resource)) {
+    return {
+      kind: 'rest',
+      version: 'v1',
+      base: restV1Base(env),
       unwrap,
       mapCreate: identity,
       mapUpdate: identity,

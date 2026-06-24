@@ -12,7 +12,7 @@ export function registerEndpointTools(
   server: McpServer,
   rt: ToolRuntime
 ): void {
-  const { jsonReply, runpodRequest } = rt;
+  const { jsonReply, runpodRequest, callRestUrl, backendFor } = rt;
 
   // List Endpoints
   server.tool(
@@ -175,6 +175,40 @@ export function registerEndpointTools(
       );
 
       return jsonReply(result);
+    }
+  );
+
+  // List Endpoint Workers (v2-only — GET /v2/serverless/{id}/workers)
+  // Returns the workers backing an endpoint plus an aggregate summary. v2-only:
+  // returns a 501 notice on the v1 API. The workers array is capped via
+  // limit/cursor; the `summary` and `endpointVersion` are preserved alongside.
+  server.tool(
+    'list-endpoint-workers',
+    'List the workers backing a Serverless endpoint, with their status and an aggregate summary. v2-only — returns a 501 notice on the v1 API. Paginated via limit/cursor.',
+    {
+      ...listPaginationParams,
+      endpointId: z
+        .string()
+        .describe('ID of the Serverless endpoint whose workers to list'),
+    },
+    { title: 'List endpoint workers', ...READ_ONLY },
+    async (params) => {
+      const backend = backendFor('workers');
+      if (backend.version === 'v1') {
+        return jsonReply({
+          error:
+            'list-endpoint-workers is only available on the v2 REST API. Set RUNPOD_REST_VERSION=v2 (on v1, use get-endpoint with includeWorkers).',
+          status: 501,
+        });
+      }
+      const raw = (await callRestUrl(
+        `${backend.base}/serverless/${params.endpointId}/workers`
+      )) as Record<string, unknown> | undefined;
+      return capListResult(
+        backend.unwrap(raw),
+        { limit: params.limit, cursor: params.cursor },
+        { summary: raw?.summary, endpointVersion: raw?.endpointVersion }
+      );
     }
   );
 }

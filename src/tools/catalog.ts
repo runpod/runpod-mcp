@@ -276,4 +276,52 @@ export function registerCatalogTools(server: McpServer, rt: ToolRuntime): void {
       return jsonReply(result);
     }
   );
+
+  // Get CPU Type by id (v2-only — GET /v2/catalog/cpus/{id})
+  server.tool(
+    'get-cpu-type',
+    'Get details for a single CPU flavor type by id. v2-only — returns a 501 notice on the v1 API (use list-cpu-types there).',
+    {
+      cpuTypeId: z.string().describe('ID of the CPU type to retrieve'),
+    },
+    { title: 'Get CPU type', ...READ_ONLY },
+    async (params) => {
+      const backend = backendFor('cpus');
+      if (backend.version === 'v1') {
+        return jsonReply({
+          error:
+            'get-cpu-type is only available on the v2 REST API. Set RUNPOD_REST_VERSION=v2.',
+          status: 501,
+        });
+      }
+      const result = await callRestUrl(
+        `${backend.base}${backend.get!(params.cpuTypeId)}`
+      );
+      return jsonReply(result);
+    }
+  );
+
+  // Get Data Center by id (v2-only — GET /v2/catalog/datacenters/{id})
+  server.tool(
+    'get-data-center',
+    'Get details for a single data center by id. v2-only — returns a 501 notice on the v1 API (use list-data-centers there).',
+    {
+      dataCenterId: z.string().describe('ID of the data center to retrieve'),
+    },
+    { title: 'Get data center', ...READ_ONLY },
+    async (params) => {
+      const backend = backendFor('dataCenters');
+      if (backend.version === 'v1') {
+        return jsonReply({
+          error:
+            'get-data-center is only available on the v2 REST API. Set RUNPOD_REST_VERSION=v2.',
+          status: 501,
+        });
+      }
+      const result = await callRestUrl(
+        `${backend.base}${backend.get!(params.dataCenterId)}`
+      );
+      return jsonReply(result);
+    }
+  );
 }

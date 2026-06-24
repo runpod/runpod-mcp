@@ -67,6 +67,8 @@ const EXPECTED_TOOLS = [
   'list-data-centers',
   'list-cpu-types',
   'get-gpu-type',
+  'get-cpu-type',
+  'get-data-center',
   // pods
   'list-pods',
   'get-pod',
@@ -82,6 +84,7 @@ const EXPECTED_TOOLS = [
   'create-endpoint',
   'update-endpoint',
   'delete-endpoint',
+  'list-endpoint-workers',
   // serverless runtime (jobs)
   'run-endpoint',
   'runsync-endpoint',
@@ -108,6 +111,16 @@ const EXPECTED_TOOLS = [
   'get-container-registry-auth',
   'create-container-registry-auth',
   'delete-container-registry-auth',
+  // tags (v2-only)
+  'list-tags',
+  'get-tag',
+  'create-tag',
+  'update-tag',
+  'delete-tag',
+  'attach-tag',
+  'detach-tag',
+  // billing (v2-only)
+  'get-billing',
 ];
 
 describe('tool registration', () => {
