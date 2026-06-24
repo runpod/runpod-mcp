@@ -16,6 +16,34 @@ The server never holds a credential of its own and never shares one across users
 - Node.js 18 or higher.
 - A Runpod account and API key: https://www.runpod.io/console/user/settings
 
+## REST API version (v1 / v2)
+
+The server can target either the v1 REST API (`rest.runpod.io/v1`) or the newer v2 REST API (`v2-rest.runpod.io/v2`). It **defaults to v1**; v2 is opt-in. These environment variables are read once at startup:
+
+| Variable | Values | Default | Effect |
+|----------|--------|---------|--------|
+| `RUNPOD_REST_VERSION` | `v1` \| `v2` \| `auto` | `v1` | Version used for all resources. |
+| `RUNPOD_REST_VERSION_<RESOURCE>` | `v1` \| `v2` \| `auto` | — | Per-resource override (e.g. `RUNPOD_REST_VERSION_PODS=v2`). Takes precedence over the global setting. |
+| `RUNPOD_REST_V2_API_URL` | URL | `https://v2-rest.runpod.io/v2` | v2 base URL. Override to target a non-prod host. |
+| `RUNPOD_REST_API_URL` | URL | `https://rest.runpod.io/v1` | v1 base URL. |
+| `RUNPOD_SERVERLESS_API_URL` | URL | `https://api.runpod.ai/v2` | Serverless runtime base URL. |
+
+Notes:
+
+- **Default is v1** — with nothing set, behavior is unchanged.
+- `auto` probes v2 once at startup and falls back to v1, but **only on the `stdio` transport** (one process = one key). On hosted HTTP it resolves to v1, because a warm instance serves many users and a cached probe verdict could leak across them — pin the hosted version explicitly with `RUNPOD_REST_VERSION`.
+- `jobs` (serverless runtime) and `endpoints` always use v1 regardless of the setting — they have no v2 REST home yet.
+- The v2-only tools (`list-cpu-types`, `get-gpu-type`, `restart-pod`) return a clear "v2 only" notice when called under v1.
+
+Example (stdio client config):
+
+```json
+"env": {
+  "RUNPOD_API_KEY": "YOUR_API_KEY",
+  "RUNPOD_REST_VERSION": "v2"
+}
+```
+
 ## Quick start
 
 ### Run locally with `npx`
@@ -262,10 +290,14 @@ Create a Runpod Serverless endpoint with the following configuration:
 
 The source is now split by responsibility:
 
-- `src/stdio.ts`: local `stdio` entrypoint.
+- `src/stdio.ts`: local `stdio` entrypoint (runs the v2 probe at startup for `auto` mode).
 - `src/http.ts`: bearer-token extraction and the per-request MCP session for the Streamable HTTP transport.
-- `src/tools.ts`: all Runpod MCP tools.
+- `src/tools.ts`: all Runpod MCP tools (each with a description + MCP annotations).
 - `src/server.ts`: shared server metadata and construction.
+- `src/_shared/backend.ts`: v1/v2 routing adapter — version resolution, per-resource paths, list-envelope unwrap, and the v2 probe.
+- `src/_shared/http.ts`: unified authenticated JSON client + `HttpError`.
+- `src/_shared/tracking.ts`: caller-tracking header construction.
+- `src/_shared/mappers.ts`: v1→v2 request-body mappers.
 - `api/index.ts`: Vercel adapter and the OAuth authorization-server routes (`/.well-known/*`, `/register`, `/authorize`, `/token`).
 
 After changes:
@@ -273,14 +305,25 @@ After changes:
 ```bash
 pnpm type-check
 pnpm lint
+pnpm test
 pnpm build
 ```
+
+`pnpm test` runs the offline unit suite (outbound-request goldens, adapter, mappers, http client) — no network or API key required.
 
 For transport validation:
 
 ```bash
 pnpm smoke:stdio
 pnpm smoke:http
+```
+
+To exercise a real create→get→delete lifecycle against a **dev account** (free resources only — templates and registry auths — with fail-closed teardown):
+
+```bash
+RUNPOD_API_KEY=YOUR_DEV_KEY \
+RUNPOD_REST_V2_API_URL=https://v2-rest.runpod.dev/v2 \
+pnpm smoke:crud v1 v2
 ```
 
 This project uses [changesets](https://github.com/changesets/changesets) for versioning and npm publishing. Every PR with user-facing changes needs a changeset file at `.changeset/DESCRIPTIVE_NAME.md`.
