@@ -126,6 +126,21 @@ async function graphqlRequest<T>(
 type HttpFetch = Parameters<typeof createHttpClient>[0]['fetch'];
 const defaultFetch = fetch as HttpFetch;
 
+// Wrap a unified-client call with the legacy `console.error(label) + re-throw`
+// the pre-adapter runpodRequest/serverlessRequest helpers had. Centralizes the
+// identical try/catch blocks into one place.
+async function withApiErrorLog<T>(
+  label: string,
+  call: () => Promise<T>
+): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    console.error(label, error);
+    throw error;
+  }
+}
+
 function createRunpodRequest(
   apiKey: string,
   tracking: () => Record<string, string>,
@@ -137,18 +152,14 @@ function createRunpodRequest(
     tracking,
     errorPrefix: 'Runpod API Error',
   });
-  return async function runpodRequest(
+  return (
     endpoint: string,
     method: string = 'GET',
     body?: Record<string, unknown>
-  ) {
-    try {
-      return await client(`${API_BASE_URL}${endpoint}`, method, body);
-    } catch (error) {
-      console.error('Error calling Runpod API:', error);
-      throw error;
-    }
-  };
+  ) =>
+    withApiErrorLog('Error calling Runpod API:', () =>
+      client(`${API_BASE_URL}${endpoint}`, method, body)
+    );
 }
 
 // Helper function to make authenticated requests to the Serverless runtime API
@@ -163,23 +174,15 @@ function createServerlessRequest(
     tracking,
     errorPrefix: 'Runpod Serverless API Error',
   });
-  return async function serverlessRequest(
+  return (
     endpointId: string,
     path: string,
     method: string = 'GET',
     body?: Record<string, unknown>
-  ) {
-    try {
-      return await client(
-        `${SERVERLESS_API_BASE_URL}/${endpointId}${path}`,
-        method,
-        body
-      );
-    } catch (error) {
-      console.error('Error calling Runpod Serverless API:', error);
-      throw error;
-    }
-  };
+  ) =>
+    withApiErrorLog('Error calling Runpod Serverless API:', () =>
+      client(`${SERVERLESS_API_BASE_URL}/${endpointId}${path}`, method, body)
+    );
 }
 
 /**
