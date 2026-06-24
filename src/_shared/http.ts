@@ -11,14 +11,15 @@
 // `fetch` and `tracking` are injected so this is unit-testable offline with no
 // network and no MCP SDK.
 
-type FetchLike = (
-  url: string,
-  init: {
-    method: string;
-    headers: Record<string, string>;
-    body?: string;
-  }
-) => Promise<HttpResponseLike>;
+// The shape of a `fetch` request init this client builds. Named so the client's
+// internal `init` literal can't drift from what `FetchLike` actually accepts.
+interface RequestInitLike {
+  method: string;
+  headers: Record<string, string>;
+  body?: string;
+}
+
+type FetchLike = (url: string, init: RequestInitLike) => Promise<HttpResponseLike>;
 
 interface HttpResponseLike {
   ok: boolean;
@@ -54,6 +55,24 @@ function isJsonContentType(contentType: string | null): boolean {
   return ct.includes('application/json') || ct.includes('+json');
 }
 
+// Only POST/PATCH carry a JSON body; GET/DELETE never do (matches the legacy
+// runpodRequest/serverlessRequest helpers this client replaced).
+function methodSendsBody(method: string): boolean {
+  return method === 'POST' || method === 'PATCH';
+}
+
+// The auth + content-type + caller-tracking headers sent on every request.
+function buildRequestHeaders(
+  apiKey: string,
+  tracking: () => Record<string, string>
+): Record<string, string> {
+  return {
+    Authorization: `Bearer ${apiKey}`,
+    'Content-Type': 'application/json',
+    ...tracking(),
+  };
+}
+
 export interface HttpClient {
   (
     url: string,
@@ -75,36 +94,28 @@ export function createHttpClient(deps: {
     method: string = 'GET',
     body?: Record<string, unknown>
   ): Promise<unknown> {
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${deps.apiKey}`,
-      'Content-Type': 'application/json',
-      ...deps.tracking(),
-    };
-
-    const init: {
-      method: string;
-      headers: Record<string, string>;
-      body?: string;
-    } = {
+    const init: RequestInitLike = {
       method,
-      headers,
+      headers: buildRequestHeaders(deps.apiKey, deps.tracking),
     };
-    if (body && (method === 'POST' || method === 'PATCH')) {
+    if (body && methodSendsBody(method)) {
       init.body = JSON.stringify(body);
     }
 
     const response = await deps.fetch(url, init);
 
     if (!response.ok) {
-      const text = await response.text();
-      throw new HttpError(deps.errorPrefix, response.status, text);
+      throw new HttpError(
+        deps.errorPrefix,
+        response.status,
+        await response.text()
+      );
     }
 
     // 204 / empty / non-JSON → a uniform success marker (matches today's helpers
     // and covers pod-action responses that return no JSON body).
-    if (isJsonContentType(response.headers.get('content-type'))) {
-      return response.json();
-    }
-    return { success: true, status: response.status };
+    return isJsonContentType(response.headers.get('content-type'))
+      ? response.json()
+      : { success: true, status: response.status };
   };
 }
