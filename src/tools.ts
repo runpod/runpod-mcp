@@ -142,6 +142,16 @@ async function withApiErrorLog<T>(
   }
 }
 
+// The standard MCP tool reply: a single text block holding pretty-printed JSON.
+// Every tool returns this shape, so it lives at module scope.
+function jsonReply(result: unknown) {
+  return {
+    content: [
+      { type: 'text' as const, text: JSON.stringify(result, null, 2) },
+    ],
+  };
+}
+
 function createRunpodRequest(
   apiKey: string,
   tracking: () => Record<string, string>,
@@ -217,18 +227,14 @@ export function registerTools(
     tracking,
     errorPrefix: 'Runpod API Error',
   });
-  const callRestUrl = async (
+  const callRestUrl = (
     url: string,
     method: string = 'GET',
     body?: Record<string, unknown>
-  ): Promise<unknown> => {
-    try {
-      return await restClient(url, method, body);
-    } catch (error) {
-      console.error('Error calling Runpod API:', error);
-      throw error;
-    }
-  };
+  ): Promise<unknown> =>
+    withApiErrorLog('Error calling Runpod API:', () =>
+      restClient(url, method, body)
+    );
   const backendFor = (
     resource: Parameters<typeof resolveBackend>[0]['resource']
   ): Backend =>
@@ -238,9 +244,6 @@ export function registerTools(
       ctx: { transport: ctx.transport },
       v2Available: deps.v2Available,
     });
-  const jsonReply = (result: unknown) => ({
-    content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
-  });
   // B4: pod state transition. v1 has dedicated subpaths (/start, /stop); v2
   // unifies them under POST /pods/{id}/action with an `{action}` body.
   const podAction = async (
@@ -371,14 +374,7 @@ export function registerTools(
         available: isAvailable(gpu),
       }));
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
@@ -424,14 +420,7 @@ export function registerTools(
         );
       }
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(dataCenters, null, 2),
-          },
-        ],
-      };
+      return jsonReply(dataCenters);
     }
   );
 
@@ -748,14 +737,7 @@ export function registerTools(
         `/endpoints/${params.endpointId}${queryString}`
       );
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
@@ -784,14 +766,7 @@ export function registerTools(
     async (params) => {
       const result = await runpodRequest('/endpoints', 'POST', params);
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
@@ -827,14 +802,7 @@ export function registerTools(
         updateParams
       );
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
@@ -850,14 +818,7 @@ export function registerTools(
         'DELETE'
       );
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
@@ -936,14 +897,7 @@ export function registerTools(
         body as Record<string, unknown>
       );
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
@@ -978,14 +932,7 @@ export function registerTools(
         body as Record<string, unknown>
       );
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
@@ -1005,14 +952,7 @@ export function registerTools(
         `/status/${params.jobId}`
       );
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
@@ -1083,18 +1023,7 @@ export function registerTools(
         await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
       }
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(
-              { ...finalResult, stream: allChunks },
-              null,
-              2
-            ),
-          },
-        ],
-      };
+      return jsonReply({ ...finalResult, stream: allChunks });
     }
   );
 
@@ -1115,14 +1044,7 @@ export function registerTools(
         'POST'
       );
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
@@ -1143,14 +1065,7 @@ export function registerTools(
         'POST'
       );
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
@@ -1166,14 +1081,7 @@ export function registerTools(
     async (params) => {
       const result = await serverlessRequest(params.endpointId, '/health');
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
@@ -1193,14 +1101,7 @@ export function registerTools(
         'POST'
       );
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
@@ -1256,14 +1157,7 @@ export function registerTools(
     async (params) => {
       const result = await runpodRequest(`/templates/${params.templateId}`);
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
@@ -1304,14 +1198,7 @@ export function registerTools(
     async (params) => {
       const result = await runpodRequest('/templates', 'POST', params);
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
@@ -1340,14 +1227,7 @@ export function registerTools(
         updateParams
       );
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
@@ -1363,14 +1243,7 @@ export function registerTools(
         'DELETE'
       );
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
@@ -1399,14 +1272,7 @@ export function registerTools(
         `/networkvolumes/${params.networkVolumeId}`
       );
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
@@ -1421,14 +1287,7 @@ export function registerTools(
     async (params) => {
       const result = await runpodRequest('/networkvolumes', 'POST', params);
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
@@ -1453,14 +1312,7 @@ export function registerTools(
         updateParams
       );
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
@@ -1478,14 +1330,7 @@ export function registerTools(
         'DELETE'
       );
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
@@ -1518,14 +1363,7 @@ export function registerTools(
         `/containerregistryauth/${params.containerRegistryAuthId}`
       );
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
@@ -1544,14 +1382,7 @@ export function registerTools(
         params
       );
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 
@@ -1569,14 +1400,7 @@ export function registerTools(
         'DELETE'
       );
 
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return jsonReply(result);
     }
   );
 }
