@@ -103,22 +103,19 @@ function idOf(obj: unknown): string | undefined {
   return o?.id;
 }
 
-async function sweepRegistries(client: Client): Promise<void> {
-  const items = await listAll(client, 'list-container-registry-auths');
-  for (const r of items) {
-    if (typeof r.name === 'string' && r.name.startsWith(PREFIX) && r.id) {
-      await call(client, 'delete-container-registry-auth', {
-        containerRegistryAuthId: r.id,
-      });
-    }
-  }
-}
-
-async function sweepTemplates(client: Client): Promise<void> {
-  const items = await listAll(client, 'list-templates');
-  for (const t of items) {
-    if (typeof t.name === 'string' && t.name.startsWith(PREFIX) && t.id) {
-      await call(client, 'delete-template', { templateId: t.id });
+// Delete every PREFIX-named resource a list tool returns, passing each id to the
+// delete tool under the given arg name. One helper for both resource kinds —
+// they differ only in the list/delete tool names and the delete arg key.
+async function sweepByPrefix(
+  client: Client,
+  listTool: string,
+  deleteTool: string,
+  idArg: string
+): Promise<void> {
+  const items = await listAll(client, listTool);
+  for (const item of items) {
+    if (typeof item.name === 'string' && item.name.startsWith(PREFIX) && item.id) {
+      await call(client, deleteTool, { [idArg]: item.id });
     }
   }
 }
@@ -131,8 +128,13 @@ async function runVersion(version: string): Promise<void> {
 
   try {
     // Pre-sweep orphans from a prior crashed run.
-    await sweepRegistries(client);
-    await sweepTemplates(client);
+    await sweepByPrefix(
+      client,
+      'list-container-registry-auths',
+      'delete-container-registry-auth',
+      'containerRegistryAuthId'
+    );
+    await sweepByPrefix(client, 'list-templates', 'delete-template', 'templateId');
 
     // --- container registry auth: create → delete ---
     const reg = await call(client, 'create-container-registry-auth', {
