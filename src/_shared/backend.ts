@@ -134,39 +134,61 @@ export function resolveVersion(opts: {
 // response) pins true/false, but a transient failure (thrown error or 5xx) is
 // NOT cached — it returns false for this call and re-probes next time, so a
 // one-time startup network blip doesn't pin the process to v1 forever.
-type FetchLike = (
+// Exported so the stdio entrypoint can type its node-fetch adapter against the
+// exact shape the prober needs (just `{ status }`), instead of casting.
+export type FetchLike = (
   url: string,
   init?: { method?: string; headers?: Record<string, string> }
 ) => Promise<{ status: number }>;
 
-export function createV2Prober(deps: {
+export interface ProbeDeps {
   fetch: FetchLike;
   baseUrl: string;
   apiKey: string;
-}): () => Promise<boolean> {
+}
+
+// Classify a probe response status into a definitive verdict, or `undefined` for
+// a transient failure (5xx) that must NOT be cached.
+function classifyProbeStatus(status: number): boolean | undefined {
+  if (status >= 500) return undefined;
+  return status >= 200 && status < 300;
+}
+
+// One probe attempt. Returns a definitive verdict, or `undefined` when the
+// attempt was transient (network throw / 5xx) and should be retried.
+async function runV2Probe(deps: ProbeDeps): Promise<boolean | undefined> {
+  try {
+    const res = await deps.fetch(`${deps.baseUrl}/catalog/gpus`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${deps.apiKey}` },
+    });
+    return classifyProbeStatus(res.status);
+  } catch {
+    return undefined;
+  }
+}
+
+// Memoizing v2 prober: probes once, caches only a *definitive* verdict, and
+// coalesces concurrent first-calls onto a single in-flight probe. A transient
+// attempt resolves to false for this call but leaves the cache unset, so the
+// next call re-probes (a one-time startup blip can't pin the process to v1).
+export function createV2Prober(deps: ProbeDeps): () => Promise<boolean> {
   let cached: boolean | undefined;
   let inFlight: Promise<boolean> | undefined;
 
-  return function probeV2(): Promise<boolean> {
-    if (cached !== undefined) return Promise.resolve(cached);
-    // Coalesce concurrent first-calls onto one in-flight probe.
-    if (inFlight) return inFlight;
+  const probeOnce = async (): Promise<boolean> => {
+    const verdict = await runV2Probe(deps);
+    if (verdict !== undefined) cached = verdict;
+    return verdict ?? false;
+  };
 
-    inFlight = (async () => {
-      try {
-        const res = await deps.fetch(`${deps.baseUrl}/catalog/gpus`, {
-          method: 'GET',
-          headers: { Authorization: `Bearer ${deps.apiKey}` },
-        });
-        if (res.status >= 500) return false; // transient — do not cache
-        cached = res.status >= 200 && res.status < 300;
-        return cached;
-      } catch {
-        return false; // transient — do not cache
-      } finally {
+  return () => {
+    if (cached !== undefined) return Promise.resolve(cached);
+    if (!inFlight) {
+      inFlight = probeOnce().finally(() => {
         inFlight = undefined;
-      }
-    })();
+      });
+    }
     return inFlight;
   };
 }
