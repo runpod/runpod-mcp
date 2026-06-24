@@ -672,7 +672,7 @@ describe('catalog routing (B5)', () => {
         outbound[0].url,
         'https://v2-rest.runpod.io/v2/catalog/gpus'
       );
-      const payload = JSON.parse(out.content[0].text);
+      const payload = JSON.parse(out.content[0].text).items;
       assert.equal(payload.length, 1);
       assert.equal(payload[0].id, 'a100');
     });
@@ -688,7 +688,7 @@ describe('catalog routing (B5)', () => {
       const out = (await handlers.get('list-gpu-types')!({
         communityCloudOnly: true,
       })) as { content: Array<{ text: string }> };
-      const payload = JSON.parse(out.content[0].text);
+      const payload = JSON.parse(out.content[0].text).items;
       assert.deepEqual(
         payload.map((g: { id: string }) => g.id),
         ['b']
@@ -706,7 +706,7 @@ describe('catalog routing (B5)', () => {
       const out = (await handlers.get('list-gpu-types')!({
         includeUnavailable: false,
       })) as { content: Array<{ text: string }> };
-      assert.equal(JSON.parse(out.content[0].text).length, 2);
+      assert.equal(JSON.parse(out.content[0].text).items.length, 2);
     });
   });
 
@@ -717,7 +717,7 @@ describe('catalog routing (B5)', () => {
       const out = (await handlers.get('list-gpu-types')!({})) as {
         content: Array<{ text: string }>;
       };
-      assert.equal(JSON.parse(out.content[0].text).length, 3);
+      assert.equal(JSON.parse(out.content[0].text).items.length, 3);
     });
   });
 
@@ -731,7 +731,7 @@ describe('catalog routing (B5)', () => {
       const out = (await handlers.get('list-gpu-types')!({
         searchTerm: '4090',
       })) as { content: Array<{ text: string }> };
-      const payload = JSON.parse(out.content[0].text);
+      const payload = JSON.parse(out.content[0].text).items;
       assert.equal(payload.length, 1);
       assert.equal(payload[0].id, 'rtx');
     });
@@ -751,7 +751,7 @@ describe('catalog routing (B5)', () => {
         outbound[0].url,
         'https://v2-rest.runpod.io/v2/catalog/datacenters'
       );
-      const payload = JSON.parse(out.content[0].text);
+      const payload = JSON.parse(out.content[0].text).items;
       assert.equal(payload.length, 1);
       assert.equal(payload[0].id, 'EU-RO-1');
     });
@@ -781,7 +781,9 @@ describe('catalog routing (B5)', () => {
         outbound[0].url,
         'https://v2-rest.runpod.io/v2/catalog/cpus'
       );
-      assert.deepEqual(JSON.parse(out.content[0].text), [{ id: 'cpu5c' }]);
+      assert.deepEqual(JSON.parse(out.content[0].text).items, [
+        { id: 'cpu5c' },
+      ]);
     });
   });
 
@@ -811,6 +813,38 @@ describe('catalog routing (B5)', () => {
         id: 'a100',
         memory: 80,
       });
+    });
+  });
+
+  it('list-gpu-types v2 caps to limit + returns a working pagination cursor', async () => {
+    await withV2(async () => {
+      const gpus = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+      const { handlers } = harness({ jsonBody: { gpus } });
+      const page1 = JSON.parse(
+        (
+          (await handlers.get('list-gpu-types')!({ limit: 2 })) as {
+            content: Array<{ text: string }>;
+          }
+        ).content[0].text
+      );
+      assert.equal(page1.items.length, 2);
+      assert.equal(page1.pagination.total, 3);
+      assert.equal(page1.pagination.truncated, true);
+      assert.ok(page1.pagination.nextCursor);
+
+      const page2 = JSON.parse(
+        (
+          (await handlers.get('list-gpu-types')!({
+            limit: 2,
+            cursor: page1.pagination.nextCursor,
+          })) as { content: Array<{ text: string }> }
+        ).content[0].text
+      );
+      assert.deepEqual(
+        page2.items.map((g: { id: string }) => g.id),
+        ['c']
+      );
+      assert.equal(page2.pagination.truncated, false);
     });
   });
 });

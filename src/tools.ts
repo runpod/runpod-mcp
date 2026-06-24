@@ -279,6 +279,7 @@ export function registerTools(
     'list-gpu-types',
     'List available GPU types with stock/pricing and capability filters (minimum VRAM, secure/community cloud, name search). Use this to discover valid gpuTypeIds before creating a pod or endpoint. On v2 the realtime stock filter is a no-op.',
     {
+      ...listPaginationParams,
       minMemoryGb: z
         .number()
         .optional()
@@ -331,7 +332,10 @@ export function registerTools(
                 .includes(t)
           );
         }
-        return jsonReply(gpus);
+        return capListResult(gpus, {
+          limit: params.limit,
+          cursor: params.cursor,
+        });
       }
 
       interface GpuTypesResponse {
@@ -416,7 +420,10 @@ export function registerTools(
         available: isAvailable(gpu),
       }));
 
-      return jsonReply(result);
+      return capListResult(result, {
+        limit: params.limit,
+        cursor: params.cursor,
+      });
     }
   );
 
@@ -425,6 +432,7 @@ export function registerTools(
     'list-data-centers',
     'List Runpod data centers (id, name, region/location). Use this to discover valid dataCenterIds for placing pods, endpoints, or network volumes.',
     {
+      ...listPaginationParams,
       region: z
         .string()
         .optional()
@@ -448,7 +456,10 @@ export function registerTools(
               .includes(t)
           );
         }
-        return jsonReply(dcs);
+        return capListResult(dcs, {
+          limit: params.limit,
+          cursor: params.cursor,
+        });
       }
 
       interface DataCentersResponse {
@@ -481,7 +492,10 @@ export function registerTools(
         );
       }
 
-      return jsonReply(dataCenters);
+      return capListResult(dataCenters, {
+        limit: params.limit,
+        cursor: params.cursor,
+      });
     }
   );
 
@@ -489,9 +503,9 @@ export function registerTools(
   server.tool(
     'list-cpu-types',
     'List available CPU flavor types for CPU pods/endpoints. v2-only — returns a 501 notice on the v1 API.',
-    {},
+    { ...listPaginationParams },
     { title: 'List CPU types', ...READ_ONLY },
-    async () => {
+    async (params) => {
       const backend = backendFor('cpus');
       if (backend.version === 'v1') {
         return jsonReply({
@@ -501,7 +515,10 @@ export function registerTools(
         });
       }
       const raw = await callRestUrl(`${backend.base}${backend.list}`);
-      return jsonReply(backend.unwrap(raw));
+      return capListResult(backend.unwrap(raw), {
+        limit: params.limit,
+        cursor: params.cursor,
+      });
     }
   );
 
