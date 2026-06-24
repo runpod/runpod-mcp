@@ -6,6 +6,7 @@ import {
   createV2Prober,
   restV2Base,
   wantsAutoProbe,
+  type FetchLike,
 } from './_shared/backend.js';
 
 // Get API key from environment variable
@@ -21,7 +22,8 @@ async function main(apiKey: string): Promise<void> {
   let v2Available: boolean | undefined;
   if (wantsAutoProbe(process.env)) {
     const probe = createV2Prober({
-      fetch: fetch as unknown as Parameters<typeof createV2Prober>[0]['fetch'],
+      // node-fetch's signature is wider than the `{ status }` the prober needs.
+      fetch: fetch as unknown as FetchLike,
       baseUrl: restV2Base(process.env),
       apiKey,
     });
