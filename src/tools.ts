@@ -5,7 +5,12 @@ import { randomUUID } from 'node:crypto';
 import { capListResult, listPaginationParams } from './pagination.js';
 import { createHttpClient, HttpError } from './_shared/http.js';
 import { buildTrackingHeaders } from './_shared/tracking.js';
-import { resolveBackend, type Env, type Backend } from './_shared/backend.js';
+import {
+  resolveBackend,
+  restV1Base,
+  type Env,
+  type Backend,
+} from './_shared/backend.js';
 
 // Base URL for Runpod REST API. Override via RUNPOD_REST_API_URL to point at a
 // non-production environment (e.g. when authenticating with a dev API key).
@@ -708,6 +713,25 @@ export function registerTools(
     { title: 'Create pod', ...WRITE },
     async (params) => {
       const backend = backendFor('pods');
+
+      // v2 has no CPU pods yet (AE-2991): a GPU-less create is rejected by v2
+      // ("exactly one of gpu or cpu must be set"). v1 supports CPU pods, so rather
+      // than fail, transparently route a GPU-less request to v1 (an identity
+      // passthrough) and tell the caller which API actually served it.
+      const isCpuPod = !params.gpuTypeIds || params.gpuTypeIds.length === 0;
+      if (backend.version === 'v2' && isCpuPod) {
+        const result = (await callRestUrl(
+          `${restV1Base(process.env as Env)}/pods`,
+          'POST',
+          params as Record<string, unknown>
+        )) as Record<string, unknown>;
+        return jsonReply({
+          ...result,
+          _servedBy: 'v1',
+          _note: 'CPU pod (no GPU requested): created on the v1 API, because the v2 REST API does not support CPU pods yet.',
+        });
+      }
+
       const body = backend.mapCreate(params) as Record<string, unknown>;
       try {
         const result = await callRestUrl(
@@ -717,8 +741,8 @@ export function registerTools(
         );
         return jsonReply(result);
       } catch (error) {
-        // C2: v2 stubs CPU-pod creation with 501 (AE-2991). Surface a clean,
-        // non-error message instead of a raw stack so the agent understands.
+        // Defense for if/when the v2 CPU stub starts returning 501 directly
+        // (AE-2991): surface a clean message instead of a raw stack.
         if (error instanceof HttpError && error.status === 501) {
           return jsonReply({
             error:

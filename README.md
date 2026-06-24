@@ -34,6 +34,7 @@ Notes:
 - `auto` probes v2 once at startup and falls back to v1, but **only on the `stdio` transport** (one process = one key). On hosted HTTP it resolves to v1, because a warm instance serves many users and a cached probe verdict could leak across them — pin the hosted version explicitly with `RUNPOD_REST_VERSION`.
 - `jobs` (serverless runtime) and `endpoints` always use v1 regardless of the setting — they have no v2 REST home yet.
 - The v2-only tools (`list-cpu-types`, `get-gpu-type`, `restart-pod`) return a clear "v2 only" notice when called under v1.
+- `create-pod` for a **CPU pod** (no GPU requested) on v2 is transparently served by the **v1** API — v2 has no CPU pods yet — and the reply is flagged with `_servedBy: "v1"`. (When v2 gains CPU pods this fallback is removed.)
 
 Example (stdio client config):
 
@@ -43,6 +44,10 @@ Example (stdio client config):
   "RUNPOD_REST_VERSION": "v2"
 }
 ```
+
+### Large tool output
+
+Resource **lists** are paginated (default 20 items, `nextCursor`), so a big account can't flood the agent's context. But **serverless job output** — `run-endpoint`, `runsync-endpoint`, `get-job-status`, and especially `stream-job` (which accumulates every chunk) — is returned **as-is and is not size-capped**. It's a single opaque payload, not a list, so there's no cursor to page. A very large or long-streaming result can exceed the context window. If output may be huge, have the agent **write it to a file** instead of returning it inline, or set `s3Config` on the job so large outputs go to object storage.
 
 ## Quick start
 

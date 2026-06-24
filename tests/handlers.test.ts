@@ -478,9 +478,31 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
   it('create-pod v2 with a partial volume drops mounts (no size-only mount)', async () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({ jsonBody: {} });
-      await handlers.get('create-pod')!({ imageName: 'i', volumeInGb: 40 });
+      // gpuTypeIds present so it stays on v2 (a GPU-less create routes to v1).
+      await handlers.get('create-pod')!({
+        imageName: 'i',
+        gpuTypeIds: ['A100'],
+        volumeInGb: 40,
+      });
+      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/pods');
       const body = JSON.parse(outbound[0].body!);
       assert.equal('mounts' in body, false);
+    });
+  });
+
+  it('create-pod v2 with NO gpuTypeIds (CPU pod) transparently routes to v1 + flags it', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'pod_cpu' } });
+      const out = (await handlers.get('create-pod')!({
+        imageName: 'i',
+        containerDiskInGb: 10,
+      })) as { content: Array<{ text: string }> };
+      // routed to v1 (v1 passthrough body), NOT v2
+      assert.equal(outbound[0].url, 'https://rest.runpod.io/v1/pods');
+      assert.equal(JSON.parse(outbound[0].body!).imageName, 'i');
+      const payload = JSON.parse(out.content[0].text);
+      assert.equal(payload._servedBy, 'v1');
+      assert.match(payload._note, /v2 REST API does not support CPU pods/);
     });
   });
 
