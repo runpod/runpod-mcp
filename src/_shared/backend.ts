@@ -291,6 +291,66 @@ const V2_MAPPERS: Partial<
   registries: { create: identity, update: identity },
 };
 
+// The unwrap closure is built once in resolveBackend and threaded into whichever
+// builder runs, so the per-version builders stay free of unwrap plumbing.
+type Unwrap = Backend['unwrap'];
+
+// jobs/endpoints never reach here (pinned v1 by resolveVersion). Catalog v2 is
+// REST (not GraphQL); CRUD resources use their v2 paths + body mappers.
+function buildV2Backend(resource: Resource, env: Env, unwrap: Unwrap): Backend {
+  const paths = V2_REST_PATHS[resource];
+  if (!paths) throw new Error(`no v2 REST paths for resource "${resource}"`);
+  const mappers = V2_MAPPERS[resource];
+  return {
+    kind: 'rest',
+    version: 'v2',
+    base: restV2Base(env),
+    list: paths.list,
+    get: paths.get,
+    unwrap,
+    mapCreate: mappers?.create ?? identity,
+    mapUpdate: mappers?.update ?? identity,
+  };
+}
+
+function buildV1Backend(resource: Resource, env: Env, unwrap: Unwrap): Backend {
+  // jobs: serverless runtime base; no list/get/path table entry.
+  if (resource === 'jobs') {
+    return {
+      kind: 'rest',
+      version: 'v1',
+      base: serverlessBase(env),
+      unwrap,
+      mapCreate: identity,
+      mapUpdate: identity,
+    };
+  }
+  // v1 catalog is GraphQL via a separate helper (kept out of the unified REST
+  // client through Phase A); folds into REST at Step B5.
+  if (CATALOG.has(resource)) {
+    return {
+      kind: 'graphql',
+      version: 'v1',
+      base: env.RUNPOD_PUBLIC_GRAPHQL_URL ?? 'https://api.runpod.io/graphql',
+      unwrap,
+      mapCreate: identity,
+      mapUpdate: identity,
+    };
+  }
+  const paths = V1_REST_PATHS[resource];
+  if (!paths) throw new Error(`no v1 REST paths for resource "${resource}"`);
+  return {
+    kind: 'rest',
+    version: 'v1',
+    base: restV1Base(env),
+    list: paths.list,
+    get: paths.get,
+    unwrap,
+    mapCreate: identity,
+    mapUpdate: identity,
+  };
+}
+
 export function resolveBackend(opts: {
   resource: Resource;
   env: Env;
@@ -299,65 +359,8 @@ export function resolveBackend(opts: {
 }): Backend {
   const { resource, env } = opts;
   const version = resolveVersion(opts);
-  const unwrap = (raw: unknown): unknown[] =>
-    unwrapList(resource, version, raw);
-
-  if (version === 'v2') {
-    // jobs/endpoints never reach here (pinned v1 by resolveVersion). Catalog v2
-    // is REST (not GraphQL); CRUD resources use their v2 paths + body mappers.
-    const v2Paths = V2_REST_PATHS[resource];
-    if (!v2Paths) {
-      throw new Error(`no v2 REST paths for resource "${resource}"`);
-    }
-    const mappers = V2_MAPPERS[resource];
-    return {
-      kind: 'rest',
-      version,
-      base: restV2Base(env),
-      list: v2Paths.list,
-      get: v2Paths.get,
-      unwrap,
-      mapCreate: mappers?.create ?? identity,
-      mapUpdate: mappers?.update ?? identity,
-    };
-  }
-
-  // ---- v1 ----
-  if (resource === 'jobs') {
-    return {
-      kind: 'rest',
-      version,
-      base: serverlessBase(env),
-      unwrap,
-      mapCreate: identity,
-      mapUpdate: identity,
-    };
-  }
-  if (CATALOG.has(resource)) {
-    // v1 catalog is GraphQL via a separate helper (kept out of the unified REST
-    // client through Phase A); folds into REST at Step B5.
-    return {
-      kind: 'graphql',
-      version,
-      base: env.RUNPOD_PUBLIC_GRAPHQL_URL ?? 'https://api.runpod.io/graphql',
-      unwrap,
-      mapCreate: identity,
-      mapUpdate: identity,
-    };
-  }
-
-  const paths = V1_REST_PATHS[resource];
-  if (!paths) {
-    throw new Error(`no v1 REST paths for resource "${resource}"`);
-  }
-  return {
-    kind: 'rest',
-    version,
-    base: restV1Base(env),
-    list: paths.list,
-    get: paths.get,
-    unwrap,
-    mapCreate: identity,
-    mapUpdate: identity,
-  };
+  const unwrap: Unwrap = (raw) => unwrapList(resource, version, raw);
+  return version === 'v2'
+    ? buildV2Backend(resource, env, unwrap)
+    : buildV1Backend(resource, env, unwrap);
 }

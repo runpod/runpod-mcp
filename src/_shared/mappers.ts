@@ -38,6 +38,21 @@ function compact<T extends Record<string, unknown>>(obj: T): Partial<T> {
   return out as Partial<T>;
 }
 
+// volumeInGb / volumeMountPath → mounts.persistent.{size,path}.
+// v2 PersistentMount requires BOTH size and path (additionalProperties:false,
+// 422 on a partial). So only emit the mount when both are present; a partial
+// v1 input (size-only or path-only) yields `undefined` and is dropped rather
+// than producing a body the API rejects. (Tool-schema validation should require
+// both together.)
+type PersistentMount = { persistent: { size: number; path: string } };
+function persistentMount(
+  size?: number,
+  path?: string
+): PersistentMount | undefined {
+  if (size === undefined || path === undefined) return undefined;
+  return { persistent: { size, path } };
+}
+
 // ---- ContainerConfig flatten shared by pod + template create/update ----
 function containerConfigToV2(p: {
   imageName?: string;
@@ -47,43 +62,36 @@ function containerConfigToV2(p: {
   ports?: string[];
   env?: Record<string, string>;
 }): Record<string, unknown> {
-  const out: Record<string, unknown> = compact({
+  return compact({
     image: p.imageName,
     disk: p.containerDiskInGb,
     ports: p.ports,
     env: p.env,
+    mounts: persistentMount(p.volumeInGb, p.volumeMountPath),
   });
-  // volumeInGb / volumeMountPath → mounts.persistent.{size,path}.
-  // v2 PersistentMount requires BOTH size and path (additionalProperties:false,
-  // 422 on a partial). So only emit the mount when both are present; a partial
-  // v1 input (size-only or path-only) is dropped rather than producing a body
-  // the API rejects. (Tool-schema validation should require both together.)
-  if (p.volumeInGb !== undefined && p.volumeMountPath !== undefined) {
-    out.mounts = {
-      persistent: { size: p.volumeInGb, path: p.volumeMountPath },
-    };
-  }
-  return out;
+}
+
+// gpuTypeIds[] + gpuCount → gpu: { id, count }. v2 GpuConfig requires `id`, so
+// return undefined for a count-only input — an idless gpu would be rejected
+// (422). count is optional (defaults to 1 server-side).
+function gpuConfigToV2(
+  gpuTypeIds?: string[],
+  gpuCount?: number
+): Record<string, unknown> | undefined {
+  const id = gpuTypeIds?.[0];
+  if (id === undefined) return undefined;
+  return compact({ id, count: gpuCount });
 }
 
 export function mapPodCreateToV2(params: V1PodParams): Record<string, unknown> {
-  const body: Record<string, unknown> = {
+  return compact({
     ...containerConfigToV2(params),
-    ...compact({
-      name: params.name,
-      cloud: params.cloudType,
-      // array → scalar: v2 takes a single GPU type id
-      dataCenter: params.dataCenterIds?.[0],
-    }),
-  };
-  // gpuTypeIds[] + gpuCount → gpu: { id, count }. v2 GpuConfig requires `id`, so
-  // only emit `gpu` when a concrete id is present — a count-only input would
-  // produce an idless gpu the API rejects (422). count is optional (defaults 1).
-  const gpuId = params.gpuTypeIds?.[0];
-  if (gpuId !== undefined) {
-    body.gpu = compact({ id: gpuId, count: params.gpuCount });
-  }
-  return body;
+    name: params.name,
+    cloud: params.cloudType,
+    // array → scalar: v2 takes a single GPU type id / data center
+    dataCenter: params.dataCenterIds?.[0],
+    gpu: gpuConfigToV2(params.gpuTypeIds, params.gpuCount),
+  });
 }
 
 export function mapPodUpdateToV2(params: V1PodParams): Record<string, unknown> {
