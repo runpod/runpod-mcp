@@ -34,14 +34,25 @@ Notes:
 - `auto` probes v2 once at startup and falls back to v1, but **only on the `stdio` transport** (one process = one key). On hosted HTTP it resolves to v1, because a warm instance serves many users and a cached probe verdict could leak across them — pin the hosted version explicitly with `RUNPOD_REST_VERSION`.
 - `jobs` (serverless runtime) and `endpoints` always use v1 regardless of the setting — they have no v2 REST home yet.
 - The v2-only tools (`list-cpu-types`, `get-gpu-type`, `restart-pod`) return a clear "v2 only" notice when called under v1.
-- `create-pod` for a **CPU pod** (no GPU requested) on v2 is transparently served by the **v1** API — v2 has no CPU pods yet — and the reply is flagged with `_servedBy: "v1"`. (When v2 gains CPU pods this fallback is removed.)
+- `create-pod` for a **CPU pod** (`computeType: "CPU"`) on v2 is transparently served by the **v1** API — v2 has no CPU pods yet — and the reply is flagged `_servedBy: "v1"`. Because that fallback hits the **v1 base**, set `RUNPOD_REST_API_URL` to match your environment when running v2 against a non-prod host (otherwise CPU creates land on v1 **prod**). On v2 a create with neither `gpuTypeIds` nor `computeType` is rejected — absence is never silently turned into a CPU pod.
 
-Example (stdio client config):
+Example (stdio client config) — v2 against prod:
 
 ```json
 "env": {
   "RUNPOD_API_KEY": "YOUR_API_KEY",
   "RUNPOD_REST_VERSION": "v2"
+}
+```
+
+Targeting a **non-prod (dev) environment** — point **both** bases at it (the v1 base matters even in v2 mode, for the CPU-pod fallback above):
+
+```json
+"env": {
+  "RUNPOD_API_KEY": "YOUR_DEV_KEY",
+  "RUNPOD_REST_VERSION": "v2",
+  "RUNPOD_REST_V2_API_URL": "https://v2-rest.runpod.dev/v2",
+  "RUNPOD_REST_API_URL": "https://rest.runpod.dev/v1"
 }
 ```
 
