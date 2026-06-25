@@ -12,7 +12,7 @@ export const NPM_PACKAGE = '@runpod/mcp-server@latest';
 // the OAuth "Sign in with Runpod" flow — no API key is stored in their config.
 // Overridable so a non-production deployment can be targeted during testing.
 export const HOSTED_URL =
-  process.env.RUNPOD_MCP_URL ?? 'https://runpod-mcp.vercel.app/';
+  process.env.RUNPOD_MCP_URL ?? 'https://mcp.getrunpod.io/';
 
 // How the user wants the server wired up:
 // - local: run via npx on this machine, authenticated by an API key in the env.
