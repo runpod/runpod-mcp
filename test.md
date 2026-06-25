@@ -138,10 +138,12 @@ If all of section 1 is green, the code is sound. Section 2 proves it against the
 
 The server speaks two transports, and they take the API key two different ways — validate the one(s) you'll actually ship. (The §2 live walkthrough below drives **HTTP**; this covers the **stdio** path too.)
 
-| Transport | Key source | How a client connects |
+| Transport | Key source | How you "launch" it |
 |---|---|---|
-| **HTTP** (hosted, or local `serve-http.local.ts`) | per-request `Authorization: Bearer` header | connects to a URL |
-| **stdio** (local, what `npx @runpod/mcp-server` uses) | `RUNPOD_API_KEY` **env** on the spawned process | client launches the server as a child process |
+| **HTTP** (hosted, or local `serve-http.local.ts`) | per-request `Authorization: Bearer` header | **you** run a server process, the agent connects to its URL → see [Quick start](#quick-start) / [§2a](#a-launch-the-server-locally) |
+| **stdio** (local, what `npx @runpod/mcp-server` uses) | `RUNPOD_API_KEY` **env** on the spawned process | **the agent** launches the server for you — there's no separate "start the server" step; you just register it (below) |
+
+> Key difference to keep straight: for **HTTP** you start a long-running server yourself (the `serve-http.local.ts` launch in Quick start) and point the agent at `http://localhost:3399/`. For **stdio** you don't start anything — you give the client a `command` (`node dist/stdio.mjs`) + `env`, and it spawns/kills the process per session.
 
 ### Run the suite through stdio
 
@@ -149,7 +151,7 @@ The server speaks two transports, and they take the API key two different ways �
 pnpm build     # stdio runs the built dist/stdio.mjs
 ```
 
-Register a stdio server with the dev env in your client config (Claude Code shown), then connect and run the **same** [§2c suite](#c-the-test-suite-steps--manual-checks):
+Register a stdio server with the dev env in your client config (Claude Code shown), then connect and drive it with the **same** [agent prompt (§2b)](#b-drive-the-test-with-an-agent-copy-paste-prompt) over the **same** [suite (§2c)](#c-the-test-suite-steps--manual-checks):
 
 ```bash
 claude mcp add runpod-v2-stdio \
