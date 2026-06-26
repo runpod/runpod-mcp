@@ -1283,6 +1283,12 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         .string()
         .optional()
         .describe('README content in markdown format'),
+      containerRegistryAuthId: z
+        .string()
+        .optional()
+        .describe(
+          'ID of a container registry credential (from create-container-registry-auth / list-container-registry-auths) used to pull a private image. Required when imageName points at a private registry; without it serverless workers fail the image pull.'
+        ),
     },
     async (params) => {
       const result = await runpodRequest('/templates', 'POST', params);
@@ -1314,6 +1320,12 @@ export function registerTools(server: McpServer, ctx: ToolContext): void {
         .string()
         .optional()
         .describe('New README content in markdown format'),
+      containerRegistryAuthId: z
+        .string()
+        .optional()
+        .describe(
+          'ID of a container registry credential (from create-container-registry-auth / list-container-registry-auths) used to pull a private image. Set this to attach a credential to a template referencing a private registry.'
+        ),
     },
     async (params) => {
       const { templateId, ...updateParams } = params;
