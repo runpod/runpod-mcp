@@ -212,27 +212,57 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
         // v2 has no CPU pods yet (AE-2991): serve a CPU pod from v1 (which supports
         // them) instead of failing, and tell the caller which API answered.
         if (wantsCpu) {
-          const result = (await callRestUrl(
-            `${restV1Base(env)}/pods`,
-            'POST',
-            params as Record<string, unknown>
-          )) as Record<string, unknown>;
-          return jsonReply({
-            ...result,
-            _servedBy: 'v1',
-            _note:
-              'CPU pod: created on the v1 API, because the v2 REST API does not support CPU pods yet.',
-          });
+          // v1 is a passthrough (mapCreate is identity there), so the raw tool
+          // params are the correct v1 body — `computeType` is a valid v1 field.
+          // Wrap the call so a v1 error surfaces as a clean message, not a raw
+          // throw (matching the GPU/v2 path's error handling below).
+          try {
+            const result = (await callRestUrl(
+              `${restV1Base(env)}/pods`,
+              'POST',
+              params as Record<string, unknown>
+            )) as Record<string, unknown>;
+            return jsonReply({
+              ...result,
+              _servedBy: 'v1',
+              _note:
+                'CPU pod: created on the v1 API, because the v2 REST API does not support CPU pods yet.',
+            });
+          } catch (error) {
+            if (error instanceof HttpError) {
+              return jsonReply({
+                error: error.message,
+                status: error.status,
+                _servedBy: 'v1',
+                _note: 'CPU pod create was routed to the v1 API and failed.',
+              });
+            }
+            throw error;
+          }
         }
       }
 
       const body = backend.mapCreate(params) as Record<string, unknown>;
       try {
-        const result = await callRestUrl(
+        const result = (await callRestUrl(
           `${backend.base}${backend.list}`,
           'POST',
           body
-        );
+        )) as Record<string, unknown>;
+        // v2 accepts a single GPU type (`gpu.id`); v1's gpuTypeIds is "any of
+        // these". If the caller offered several, only the first was sent — say
+        // so in the reply so the narrowing isn't silent.
+        if (
+          backend.version === 'v2' &&
+          (params.gpuTypeIds?.length ?? 0) > 1
+        ) {
+          return jsonReply({
+            ...result,
+            _warning: `v2 accepts one GPU type per pod; used "${params.gpuTypeIds![0]}" and ignored ${
+              params.gpuTypeIds!.length - 1
+            } other(s): ${params.gpuTypeIds!.slice(1).join(', ')}.`,
+          });
+        }
         return jsonReply(result);
       } catch (error) {
         // Defense for if/when the v2 CPU stub starts returning 501 directly

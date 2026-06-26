@@ -65,13 +65,21 @@ describe('mapPodCreateToV2', () => {
     assert.deepEqual(mapPodCreateToV2({ gpuTypeIds: ['A'] }).gpu, { id: 'A' });
   });
 
-  it('cloudType → cloud; dataCenterIds[] → dataCenter (array→scalar)', () => {
+  it('cloudType → cloud; dataCenterIds[] passes through as an array (v2 field)', () => {
     const out = mapPodCreateToV2({
       cloudType: 'COMMUNITY',
       dataCenterIds: ['DC1', 'DC2'],
     });
     assert.equal(out.cloud, 'COMMUNITY');
-    assert.equal(out.dataCenter, 'DC1');
+    // v2 CreatePodRequest uses `dataCenterIds` (array), not a singular
+    // `dataCenter` — the whole list must survive, not just the first.
+    assert.deepEqual(out.dataCenterIds, ['DC1', 'DC2']);
+    assert.equal('dataCenter' in out, false);
+  });
+
+  it('empty dataCenterIds is dropped (scheduler chooses)', () => {
+    const out = mapPodCreateToV2({ dataCenterIds: [] });
+    assert.equal('dataCenterIds' in out, false);
   });
 
   it('no gpu key when no gpuTypeIds given (translation only — gpu/cpu requirement is enforced by the tool/handler)', () => {

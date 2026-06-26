@@ -6,10 +6,10 @@
 // ⚠️ SPEC IS MID-FLIGHT (see PLAN.md Part 7/8). These mappers target the current
 // v2 dev spec snapshot and are pinned by committed fixtures under tests/fixtures.
 // Known pending upstream changes that will require updating these + the fixtures:
-//   - `dataCenter` (scalar) may revert to `dataCenterIds` (array)
 //   - `cloud` enum may drop `ALL`
-//   - template `category` may become optional / be removed (we currently emit it
-//     with an NVIDIA default since the committed spec marks it required)
+//   - template `category` may become optional / be removed (v2 marks it required
+//     today; the create-template tool now exposes `category`, defaulting to
+//     NVIDIA only when the caller omits it)
 // When the live spec changes, update the mapper AND its fixture in one commit.
 
 // v1 params accepted by the create-pod / update-pod tool schemas (the fields the
@@ -88,8 +88,15 @@ export function mapPodCreateToV2(params: V1PodParams): Record<string, unknown> {
     ...containerConfigToV2(params),
     name: params.name,
     cloud: params.cloudType,
-    // array → scalar: v2 takes a single GPU type id / data center
-    dataCenter: params.dataCenterIds?.[0],
+    // v2 CreatePodRequest takes `dataCenterIds` as an ARRAY (preferred data
+    // centers; omit/empty = scheduler chooses). Pass the v1 list straight
+    // through — the earlier singular `dataCenter` key did not exist on the pod
+    // schema, so placement was being silently dropped. GPU, by contrast, IS
+    // singular on v2 (`gpu.id`): gpuConfigToV2 takes the first id; the
+    // create-pod handler warns when more than one gpuTypeId was supplied.
+    dataCenterIds: params.dataCenterIds?.length
+      ? params.dataCenterIds
+      : undefined,
     gpu: gpuConfigToV2(params.gpuTypeIds, params.gpuCount),
   });
 }

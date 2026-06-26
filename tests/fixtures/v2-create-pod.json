@@ -20,7 +20,7 @@
     "mounts": { "persistent": { "size": 50, "path": "/workspace" } },
     "name": "training-pod",
     "cloud": "SECURE",
-    "dataCenter": "US-TX-3",
+    "dataCenterIds": ["US-TX-3", "EU-RO-1"],
     "gpu": { "id": "NVIDIA A100", "count": 2 }
   }
 }

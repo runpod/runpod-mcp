@@ -468,7 +468,8 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
       assert.equal(body.image, 'img:1');
       assert.equal('imageName' in body, false);
       assert.deepEqual(body.gpu, { id: 'A100', count: 2 });
-      assert.equal(body.dataCenter, 'US-TX-3');
+      assert.deepEqual(body.dataCenterIds, ['US-TX-3']);
+      assert.equal('dataCenter' in body, false);
       assert.deepEqual(body.mounts, {
         persistent: { size: 40, path: '/workspace' },
       });
@@ -504,6 +505,41 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
       const payload = JSON.parse(out.content[0].text);
       assert.equal(payload._servedBy, 'v1');
       assert.match(payload._note, /v2 REST API does not support CPU pods/);
+    });
+  });
+
+  it('create-pod v2 with >1 gpuTypeId → succeeds, warns only the first was used', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'pod_multi' } });
+      const out = (await handlers.get('create-pod')!({
+        imageName: 'i',
+        gpuTypeIds: ['A100', 'H100', 'L40'],
+      })) as { content: Array<{ text: string }> };
+      // v2 gpu is singular — only the first id reaches the wire.
+      assert.deepEqual(JSON.parse(outbound[0].body!).gpu, { id: 'A100' });
+      const payload = JSON.parse(out.content[0].text);
+      assert.match(payload._warning, /one GPU type/);
+      assert.match(payload._warning, /H100/);
+      assert.match(payload._warning, /L40/);
+    });
+  });
+
+  it('create-pod v2 CPU pod whose v1 create fails → clean error reply, not a raw throw', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        status: 400,
+        jsonBody: { error: 'bad request' },
+      });
+      const out = (await handlers.get('create-pod')!({
+        imageName: 'i',
+        computeType: 'CPU',
+        containerDiskInGb: 10,
+      })) as { content: Array<{ text: string }> };
+      assert.equal(outbound[0].url, 'https://rest.runpod.io/v1/pods');
+      const payload = JSON.parse(out.content[0].text);
+      assert.equal(payload.status, 400);
+      assert.equal(payload._servedBy, 'v1');
+      assert.match(payload._note, /routed to the v1 API and failed/);
     });
   });
 

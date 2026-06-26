@@ -108,6 +108,12 @@ export function registerTemplateTools(
         .string()
         .optional()
         .describe('README content in markdown format'),
+      category: z
+        .enum(['CPU', 'NVIDIA', 'AMD'])
+        .optional()
+        .describe(
+          'Hardware category for the template. On v2 a category is required and defaults to NVIDIA when omitted — set CPU or AMD for non-NVIDIA templates so they are not mis-categorized.'
+        ),
     },
     { title: 'Create template', ...WRITE },
     async (params) => {
