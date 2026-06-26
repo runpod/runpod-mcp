@@ -117,11 +117,18 @@ function summarizeGpuTypes(result: unknown) {
     }
 
     const item = gpu as Record<string, unknown>;
+    // v1/GraphQL and v2 REST use different field names for the same data:
+    //   v1: displayName / memoryGb / stockStatus
+    //   v2: name        / memory   / (secure flag, no stockStatus)
+    // Read whichever is present so the summary is non-empty on both surfaces.
     return {
       id: item.id,
-      displayName: item.displayName,
-      memoryGb: item.memoryGb,
-      stockStatus: item.stockStatus,
+      displayName: item.displayName ?? item.name,
+      memoryGb: item.memoryGb ?? item.memory,
+      ...(item.stockStatus !== undefined
+        ? { stockStatus: item.stockStatus }
+        : {}),
+      ...(item.secure !== undefined ? { secure: item.secure } : {}),
     };
   });
 }

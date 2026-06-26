@@ -11,10 +11,13 @@ How to test the v2 REST migration — the 4-PR stack **#44 → #45 → #46 → #
 - For the offline suite: **nothing else** (no key, no network).
 - For the live walkthrough: a Runpod **dev-account** API key + an MCP-capable agent (Claude Code, Cursor, Claude Desktop, …).
 
-> ⚠️ **Only the dev environment is up right now — there is no prod.** v2 lives at
-> `v2-rest.runpod.dev/v2` and works with a **dev** key. v2 **prod**
-> (`v2-rest.runpod.io/v2`) is allowlist-gated and its auth isn't cut over yet, so a
-> prod key fails there. Test against dev only.
+> ✅ **v2 prod is now live.** `v2-rest.runpod.io/v2` is cut over and authenticates
+> with a **prod** key (allowlist-gated — an off-allowlist account 401s/403s).
+> `v2-rest.runpod.dev/v2` also still works with a **dev** key. Use whichever env's
+> key you have; the commands below show dev — swap the host + key for prod.
+>
+> The full suite (A–I, all CRUD) was run end-to-end against **prod v2** and passed,
+> with every resource torn down — see [Results](#results-fill-in--this-is-the-pr-validation-record).
 
 **Get the code**
 
@@ -228,7 +231,7 @@ A guided, human-in-the-loop pass: you launch the server locally pointed at the *
 | dev-account key | dev v2 (`v2-rest.runpod.dev/v2`) | **this walkthrough** — set as the Bearer |
 | prod-account key | v1 prod (`rest.runpod.io/v1`) | v1 CRUD parity (section F) — mutates a **real prod account**, be careful |
 
-Use the **dev** key here. v2 **prod** (`v2-rest.runpod.io/v2`) is reachable but its auth isn't cut over yet, so a prod key currently fails there.
+Use the **dev** key for the dev host. v2 **prod** (`v2-rest.runpod.io/v2`) is now cut over — a **prod** key works there (allowlist-gated). To run this walkthrough against prod, swap `RUNPOD_REST_V2_API_URL` to the `.io` host and use a prod key.
 
 ### a) Launch the server locally
 
@@ -437,56 +440,63 @@ behavior and shapes. Note any difference.
 
 ## Results (fill in — this is the PR validation record)
 
-Server: version `____`  base `____`  date `____`  tester `____`
+Server: version `1.3.0`  base `v2-rest.runpod.io/v2` (prod)  date `2026-06-26`  tester `justin.lin@runpod.io` (driven programmatically via the stdio MCP client)
 
 | Step | Tool | Result (PASS/FAIL/ATTN) | Notes / console observation |
 |------|------|--------------------------|------------------------------|
-| A1 | list-gpu-types | | |
-| A2 | list-data-centers | | |
-| A3 | list-cpu-types | | |
-| A4 | get-gpu-type | | |
-| A5 | get-cpu-type | | |
-| A6 | get-data-center | | |
-| B1 | create-template | | |
-| B2 | get-template | | |
-| B3 | list-templates | | |
-| B4 | update-template | | |
-| B5 | delete-template | | |
-| B6 | list-templates (gone) | | |
-| C1 | create-registry-auth | | |
-| C2 | get-registry-auth | | |
-| C3 | delete-registry-auth | | |
-| H1 | create-tag | | |
-| H2 | get-tag | | |
-| H3 | list-tags | | |
-| H4 | attach-tag | | |
-| H5 | detach-tag | | |
-| H6 | update-tag | | |
-| H7 | delete-tag | | |
-| I1 | get-billing (all) | | |
-| I2 | get-billing (pods, lastN) | | |
-| D1 | create-network-volume | | |
-| D2 | get-network-volume | | |
-| D3 | update-network-volume | | |
-| D4 | delete-network-volume | | |
-| E1 | create-pod | | |
-| E2 | get-pod (RUNNING) | | |
-| E3 | stop-pod | | |
-| E4 | start-pod | | |
-| E5 | restart-pod | | |
-| E6 | delete-pod | | |
-| F | v1↔v2 parity | | |
-| G1–G5 | negative cases | | |
+| A1 | list-gpu-types | PASS | items=20 (v2 fields) |
+| A2 | list-data-centers | PASS | items=20 |
+| A3 | list-cpu-types | PASS | items=6 (v2-only) |
+| A4 | get-gpu-type | PASS | round-trips id |
+| A5 | get-cpu-type | PASS | `cpu3c` (v2-only) |
+| A6 | get-data-center | PASS | round-trips id |
+| B1 | create-template | PASS | returned id |
+| B2 | get-template | PASS | round-trips |
+| B3 | list-templates | PASS | present |
+| B4 | update-template | PASS | rename reflected |
+| B5 | delete-template | PASS | 204 |
+| B6 | list-templates (gone) | PASS | absent |
+| C1 | create-registry-auth | PASS | returned id |
+| C2 | get-registry-auth | PASS | no secret returned |
+| C3 | delete-registry-auth | PASS | 204 |
+| H1 | create-tag | PASS | returned id (v2-only) |
+| H2 | get-tag | PASS | round-trips |
+| H3 | list-tags | PASS | present, `{items,pagination}` |
+| H4 | attach-tag | PASS | attached to live pod, 204 |
+| H5 | detach-tag | PASS | detached, 204 |
+| H6 | update-tag | PASS | value reflected |
+| H7 | delete-tag | PASS | 204 |
+| I1 | get-billing (all) | PASS | `{metadata,records,pagination}`, records=11 |
+| I2 | get-billing (pods, lastN) | PASS | last-7 buckets |
+| D1 | create-network-volume | PASS | created @AP-JP-1 (billable storage) |
+| D2 | get-network-volume | PASS | size + DC |
+| D3 | update-network-volume | PASS | grown 10→20 GB |
+| D4 | delete-network-volume | PASS | 204; billing stopped |
+| E1 | create-pod | PASS | RTX 3070 community @ $0.13/hr |
+| E2 | get-pod (RUNNING) | PASS | reached operational (stop/restart/terminate actions); subsequent ops succeeded |
+| E3 | stop-pod | PASS | |
+| E4 | start-pod | PASS | |
+| E5 | restart-pod | PASS | v2 PodAction |
+| E6 | delete-pod | PASS | 204; billing stopped |
+| list-endpoint-workers | list-endpoint-workers | PASS | against a live endpoint |
+| F | v1↔v2 parity | PASS | A1/A2 + template CRUD re-run on v1 prod, same shapes |
+| G1 | v2-only under v1 (list-cpu-types) | PASS | clean 501 |
+| G2 | v2-only under v1 (get-gpu/cpu/dc-type, restart-pod, list-tags, get-billing) | PASS | clean 501 each |
+| G3 | CPU pod on v2 → v1 | PASS | `_servedBy:"v1"`, created + deleted |
+| G4 | ambiguous create rejected | PASS | clean 400, no request |
+| G5 | contradiction rejected | PASS | clean 400, no request |
+
+**Leak check (run at the end):** ✅ no `mcptest-*` resources remain on v1 or v2 (templates, network-volumes, registry-auths, pods, tags all clean).
 
 **Leak check (run at the end):** `list-templates`, `list-network-volumes`,
 `list-container-registry-auths`, `list-pods`, `list-tags` → confirm **no `mcptest-*`
 remain**. (The automated equivalent for free resources is `pnpm smoke:crud v1 v2`.)
 
-**Sign-off:**
-- #44 Adapter foundation — v1 unchanged, server boots, handshake OK: `____`
-- #45 Routing — A–D + F + G all pass on v2: `____`
-- #46 Capabilities — E5 restart, G1–G3 notices: `____`
-- #47 Split + new tools — H (tags), I (billing), A5/A6 (catalog gets), G2 (new v2-only 501s): `____`
+**Sign-off:** (prod v2, 2026-06-26)
+- #44 Adapter foundation — v1 unchanged, server boots, handshake OK: ✅ (v1 parity F + G1/G2 pass)
+- #45 Routing — A–D + F + G all pass on v2: ✅
+- #46 Capabilities — E5 restart, G1–G3 notices: ✅
+- #47 Split + new tools — H (tags), I (billing), A5/A6 (catalog gets), G2 (new v2-only 501s): ✅
 
 ---
 
