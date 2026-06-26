@@ -174,9 +174,3 @@ export function mapTemplateUpdateToV2(
     ...compact({ name: params.name }),
   };
 }
-
-// Registry create is unchanged between v1 and v2 (name/username/password) →
-// identity. Exposed for symmetry so the descriptor table is uniform.
-export function identityMapper(body: unknown): unknown {
-  return body;
-}

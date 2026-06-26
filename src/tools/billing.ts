@@ -83,7 +83,14 @@ export function registerBillingTools(server: McpServer, rt: ToolRuntime): void {
       if (params.startTime) query.set('startTime', params.startTime);
       if (params.endTime) query.set('endTime', params.endTime);
       if (params.bucketSize) query.set('bucketSize', params.bucketSize);
-      if (params.lastN !== undefined) query.set('lastN', String(params.lastN));
+      // lastN is mutually exclusive with startTime/endTime; if a window was
+      // given, ignore lastN so we never forward a contradictory request.
+      if (
+        params.lastN !== undefined &&
+        !params.startTime &&
+        !params.endTime
+      )
+        query.set('lastN', String(params.lastN));
       const qs = query.toString() ? `?${query.toString()}` : '';
 
       const raw = (await callRestUrl(`${backend.base}${subPath}${qs}`)) as

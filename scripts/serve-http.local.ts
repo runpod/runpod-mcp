@@ -1,4 +1,4 @@
-// LOCAL DEV ONLY (uncommitted) — boots the MCP server over HTTP so an agent can
+// LOCAL DEV HELPER — boots the MCP server over HTTP so an agent can
 // connect at http://localhost:<PORT>/. The caller's Runpod API key is passed as
 // the request Bearer token (this process holds no credential). v2 is controlled
 // by this process's RUNPOD_REST_VERSION / RUNPOD_REST_V2_API_URL env.

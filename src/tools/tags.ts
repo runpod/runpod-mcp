@@ -179,7 +179,7 @@ export function registerTagTools(server: McpServer, rt: ToolRuntime): void {
       if (backend.version === 'v1')
         return jsonReply(v2OnlyNotice('attach-tag'));
       const result = await callRestUrl(
-        `${backend.base}/tags/${params.tagId}/resources/${params.resourceType}/${params.resourceId}`,
+        `${backend.base}/tags/${encodeURIComponent(params.tagId)}/resources/${params.resourceType}/${encodeURIComponent(params.resourceId)}`,
         'PUT'
       );
       return jsonReply(result);
@@ -205,7 +205,7 @@ export function registerTagTools(server: McpServer, rt: ToolRuntime): void {
       if (backend.version === 'v1')
         return jsonReply(v2OnlyNotice('detach-tag'));
       const result = await callRestUrl(
-        `${backend.base}/tags/${params.tagId}/resources/${params.resourceType}/${params.resourceId}`,
+        `${backend.base}/tags/${encodeURIComponent(params.tagId)}/resources/${params.resourceType}/${encodeURIComponent(params.resourceId)}`,
         'DELETE'
       );
       return jsonReply(result);

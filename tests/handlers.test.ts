@@ -1164,6 +1164,21 @@ describe('tags tools (v2-only)', () => {
       assert.equal(outbound[0].method, 'DELETE');
     });
   });
+
+  it('attach-tag URL-encodes free-text tagId/resourceId (not the enum resourceType)', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('attach-tag')!({
+        tagId: 'a/b?c',
+        resourceType: 'POD',
+        resourceId: 'p#1',
+      });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/tags/a%2Fb%3Fc/resources/POD/p%231'
+      );
+    });
+  });
 });
 
 describe('billing tool (v2-only)', () => {
@@ -1186,6 +1201,21 @@ describe('billing tool (v2-only)', () => {
       assert.equal((env.pagination as { total: number }).total, 25);
       assert.equal((env.items as unknown[]).length, 20);
       assert.deepEqual(env.metadata, { total: 123 });
+    });
+  });
+
+  it('get-billing drops lastN when a startTime/endTime window is supplied (mutually exclusive)', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        jsonBody: { records: [], metadata: {} },
+      });
+      await handlers.get('get-billing')!({
+        startTime: '2026-05-01T00:00:00Z',
+        lastN: 5,
+      });
+      const url = new URL(outbound[0].url);
+      assert.equal(url.searchParams.get('startTime'), '2026-05-01T00:00:00Z');
+      assert.equal(url.searchParams.has('lastN'), false);
     });
   });
 
