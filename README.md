@@ -310,10 +310,15 @@ Create a new Runpod Pod with the following specifications:
 ```text
 Create a Runpod Serverless endpoint with the following configuration:
 - Name: my-endpoint
-- Template ID: 30zmvf89kd
+- Image: runpod/test-output:0.0.1
+- GPU pool: AMPERE_80   (a "pool" value from list-gpu-types)
 - Minimum workers: 0
 - Maximum workers: 3
 ```
+
+On the v2 API (the default) endpoints are image-based — pass an image and a GPU
+pool, not a template. To use the legacy template-based model, pin
+`RUNPOD_REST_VERSION=v1` and provide a `Template ID` instead.
 
 ## Contributing
 
