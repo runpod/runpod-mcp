@@ -18,11 +18,11 @@ The server never holds a credential of its own and never shares one across users
 
 ## REST API version (v1 / v2)
 
-The server can target either the v1 REST API (`rest.runpod.io/v1`) or the newer v2 REST API (`v2-rest.runpod.io/v2`). It **defaults to v1**; v2 is opt-in. These environment variables are read once at startup:
+The server can target either the v1 REST API (`rest.runpod.io/v1`) or the newer v2 REST API (`v2-rest.runpod.io/v2`). It **defaults to v2**; set `RUNPOD_REST_VERSION=v1` to pin the previous v1 behavior. These environment variables are read once at startup:
 
 | Variable                         | Values                 | Default                        | Effect                                                                                                |
 | -------------------------------- | ---------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------- |
-| `RUNPOD_REST_VERSION`            | `v1` \| `v2` \| `auto` | `v1`                           | Version used for all resources.                                                                       |
+| `RUNPOD_REST_VERSION`            | `v1` \| `v2` \| `auto` | `v2`                           | Version used for all resources.                                                                       |
 | `RUNPOD_REST_VERSION_<RESOURCE>` | `v1` \| `v2` \| `auto` | —                              | Per-resource override (e.g. `RUNPOD_REST_VERSION_PODS=v2`). Takes precedence over the global setting. |
 | `RUNPOD_REST_V2_API_URL`         | URL                    | `https://v2-rest.runpod.io/v2` | v2 base URL. Override to target a non-prod host.                                                      |
 | `RUNPOD_REST_API_URL`            | URL                    | `https://rest.runpod.io/v1`    | v1 base URL.                                                                                          |
@@ -30,9 +30,9 @@ The server can target either the v1 REST API (`rest.runpod.io/v1`) or the newer 
 
 Notes:
 
-- **Default is v1** — with nothing set, behavior is unchanged. v2 prod is live but the default stays v1; opt in per deployment with the env var below.
-- **On a server, set `RUNPOD_REST_VERSION=v2` explicitly** — the env var is read once at startup, so you flip a deployment to v2 by setting it in the host's environment (e.g. a Vercel project env var) and redeploying; no code change. **Use `v2`, not `auto`:** on the hosted HTTP transport `auto` resolves to **v1** (see below), so `auto` will *not* turn on v2 on a server.
-- **What `auto` does right now:** it probes v2 once at startup and falls back to v1 — but **only on the `stdio` transport** (one process = one key). On hosted HTTP it always resolves to **v1**, because a warm instance serves many users and a cached probe verdict could leak across them. So `auto` is a stdio-only convenience; for any hosted/HTTP server pin the version explicitly with `RUNPOD_REST_VERSION=v2`.
+- **Default is v2** — with nothing set, every control-plane resource uses the v2 REST API. Set `RUNPOD_REST_VERSION=v1` to pin the previous v1 behavior.
+- **Pinning a deployment** — the env var is read once at startup, so set `RUNPOD_REST_VERSION` (`v1` or `v2`) in the host's environment (e.g. a Vercel project env var) and redeploy; no code change. Hosted HTTP honors this default like any other transport.
+- **What `auto` does:** it probes v2 once at startup and falls back to v1 — but **only on the `stdio` transport** (one process = one key). On hosted HTTP `auto` resolves to **v1**, because a warm instance serves many users and a cached probe verdict could leak across them. `auto` is a stdio-only convenience; on HTTP, rely on the default or pin the version explicitly.
 - `jobs` (serverless runtime) and `endpoints` always use v1 regardless of the setting — they have no v2 REST home yet.
 - The v2-only tools (`list-cpu-types`, `get-gpu-type`, `restart-pod`) return a clear "v2 only" notice when called under v1.
 - `create-pod` for a **CPU pod** (`computeType: "CPU"`) on v2 is transparently served by the **v1** API — v2 has no CPU pods yet — and the reply is flagged `_servedBy: "v1"`. Because that fallback hits the **v1 base**, set `RUNPOD_REST_API_URL` to match your environment when running v2 against a non-prod host (otherwise CPU creates land on v1 **prod**). On v2 a create with neither `gpuTypeIds` nor `computeType` is rejected — absence is never silently turned into a CPU pod.

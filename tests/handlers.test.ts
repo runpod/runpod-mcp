@@ -11,6 +11,11 @@ beforeEach(() => {
   for (const k of Object.keys(process.env)) {
     if (k.startsWith('RUNPOD_REST_VERSION')) delete process.env[k];
   }
+  // Pin this process.env-based suite to v1 by default so the "v1 unchanged"
+  // goldens assert v1 regardless of the code's default version — the suite
+  // stays correct whether the local default is v1 or v2. v2 cases opt in
+  // explicitly via withV2(...).
+  process.env.RUNPOD_REST_VERSION = 'v1';
 });
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';

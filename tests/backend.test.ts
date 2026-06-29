@@ -118,10 +118,10 @@ describe('resolveVersion', () => {
     );
   });
 
-  it('unset defaults to v1', () => {
+  it('unset defaults to v2 (the local default)', () => {
     assert.equal(
       resolveVersion({ resource: 'pods', env: {}, ctx: stdio }),
-      'v1'
+      'v2'
     );
   });
 
@@ -364,7 +364,9 @@ describe('createV2Prober', () => {
 // ============== A2: resolveBackend (v1 descriptors) ==============
 describe('resolveBackend (v1)', () => {
   const stdio = { transport: 'stdio' as const };
-  const env = {}; // all defaults
+  // Pin v1 explicitly so these v1-descriptor assertions hold regardless of the
+  // code's default version (the local default is v2 — tests must not rely on it).
+  const env = { RUNPOD_REST_VERSION: 'v1' };
 
   it('pods → REST v1 base + exact today paths + identity mappers', () => {
     const b = resolveBackend({ resource: 'pods', env, ctx: stdio });
@@ -445,7 +447,10 @@ describe('resolveBackend (v1)', () => {
   it('env overrides the REST base', () => {
     const b = resolveBackend({
       resource: 'pods',
-      env: { RUNPOD_REST_API_URL: 'http://localhost:9999/v1' },
+      env: {
+        RUNPOD_REST_VERSION: 'v1',
+        RUNPOD_REST_API_URL: 'http://localhost:9999/v1',
+      },
       ctx: stdio,
     });
     assert.equal(b.base, 'http://localhost:9999/v1');
@@ -463,7 +468,10 @@ describe('resolveBackend (v1)', () => {
   it('env overrides the graphql base (catalog)', () => {
     const b = resolveBackend({
       resource: 'gpus',
-      env: { RUNPOD_PUBLIC_GRAPHQL_URL: 'http://localhost:8/graphql' },
+      env: {
+        RUNPOD_REST_VERSION: 'v1',
+        RUNPOD_PUBLIC_GRAPHQL_URL: 'http://localhost:8/graphql',
+      },
       ctx: stdio,
     });
     assert.equal(b.base, 'http://localhost:8/graphql');

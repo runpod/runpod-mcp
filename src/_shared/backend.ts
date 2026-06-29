@@ -106,7 +106,7 @@ export function unwrapList(
 // ---- A1: resolve which version a given resource call should use ----
 // Pure: env, transport, and the already-resolved v2 probe verdict are injected.
 // Precedence: v1-only resources → v1; else RUNPOD_REST_VERSION_<RESOURCE> →
-// RUNPOD_REST_VERSION → default 'v1'. `auto` probes only on stdio (one process =
+// RUNPOD_REST_VERSION → default 'v2'. `auto` probes only on stdio (one process =
 // one key); on hosted HTTP `auto` is treated as v1 (a warm instance serves many
 // keys, so a cached probe verdict would leak across users).
 //
@@ -132,7 +132,7 @@ export function resolveVersion(opts: {
   const setting = (
     perResource ??
     env.RUNPOD_REST_VERSION ??
-    'v1'
+    'v2'
   ).toLowerCase();
 
   if (setting === 'v2') return 'v2';

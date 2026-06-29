@@ -20,7 +20,7 @@ const server = createServer((req, res) => {
 server.listen(PORT, () => {
   console.error(
     `MCP HTTP server listening on http://localhost:${PORT}/  ` +
-      `(RUNPOD_REST_VERSION=${process.env.RUNPOD_REST_VERSION ?? 'v1(default)'}, ` +
+      `(RUNPOD_REST_VERSION=${process.env.RUNPOD_REST_VERSION ?? 'v2(default)'}, ` +
       `v2 base=${process.env.RUNPOD_REST_V2_API_URL ?? 'prod default'})`
   );
 });
