@@ -114,6 +114,12 @@ export function registerTemplateTools(
         .describe(
           'Hardware category for the template. On v2 a category is required and defaults to NVIDIA when omitted — set CPU or AMD for non-NVIDIA templates so they are not mis-categorized.'
         ),
+      containerRegistryAuthId: z
+        .string()
+        .optional()
+        .describe(
+          'ID of a container registry credential (from create-container-registry-auth / list-container-registry-auths) used to pull a private image. Required when imageName points at a private registry; without it serverless workers fail the image pull.'
+        ),
     },
     { title: 'Create template', ...WRITE },
     async (params) => {
@@ -145,6 +151,12 @@ export function registerTemplateTools(
         .string()
         .optional()
         .describe('New README content in markdown format'),
+      containerRegistryAuthId: z
+        .string()
+        .optional()
+        .describe(
+          'ID of a container registry credential (from create-container-registry-auth / list-container-registry-auths) used to pull a private image. Set this to attach a credential to a template referencing a private registry.'
+        ),
     },
     { title: 'Update template', ...WRITE, idempotentHint: true },
     async (params) => {

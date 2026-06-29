@@ -228,6 +228,9 @@ interface V1TemplateCreate {
   // has no such field; default to NVIDIA (the documented default) so the body is
   // valid, and accept an explicit override once the tool schema exposes it.
   category?: 'CPU' | 'NVIDIA' | 'AMD';
+  // Container registry credential for pulling a private image. v1's field is
+  // `containerRegistryAuthId`; v2 ContainerConfig calls it `registry`.
+  containerRegistryAuthId?: string;
 }
 export function mapTemplateCreateToV2(
   params: V1TemplateCreate
@@ -237,6 +240,7 @@ export function mapTemplateCreateToV2(
     ...compact({
       name: params.name,
       serverless: params.isServerless,
+      registry: params.containerRegistryAuthId,
     }),
     // Required by v2 — always emit, defaulting to NVIDIA.
     category: params.category ?? 'NVIDIA',
@@ -248,6 +252,7 @@ interface V1TemplateUpdate {
   imageName?: string;
   ports?: string[];
   env?: Record<string, string>;
+  containerRegistryAuthId?: string;
   // readme has no v2 equivalent — dropped.
 }
 // Update has no required `category`; just flatten ContainerConfig + name. Crucial:
@@ -258,6 +263,9 @@ export function mapTemplateUpdateToV2(
 ): Record<string, unknown> {
   return {
     ...containerConfigToV2(params),
-    ...compact({ name: params.name }),
+    ...compact({
+      name: params.name,
+      registry: params.containerRegistryAuthId,
+    }),
   };
 }

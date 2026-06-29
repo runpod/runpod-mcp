@@ -9,12 +9,12 @@ import {
   type ProbeFetch,
 } from './_shared/backend.js';
 
-// Get API key from environment variable
-const API_KEY = process.env.RUNPOD_API_KEY;
-if (!API_KEY) {
-  console.error('RUNPOD_API_KEY environment variable is required');
-  process.exit(1);
-}
+// Detect the install wizard subcommand (`add` / `remove`). In this mode we run
+// the interactive installer instead of starting the stdio server, and the API
+// key is collected by the wizard rather than required up front.
+const WIZARD_SUBCOMMANDS = ['add', 'remove'];
+const subcommand = process.argv[2];
+const isWizardMode = WIZARD_SUBCOMMANDS.includes(subcommand);
 
 async function main(apiKey: string): Promise<void> {
   // `auto` mode (stdio only): probe v2 once at startup and pass the resolved
@@ -40,7 +40,23 @@ async function main(apiKey: string): Promise<void> {
   await server.connect(transport);
 }
 
-main(API_KEY).catch((error) => {
-  console.error('Failed to start Runpod MCP server:', error);
-  process.exit(1);
-});
+if (isWizardMode) {
+  import('./install/wizard.js')
+    .then(({ runWizard }) => runWizard(subcommand))
+    .catch((error) => {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    });
+} else {
+  // Get API key from environment variable
+  const API_KEY = process.env.RUNPOD_API_KEY;
+  if (!API_KEY) {
+    console.error('RUNPOD_API_KEY environment variable is required');
+    process.exit(1);
+  }
+
+  main(API_KEY).catch((error) => {
+    console.error('Failed to start Runpod MCP server:', error);
+    process.exit(1);
+  });
+}

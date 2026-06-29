@@ -176,6 +176,15 @@ describe('mapTemplateCreateToV2', () => {
     const out = mapTemplateCreateToV2({ name: 't', category: 'CPU' });
     assert.equal(out.category, 'CPU');
   });
+
+  it('maps containerRegistryAuthId → registry (private-image pull)', () => {
+    const out = mapTemplateCreateToV2({
+      name: 't',
+      containerRegistryAuthId: 'cra_1',
+    });
+    assert.equal(out.registry, 'cra_1');
+    assert.equal('containerRegistryAuthId' in out, false);
+  });
 });
 
 describe('mapTemplateUpdateToV2', () => {
@@ -184,6 +193,12 @@ describe('mapTemplateUpdateToV2', () => {
     assert.deepEqual(out, { image: 'i', name: 'n' });
     assert.equal('imageName' in out, false);
     assert.equal('category' in out, false);
+  });
+
+  it('maps containerRegistryAuthId → registry on update too', () => {
+    const out = mapTemplateUpdateToV2({ containerRegistryAuthId: 'cra_2' });
+    assert.equal(out.registry, 'cra_2');
+    assert.equal('containerRegistryAuthId' in out, false);
   });
 });
 
