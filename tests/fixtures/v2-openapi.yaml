@@ -1,0 +1,3882 @@
+openapi: "3.0.3"
+
+info:
+  title: RunPod REST API
+  version: "2.0.0"
+  description: RunPod public REST API — v2
+
+servers:
+  - url: /
+    description: Current server
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: RunPod API Key
+
+  parameters:
+    # Shared /v2/billing* query params. Routes add their own resource-id filter.
+    BillingStartTime:
+      name: startTime
+      in: query
+      required: false
+      description: >
+        Start of the billing period (RFC 3339). Defaults to 30 days ago. Snapped
+        down to the start of its bucketSize bucket so the window aligns with the
+        returned records; provide a boundary-aligned value (e.g. midnight for
+        bucketSize=day) to avoid widening.
+      schema:
+        type: string
+        format: date-time
+      example: "2026-05-01T00:00:00Z"
+    BillingEndTime:
+      name: endTime
+      in: query
+      required: false
+      description: >
+        End of the billing period (RFC 3339), exclusive. Defaults to now. Snapped
+        up to the end of the bucketSize bucket it lands in (unless already on a
+        boundary) so the window aligns with the returned records.
+      schema:
+        type: string
+        format: date-time
+      example: "2026-06-01T00:00:00Z"
+    BillingBucketSize:
+      name: bucketSize
+      in: query
+      required: false
+      description: Length of each billing time bucket. Defaults to day.
+      schema:
+        $ref: "#/components/schemas/BillingBucketSize"
+    BillingLastN:
+      name: lastN
+      in: query
+      required: false
+      description: >
+        Return the last N buckets of bucketSize, ending with the current
+        (in-progress) bucket — e.g. lastN=100 with bucketSize=day is "last 100
+        days". The resolved window is aligned to bucket boundaries: startTime is
+        the start of the earliest bucket (e.g. midnight of the earliest day) and
+        endTime is the end of the current bucket. Mutually exclusive with
+        startTime/endTime; provide one or the other, not both.
+      schema:
+        type: integer
+        minimum: 1
+      example: 30
+
+    CatalogIncludeParam:
+      name: include
+      in: query
+      required: false
+      description: "Comma-separated optional expansions. Supported value today: AVAILABILITY. This may expand with more include values in the future."
+      style: form
+      explode: false
+      schema:
+        type: array
+        maxItems: 1
+        items:
+          $ref: "#/components/schemas/CatalogInclude"
+      example: [AVAILABILITY]
+    GpuProductFilter:
+      name: product
+      in: query
+      required: false
+      description: "Comma-separated availability product contexts. Supported values: POD, CLUSTER, SERVERLESS. Valid only with include=AVAILABILITY. Upstream default when omitted: POD."
+      style: form
+      explode: false
+      schema:
+        type: array
+        items:
+          $ref: "#/components/schemas/Product"
+      example: [POD, SERVERLESS]
+    GpuCountFilter:
+      name: count
+      in: query
+      required: false
+      description: "GPU count for availability and lowest-price calculations. Valid only with include=AVAILABILITY. Defaults to 1."
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+      example: 2
+    GpuCloudFilter:
+      name: cloud
+      in: query
+      required: false
+      description: "Cloud type for availability and lowest-price calculations. Valid only with include=AVAILABILITY. Supported values: SECURE, COMMUNITY. Upstream default when omitted: SECURE."
+      schema:
+        $ref: "#/components/schemas/GpuCloudFilter"
+    MinCudaVersionFilter:
+      name: minCudaVersion
+      in: query
+      required: false
+      description: "Minimum CUDA version for availability and lowest-price calculations. Valid only with include=AVAILABILITY. Format: integer major or major.minor, e.g. 12 or 12.1."
+      schema:
+        type: string
+      example: "12.1"
+    CpuProductFilter:
+      name: product
+      in: query
+      required: false
+      description: "Availability product context. Valid only with include=AVAILABILITY. Supported values for CPUs: POD, SERVERLESS. Upstream default when omitted: POD."
+      schema:
+        $ref: "#/components/schemas/CpuProduct"
+    CpuVCPUCountFilter:
+      name: vcpuCount
+      in: query
+      required: false
+      description: "Availability vCPU count. Valid only with include=AVAILABILITY. Must be a power of two."
+      schema:
+        type: integer
+        minimum: 2
+      example: 4
+
+  schemas:
+    # ── Shared Components ────────────────────────────────────────────────────
+
+    ContainerConfig:
+      type: object
+      description: >
+        Reusable container configuration shared across templates, pods, and serverless endpoints.
+        Adding a field here automatically propagates to all three resources.
+      properties:
+        image:
+          type: string
+          description: Docker image reference
+          example: runpod/pytorch:2.8.0-py3.11-cuda12.8.1
+        args:
+          type: string
+          description: Arguments passed to the container entrypoint
+          example: ""
+        disk:
+          type: integer
+          minimum: 1
+          description: Container disk in GB (ephemeral, wiped on restart)
+          example: 50
+        ports:
+          type: array
+          description: "Exposed ports, formatted as port/protocol"
+          items:
+            type: string
+          example: ["8888/http", "22/tcp"]
+        env:
+          type: object
+          additionalProperties:
+            type: string
+          description: Environment variables as key-value pairs
+          example: { "JUPYTER_PASSWORD": "hunter2" }
+        registry:
+          type: string
+          nullable: true
+          description: Container registry credential ID (for private images)
+          example: null
+
+    Mounts:
+      type: object
+      additionalProperties: false
+      description: |
+        Storage mounts attached to a pod. At-most-one of `persistent` or
+        `network` may be set today (mutually exclusive, enforced at the
+        handler with 400 if both are present). The `network` field is an
+        array for forward compatibility with eventual multi-network-volume
+        support, but `maxItems` is 1 today.
+
+        PATCH semantics:
+        - Omitting `mounts` or sending `{}` leaves the existing mount
+          unchanged.
+        - An explicit `network: []` is rejected with 400 (clearing mounts
+          is not supported).
+        - Mount kind is fixed at create — a PATCH that introduces a kind
+          not present at create (persistent on a network pod, network on
+          a persistent pod, or any mount on a previously-mountless pod)
+          is rejected with 400.
+        - The `volumeId` of a network mount is immutable; a PATCH that
+          names a different `volumeId` is rejected with 400.
+        - Partial mounts are not supported — every mount entry must
+          include the full schema (`size` + `path` for persistent,
+          `volumeId` + `path` for network). Missing required fields → 422.
+      properties:
+        persistent:
+          $ref: "#/components/schemas/PersistentMount"
+        network:
+          type: array
+          maxItems: 1
+          items:
+            $ref: "#/components/schemas/NetworkMount"
+
+    TemplateMounts:
+      type: object
+      additionalProperties: false
+      description: |
+        Storage mounts attached to a template. Templates support only a
+        single persistent mount today; any `network` property is rejected
+        with 422 by the schema validator.
+
+        PATCH semantics: omitting `mounts` or sending `{}` leaves the
+        existing mount unchanged.
+      properties:
+        persistent:
+          $ref: "#/components/schemas/PersistentMount"
+
+    PersistentMount:
+      type: object
+      required: [size, path]
+      additionalProperties: false
+      description: |
+        Host-local persistent storage. Pinned to the pod's host machine — data
+        does not survive a host failure. Disallowed on CPU pods. Mutually
+        exclusive with NetworkMount. Deprecated: prefer NetworkMount for any
+        data you cannot recreate.
+      properties:
+        size:
+          type: integer
+          minimum: 10
+          description: Host-local persistent storage in GB. Upstream enforces a 10 GB floor.
+          example: 20
+        path:
+          type: string
+          description: Mount path inside the container. May be changed via PATCH.
+          example: /workspace
+
+    NetworkMount:
+      type: object
+      required: [volumeId, path]
+      additionalProperties: false
+      description: |
+        Reference to a NetworkVolume. Custom paths are honored at runtime on
+        both GPU and CPU pods. The underlying `volumeId` is immutable
+        post-create; the mount `path` may be changed via PATCH.
+      properties:
+        volumeId:
+          type: string
+          description: ID of an existing NetworkVolume in the same data center as the pod.
+          example: vol_xyz
+        path:
+          type: string
+          description: Mount path inside the container. No default — must be specified explicitly.
+          example: /runpod-volume
+
+    GpuConfig:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          description: GPU type identifier
+          example: NVIDIA GeForce RTX 4090
+        count:
+          type: integer
+          minimum: 1
+          default: 1
+          description: Number of GPUs
+          example: 1
+
+    BaseCpuConfig:
+      type: object
+      required: [id, vcpuCount]
+      properties:
+        id:
+          type: string
+          description: CPU flavor identifier, as returned by GET /v2/catalog/cpus.
+          example: cpu5c
+          minLength: 1
+        vcpuCount:
+          type: integer
+          minimum: 2
+          description: Number of vCPUs. Must be valid for the selected CPU flavor and must be a power of two.
+          example: 4
+
+    CreateCpuConfig:
+      allOf:
+        - $ref: "#/components/schemas/BaseCpuConfig"
+
+    CpuConfig:
+      allOf:
+        - $ref: "#/components/schemas/BaseCpuConfig"
+        - type: object
+          required: [memory]
+          properties:
+            memory:
+              type: integer
+              minimum: 1
+              description: Memory allocated to the pod in GB.
+              example: 16
+
+    ScalerType:
+      type: string
+      description: |
+        Autoscaling strategy.
+        - `QUEUE_DELAY`   — scale on seconds a request waits in queue
+        - `REQUEST_COUNT` — scale on in-flight request count
+      enum:
+        - QUEUE_DELAY
+        - REQUEST_COUNT
+
+    FlashBoot:
+      type: string
+      description: |
+        FlashBoot cold-start acceleration mode.
+        - `OFF`                — disabled
+        - `FLASHBOOT`          — enabled
+        - `PRIORITY_FLASHBOOT` — enabled with priority capacity
+      enum:
+        - OFF
+        - FLASHBOOT
+        - PRIORITY_FLASHBOOT
+
+    EndpointGpuConfig:
+      type: object
+      required: [pools]
+      properties:
+        pools:
+          type: array
+          minItems: 1
+          description: |
+            Serverless GPU pool IDs (as returned by `GET /v2/catalog/gpus` in
+            `pool`). Workers are placed on whichever listed pool has capacity.
+          items:
+            type: string
+          example: ["ADA_24"]
+        count:
+          type: integer
+          minimum: 1
+          default: 1
+          description: GPUs per worker
+          example: 1
+
+    Endpoint:
+      allOf:
+        - $ref: "#/components/schemas/ContainerConfig"
+        - type: object
+          required:
+            - id
+            - name
+            - workers
+            - scaling
+            - dataCenterIds
+            - networkVolumes
+            - timeout
+            - flashboot
+            - createdAt
+          properties:
+            id:
+              type: string
+              example: ep_abc123
+            name:
+              type: string
+              example: my-inference
+            gpu:
+              nullable: true
+              allOf:
+                - $ref: "#/components/schemas/EndpointGpuConfig"
+            cpu:
+              nullable: true
+              description: Read-only. Present for CPU serverless endpoints; CPU create/update is not yet supported.
+              allOf:
+                - $ref: "#/components/schemas/CpuConfig"
+            workers:
+              type: object
+              required: [min, max]
+              properties:
+                min:
+                  type: integer
+                  minimum: 0
+                  example: 0
+                max:
+                  type: integer
+                  minimum: 0
+                  example: 5
+            scaling:
+              type: object
+              required: [type, value, idleTimeout]
+              properties:
+                type:
+                  $ref: "#/components/schemas/ScalerType"
+                value:
+                  type: integer
+                  minimum: 1
+                  example: 4
+                idleTimeout:
+                  type: integer
+                  minimum: 0
+                  description: Seconds before idle workers scale down
+                  example: 5
+            dataCenterIds:
+              type: array
+              items:
+                type: string
+              example: ["US-TX-3"]
+            networkVolumes:
+              type: array
+              items:
+                type: string
+              example: ["vol_abc"]
+            timeout:
+              type: integer
+              description: Per-request execution timeout in milliseconds
+              example: 300000
+            flashboot:
+              $ref: "#/components/schemas/FlashBoot"
+            createdAt:
+              type: string
+              format: date-time
+              example: "2026-03-13T20:00:00Z"
+
+    ListEndpointsResponse:
+      type: object
+      required: [endpoints]
+      properties:
+        endpoints:
+          type: array
+          items:
+            $ref: "#/components/schemas/Endpoint"
+
+    WorkerStatus:
+      type: string
+      description: |
+        Derived worker state, reconciled from the worker pod's lifecycle status
+        and the live job-queue view.
+        - `RUNNING`      — actively processing a job
+        - `IDLE`         — ready and polling for jobs
+        - `INITIALIZING` — starting up, not yet ready
+        - `THROTTLED`    — waiting on compute capacity
+        - `UNHEALTHY`    — failing health checks
+      # Explicit Go constant names: the RUNNING value is shared with PodStatus,
+      # and without distinct names oapi-codegen would prefix BOTH enums
+      # (renaming the existing api.RUNNING etc. that the pods package depends on).
+      x-enum-varnames:
+        - WorkerStatusRunning
+        - WorkerStatusIdle
+        - WorkerStatusInitializing
+        - WorkerStatusThrottled
+        - WorkerStatusUnhealthy
+      enum:
+        - RUNNING
+        - IDLE
+        - INITIALIZING
+        - THROTTLED
+        - UNHEALTHY
+
+    Worker:
+      type: object
+      required: [id, status, gpuCount, isStale]
+      properties:
+        id:
+          type: string
+          example: worker_abc
+        status:
+          $ref: "#/components/schemas/WorkerStatus"
+        isStale:
+          type: boolean
+          description: |
+            True when the worker is running an older endpoint configuration than
+            the current one (e.g. mid rolling-update). This is the authoritative
+            flag: it is derived from `version` vs the response's `endpointVersion`,
+            except on legacy endpoints (`endpointVersion` 1) where it falls back
+            to a container-image comparison.
+          example: false
+        version:
+          type: integer
+          nullable: true
+          description: |
+            Endpoint configuration version this worker is running. Compare with
+            the response's `endpointVersion`. Null if unknown.
+          example: 4
+        gpuCount:
+          type: integer
+          minimum: 0
+          description: GPUs allocated to the worker.
+          example: 1
+        image:
+          type: string
+          nullable: true
+          description: Container image the worker is running.
+          example: my-org/sdxl-worker:latest
+        uptimeSeconds:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: Seconds the worker has been running. Null until the worker is placed and running.
+          example: 3600
+        gpuTypeId:
+          type: string
+          nullable: true
+          description: GPU type the worker is placed on. Null until the worker is placed.
+          example: NVIDIA RTX 4090
+        dataCenterId:
+          type: string
+          nullable: true
+          description: Data center the worker is placed in. Null until the worker is placed.
+          example: US-TX-3
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the worker last started. Null if it has not started.
+          example: "2026-03-26T00:00:00Z"
+
+    WorkerSummary:
+      type: object
+      description: |
+        Histogram of the returned workers by status. The per-status counts are a
+        roll-up of the `workers` array, so `running + idle + initializing +
+        throttled + unhealthy == total == len(workers)`.
+      required: [running, idle, initializing, throttled, unhealthy, total]
+      properties:
+        running:
+          type: integer
+          minimum: 0
+          description: Workers actively processing a job.
+          example: 2
+        idle:
+          type: integer
+          minimum: 0
+          description: Ready workers polling for jobs.
+          example: 1
+        initializing:
+          type: integer
+          minimum: 0
+          description: Workers starting up, not yet ready.
+          example: 0
+        throttled:
+          type: integer
+          minimum: 0
+          description: Workers waiting on compute capacity.
+          example: 0
+        unhealthy:
+          type: integer
+          minimum: 0
+          description: Workers failing health checks.
+          example: 0
+        total:
+          type: integer
+          minimum: 0
+          description: All workers currently allocated to the endpoint.
+          example: 3
+
+    ListEndpointWorkersResponse:
+      type: object
+      required: [workers, summary]
+      properties:
+        workers:
+          type: array
+          items:
+            $ref: "#/components/schemas/Worker"
+        summary:
+          $ref: "#/components/schemas/WorkerSummary"
+        endpointVersion:
+          type: integer
+          nullable: true
+          description: |
+            The endpoint's current configuration version. A worker whose
+            `version` differs is running stale config (see `worker.isStale`).
+            Null if unknown.
+          example: 4
+
+    ReleaseSource:
+      type: string
+      description: |
+        What produced the release.
+        - `GIT_BUILD` — a completed GitHub build (see `buildId`)
+        - `MANUAL`    — a manual configuration change
+      x-enum-varnames:
+        - ReleaseSourceGitBuild
+        - ReleaseSourceManual
+      enum:
+        - GIT_BUILD
+        - MANUAL
+
+    ReleaseDiffEntry:
+      type: object
+      required: [field, old, new]
+      properties:
+        field:
+          type: string
+          description: |
+            The changed configuration field. Top-level (e.g. `gpuCount`,
+            `locations`) or template-scoped (e.g. `template.imageName`,
+            `template.env`).
+          example: template.imageName
+        old:
+          nullable: true
+          description: Previous value, as raw JSON. Null when the field was added.
+        new:
+          nullable: true
+          description: New value, as raw JSON. Null when the field was removed.
+
+    Release:
+      type: object
+      required: [id, source, createdAt, workerCount, diff]
+      properties:
+        id:
+          type: string
+          example: rel_abc123
+        version:
+          type: integer
+          nullable: true
+          description: The endpoint configuration version this release produced.
+          example: 4
+        source:
+          $ref: "#/components/schemas/ReleaseSource"
+        buildId:
+          type: string
+          nullable: true
+          description: |
+            The GitHub build that produced this release. Set when `source` is
+            `GIT_BUILD`; null for `MANUAL` releases. Fetch build detail/logs via
+            `/v2/serverless/{id}/builds/{buildId}`.
+          example: build_abc123
+        createdByUserId:
+          type: string
+          nullable: true
+          description: ID of the user who created the release.
+        workerCount:
+          type: integer
+          minimum: 0
+          description: Workers currently running this release's version.
+          example: 2
+        createdAt:
+          type: string
+          format: date-time
+          example: "2026-03-13T20:00:00Z"
+        diff:
+          type: array
+          description: Configuration fields that changed in this release.
+          items:
+            $ref: "#/components/schemas/ReleaseDiffEntry"
+
+    RolloutSummary:
+      type: object
+      required: [inProgress, workersOnLatest, workersTotal, percentOnLatest]
+      properties:
+        inProgress:
+          type: boolean
+          description: True while any worker is still running an older version.
+          example: true
+        workersOnLatest:
+          type: integer
+          minimum: 0
+          description: Workers running the endpoint's current version.
+          example: 2
+        workersTotal:
+          type: integer
+          minimum: 0
+          description: All workers currently allocated to the endpoint.
+          example: 3
+        percentOnLatest:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Percentage of workers on the current version (0 when there are no workers).
+          example: 67
+
+    ListEndpointReleasesResponse:
+      type: object
+      required: [rollout, releases]
+      properties:
+        endpointVersion:
+          type: integer
+          nullable: true
+          description: The endpoint's current configuration version. Null if unknown.
+          example: 4
+        rollout:
+          $ref: "#/components/schemas/RolloutSummary"
+        releases:
+          type: array
+          description: Release history, newest first.
+          items:
+            $ref: "#/components/schemas/Release"
+
+    CreateEndpointRequest:
+      allOf:
+        - $ref: "#/components/schemas/ContainerConfig"
+        - type: object
+          required: [name, image, gpu]
+          properties:
+            name:
+              type: string
+              minLength: 1
+              example: my-inference
+            gpu:
+              $ref: "#/components/schemas/EndpointGpuConfig"
+            workers:
+              type: object
+              properties:
+                min:
+                  type: integer
+                  minimum: 0
+                  default: 0
+                max:
+                  type: integer
+                  minimum: 0
+                  default: 3
+            scaling:
+              type: object
+              properties:
+                type:
+                  $ref: "#/components/schemas/ScalerType"
+                value:
+                  type: integer
+                  minimum: 1
+                  default: 4
+                idleTimeout:
+                  type: integer
+                  minimum: 0
+                  default: 5
+            dataCenterIds:
+              type: array
+              items:
+                type: string
+              description: Preferred data centers for placement. Omit or pass an empty array to let the scheduler choose.
+            networkVolumes:
+              type: array
+              items:
+                type: string
+            timeout:
+              type: integer
+              default: 300000
+            flashboot:
+              allOf:
+                - $ref: "#/components/schemas/FlashBoot"
+              default: OFF
+
+    UpdateEndpointRequest:
+      allOf:
+        - $ref: "#/components/schemas/ContainerConfig"
+        - type: object
+          description: Only provided fields are changed.
+          properties:
+            name:
+              type: string
+              minLength: 1
+            gpu:
+              $ref: "#/components/schemas/EndpointGpuConfig"
+            workers:
+              type: object
+              properties:
+                min:
+                  type: integer
+                  minimum: 0
+                max:
+                  type: integer
+                  minimum: 0
+            scaling:
+              type: object
+              properties:
+                type:
+                  $ref: "#/components/schemas/ScalerType"
+                value:
+                  type: integer
+                  minimum: 1
+                idleTimeout:
+                  type: integer
+                  minimum: 0
+            dataCenterIds:
+              type: array
+              items:
+                type: string
+              description: Preferred data centers for placement. Omit or pass an empty array to let the scheduler choose.
+            networkVolumes:
+              type: array
+              items:
+                type: string
+            timeout:
+              type: integer
+            flashboot:
+              $ref: "#/components/schemas/FlashBoot"
+
+    Utilization:
+      type: object
+      description: Single-value utilization percentage (0–100). Shared by `cpu` and `memory`.
+      properties:
+        util:
+          type: integer
+          example: 45
+
+    PodGpuUtilization:
+      type: object
+      description: Per-GPU utilization metrics.
+      properties:
+        util:
+          type: integer
+          example: 94
+        memoryUtil:
+          type: integer
+          example: 78
+
+    PodRuntimePort:
+      type: object
+      description: Live port mapping for a running pod.
+      properties:
+        private:
+          type: integer
+          example: 8888
+        public:
+          type: integer
+          nullable: true
+          example: 43210
+        type:
+          type: string
+          example: http
+        ip:
+          type: string
+          nullable: true
+          example: 45.23.12.1
+
+    PodRuntime:
+      type: object
+      description: Live utilization metrics for a running pod.
+      properties:
+        uptime:
+          type: integer
+          description: Seconds since the container started
+          example: 3600
+        gpus:
+          type: array
+          items:
+            $ref: "#/components/schemas/PodGpuUtilization"
+        cpu:
+          $ref: "#/components/schemas/Utilization"
+        memory:
+          $ref: "#/components/schemas/Utilization"
+        ports:
+          type: array
+          items:
+            $ref: "#/components/schemas/PodRuntimePort"
+
+    # ── Enums ────────────────────────────────────────────────────────────────
+
+    PodStatus:
+      type: string
+      description: |
+        Lifecycle status of a pod.
+        - `PROVISIONING` — pod is being allocated
+        - `STARTING`     — container is starting
+        - `RUNNING`      — container is healthy
+        - `EXITED`       — container exited (stopped)
+        - `ERROR`        — container is in an unrecoverable error state
+        - `TERMINATED`   — pod has been permanently deleted
+      enum:
+        - PROVISIONING
+        - STARTING
+        - RUNNING
+        - EXITED
+        - ERROR
+        - TERMINATED
+
+    PodAction:
+      type: string
+      description: State transition to trigger on a pod.
+      enum:
+        - start
+        - stop
+        - restart
+        - terminate
+
+    PodLogSource:
+      type: string
+      description: |
+        Log source to include in a pod log stream.
+        - `container` — container stdout/stderr log stream
+        - `system`    — host lifecycle/userlogs stream
+      x-enum-varnames:
+        - PodLogSourceContainer
+        - PodLogSourceSystem
+      enum:
+        - container
+        - system
+
+    Cloud:
+      type: string
+      description: |
+        Cloud tier.
+        - `SECURE`    — RunPod-owned datacenter hardware
+        - `COMMUNITY` — community-hosted hardware
+        - `ALL`       — eligible for either tier (request-only; responses always
+          report the concrete tier the pod was placed on)
+      enum:
+        - SECURE
+        - COMMUNITY
+        - ALL
+
+    TemplateCategory:
+      type: string
+      description: |
+        Hardware family this template targets.
+        - `CPU`    — CPU-only workloads
+        - `NVIDIA` — NVIDIA GPU workloads
+        - `AMD`    — AMD GPU workloads
+      enum:
+        - CPU
+        - NVIDIA
+        - AMD
+
+    # ── Resources ────────────────────────────────────────────────────────────
+
+    PodGlobalNetworking:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+          description: >-
+            Whether global networking is enabled, giving the pod a private IP
+            reachable across data centers. Derived from whether the pod has an
+            assigned global-network address.
+          example: true
+        ip:
+          type: string
+          description: >-
+            The pod's assigned global-networking IP. Present only when enabled.
+          example: 10.65.1.42
+        internalDns:
+          type: string
+          description: >-
+            Internal DNS name (`<podId>.runpod.internal`), reachable from other
+            globally-networked pods in the same account. Present only when enabled.
+          example: gfj8b292vyg08g.runpod.internal
+
+    Pod:
+      allOf:
+        - $ref: "#/components/schemas/ContainerConfig"
+        - type: object
+          required:
+            - id
+            - name
+            - status
+            - actions
+            - image
+            - args
+            - disk
+            - mounts
+            - ports
+            - env
+            - registry
+            - cloud
+            - dataCenterId
+            - template
+            - cost
+            - locked
+            - tags
+            - runtime
+            - createdAt
+            - startedAt
+            - globalNetworking
+          properties:
+            id:
+              type: string
+              example: pod_abc123
+            name:
+              type: string
+              example: my-training-pod
+            status:
+              $ref: "#/components/schemas/PodStatus"
+            actions:
+              type: array
+              description: Valid state transitions for the current status.
+              items:
+                $ref: "#/components/schemas/PodAction"
+            mounts:
+              $ref: "#/components/schemas/Mounts"
+
+            # ── Compute & placement ──
+            gpu:
+              description: Present for GPU pods; omitted from CPU pods.
+              allOf:
+                - $ref: "#/components/schemas/GpuConfig"
+            cpu:
+              description: Present for CPU pods; omitted from GPU pods.
+              allOf:
+                - $ref: "#/components/schemas/CpuConfig"
+            cloud:
+              $ref: "#/components/schemas/Cloud"
+            dataCenterId:
+              type: string
+              nullable: true
+              description: Data center where the pod is running (assigned by scheduler)
+              example: US-TX-3
+
+            # ── Metadata ──
+            template:
+              type: string
+              nullable: true
+              description: ID of the template this pod was created from
+              example: null
+            cost:
+              type: number
+              format: float
+              description: Current cost in USD per hour (0.0 when EXITED or TERMINATED)
+              example: 0.35
+            locked:
+              type: boolean
+              description: Whether the pod is locked (prevents stopping or resetting)
+              example: false
+            globalNetworking:
+              $ref: "#/components/schemas/PodGlobalNetworking"
+            tags:
+              type: array
+              description: Tags attached to this pod.
+              items:
+                $ref: "#/components/schemas/Tag"
+
+            # ── Runtime (nullable) ──
+            runtime:
+              nullable: true
+              description: Live utilization metrics. Null when the pod is not RUNNING.
+              allOf:
+                - $ref: "#/components/schemas/PodRuntime"
+
+            # ── Timestamps ──
+            createdAt:
+              type: string
+              format: date-time
+              example: "2026-03-13T20:00:00Z"
+            startedAt:
+              type: string
+              format: date-time
+              nullable: true
+              example: "2026-03-13T20:00:00Z"
+
+    CreatePodRequest:
+      allOf:
+        - $ref: "#/components/schemas/ContainerConfig"
+        - type: object
+          required: [name, image]
+          description: |
+            Request body for creating a pod. Exactly one of `gpu` or `cpu`
+            must be set — enforced at the handler layer. For CPU pods, memory
+            is derived by the API from the selected flavor's RAM multiplier;
+            clients provide only CPU flavor and vCPU count. CPU pods support
+            container disk and network volumes only; `mounts.persistent` is
+            invalid when `cpu` is set.
+          properties:
+            name:
+              type: string
+              minLength: 1
+              example: my-training-pod
+            mounts:
+              $ref: "#/components/schemas/Mounts"
+            gpu:
+              $ref: "#/components/schemas/GpuConfig"
+            cpu:
+              $ref: "#/components/schemas/CreateCpuConfig"
+            cloud:
+              $ref: "#/components/schemas/Cloud"
+            dataCenterIds:
+              type: array
+              items:
+                type: string
+              description: |
+                Preferred data centers for placement. Omit or pass an empty
+                array to let the scheduler choose.
+              example: ["US-TX-3"]
+            globalNetworking:
+              type: boolean
+              default: false
+              description: >-
+                Enable global networking, giving the pod a private IP reachable
+                across data centers. Requires an NVIDIA GPU and a
+                global-networking-enabled data center (both enforced upstream).
+                See `GET /v2/catalog/datacenters` (`globalNetwork`) for eligible
+                data centers.
+              example: false
+
+    UpdatePodRequest:
+      allOf:
+        - $ref: "#/components/schemas/ContainerConfig"
+        - type: object
+          properties:
+            name:
+              type: string
+              minLength: 1
+            mounts:
+              $ref: "#/components/schemas/Mounts"
+            locked:
+              type: boolean
+              description: Lock the pod (true) or unlock it (false). Locked pods cannot be stopped or reset.
+            globalNetworking:
+              type: boolean
+              description: >-
+                Enable (true) or disable (false) global networking. Takes effect
+                on the next pod start/restart, not live. Requires an NVIDIA GPU
+                and a global-networking-enabled data center (both enforced
+                upstream). See `GET /v2/catalog/datacenters` (`globalNetwork`)
+                for eligible data centers.
+
+    PodActionRequest:
+      type: object
+      required: [action]
+      properties:
+        action:
+          $ref: "#/components/schemas/PodAction"
+
+    ListPodsResponse:
+      type: object
+      required: [pods]
+      properties:
+        pods:
+          type: array
+          items:
+            $ref: "#/components/schemas/Pod"
+
+    # ── Template ─────────────────────────────────────────────────────────────
+
+    Template:
+      allOf:
+        - $ref: "#/components/schemas/ContainerConfig"
+        - type: object
+          required:
+            [
+              id,
+              name,
+              image,
+              args,
+              disk,
+              mounts,
+              ports,
+              env,
+              registry,
+              serverless,
+              public,
+              category,
+            ]
+          properties:
+            id:
+              type: string
+              example: tpl_abc
+            name:
+              type: string
+              example: My PyTorch Template
+            mounts:
+              $ref: "#/components/schemas/TemplateMounts"
+            serverless:
+              type: boolean
+              description: Whether this template is for serverless workers (true) or pods (false)
+              example: false
+            public:
+              type: boolean
+              description: Whether this template is visible to other RunPod users
+              example: false
+            category:
+              $ref: "#/components/schemas/TemplateCategory"
+
+    CreateTemplateRequest:
+      allOf:
+        - $ref: "#/components/schemas/ContainerConfig"
+        - type: object
+          required: [name, image, category]
+          properties:
+            name:
+              type: string
+              minLength: 1
+              example: My PyTorch Template
+            mounts:
+              $ref: "#/components/schemas/TemplateMounts"
+            serverless:
+              type: boolean
+              default: false
+            public:
+              type: boolean
+              default: false
+            category:
+              $ref: "#/components/schemas/TemplateCategory"
+
+    UpdateTemplateRequest:
+      allOf:
+        - $ref: "#/components/schemas/ContainerConfig"
+        - type: object
+          properties:
+            name:
+              type: string
+              minLength: 1
+            mounts:
+              $ref: "#/components/schemas/TemplateMounts"
+            serverless:
+              type: boolean
+            public:
+              type: boolean
+            category:
+              $ref: "#/components/schemas/TemplateCategory"
+
+    ListTemplatesResponse:
+      type: object
+      required: [templates]
+      properties:
+        templates:
+          type: array
+          items:
+            $ref: "#/components/schemas/Template"
+
+    # ── Tags ──────────────────────────────────────────────────────────────────
+
+    TagResourceType:
+      type: string
+      description: Resource type attached to a tag.
+      enum:
+        - POD
+        - NETWORK_VOLUME
+        - CLUSTER
+        - SERVERLESS_ENDPOINT
+      example: POD
+
+    TaggedResource:
+      type: object
+      required: [id, type]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: Resource identifier.
+          example: pod_abc123
+        type:
+          $ref: "#/components/schemas/TagResourceType"
+
+    Tag:
+      type: object
+      required: [id, key, value]
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          description: Tag identifier
+          example: tag_abc123
+        key:
+          type: string
+          minLength: 1
+          description: Tag key
+          example: project
+        value:
+          type: string
+          minLength: 1
+          description: Tag value
+          example: gpt-training
+        resources:
+          type: array
+          description: Populated only on direct tag responses when `?include=resources` is provided; omitted when the tag appears nested in another resource or if no resources have the tag.
+          items:
+            $ref: "#/components/schemas/TaggedResource"
+
+    CreateTagRequest:
+      type: object
+      required: [key, value]
+      additionalProperties: false
+      properties:
+        key:
+          type: string
+          minLength: 1
+          example: project
+        value:
+          type: string
+          minLength: 1
+          example: gpt-training
+        resources:
+          type: array
+          description: Resources to attach to the tag at create time. If any resource cannot be attached, tag creation returns an error rather than silently dropping the association.
+          items:
+            $ref: "#/components/schemas/TaggedResource"
+
+    UpdateTagRequest:
+      type: object
+      minProperties: 1
+      additionalProperties: false
+      description: At least one of `key`, `value`, or `resources` must be provided.
+      properties:
+        key:
+          type: string
+          minLength: 1
+          example: project
+        value:
+          type: string
+          minLength: 1
+          example: gpt-training
+        resources:
+          type: array
+          description: |
+            Replaces resource associations when present. Omit `resources` to leave
+            existing associations unchanged. Send `resources: []` to remove all
+            associations. Send a non-empty array to replace current associations with
+            exactly those resources.
+          items:
+            $ref: "#/components/schemas/TaggedResource"
+
+    ListTagsResponse:
+      type: object
+      required: [tags]
+      additionalProperties: false
+      properties:
+        tags:
+          type: array
+          items:
+            $ref: "#/components/schemas/Tag"
+
+    # ── Network Volumes ───────────────────────────────────────────────────────
+
+    NetworkVolume:
+      type: object
+      required:
+        - id
+        - name
+        - size
+        - dataCenter
+        - tags
+      properties:
+        id:
+          type: string
+          description: Unique network volume identifier
+          example: agv6w2qcg7
+        name:
+          type: string
+          description: Human-readable name (not required to be unique)
+          example: my-dataset
+        size:
+          type: integer
+          minimum: 1
+          maximum: 4000
+          description: Allocated storage in GB
+          example: 50
+        dataCenter:
+          type: string
+          description: Data center location; immutable after creation
+          example: EU-RO-1
+        tags:
+          type: array
+          description: Tags attached to this network volume.
+          items:
+            $ref: "#/components/schemas/Tag"
+
+    CreateNetworkVolumeRequest:
+      type: object
+      required:
+        - name
+        - size
+        - dataCenter
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: Human-readable name
+          example: my-dataset
+        size:
+          type: integer
+          minimum: 1
+          maximum: 4000
+          description: Storage to allocate in GB
+          example: 50
+        dataCenter:
+          type: string
+          minLength: 1
+          description: Data center in which to create the volume
+          example: EU-RO-1
+
+    UpdateNetworkVolumeRequest:
+      type: object
+      description: All fields are optional. Only provided fields are updated.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          description: New human-readable name
+          example: renamed-volume
+        size:
+          type: integer
+          minimum: 1
+          maximum: 4000
+          description: |
+            New size in GB. Must be greater than or equal to the current size —
+            network volume storage cannot be reduced.
+          example: 100
+
+    ListNetworkVolumesResponse:
+      type: object
+      required:
+        - networkVolumes
+      properties:
+        networkVolumes:
+          type: array
+          items:
+            $ref: "#/components/schemas/NetworkVolume"
+
+    # ── Container Registry ───────────────────────────────────────────────────
+
+    Registry:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          example: reg_abc
+        name:
+          type: string
+          example: my-private-registry
+
+    CreateRegistryRequest:
+      type: object
+      required: [name, username, password]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          example: my-private-registry
+        username:
+          type: string
+          minLength: 1
+          description: Registry username (write-only, not returned in responses)
+        password:
+          type: string
+          minLength: 1
+          description: Registry password (write-only, not returned in responses)
+
+    ListRegistriesResponse:
+      type: object
+      required: [registries]
+      properties:
+        registries:
+          type: array
+          items:
+            $ref: "#/components/schemas/Registry"
+
+    # ── Catalog ──────────────────────────────────────────────────────────────
+
+    GpuType:
+      type: object
+      required:
+        [
+          id,
+          name,
+          pool,
+          manufacturer,
+          memory,
+          secure,
+          community,
+          price,
+          maxCount,
+        ]
+      properties:
+        id:
+          type: string
+          description: Individual GPU type identifier (use for pod creation)
+          example: NVIDIA GeForce RTX 4090
+        name:
+          type: string
+          example: RTX 4090
+        pool:
+          type: string
+          nullable: true
+          description: Serverless GPU pool ID (use for serverless endpoint creation). Null if GPU is not in a serverless pool.
+          example: ADA_24
+        manufacturer:
+          type: string
+          example: NVIDIA
+        memory:
+          type: integer
+          description: VRAM in GB
+          example: 24
+        secure:
+          type: boolean
+          description: Available on secure cloud
+          example: true
+        community:
+          type: boolean
+          description: Available on community cloud
+          example: true
+        price:
+          type: object
+          required: [secure, community]
+          properties:
+            secure:
+              type: number
+              format: float
+              example: 0.44
+            community:
+              type: number
+              format: float
+              example: 0.31
+        maxCount:
+          type: object
+          required: [secure, community]
+          properties:
+            secure:
+              type: integer
+              example: 8
+            community:
+              type: integer
+              example: 4
+        availability:
+          description: Overall GPU availability. Present only when requested with include=AVAILABILITY.
+          $ref: "#/components/schemas/AvailabilityLevel"
+        dataCenters:
+          type: array
+          description: Per-datacenter GPU availability. Present only when requested with include=AVAILABILITY.
+          items:
+            $ref: "#/components/schemas/DataCenterAvailability"
+
+    AvailabilityLevel:
+      type: string
+      description: Catalog stock availability level.
+      enum:
+        - NONE
+        - LOW
+        - MEDIUM
+        - HIGH
+
+    Product:
+      type: string
+      description: Catalog product availability context.
+      enum:
+        - POD
+        - CLUSTER
+        - SERVERLESS
+
+    CpuProduct:
+      type: string
+      description: CPU catalog product availability context.
+      enum:
+        - POD
+        - SERVERLESS
+
+    CatalogInclude:
+      type: string
+      description: Catalog include expansion. Only AVAILABILITY is supported today; additional include values may be added in the future.
+      enum:
+        - AVAILABILITY
+
+    DataCenterInclude:
+      type: string
+      description: Data center catalog availability expansion.
+      enum:
+        - GPU_AVAILABILITY
+        - CPU_AVAILABILITY
+
+    GpuCloudFilter:
+      type: string
+      description: GPU availability cloud filter.
+      enum:
+        - SECURE
+        - COMMUNITY
+
+    VolumeType:
+      type: string
+      description: Data center network volume storage type.
+      enum:
+        - STANDARD
+        - HIGH_PERFORMANCE
+
+    CatalogResourceAvailability:
+      type: object
+      required: [id, name, availability]
+      properties:
+        id:
+          type: string
+          description: Catalog resource identifier.
+          example: NVIDIA GeForce RTX 4090
+        name:
+          type: string
+          description: Human-readable catalog resource name.
+          example: RTX 4090
+        availability:
+          $ref: "#/components/schemas/AvailabilityLevel"
+
+    DataCenterAvailability:
+      type: object
+      required: [id, name, availability]
+      properties:
+        id:
+          type: string
+          description: Data center identifier.
+          example: US-CA-2
+        name:
+          type: string
+          description: Human-readable data center name.
+          example: US California 2
+        availability:
+          $ref: "#/components/schemas/AvailabilityLevel"
+
+    ListGpuTypesResponse:
+      type: object
+      required: [gpus]
+      properties:
+        gpus:
+          type: array
+          items:
+            $ref: "#/components/schemas/GpuType"
+
+    CpuType:
+      type: object
+      required: [id, name, group, vcpu, ramGbPerVcpu, price]
+      properties:
+        id:
+          type: string
+          description: CPU flavor identifier (use in cpu.id for pod creation)
+          example: cpu5c
+        name:
+          type: string
+          description: Human-readable flavor name
+          example: Compute-Optimized
+        group:
+          type: string
+          description: CPU generation group
+          example: Gen 5
+        vcpu:
+          type: object
+          required: [min, max]
+          properties:
+            min:
+              type: integer
+              example: 2
+            max:
+              type: integer
+              example: 32
+        ramGbPerVcpu:
+          type: number
+          format: float
+          description: |
+            GB of RAM allocated per vCPU. Multiply by the chosen vCPU
+            count (within `vcpu.min`..`vcpu.max`) to get the total RAM
+            for an instance of this flavor. May be fractional.
+          example: 2.5
+        price:
+          type: object
+          required: [securePerVcpu, serverlessPerVcpu]
+          properties:
+            securePerVcpu:
+              type: number
+              format: float
+              description: |
+                Price for secure pods per vCPU. Multiply by the chosen vCPU
+                count (within `vcpu.min`..`vcpu.max`) to get the total price.
+              example: 0.04
+            serverlessPerVcpu:
+              type: number
+              format: float
+              description: |
+                Price for serverless per vCPU. Multiply by the chosen vCPU
+                count (within `vcpu.min`..`vcpu.max`) to get the total price.
+              example: 0.03
+        availability:
+          description: Overall CPU availability. Present only when requested with include=AVAILABILITY.
+          $ref: "#/components/schemas/AvailabilityLevel"
+        dataCenters:
+          type: array
+          description: Per-datacenter CPU availability. Present only when requested with include=AVAILABILITY.
+          items:
+            $ref: "#/components/schemas/DataCenterAvailability"
+
+    ListCpuTypesResponse:
+      type: object
+      required: [cpus]
+      properties:
+        cpus:
+          type: array
+          items:
+            $ref: "#/components/schemas/CpuType"
+
+    DataCenter:
+      type: object
+      required:
+        [id, name, region, networkVolumeTypes, compliance, globalNetwork]
+      properties:
+        id:
+          type: string
+          example: US-TX-3
+        name:
+          type: string
+          example: US Texas 3
+        region:
+          $ref: "#/components/schemas/DataCenterRegion"
+        globalNetwork:
+          type: boolean
+          description: Whether this data center supports global networking (private cross-datacenter pod-to-pod network).
+          example: true
+        networkVolumeTypes:
+          type: array
+          items:
+            $ref: "#/components/schemas/VolumeType"
+          description: Network volume tiers this DC supports. Empty = none.
+        compliance:
+          type: array
+          description: Compliance certifications held by this data center
+          items:
+            $ref: "#/components/schemas/Compliance"
+          example: ["GDPR", "ISO_IEC_27001", "SOC_2_TYPE_2"]
+        gpuAvailability:
+          type: array
+          description: Per-GPU availability in this data center. Present only when requested with include=gpuAvailability.
+          items:
+            $ref: "#/components/schemas/CatalogResourceAvailability"
+        cpuAvailability:
+          type: array
+          description: Per-CPU availability in this data center. Present only when requested with include=cpuAvailability.
+          items:
+            $ref: "#/components/schemas/CatalogResourceAvailability"
+
+    DataCenterRegion:
+      type: string
+      description: Continental region containing the data center.
+      example: EUROPE
+      enum:
+        - NORTH_AMERICA
+        - SOUTH_AMERICA
+        - EUROPE
+        - ASIA
+        - MIDDLE_EAST
+        - AFRICA
+        - OCEANIA
+        - ANTARCTICA
+        - UNKNOWN
+
+    Compliance:
+      type: string
+      description: Compliance certifications.
+      enum:
+        - GDPR
+        - ISO_IEC_27001
+        - ISO_14001
+        - PCI_DSS
+        - HITRUST
+        - SOC_1_TYPE_2
+        - SOC_2_TYPE_2
+        - SOC_3_TYPE_2
+        - ITAR
+        - FISMA_HIGH
+        - HIPAA
+        - RENEWABLE
+
+    ListDataCentersResponse:
+      type: object
+      required: [dataCenters]
+      properties:
+        dataCenters:
+          type: array
+          items:
+            $ref: "#/components/schemas/DataCenter"
+
+    # ── Billing ──────────────────────────────────────────────────────────────
+    #
+    # Every billing record covers a half-open time bucket [startTime, endTime)
+    # and reports a totalAmount plus the cost components that sum to it. The
+    # component set differs per resource (pods have no networking, clusters have
+    # no CPU, etc.), so each route returns its own record type. The aggregate
+    # BillingRecord (GET /v2/billing) carries every component, fully prefixed by
+    # resource to disambiguate.
+
+    BillingTimeRange:
+      type: object
+      description: >
+        Half-open time range [startTime, endTime) in RFC 3339. On a record it is
+        the time bucket; on a query echo it is the resolved window.
+      required: [startTime, endTime]
+      properties:
+        startTime:
+          type: string
+          format: date-time
+          description: Start of the range, inclusive (RFC 3339).
+          example: "2026-06-01T00:00:00Z"
+        endTime:
+          type: string
+          format: date-time
+          description: End of the range, exclusive (RFC 3339).
+          example: "2026-06-02T00:00:00Z"
+
+    BillingBucketSize:
+      type: string
+      enum: [hour, day, week, month, year]
+      x-enum-varnames:
+        - BillingBucketSizeHour
+        - BillingBucketSizeDay
+        - BillingBucketSizeWeek
+        - BillingBucketSizeMonth
+        - BillingBucketSizeYear
+      default: day
+      description: Length of each billing time bucket.
+      example: day
+
+    BillingAmounts:
+      type: object
+      description: >
+        Total spend across all billable RunPod resources with each cost component
+        broken out, fully prefixed by resource. Backs the aggregate record's
+        amounts and the metadata totals.
+      required:
+        - totalAmount
+        - podGpuAmount
+        - podCpuAmount
+        - podDiskAmount
+        - serverlessGpuAmount
+        - serverlessCpuAmount
+        - serverlessDiskAmount
+        - serverlessFeeAmount
+        - storageStandardAmount
+        - storageHighPerformanceAmount
+        - endpointAmount
+        - clusterGpuAmount
+        - clusterDiskAmount
+        - clusterNetworkingAmount
+      properties:
+        totalAmount:
+          type: number
+          format: double
+          description: Total cost in USD for the bucket across all resources.
+          example: 42.34
+        podGpuAmount:
+          type: number
+          format: double
+          description: GPU pod compute cost in USD for the bucket.
+        podCpuAmount:
+          type: number
+          format: double
+          description: CPU pod compute cost in USD for the bucket.
+        podDiskAmount:
+          type: number
+          format: double
+          description: Pod disk cost in USD for the bucket.
+        serverlessGpuAmount:
+          type: number
+          format: double
+          description: Serverless GPU compute cost in USD for the bucket.
+        serverlessCpuAmount:
+          type: number
+          format: double
+          description: Serverless CPU compute cost in USD for the bucket.
+        serverlessDiskAmount:
+          type: number
+          format: double
+          description: Serverless disk cost in USD for the bucket.
+        serverlessFeeAmount:
+          type: number
+          format: double
+          description: Serverless platform fee in USD for the bucket.
+        storageStandardAmount:
+          type: number
+          format: double
+          description: Standard network volume storage cost in USD for the bucket.
+        storageHighPerformanceAmount:
+          type: number
+          format: double
+          description: High-performance network volume storage cost in USD for the bucket.
+        endpointAmount:
+          type: number
+          format: double
+          description: RunPod public endpoint cost in USD for the bucket.
+        clusterGpuAmount:
+          type: number
+          format: double
+          description: Instant Cluster GPU compute cost in USD for the bucket.
+        clusterDiskAmount:
+          type: number
+          format: double
+          description: Instant Cluster disk cost in USD for the bucket.
+        clusterNetworkingAmount:
+          type: number
+          format: double
+          description: Instant Cluster inter-node networking cost in USD for the bucket.
+
+    BillingRecord:
+      description: >
+        A single time-bucketed record of total spend across all billable RunPod
+        resources, with each cost component broken out. Returned by GET
+        /v2/billing.
+      allOf:
+        - $ref: "#/components/schemas/BillingTimeRange"
+        - $ref: "#/components/schemas/BillingAmounts"
+
+    PodBillingAmounts:
+      type: object
+      description: >
+        Pod cost components covering both GPU and CPU pods. Backs a record's
+        amounts and the metadata totals.
+      required: [totalAmount, gpuAmount, cpuAmount, diskAmount]
+      properties:
+        totalAmount:
+          type: number
+          format: double
+          description: Total pod cost in USD for the bucket.
+          example: 12.34
+        gpuAmount:
+          type: number
+          format: double
+          description: GPU pod compute cost in USD for the bucket.
+        cpuAmount:
+          type: number
+          format: double
+          description: CPU pod compute cost in USD for the bucket.
+        diskAmount:
+          type: number
+          format: double
+          description: Pod disk cost in USD for the bucket.
+
+    PodBillingRecord:
+      description: >
+        A single time-bucketed pod billing record, covering both GPU and CPU
+        pods. Returned by GET /v2/billing/pods.
+      allOf:
+        - $ref: "#/components/schemas/BillingTimeRange"
+        - $ref: "#/components/schemas/PodBillingAmounts"
+        - type: object
+          required: [podId]
+          properties:
+            podId:
+              type: string
+              description: >
+                The pod this record bills. When the podId filter is set every
+                record carries that id; otherwise one record is emitted per pod
+                per bucket.
+              example: "pod_abc123"
+
+    ServerlessBillingAmounts:
+      type: object
+      description: >
+        Serverless cost components. Backs a record's amounts and the metadata
+        totals.
+      required:
+        - totalAmount
+        - gpuAmount
+        - cpuAmount
+        - diskAmount
+        - feeAmount
+      properties:
+        totalAmount:
+          type: number
+          format: double
+          description: Total serverless cost in USD for the bucket.
+          example: 8.90
+        gpuAmount:
+          type: number
+          format: double
+          description: Serverless GPU compute cost in USD for the bucket.
+        cpuAmount:
+          type: number
+          format: double
+          description: Serverless CPU compute cost in USD for the bucket.
+        diskAmount:
+          type: number
+          format: double
+          description: Serverless disk cost in USD for the bucket.
+        feeAmount:
+          type: number
+          format: double
+          description: Serverless platform fee in USD for the bucket.
+
+    ServerlessBillingRecord:
+      description: >
+        A single time-bucketed serverless billing record. Returned by
+        GET /v2/billing/serverless.
+      allOf:
+        - $ref: "#/components/schemas/BillingTimeRange"
+        - $ref: "#/components/schemas/ServerlessBillingAmounts"
+        - type: object
+          required: [serverlessId]
+          properties:
+            serverlessId:
+              type: string
+              description: >
+                The serverless endpoint this record bills. When the serverlessId
+                filter is set every record carries that id; otherwise one record
+                is emitted per serverless endpoint per bucket.
+              example: "ep_abc123"
+
+    EndpointBillingAmounts:
+      type: object
+      description: >
+        RunPod public endpoint cost. Backs a record's amounts and the metadata
+        totals.
+      required: [totalAmount]
+      properties:
+        totalAmount:
+          type: number
+          format: double
+          description: Total public endpoint cost in USD for the bucket.
+          example: 3.21
+
+    EndpointBillingRecord:
+      description: >
+        A single time-bucketed RunPod public endpoint billing record. Returned
+        by GET /v2/billing/endpoints.
+      allOf:
+        - $ref: "#/components/schemas/BillingTimeRange"
+        - $ref: "#/components/schemas/EndpointBillingAmounts"
+
+    NetworkVolumeBillingAmounts:
+      type: object
+      description: >
+        Network volume storage cost, split into standard and high-performance.
+        Backs a record's amounts and the metadata totals.
+      required: [totalAmount, standardAmount, highPerformanceAmount]
+      properties:
+        totalAmount:
+          type: number
+          format: double
+          description: >
+            Total network volume cost in USD for the bucket, across standard and
+            high-performance storage.
+          example: 5.79
+        standardAmount:
+          type: number
+          format: double
+          description: Standard storage cost in USD for the bucket.
+        highPerformanceAmount:
+          type: number
+          format: double
+          description: High-performance storage cost in USD for the bucket.
+
+    NetworkVolumeBillingRecord:
+      description: >
+        A single time-bucketed network volume billing record, split into
+        standard and high-performance storage. Returned by
+        GET /v2/billing/networkvolumes.
+      allOf:
+        - $ref: "#/components/schemas/BillingTimeRange"
+        - $ref: "#/components/schemas/NetworkVolumeBillingAmounts"
+        - type: object
+          required: [networkVolumeId]
+          properties:
+            networkVolumeId:
+              type: string
+              description: >
+                The network volume this record bills. When the networkVolumeId
+                filter is set every record carries that id; otherwise one record
+                is emitted per network volume per bucket.
+              example: "vol_abc123"
+
+    ClusterBillingAmounts:
+      type: object
+      description: >
+        Instant Cluster cost components (GPU-only, no CPU). Backs a record's
+        amounts and the metadata totals.
+      required: [totalAmount, gpuAmount, diskAmount, networkingAmount]
+      properties:
+        totalAmount:
+          type: number
+          format: double
+          description: Total Instant Cluster cost in USD for the bucket.
+          example: 99.00
+        gpuAmount:
+          type: number
+          format: double
+          description: Cluster GPU compute cost in USD for the bucket.
+        diskAmount:
+          type: number
+          format: double
+          description: Cluster disk cost in USD for the bucket.
+        networkingAmount:
+          type: number
+          format: double
+          description: Cluster inter-node networking cost in USD for the bucket.
+
+    ClusterBillingRecord:
+      description: >
+        A single time-bucketed Instant Cluster billing record. Clusters are
+        GPU-only (no CPU component). Returned by GET /v2/billing/clusters.
+      allOf:
+        - $ref: "#/components/schemas/BillingTimeRange"
+        - $ref: "#/components/schemas/ClusterBillingAmounts"
+        - type: object
+          required: [clusterId]
+          properties:
+            clusterId:
+              type: string
+              description: >
+                The Instant Cluster this record bills. When the clusterId filter
+                is set every record carries that id; otherwise one record is
+                emitted per cluster per bucket.
+              example: "cluster_abc123"
+
+    # ── Billing metadata ───────────────────────────────────────────────────
+    #
+    # Every list response carries a metadata block: the resolved query (window +
+    # granularity + the filter that was applied), the record count, and the
+    # per-component totals across all records. `totals` is the route's amounts
+    # type — cost components only, with no times or resource id. Per-resource
+    # routes also report how many distinct resources the records span
+    # (unique<Resource>Count).
+
+    BillingQuery:
+      description: Resolved query window and granularity (routes without a filter).
+      allOf:
+        - $ref: "#/components/schemas/BillingTimeRange"
+        - type: object
+          required: [bucketSize]
+          properties:
+            bucketSize:
+              $ref: "#/components/schemas/BillingBucketSize"
+
+    PodBillingQuery:
+      allOf:
+        - $ref: "#/components/schemas/BillingQuery"
+        - type: object
+          properties:
+            podId:
+              type: string
+              nullable: true
+              description: The podId filter applied, if any.
+
+    ServerlessBillingQuery:
+      allOf:
+        - $ref: "#/components/schemas/BillingQuery"
+        - type: object
+          properties:
+            serverlessId:
+              type: string
+              nullable: true
+              description: The serverlessId filter applied, if any.
+
+    NetworkVolumeBillingQuery:
+      allOf:
+        - $ref: "#/components/schemas/BillingQuery"
+        - type: object
+          properties:
+            networkVolumeId:
+              type: string
+              nullable: true
+              description: The networkVolumeId filter applied, if any.
+
+    ClusterBillingQuery:
+      allOf:
+        - $ref: "#/components/schemas/BillingQuery"
+        - type: object
+          properties:
+            clusterId:
+              type: string
+              nullable: true
+              description: The clusterId filter applied, if any.
+
+    BillingMetadata:
+      type: object
+      required: [query, recordCount, totals]
+      properties:
+        query:
+          $ref: "#/components/schemas/BillingQuery"
+        recordCount:
+          type: integer
+          description: Number of records returned.
+        totals:
+          $ref: "#/components/schemas/BillingAmounts"
+
+    PodBillingMetadata:
+      type: object
+      required: [query, recordCount, uniquePodCount, totals]
+      properties:
+        query:
+          $ref: "#/components/schemas/PodBillingQuery"
+        recordCount:
+          type: integer
+          description: Number of records returned (buckets times distinct pods).
+        uniquePodCount:
+          type: integer
+          description: Number of distinct pods the records span.
+        totals:
+          $ref: "#/components/schemas/PodBillingAmounts"
+
+    ServerlessBillingMetadata:
+      type: object
+      required: [query, recordCount, uniqueServerlessCount, totals]
+      properties:
+        query:
+          $ref: "#/components/schemas/ServerlessBillingQuery"
+        recordCount:
+          type: integer
+          description: Number of records returned (buckets times distinct endpoints).
+        uniqueServerlessCount:
+          type: integer
+          description: Number of distinct serverless endpoints the records span.
+        totals:
+          $ref: "#/components/schemas/ServerlessBillingAmounts"
+
+    EndpointBillingMetadata:
+      type: object
+      required: [query, recordCount, totals]
+      properties:
+        query:
+          $ref: "#/components/schemas/BillingQuery"
+        recordCount:
+          type: integer
+        totals:
+          $ref: "#/components/schemas/EndpointBillingAmounts"
+
+    NetworkVolumeBillingMetadata:
+      type: object
+      required: [query, recordCount, uniqueNetworkVolumeCount, totals]
+      properties:
+        query:
+          $ref: "#/components/schemas/NetworkVolumeBillingQuery"
+        recordCount:
+          type: integer
+          description: Number of records returned (buckets times distinct volumes).
+        uniqueNetworkVolumeCount:
+          type: integer
+          description: Number of distinct network volumes the records span.
+        totals:
+          $ref: "#/components/schemas/NetworkVolumeBillingAmounts"
+
+    ClusterBillingMetadata:
+      type: object
+      required: [query, recordCount, uniqueClusterCount, totals]
+      properties:
+        query:
+          $ref: "#/components/schemas/ClusterBillingQuery"
+        recordCount:
+          type: integer
+          description: Number of records returned (buckets times distinct clusters).
+        uniqueClusterCount:
+          type: integer
+          description: Number of distinct clusters the records span.
+        totals:
+          $ref: "#/components/schemas/ClusterBillingAmounts"
+
+    ListBillingResponse:
+      type: object
+      description: Aggregated billing records across all RunPod resources.
+      required: [records, metadata]
+      properties:
+        records:
+          type: array
+          items:
+            $ref: "#/components/schemas/BillingRecord"
+        metadata:
+          $ref: "#/components/schemas/BillingMetadata"
+
+    ListPodBillingResponse:
+      type: object
+      description: Billing records for pods.
+      required: [records, metadata]
+      properties:
+        records:
+          type: array
+          items:
+            $ref: "#/components/schemas/PodBillingRecord"
+        metadata:
+          $ref: "#/components/schemas/PodBillingMetadata"
+
+    ListServerlessBillingResponse:
+      type: object
+      description: Billing records for serverless.
+      required: [records, metadata]
+      properties:
+        records:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServerlessBillingRecord"
+        metadata:
+          $ref: "#/components/schemas/ServerlessBillingMetadata"
+
+    ListEndpointBillingResponse:
+      type: object
+      description: Billing records for RunPod public endpoints.
+      required: [records, metadata]
+      properties:
+        records:
+          type: array
+          items:
+            $ref: "#/components/schemas/EndpointBillingRecord"
+        metadata:
+          $ref: "#/components/schemas/EndpointBillingMetadata"
+
+    ListNetworkVolumeBillingResponse:
+      type: object
+      description: Billing records for network volumes.
+      required: [records, metadata]
+      properties:
+        records:
+          type: array
+          items:
+            $ref: "#/components/schemas/NetworkVolumeBillingRecord"
+        metadata:
+          $ref: "#/components/schemas/NetworkVolumeBillingMetadata"
+
+    ListClusterBillingResponse:
+      type: object
+      description: Billing records for Instant Clusters.
+      required: [records, metadata]
+      properties:
+        records:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClusterBillingRecord"
+        metadata:
+          $ref: "#/components/schemas/ClusterBillingMetadata"
+
+    # ── Errors ───────────────────────────────────────────────────────────────
+
+    # RFC 9457 problem details
+    ErrorResponse:
+      type: object
+      properties:
+        title:
+          type: string
+          description: Short human-readable summary
+          example: Not Found
+        status:
+          type: integer
+          description: HTTP status code
+          example: 404
+        detail:
+          type: string
+          description: Human-readable explanation
+          example: pod not found
+
+    ValidatationErrorResponse:
+      type: object
+      properties:
+        title:
+          type: string
+          description: Short human-readable summary
+          example: Unprocessable Entity
+        status:
+          type: integer
+          description: HTTP status code
+          example: 422
+        errors:
+          type: array
+          items:
+            type: string
+            example: "$: minProperties: got 0, want 1"
+          description: Human-readable explanation
+
+paths:
+  # ── Pods ───────────────────────────────────────────────────────────────────
+
+  /v2/pods:
+    get:
+      operationId: listPods
+      summary: List pods
+      description: Returns all pods owned by the authenticated user.
+      tags: [Pods]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListPodsResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    post:
+      operationId: createPod
+      summary: Create a pod
+      description: |
+        Creates a new pod. Specify `gpu` for compute.
+        ContainerConfig fields can be spread from a template response.
+      tags: [Pods]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePodRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pod"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/pods/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Pod identifier
+        example: pod_abc123
+
+    get:
+      operationId: getPod
+      summary: Get a pod
+      description: Returns a single pod by ID.
+      tags: [Pods]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pod"
+        "404":
+          description: Pod not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    patch:
+      operationId: updatePod
+      summary: Update a pod
+      description: Updates pod configuration. Only provided fields are changed.
+      tags: [Pods]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePodRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pod"
+        "404":
+          description: Pod not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      operationId: deletePod
+      summary: Terminate a pod
+      description: Permanently terminates and deletes a pod.
+      tags: [Pods]
+      responses:
+        "204":
+          description: Terminated
+        "404":
+          description: Pod not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/pods/{id}/logs:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Pod identifier
+        example: pod_abc123
+
+    get:
+      operationId: getPodLogs
+      summary: Stream pod logs
+      description: |
+        Streams pod logs as Server-Sent Events. The `source` query parameter
+        selects which log source to include.
+
+        The SSE `data` payload shape is:
+        `{ "source": "container", "line": "...", "ts": "..." }`.
+        Log-event `id` values are the event `ts` timestamp so
+        browser/EventSource reconnects can resume with `Last-Event-ID`.
+      tags: [Pods]
+      parameters:
+        - name: source
+          in: query
+          required: false
+          description: Log source to stream. Omit to include both container and system logs.
+          schema:
+            $ref: "#/components/schemas/PodLogSource"
+        - name: tail
+          in: query
+          required: false
+          description: |
+            Number of historical lines to backfill before streaming. Defaults to
+            100 when omitted; set `0` to stream live with no backfill. Maximum 5000.
+            Ignored when `since` or `Last-Event-ID` is provided — the resume cursor
+            drives the backfill instead.
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 5000
+            default: 100
+        - name: since
+          in: query
+          required: false
+          description: |
+            RFC3339 timestamp to resume from. Ignored when `Last-Event-ID` is
+            provided. When set, the stream resumes from this point and `tail` is
+            ignored.
+          schema:
+            type: string
+            format: date-time
+        - name: Last-Event-ID
+          in: header
+          required: false
+          description: |
+            SSE reconnect cursor — a timestamp emitted by this endpoint. Takes
+            precedence over `since` and `tail`: when present, the stream resumes
+            from this point. Sent automatically by EventSource on reconnect.
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Pod log event stream
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              description: Always `no-cache` for SSE responses.
+            Connection:
+              schema:
+                type: string
+              description: Always `keep-alive` to hold the SSE stream open.
+            X-Accel-Buffering:
+              schema:
+                type: string
+              description: Always `no` to disable proxy buffering of the SSE stream.
+          content:
+            text/event-stream:
+              schema:
+                type: object
+                properties:
+                  source:
+                    type: string
+                    enum: [container, system]
+                    example: container
+                  line:
+                    type: string
+                    example: Model loaded.
+                  ts:
+                    type: string
+                    format: date-time
+                    example: "2026-05-01T22:00:00Z"
+        "404":
+          description: Pod not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/pods/{id}/action:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        example: pod_abc123
+
+    post:
+      operationId: podAction
+      summary: Trigger a pod state transition
+      description: |
+        Triggers a state transition on a pod. Valid actions depend on the current status
+        and are listed in the pod's `actions` field.
+      tags: [Pods]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PodActionRequest"
+      responses:
+        "200":
+          description: Action applied — returns updated pod
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pod"
+        "204":
+          description: Pod terminated (for action=terminate)
+        "404":
+          description: Pod not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Action not valid for current pod status
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Serverless ───────────────────────────────────────────────────────────
+
+  /v2/serverless:
+    get:
+      operationId: listEndpoints
+      summary: List serverless endpoints
+      description: Returns all serverless endpoints owned by the authenticated user.
+      tags: [Serverless]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEndpointsResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    post:
+      operationId: createEndpoint
+      summary: Create a serverless endpoint
+      description: |
+        Creates a serverless endpoint. Specify `gpu` for compute (CPU serverless
+        endpoints are read-only). ContainerConfig fields can be spread from a
+        template response.
+      tags: [Serverless]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEndpointRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Endpoint"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/serverless/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Serverless endpoint identifier
+        example: ep_abc123
+    get:
+      operationId: getEndpoint
+      summary: Get a serverless endpoint
+      description: Returns a single serverless endpoint by ID.
+      tags: [Serverless]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Endpoint"
+        "404":
+          description: Serverless endpoint not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    patch:
+      operationId: updateEndpoint
+      summary: Update a serverless endpoint
+      description: Updates serverless endpoint configuration. Only provided fields are changed.
+      tags: [Serverless]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateEndpointRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Endpoint"
+        "404":
+          description: Serverless endpoint not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      operationId: deleteEndpoint
+      summary: Delete a serverless endpoint
+      description: Permanently deletes a serverless endpoint and its bound template.
+      tags: [Serverless]
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Serverless endpoint not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/serverless/{id}/workers:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Serverless endpoint identifier
+        example: ep_abc123
+    get:
+      operationId: listEndpointWorkers
+      summary: List serverless endpoint workers
+      description: |
+        Returns the active workers for a serverless endpoint plus a summary of
+        worker counts. Each worker's `status` is derived by reconciling the
+        worker pod's lifecycle status with the endpoint's live job-queue view.
+        When the job-queue view is unavailable the response degrades to the
+        pod-derived status and counts.
+      tags: [Serverless]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEndpointWorkersResponse"
+        "404":
+          description: Serverless endpoint not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/serverless/{id}/releases:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Serverless endpoint identifier
+        example: ep_abc123
+    get:
+      operationId: listEndpointReleases
+      summary: List serverless endpoint releases
+      description: |
+        Returns the endpoint's release history (newest first) plus a rollout
+        summary of how many workers are running the current version. Each
+        release is a versioned configuration snapshot with a `diff` of what
+        changed; build-driven releases carry a `buildId` (fetch build detail via
+        the builds sub-routes).
+      tags: [Serverless]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEndpointReleasesResponse"
+        "404":
+          description: Serverless endpoint not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Templates ──────────────────────────────────────────────────────────────
+
+  /v2/templates:
+    get:
+      operationId: listTemplates
+      summary: List templates
+      description: Returns all templates owned by the authenticated user.
+      tags: [Templates]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListTemplatesResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    post:
+      operationId: createTemplate
+      summary: Create a template
+      tags: [Templates]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTemplateRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Template"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/templates/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        example: tpl_abc
+
+    get:
+      operationId: getTemplate
+      summary: Get a template
+      tags: [Templates]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Template"
+        "404":
+          description: Template not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    patch:
+      operationId: updateTemplate
+      summary: Update a template
+      description: Updates template configuration. Only provided fields are changed.
+      tags: [Templates]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTemplateRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Template"
+        "404":
+          description: Template not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      operationId: deleteTemplate
+      summary: Delete a template
+      tags: [Templates]
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Template not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Tags ───────────────────────────────────────────────────────────────────
+
+  /v2/tags:
+    get:
+      operationId: listTags
+      summary: List tags
+      description: Returns all tags owned by the authenticated user.
+      tags: [Tags]
+      parameters:
+        - name: include
+          in: query
+          required: false
+          schema:
+            type: string
+          description: "Comma-separated optional expansions. Supported value: `resources`."
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListTagsResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    post:
+      operationId: createTag
+      summary: Create a tag
+      description: Creates a user-defined key-value tag.
+      tags: [Tags]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTagRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tag"
+        "400":
+          description: Invalid request body
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/tags/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Tag identifier
+        example: tag_abc123
+
+    get:
+      operationId: getTag
+      summary: Get a tag
+      description: Returns a single tag by ID.
+      tags: [Tags]
+      parameters:
+        - name: include
+          in: query
+          required: false
+          schema:
+            type: string
+          description: "Comma-separated optional expansions. Supported value: `resources`."
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tag"
+        "404":
+          description: Tag not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    patch:
+      operationId: updateTag
+      summary: Update a tag
+      description: |
+        Updates a tag. At least one of `key`, `value`, or `resources` must be provided.
+
+        When `resources` is provided, it replaces the tag's complete resource association set. Resource replacement is not atomic: the API creates missing associations first, then deletes stale associations using separate upstream operations. If an upstream operation fails after earlier operations have succeeded, the response is an error and the tag may contain a partially-applied resource set. Retrying the same request with the same `resources` array is safe and will attempt to converge the tag to the requested set. Use the explicit tag-resource attach/detach operations when you need smaller idempotent association changes.
+      tags: [Tags]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTagRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tag"
+        "404":
+          description: Tag not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Unprocessable request body (missing one of `key`, `value`, or `resources`)
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      operationId: deleteTag
+      summary: Delete a tag
+      description: Deletes a tag. This operation is idempotent; deleting a tag that does not exist returns `204`.
+      tags: [Tags]
+      responses:
+        "204":
+          description: Deleted or already absent
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/tags/{id}/resources/{resourceType}/{resourceId}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Tag identifier
+        example: tag_abc123
+      - name: resourceType
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/TagResourceType"
+        description: Resource type to attach or detach.
+      - name: resourceId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Resource identifier to attach or detach.
+        example: pod_abc123
+
+    put:
+      operationId: attachTagResource
+      summary: Attach a resource to a tag
+      description: Ensures the resource is attached to the tag. This operation is idempotent; attaching an already-associated resource returns `204`.
+      tags: [Tags]
+      responses:
+        "204":
+          description: Attached or already associated
+        "404":
+          description: Tag not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      operationId: detachTagResource
+      summary: Detach a resource from a tag
+      description: Ensures the resource is detached from the tag. This operation is idempotent; detaching a resource that is not associated with the tag returns `204`.
+      tags: [Tags]
+      responses:
+        "204":
+          description: Detached or already absent
+        "404":
+          description: Tag not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Network Volumes ────────────────────────────────────────────────────────
+
+  /v2/network-volumes:
+    get:
+      operationId: listNetworkVolumes
+      summary: List network volumes
+      description: Returns all network volumes owned by the authenticated user.
+      tags: [Network Volumes]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListNetworkVolumesResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    post:
+      operationId: createNetworkVolume
+      summary: Create a network volume
+      description: Provisions a new network volume in the specified data center.
+      tags: [Network Volumes]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateNetworkVolumeRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NetworkVolume"
+        "400":
+          description: Invalid request body
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/network-volumes/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Network volume identifier
+        example: agv6w2qcg7
+
+    get:
+      operationId: getNetworkVolume
+      summary: Get a network volume
+      description: Returns a single network volume by ID.
+      tags: [Network Volumes]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NetworkVolume"
+        "404":
+          description: Network volume not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    patch:
+      operationId: updateNetworkVolume
+      summary: Update a network volume
+      description: |
+        Updates mutable fields on a network volume. Only provided fields are changed.
+        Note: `size` may only increase; attempts to reduce size will be rejected.
+      tags: [Network Volumes]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateNetworkVolumeRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NetworkVolume"
+        "400":
+          description: Invalid request body or size decrease attempted
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Network volume not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      operationId: deleteNetworkVolume
+      summary: Delete a network volume
+      description: Permanently deletes a network volume and releases its storage.
+      tags: [Network Volumes]
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Network volume not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Container Registries ───────────────────────────────────────────────────
+
+  /v2/registries:
+    get:
+      operationId: listRegistries
+      summary: List container registries
+      description: Returns all container registry credentials owned by the authenticated user.
+      tags: [Registries]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListRegistriesResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    post:
+      operationId: createRegistry
+      summary: Create a container registry credential
+      description: Stores credentials for a private container registry. Credentials are write-only.
+      tags: [Registries]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRegistryRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Registry"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/registries/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        example: reg_abc
+
+    get:
+      operationId: getRegistry
+      summary: Get a container registry credential
+      tags: [Registries]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Registry"
+        "404":
+          description: Registry not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      operationId: deleteRegistry
+      summary: Delete a container registry credential
+      tags: [Registries]
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Registry not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Catalog ────────────────────────────────────────────────────────────────
+
+  /v2/catalog/gpus:
+    get:
+      operationId: listGpuTypes
+      summary: List GPU types
+      description: Returns available GPU types with pricing. Availability is included only when requested with include=AVAILABILITY.
+      tags: [Catalog]
+      parameters:
+        - $ref: "#/components/parameters/CatalogIncludeParam"
+        - $ref: "#/components/parameters/GpuProductFilter"
+        - $ref: "#/components/parameters/GpuCountFilter"
+        - $ref: "#/components/parameters/GpuCloudFilter"
+        - $ref: "#/components/parameters/MinCudaVersionFilter"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListGpuTypesResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/catalog/gpus/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        example: NVIDIA GeForce RTX 4090
+
+    get:
+      operationId: getGpuType
+      summary: Get a GPU type
+      description: Returns a single GPU type with pricing. Availability details are included only when requested with include=AVAILABILITY.
+      tags: [Catalog]
+      parameters:
+        - $ref: "#/components/parameters/CatalogIncludeParam"
+        - $ref: "#/components/parameters/GpuProductFilter"
+        - $ref: "#/components/parameters/GpuCountFilter"
+        - $ref: "#/components/parameters/GpuCloudFilter"
+        - $ref: "#/components/parameters/MinCudaVersionFilter"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GpuType"
+        "404":
+          description: GPU type not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/catalog/cpus:
+    get:
+      operationId: listCpuTypes
+      summary: List CPU types
+      description: Returns available CPU flavors. Availability is included only when requested with include=AVAILABILITY.
+      tags: [Catalog]
+      parameters:
+        - $ref: "#/components/parameters/CatalogIncludeParam"
+        - $ref: "#/components/parameters/CpuProductFilter"
+        - $ref: "#/components/parameters/CpuVCPUCountFilter"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListCpuTypesResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/catalog/cpus/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        example: cpu5c
+    get:
+      operationId: getCpuType
+      summary: Get a CPU type
+      description: Returns a single CPU type with pricing. Availability details are included only when requested with include=AVAILABILITY.
+      tags: [Catalog]
+      parameters:
+        - $ref: "#/components/parameters/CatalogIncludeParam"
+        - $ref: "#/components/parameters/CpuProductFilter"
+        - $ref: "#/components/parameters/CpuVCPUCountFilter"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CpuType"
+        "404":
+          description: CPU type not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/catalog/datacenters:
+    get:
+      operationId: listDataCenters
+      summary: List data centers
+      description: Returns available data center locations.
+      tags: [Catalog]
+      parameters:
+        - name: include
+          in: query
+          required: false
+          description: "Comma-separated optional expansions. Supported value: GPU_AVAILABILITY, CPU_AVAILABILITY."
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/DataCenterInclude"
+            example: [GPU_AVAILABILITY]
+        - name: regions
+          in: query
+          required: false
+          description: "Comma-separated DataCenterRegion enum values. Values within this filter use OR semantics. Different filter families combine with AND."
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/DataCenterRegion"
+            example: [EUROPE, ASIA]
+        - name: networkVolumeTypes
+          in: query
+          required: false
+          description: "Comma-separated volume types. Supported values: STANDARD, HIGH_PERFORMANCE. Values within this filter use AND semantics; volumes=STANDARD,HIGH_PERFORMANCE requires both storage types. Different filter families combine with AND."
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/VolumeType"
+            example: [STANDARD, HIGH_PERFORMANCE]
+        - name: compliance
+          in: query
+          required: false
+          description: "Comma-separated Compliance enum values. Values within this filter use AND semantics; compliance=GDPR,SOC_2_TYPE_2 requires both certifications. Different filter families combine with AND."
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/Compliance"
+            example: [GDPR, SOC_2_TYPE_2]
+        - name: globalNetwork
+          in: query
+          required: false
+          description: "Filter by global networking support. true returns only data centers that support global networking; false only those that do not. Different filter families combine with AND."
+          schema:
+            type: boolean
+          example: true
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListDataCentersResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/catalog/datacenters/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        example: US-CA-2
+    get:
+      operationId: getDataCenter
+      summary: Get a data center
+      description: Returns a single data center. Availability is included only when requested with include=GPU_AVAILABILITY or include=CPU_AVAILABILITY.
+      tags: [Catalog]
+      parameters:
+        - name: include
+          in: query
+          required: false
+          description: "Comma-separated optional expansions. Supported value: GPU_AVAILABILITY, CPU_AVAILABILITY."
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/DataCenterInclude"
+            example: [GPU_AVAILABILITY]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DataCenter"
+        "404":
+          description: Data center not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/billing:
+    get:
+      operationId: listBilling
+      summary: Get aggregated billing history
+      description: >
+        Returns time-bucketed total spend across all billable RunPod resources
+        for the authenticated user over the requested period, with each cost
+        component broken out.
+      tags: [Billing]
+      parameters:
+        - $ref: "#/components/parameters/BillingStartTime"
+        - $ref: "#/components/parameters/BillingEndTime"
+        - $ref: "#/components/parameters/BillingBucketSize"
+        - $ref: "#/components/parameters/BillingLastN"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListBillingResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/billing/pods:
+    get:
+      operationId: listPodBilling
+      summary: Get pod billing history
+      description: >
+        Returns time-bucketed pod billing records (GPU and CPU pods) for the
+        authenticated user over the requested period.
+      tags: [Billing]
+      parameters:
+        - $ref: "#/components/parameters/BillingStartTime"
+        - $ref: "#/components/parameters/BillingEndTime"
+        - $ref: "#/components/parameters/BillingBucketSize"
+        - $ref: "#/components/parameters/BillingLastN"
+        - name: podId
+          in: query
+          required: false
+          description: Filter to a specific pod (GPU or CPU).
+          schema:
+            type: string
+          example: pod_abc123
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListPodBillingResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/billing/serverless:
+    get:
+      operationId: listServerlessBilling
+      summary: Get serverless billing history
+      description: >
+        Returns time-bucketed serverless billing records for the authenticated
+        user over the requested period.
+      tags: [Billing]
+      parameters:
+        - $ref: "#/components/parameters/BillingStartTime"
+        - $ref: "#/components/parameters/BillingEndTime"
+        - $ref: "#/components/parameters/BillingBucketSize"
+        - $ref: "#/components/parameters/BillingLastN"
+        - name: serverlessId
+          in: query
+          required: false
+          description: Filter to a specific serverless endpoint.
+          schema:
+            type: string
+          example: jpnw0v75y3qoql
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListServerlessBillingResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/billing/endpoints:
+    get:
+      operationId: listEndpointBilling
+      summary: Get public endpoint billing history
+      description: >
+        Returns time-bucketed RunPod public endpoint billing records for the
+        authenticated user over the requested period.
+      tags: [Billing]
+      parameters:
+        - $ref: "#/components/parameters/BillingStartTime"
+        - $ref: "#/components/parameters/BillingEndTime"
+        - $ref: "#/components/parameters/BillingBucketSize"
+        - $ref: "#/components/parameters/BillingLastN"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEndpointBillingResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/billing/networkvolumes:
+    get:
+      operationId: listNetworkVolumeBilling
+      summary: Get network volume billing history
+      description: >
+        Returns time-bucketed network volume billing records for the
+        authenticated user over the requested period.
+      tags: [Billing]
+      parameters:
+        - $ref: "#/components/parameters/BillingStartTime"
+        - $ref: "#/components/parameters/BillingEndTime"
+        - $ref: "#/components/parameters/BillingBucketSize"
+        - $ref: "#/components/parameters/BillingLastN"
+        - name: networkVolumeId
+          in: query
+          required: false
+          description: Filter to a specific network volume.
+          schema:
+            type: string
+          example: vol_abc123
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListNetworkVolumeBillingResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/billing/clusters:
+    get:
+      operationId: listClusterBilling
+      summary: Get Instant Cluster billing history
+      description: >
+        Returns time-bucketed Instant Cluster billing records for the
+        authenticated user over the requested period.
+      tags: [Billing]
+      parameters:
+        - $ref: "#/components/parameters/BillingStartTime"
+        - $ref: "#/components/parameters/BillingEndTime"
+        - $ref: "#/components/parameters/BillingBucketSize"
+        - $ref: "#/components/parameters/BillingLastN"
+        - name: clusterId
+          in: query
+          required: false
+          description: Filter to a specific Instant Cluster.
+          schema:
+            type: string
+          example: cluster_abc123
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListClusterBillingResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"

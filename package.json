@@ -29,7 +29,8 @@
     "oauth-e2e": "tsx scripts/oauth-e2e.ts",
     "changeset": "changeset",
     "changeset:version": "changeset version",
-    "changeset:publish": "changeset publish"
+    "changeset:publish": "changeset publish",
+    "smoke:crud": "tsx scripts/smoke-crud.ts"
   },
   "exports": {
     "./package.json": "./package.json",

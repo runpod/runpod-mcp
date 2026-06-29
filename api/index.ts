@@ -235,9 +235,15 @@ function handleAuthorizationServerMetadata(
     response_types_supported: ['code'],
     grant_types_supported: ['authorization_code'],
     token_endpoint_auth_methods_supported: ['none'],
-    // Note: PKCE is intentionally not advertised because it is not enforced
-    // server-side (the flash flow has no place to bind the code_challenge).
-    // Security rests on the redirect_uri allowlist + single-use flash approval.
+    // Advertise S256 PKCE so OAuth clients that require it (e.g. Claude Code,
+    // which refuses to start the flow without this field per RFC 8414/8252)
+    // will proceed. NOTE: the code_challenge is not yet verified server-side —
+    // the stateless function has nowhere to bind it across /authorize→/token.
+    // Until enforcement lands (persist code_challenge on the flash auth request
+    // and check the verifier at /token), the flow's real protection remains the
+    // redirect_uri allowlist + single-use, short-lived, human-approved flash
+    // request. Advertising S256 here unblocks clients without weakening that.
+    code_challenge_methods_supported: ['S256'],
   });
 }
 

@@ -61,9 +61,15 @@ export function encodeCursorOffset(offset: number): string {
 // Caps a list response to `limit` items starting at `cursor`, returning an
 // envelope that tells the agent how much it is seeing and how to get the rest.
 // Only arrays are paginated; any other shape is passed through untouched.
+//
+// `extra` merges sibling fields alongside `items`/`pagination` (e.g. billing
+// `metadata`, an endpoint-workers `summary`) so a capped list response can still
+// carry the small aggregate fields that accompany the array. Reserved keys
+// (`items`, `pagination`) in `extra` are ignored so they can't shadow the cap.
 export function capListResult(
   result: unknown,
-  options: { limit?: number; cursor?: string }
+  options: { limit?: number; cursor?: string },
+  extra?: Record<string, unknown>
 ): { content: Array<{ type: 'text'; text: string }> } {
   const limit = Math.min(options.limit ?? DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT);
   const offset = decodeCursorOffset(options.cursor);
@@ -81,7 +87,12 @@ export function capListResult(
   const nextOffset = offset + page.length;
   const hasMore = nextOffset < total;
 
+  const { items: _i, pagination: _p, ...safeExtra } = extra ?? {};
+  void _i;
+  void _p;
+
   const envelope = {
+    ...safeExtra,
     items: page,
     pagination: {
       total,

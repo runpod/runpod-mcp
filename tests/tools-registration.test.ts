@@ -44,7 +44,9 @@ const LIST_TOOLS = [
 const CORE_TOOLS = [
   'create-pod',
   'get-pod',
+  'start-pod',
   'stop-pod',
+  'restart-pod',
   'list-pods',
   'create-endpoint',
   'run-endpoint',
@@ -55,12 +57,89 @@ const CORE_TOOLS = [
   ...LIST_TOOLS,
 ];
 
+// The full registered surface, frozen. The source is split across
+// src/tools/<resource>.ts and assembled by registerTools; this snapshot is the
+// guard that a per-resource refactor (or a dropped registrar import) can't
+// silently remove a tool. Update deliberately when adding/removing a tool.
+const EXPECTED_TOOLS = [
+  // catalog
+  'list-gpu-types',
+  'list-data-centers',
+  'list-cpu-types',
+  'get-gpu-type',
+  'get-cpu-type',
+  'get-data-center',
+  // pods
+  'list-pods',
+  'get-pod',
+  'create-pod',
+  'update-pod',
+  'start-pod',
+  'stop-pod',
+  'restart-pod',
+  // 'stream-pod-logs' — DISABLED until prod ships GET /v2/pods/{id}/logs
+  'delete-pod',
+  // endpoints
+  'list-endpoints',
+  'get-endpoint',
+  'create-endpoint',
+  'update-endpoint',
+  'delete-endpoint',
+  'list-endpoint-workers',
+  // 'list-endpoint-releases' — DISABLED until prod ships the releases endpoint
+  // serverless runtime (jobs)
+  'run-endpoint',
+  'runsync-endpoint',
+  'get-job-status',
+  'stream-job',
+  'cancel-job',
+  'retry-job',
+  'endpoint-health',
+  'purge-endpoint-queue',
+  // templates
+  'list-templates',
+  'get-template',
+  'create-template',
+  'update-template',
+  'delete-template',
+  // network volumes
+  'list-network-volumes',
+  'get-network-volume',
+  'create-network-volume',
+  'update-network-volume',
+  'delete-network-volume',
+  // container registry auth
+  'list-container-registry-auths',
+  'get-container-registry-auth',
+  'create-container-registry-auth',
+  'delete-container-registry-auth',
+  // tags (v2-only)
+  'list-tags',
+  'get-tag',
+  'create-tag',
+  'update-tag',
+  'delete-tag',
+  'attach-tag',
+  'detach-tag',
+  // billing (v2-only)
+  'get-billing',
+];
+
 describe('tool registration', () => {
   it('registers a non-trivial number of tools', () => {
     const { names } = captureRegisteredTools();
     assert.ok(
       names.length >= 30,
       `expected at least 30 tools, got ${names.length}`
+    );
+  });
+
+  it('registers exactly the expected tool surface (no silent add/drop)', () => {
+    const { names } = captureRegisteredTools();
+    assert.deepEqual(
+      [...names].sort(),
+      [...EXPECTED_TOOLS].sort(),
+      'registered tool surface drifted from the frozen snapshot'
     );
   });
 
@@ -74,7 +153,9 @@ describe('tool registration', () => {
   it('registers no duplicate tool names', () => {
     const { names } = captureRegisteredTools();
     const seen = new Set<string>();
-    const dupes = names.filter((n) => (seen.has(n) ? true : (seen.add(n), false)));
+    const dupes = names.filter((n) =>
+      seen.has(n) ? true : (seen.add(n), false)
+    );
     assert.deepEqual(dupes, [], `duplicate tool names: ${dupes.join(', ')}`);
   });
 

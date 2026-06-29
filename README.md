@@ -2,33 +2,61 @@
 
 [![smithery badge](https://smithery.ai/badge/@runpod/runpod-mcp-ts)](https://smithery.ai/server/@runpod/runpod-mcp-ts)
 
-This is the official Runpod Model Context Protocol (MCP) server, published to npm as `@runpod/mcp-server`.
-
-It supports two deployment modes:
-
-- Local `stdio` for Claude Desktop, Claude Code, Cursor, VS Code, and other MCP clients that launch a local process. The caller sets `RUNPOD_API_KEY` in the environment.
-- Hosted Streamable HTTP for Vercel or other HTTP-capable platforms. Each request carries its own `Authorization: Bearer <token>`, which the server forwards directly to the Runpod API. The token can be a Runpod API key or one obtained through the OAuth "Sign in with Runpod" flow.
-
-The server never holds a credential of its own and never shares one across users.
-
-## Requirements
-
-- Node.js 18 or higher.
-- A Runpod account and API key: https://www.runpod.io/console/user/settings
+This is the official Runpod Model Context Protocol (MCP) server, published to npm as `@runpod/mcp-server`. It lets MCP clients such as Claude Code, Claude Desktop, Cursor, Windsurf, and VS Code manage your Runpod Pods, Serverless endpoints, templates, network volumes, and more.
 
 ## Quick start
 
-### Guided install
-
-The fastest way to get set up is the interactive installer. It detects the agents you have installed, asks which ones to configure, and writes the configuration for you:
+The fastest way to get connected is the guided installer pointed at the **hosted Runpod MCP server at `https://mcp.getrunpod.io/`**. The installer detects the agents you have installed, asks which ones to configure, and writes the configuration for you:
 
 ```bash
 npx @runpod/mcp-server@latest add
 ```
 
-It supports Claude Code, Claude Desktop, Cursor, Windsurf, and Visual Studio Code, and offers two connection modes. The recommended mode points the agent at the hosted server and lets it authenticate with the "Sign in with Runpod" OAuth flow, so no API key is stored on disk. The local mode runs the server through `npx` and stores a `RUNPOD_API_KEY` in the agent's config. To undo the changes later, run `npx @runpod/mcp-server@latest remove`.
+It supports **Claude Code, Claude Desktop, Cursor, Windsurf, and Visual Studio Code**, and offers two connection modes:
 
-### Run locally with `npx`
+- **Hosted (recommended).** Points the agent at the hosted server and authenticates with the **"Sign in with Runpod"** OAuth flow, so **no API key is stored on disk**.
+- **Local.** Runs the server through `npx` and stores a `RUNPOD_API_KEY` in the agent's config.
+
+To undo the changes later, run:
+
+```bash
+npx @runpod/mcp-server@latest remove
+```
+
+### Connect to the hosted server manually
+
+If you'd rather configure your client by hand, point it at the hosted server over HTTP (no local process, no API key stored).
+
+**Claude Code** — add it as an HTTP server:
+
+```bash
+claude mcp add --transport http runpod -s user https://mcp.getrunpod.io/
+```
+
+**Other clients** (Cursor, VS Code, Claude Desktop connectors, …) — use a URL-based MCP entry:
+
+```json
+{
+  "mcpServers": {
+    "runpod": {
+      "url": "https://mcp.getrunpod.io/"
+    }
+  }
+}
+```
+
+The hosted server uses the "Sign in with Runpod" OAuth flow for authentication, so no API key is stored. An OAuth-capable client starts the sign-in flow automatically on first connect. See [Sign in with Runpod (authorize flow)](#sign-in-with-runpod-authorize-flow) for details.
+
+> Prefer your own API key instead of OAuth? Append `--header "Authorization: Bearer YOUR_API_KEY"` to the `claude mcp add` command (or add a `headers` block in the JSON), and the server forwards that key to the Runpod API directly.
+
+### Requirements
+
+- Node.js 18 or higher.
+- A Runpod account and API key: https://www.runpod.io/console/user/settings
+
+## Run locally with `npx`
+
+To run the server as a local `stdio` process with your own API key:
 
 ```bash
 RUNPOD_API_KEY=YOUR_API_KEY npx -y @runpod/mcp-server@latest
@@ -40,9 +68,9 @@ RUNPOD_API_KEY=YOUR_API_KEY npx -y @runpod/mcp-server@latest
 npx -y @smithery/cli install @runpod/runpod-mcp-ts --client claude
 ```
 
-## Local MCP clients
+## Local MCP client setup
 
-Local MCP clients should use the default package entrypoint, which is the `stdio` server.
+Local MCP clients should use the default package entrypoint, which is the `stdio` server. The caller sets `RUNPOD_API_KEY` in the environment, and the server forwards it directly to the Runpod API.
 
 ### Claude Code
 
@@ -90,6 +118,8 @@ Windows:
 
 Restart Claude Desktop after saving.
 
+For remote clients such as Claude's connector, use the hosted HTTP server instead (the [Quick start](#quick-start) above). The client then runs the OAuth "Sign in with Runpod" flow, and the resulting Runpod API key is forwarded to the Runpod API on each request.
+
 ### Cursor
 
 Add this to `.cursor/mcp.json` in your project or `~/.cursor/mcp.json` globally:
@@ -118,9 +148,42 @@ Use the same pattern:
 
 For a broader list of MCP clients, see https://modelcontextprotocol.io/clients
 
+## Usage examples
+
+### List all Pods
+
+```text
+Can you list all my Runpod Pods?
+```
+
+### Create a new Pod
+
+```text
+Create a new Runpod Pod with the following specifications:
+- Name: test-pod
+- Image: runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04
+- GPU Type: NVIDIA GeForce RTX 4090
+- GPU Count: 1
+```
+
+### Create a Serverless endpoint
+
+```text
+Create a Runpod Serverless endpoint with the following configuration:
+- Name: my-endpoint
+- Image: runpod/test-output:0.0.1
+- GPU pool: AMPERE_80   (a "pool" value from list-gpu-types)
+- Minimum workers: 0
+- Maximum workers: 3
+```
+
+On the v2 API (the default) endpoints are image-based — pass an image and a GPU
+pool, not a template. To use the legacy template-based model, pin
+`RUNPOD_REST_VERSION=v1` and provide a `Template ID` instead.
+
 ## Hosted HTTP deployment
 
-The package also exports a Streamable HTTP entrypoint at `@runpod/mcp-server/http`, and this repo includes a Vercel function in `api/index.ts`.
+The package also exports a Streamable HTTP entrypoint at `@runpod/mcp-server/http`, and this repo includes a Vercel function in `api/index.ts`. This is what powers the hosted server at `https://mcp.getrunpod.io/`.
 
 The hosted transport is stateless:
 
@@ -200,12 +263,6 @@ This validates:
 - A public GraphQL-backed tool call.
 - An authenticated REST-backed tool call.
 
-## Claude Desktop and hosted MCP
-
-Use the local `stdio` integration for Claude Desktop today.
-
-For remote clients such as Claude's connector, deploy the hosted HTTP server. The client then runs the OAuth "Sign in with Runpod" flow, and the resulting Runpod API key is forwarded to the Runpod API on each request.
-
 ## Local development
 
 ```bash
@@ -240,42 +297,20 @@ RUNPOD_API_KEY=YOUR_API_KEY pnpm build
 RUNPOD_API_KEY=YOUR_API_KEY pnpm smoke:stdio
 ```
 
-## Usage examples
-
-### List all Pods
-
-```text
-Can you list all my Runpod Pods?
-```
-
-### Create a new Pod
-
-```text
-Create a new Runpod Pod with the following specifications:
-- Name: test-pod
-- Image: runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04
-- GPU Type: NVIDIA GeForce RTX 4090
-- GPU Count: 1
-```
-
-### Create a Serverless endpoint
-
-```text
-Create a Runpod Serverless endpoint with the following configuration:
-- Name: my-endpoint
-- Template ID: 30zmvf89kd
-- Minimum workers: 0
-- Maximum workers: 3
-```
-
 ## Contributing
 
 The source is now split by responsibility:
 
-- `src/stdio.ts`: local `stdio` entrypoint.
+- `src/stdio.ts`: local `stdio` entrypoint (runs the v2 probe at startup for `auto` mode).
 - `src/http.ts`: bearer-token extraction and the per-request MCP session for the Streamable HTTP transport.
-- `src/tools.ts`: all Runpod MCP tools.
+- `src/tools.ts`: thin orchestrator — builds the shared runtime and calls each per-resource registrar.
+- `src/tools/<resource>.ts`: the tools for one resource (`pods`, `endpoints`, `jobs`, `templates`, `network-volumes`, `registries`, `catalog`), each with a description + MCP annotations.
+- `src/tools/runtime.ts`: the shared per-server runtime (caller-tracking, the authenticated REST/Serverless/GraphQL clients, the v1/v2 backend resolver) threaded into every registrar.
 - `src/server.ts`: shared server metadata and construction.
+- `src/_shared/backend.ts`: v1/v2 routing adapter — version resolution, per-resource paths, list-envelope unwrap, and the v2 probe.
+- `src/_shared/http.ts`: unified authenticated JSON client + `HttpError`.
+- `src/_shared/tracking.ts`: caller-tracking header construction.
+- `src/_shared/mappers.ts`: v1→v2 request-body mappers.
 - `api/index.ts`: Vercel adapter and the OAuth authorization-server routes (`/.well-known/*`, `/register`, `/authorize`, `/token`).
 
 After changes:
@@ -283,8 +318,26 @@ After changes:
 ```bash
 pnpm type-check
 pnpm lint
+pnpm test
 pnpm build
 ```
+
+`pnpm test` runs the offline unit suite (outbound-request goldens, adapter, mappers, http client) — no network or API key required.
+
+### v2 spec parity gate
+
+`tests/spec-parity.test.ts` walks every operation in the vendored v2 OpenAPI spec (`tests/fixtures/v2-openapi.yaml`) and fails if a v2 endpoint has no MCP tool covering it (and isn't explicitly allowlisted) — the drift gate that flags when the API grows an endpoint we don't expose yet. It also runs the reverse check (no tool is left unaccounted for). It's part of `pnpm test`, hermetic (parses the committed spec; no network, no API key).
+
+Refresh the vendored spec when the v2 API changes:
+
+```bash
+pnpm tsx scripts/fetch-v2-spec.ts   # re-fetch tests/fixtures/v2-openapi.yaml
+pnpm test                           # parity test shows any newly-uncovered endpoint
+```
+
+The serverless runtime tools (`run-endpoint`, `get-job-status`, …) target `api.runpod.ai/v2`, which is a different service from the v2 REST control plane, so they are allowlisted as intentionally spec-unmapped. The spec has no logs/artifacts endpoints, so there are no such tools.
+
+An optional live shape check (skipped by default) verifies the live endpoints still return the envelopes the list tools unwrap; run it with `MCP_LIVE_V2_KEY=<dev-key> pnpm test` (optionally `MCP_LIVE_V2_BASE`).
 
 For transport validation:
 
@@ -293,9 +346,76 @@ pnpm smoke:stdio
 pnpm smoke:http
 ```
 
+To exercise a real create→get→delete lifecycle against a **dev account** (free resources only — templates and registry auths — with fail-closed teardown):
+
+```bash
+RUNPOD_API_KEY=YOUR_DEV_KEY \
+RUNPOD_REST_V2_API_URL=https://v2-rest.runpod.dev/v2 \
+pnpm smoke:crud v1 v2
+```
+
 This project uses [changesets](https://github.com/changesets/changesets) for versioning and npm publishing. Every PR with user-facing changes needs a changeset file at `.changeset/DESCRIPTIVE_NAME.md`.
 
 See `CLAUDE.md` and `docs/context.md` for contributor guidance.
+
+## Reference
+
+### Deployment modes
+
+The server supports two deployment modes:
+
+- Local `stdio` for Claude Desktop, Claude Code, Cursor, VS Code, and other MCP clients that launch a local process. The caller sets `RUNPOD_API_KEY` in the environment.
+- Hosted Streamable HTTP for Vercel or other HTTP-capable platforms. Each request carries its own `Authorization: Bearer <token>`, which the server forwards directly to the Runpod API. The token can be a Runpod API key or one obtained through the OAuth "Sign in with Runpod" flow.
+
+The server never holds a credential of its own and never shares one across users.
+
+### REST API version (v1 / v2)
+
+The server can target either the v1 REST API (`rest.runpod.io/v1`) or the newer v2 REST API (`v2-rest.runpod.io/v2`). It **defaults to v2**; set `RUNPOD_REST_VERSION=v1` to pin the previous v1 behavior. These environment variables are read once at startup:
+
+| Variable                         | Values                 | Default                        | Effect                                                                                                |
+| -------------------------------- | ---------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `RUNPOD_REST_VERSION`            | `v1` \| `v2` \| `auto` | `v2`                           | Version used for all resources.                                                                       |
+| `RUNPOD_REST_VERSION_<RESOURCE>` | `v1` \| `v2` \| `auto` | —                              | Per-resource override (e.g. `RUNPOD_REST_VERSION_PODS=v2`). Takes precedence over the global setting. |
+| `RUNPOD_REST_V2_API_URL`         | URL                    | `https://v2-rest.runpod.io/v2` | v2 base URL. Override to target a non-prod host.                                                      |
+| `RUNPOD_REST_API_URL`            | URL                    | `https://rest.runpod.io/v1`    | v1 base URL.                                                                                          |
+| `RUNPOD_SERVERLESS_API_URL`      | URL                    | `https://api.runpod.ai/v2`     | Serverless runtime base URL.                                                                          |
+
+Notes:
+
+- **Default is v2** — with nothing set, every control-plane resource uses the v2 REST API. Set `RUNPOD_REST_VERSION=v1` to pin the previous v1 behavior.
+- **Pinning a deployment** — the env var is read once at startup, so set `RUNPOD_REST_VERSION` (`v1` or `v2`) in the host's environment (e.g. a Vercel project env var) and redeploy; no code change. Hosted HTTP honors this default like any other transport.
+- **What `auto` does:** it probes v2 once at startup and falls back to v1 — but **only on the `stdio` transport** (one process = one key). On hosted HTTP `auto` resolves to **v1**, because a warm instance serves many users and a cached probe verdict could leak across them. `auto` is a stdio-only convenience; on HTTP, rely on the default or pin the version explicitly.
+- `jobs` (serverless runtime) always uses v1 regardless of the setting — it has no v2 REST home (it targets `api.runpod.ai/v2`, a different service).
+- The v2-only tools (`list-cpu-types`, `get-gpu-type`, `restart-pod`) return a clear "v2 only" notice when called under v1.
+
+> **⚠️ Migration note — `create-endpoint` / `update-endpoint` changed shape in v2.** Serverless endpoints now use the v2 API (`/v2/serverless`) with an **inline config** instead of a `templateId`. On v2, `create-endpoint` requires `imageName` + `gpuPoolIds` (GPU **pool** names from `list-gpu-types` — the `pool` field, e.g. `AMPERE_80`), plus optional `workersMin`/`workersMax`, `scalerType`/`scalerValue`/`idleTimeout`, `containerDiskInGb`, `env`, `flashboot`, etc. It no longer accepts `templateId`. **If you previously called `create-endpoint` with `{ templateId }` and have no `RUNPOD_REST_VERSION` set, that call now returns a clean `400` after upgrading** — switch to the inline fields, or pin `RUNPOD_REST_VERSION=v1` to keep the legacy template-based model.
+
+- `create-pod` for a **CPU pod** (`computeType: "CPU"`) on v2 is transparently served by the **v1** API — v2 has no CPU pods yet — and the reply is flagged `_servedBy: "v1"`. Because that fallback hits the **v1 base**, set `RUNPOD_REST_API_URL` to match your environment when running v2 against a non-prod host (otherwise CPU creates land on v1 **prod**). On v2 a create with neither `gpuTypeIds` nor `computeType` is rejected — absence is never silently turned into a CPU pod.
+
+Example (stdio client config) — v2 against prod:
+
+```json
+"env": {
+  "RUNPOD_API_KEY": "YOUR_API_KEY",
+  "RUNPOD_REST_VERSION": "v2"
+}
+```
+
+Targeting a **non-prod (dev) environment** — point **both** bases at it (the v1 base matters even in v2 mode, for the CPU-pod fallback above):
+
+```json
+"env": {
+  "RUNPOD_API_KEY": "YOUR_DEV_KEY",
+  "RUNPOD_REST_VERSION": "v2",
+  "RUNPOD_REST_V2_API_URL": "https://v2-rest.runpod.dev/v2",
+  "RUNPOD_REST_API_URL": "https://rest.runpod.dev/v1"
+}
+```
+
+### Large tool output
+
+Resource **lists** are paginated (default 20 items, `nextCursor`), so a big account can't flood the agent's context. But **serverless job output** — `run-endpoint`, `runsync-endpoint`, `get-job-status`, and especially `stream-job` (which accumulates every chunk) — is returned **as-is and is not size-capped**. It's a single opaque payload, not a list, so there's no cursor to page. A very large or long-streaming result can exceed the context window. If output may be huge, have the agent **write it to a file** instead of returning it inline, or set `s3Config` on the job so large outputs go to object storage.
 
 ## Security considerations
 

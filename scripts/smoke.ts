@@ -44,12 +44,27 @@ async function createTransport(mode: Mode) {
 
   const target = process.argv[3] ?? 'dist/stdio.mjs';
 
+  // Forward the API key AND the REST routing env to the spawned server, so
+  // `smoke:stdio` can target dev/v2 the same way the HTTP path does. Without
+  // this passthrough the child booted with prod-v1 defaults regardless of the
+  // caller's env. Pass through every RUNPOD_REST* var (version, per-resource
+  // overrides, v1/v2 base URLs) plus the serverless + public-GraphQL bases.
+  const childEnv: Record<string, string> = { RUNPOD_API_KEY: apiKey };
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    if (
+      key.startsWith('RUNPOD_REST') ||
+      key === 'RUNPOD_SERVERLESS_API_URL' ||
+      key === 'RUNPOD_PUBLIC_GRAPHQL_URL'
+    ) {
+      childEnv[key] = value;
+    }
+  }
+
   return new StdioClientTransport({
     command: 'node',
     args: [target],
-    env: {
-      RUNPOD_API_KEY: apiKey,
-    },
+    env: childEnv,
     stderr: 'inherit',
   });
 }
@@ -67,11 +82,31 @@ function parseToolText(result: unknown): unknown {
     return null;
   }
 
-  return JSON.parse(text);
+  // Tool errors surface as a non-JSON text string (e.g. a network/401 message),
+  // so degrade to the raw text instead of throwing a confusing SyntaxError.
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+// List tools now return a `{ items, pagination }` envelope (the context-overflow
+// cap); older bare-array responses are still handled. Reduce either to the array.
+function unwrapItems(parsed: unknown): unknown {
+  if (
+    parsed &&
+    typeof parsed === 'object' &&
+    'items' in parsed &&
+    Array.isArray((parsed as { items: unknown }).items)
+  ) {
+    return (parsed as { items: unknown[] }).items;
+  }
+  return parsed;
 }
 
 function summarizeGpuTypes(result: unknown) {
-  const gpuTypes = parseToolText(result);
+  const gpuTypes = unwrapItems(parseToolText(result));
   if (!Array.isArray(gpuTypes)) {
     return [];
   }
@@ -82,17 +117,24 @@ function summarizeGpuTypes(result: unknown) {
     }
 
     const item = gpu as Record<string, unknown>;
+    // v1/GraphQL and v2 REST use different field names for the same data:
+    //   v1: displayName / memoryGb / stockStatus
+    //   v2: name        / memory   / (secure flag, no stockStatus)
+    // Read whichever is present so the summary is non-empty on both surfaces.
     return {
       id: item.id,
-      displayName: item.displayName,
-      memoryGb: item.memoryGb,
-      stockStatus: item.stockStatus,
+      displayName: item.displayName ?? item.name,
+      memoryGb: item.memoryGb ?? item.memory,
+      ...(item.stockStatus !== undefined
+        ? { stockStatus: item.stockStatus }
+        : {}),
+      ...(item.secure !== undefined ? { secure: item.secure } : {}),
     };
   });
 }
 
 function summarizePods(result: unknown) {
-  const pods = parseToolText(result);
+  const pods = unwrapItems(parseToolText(result));
   if (!Array.isArray(pods)) {
     return { podCount: null, samplePods: [] };
   }
