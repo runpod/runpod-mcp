@@ -38,6 +38,8 @@ jobs:
       - name: Lint
         run: pnpm run lint
 
+      # Tests run through tsx (`node --import tsx --test`) and compile TS on the
+      # fly — they need no build output, so Test can safely precede Build.
       - name: Test
         run: pnpm test
 

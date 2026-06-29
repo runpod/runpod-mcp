@@ -166,7 +166,10 @@ export function wantsAutoProbe(env: Env): boolean {
 // one-time startup network blip doesn't pin the process to v1 forever.
 // Exported so the stdio entrypoint can type its node-fetch adapter against the
 // exact shape the prober needs (just `{ status }`), instead of casting.
-export type FetchLike = (
+// Named `ProbeFetch` (not `FetchLike`) to avoid colliding with the unrelated,
+// stricter `FetchLike` in _shared/http.ts (which requires method+headers) — the
+// two model different contracts and the distinct name keeps that obvious.
+export type ProbeFetch = (
   url: string,
   init?: {
     method?: string;
@@ -176,7 +179,7 @@ export type FetchLike = (
 ) => Promise<{ status: number }>;
 
 export interface ProbeDeps {
-  fetch: FetchLike;
+  fetch: ProbeFetch;
   baseUrl: string;
   apiKey: string;
   timeoutMs?: number;
