@@ -26,6 +26,9 @@ async function main(apiKey: string): Promise<void> {
       fetch: fetch as unknown as ProbeFetch,
       baseUrl: restV2Base(process.env),
       apiKey,
+      // Surface a transient/timeout fallback to v1 — otherwise `auto` silently
+      // pins the session to v1 with no signal (stderr is the MCP log channel).
+      warn: (message) => console.error(`[runpod-mcp] ${message}`),
     });
     v2Available = await probe();
   }

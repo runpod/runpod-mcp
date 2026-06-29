@@ -186,6 +186,13 @@ export interface ProbeDeps {
   baseUrl: string;
   apiKey: string;
   timeoutMs?: number;
+  // Optional, injected — called when the probe falls back to v1 for a TRANSIENT
+  // reason (timeout / network error / 5xx / 401-403), so an operator who set
+  // `auto` and silently got v1 has a signal. Kept as an injected callback
+  // (defaulting to no-op) rather than a direct console.* so this module stays
+  // pure/side-effect-free and unit tests stay silent. NOT called on a definitive
+  // 404 (v2 genuinely not deployed) — that's the expected answer, not a blip.
+  warn?: (message: string) => void;
 }
 
 // Bound the startup probe so a slow-but-reachable v2 host can't hang stdio
@@ -213,8 +220,20 @@ async function runV2Probe(deps: ProbeDeps): Promise<boolean | undefined> {
       headers: { Authorization: `Bearer ${deps.apiKey}` },
       signal: AbortSignal.timeout(deps.timeoutMs ?? PROBE_TIMEOUT_MS),
     });
-    return classifyProbeStatus(res.status);
+    const verdict = classifyProbeStatus(res.status);
+    if (verdict === undefined) {
+      deps.warn?.(
+        `v2 auto-probe: ${deps.baseUrl} returned ${res.status} (transient) — using v1 for now; will re-probe. Pin RUNPOD_REST_VERSION=v2 to force v2.`
+      );
+    }
+    return verdict;
   } catch {
+    // Thrown = timeout (AbortSignal) or network error — transient, not cached.
+    deps.warn?.(
+      `v2 auto-probe: ${deps.baseUrl} unreachable (timed out after ${
+        deps.timeoutMs ?? PROBE_TIMEOUT_MS
+      }ms or network error) — using v1 for now; will re-probe. Pin RUNPOD_REST_VERSION=v2 to force v2.`
+    );
     return undefined;
   }
 }

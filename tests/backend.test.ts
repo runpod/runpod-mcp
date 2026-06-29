@@ -383,6 +383,51 @@ describe('createV2Prober', () => {
     assert.equal(await probe(), true);
     assert.equal(calls.n, 2);
   });
+
+  it('warns on a TRANSIENT fallback (timeout/network throw and 5xx) but NOT on a definitive 404', async () => {
+    // Network throw / timeout → warns.
+    const thrown: string[] = [];
+    const pThrow = createV2Prober({
+      fetch: () => Promise.reject(new Error('timeout')),
+      baseUrl: 'https://v2',
+      apiKey: 'k',
+      warn: (m) => thrown.push(m),
+    });
+    assert.equal(await pThrow(), false);
+    assert.equal(thrown.length, 1);
+    assert.match(thrown[0], /unreachable|timed out|network/i);
+
+    // 5xx → warns.
+    const fivexx: string[] = [];
+    const p5 = createV2Prober({
+      fetch: () => Promise.resolve({ status: 503 }),
+      baseUrl: 'https://v2',
+      apiKey: 'k',
+      warn: (m) => fivexx.push(m),
+    });
+    assert.equal(await p5(), false);
+    assert.equal(fivexx.length, 1);
+
+    // Definitive 404 (v2 not deployed) → does NOT warn (expected answer, not a blip).
+    const notFound: string[] = [];
+    const p404 = createV2Prober({
+      fetch: () => Promise.resolve({ status: 404 }),
+      baseUrl: 'https://v2',
+      apiKey: 'k',
+      warn: (m) => notFound.push(m),
+    });
+    assert.equal(await p404(), false);
+    assert.equal(notFound.length, 0, '404 is definitive — must not warn');
+  });
+
+  it('does not throw when no warn callback is provided (pure default)', async () => {
+    const probe = createV2Prober({
+      fetch: () => Promise.reject(new Error('blip')),
+      baseUrl: 'x',
+      apiKey: 'k',
+    });
+    assert.equal(await probe(), false); // no warn → no crash
+  });
 });
 
 // ============== A2: resolveBackend (v1 descriptors) ==============
