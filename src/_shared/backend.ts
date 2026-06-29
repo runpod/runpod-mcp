@@ -89,6 +89,9 @@ export function restV2Base(env: Env): string {
 export function serverlessBase(env: Env): string {
   return env.RUNPOD_SERVERLESS_API_URL ?? 'https://api.runpod.ai/v2';
 }
+export function publicGraphqlBase(env: Env): string {
+  return env.RUNPOD_PUBLIC_GRAPHQL_URL ?? 'https://api.runpod.io/graphql';
+}
 
 // ---- A0: unwrap a list response into a plain array ----
 // v1 returns a bare array; v2 wraps it in a per-resource envelope. Either way
@@ -190,9 +193,14 @@ export interface ProbeDeps {
 export const PROBE_TIMEOUT_MS = 4000;
 
 // Classify a probe response status into a definitive verdict, or `undefined` for
-// a transient failure (5xx) that must NOT be cached.
+// a transient failure that must NOT be cached (so the next call re-probes).
+// Transient = 5xx AND 401/403: an auth failure during a rollout, or a key whose
+// v2 scope is later expanded, must not pin the process to v1 for its lifetime
+// with no recovery short of restart. A 2xx pins true; any other definitive 4xx
+// (e.g. 404 = no v2 endpoint) pins false.
 function classifyProbeStatus(status: number): boolean | undefined {
   if (status >= 500) return undefined;
+  if (status === 401 || status === 403) return undefined;
   return status >= 200 && status < 300;
 }
 
@@ -412,7 +420,7 @@ function buildV1Backend(resource: Resource, env: Env, unwrap: Unwrap): Backend {
     return {
       kind: 'graphql',
       version: 'v1',
-      base: env.RUNPOD_PUBLIC_GRAPHQL_URL ?? 'https://api.runpod.io/graphql',
+      base: publicGraphqlBase(env),
       unwrap,
       mapCreate: identity,
       mapUpdate: identity,

@@ -17,7 +17,10 @@ const server = createServer((req, res) => {
   });
 });
 
-server.listen(PORT, () => {
+// Bind to loopback only. `listen(PORT)` would bind 0.0.0.0 (all interfaces),
+// which on a cloud VM or CI runner is reachable from outside the host — this is
+// a local dev helper that holds per-request keys, so keep it off the network.
+server.listen(PORT, '127.0.0.1', () => {
   console.error(
     `MCP HTTP server listening on http://localhost:${PORT}/  ` +
       `(RUNPOD_REST_VERSION=${process.env.RUNPOD_REST_VERSION ?? 'v2(default)'}, ` +

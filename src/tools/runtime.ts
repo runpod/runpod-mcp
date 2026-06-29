@@ -5,6 +5,9 @@ import { createHttpClient, HttpError } from '../_shared/http.js';
 import { buildTrackingHeaders } from '../_shared/tracking.js';
 import {
   resolveBackend,
+  restV1Base,
+  serverlessBase,
+  publicGraphqlBase,
   type Env,
   type Backend,
   type Resource,
@@ -18,22 +21,12 @@ import {
 // — is built ONCE here by createToolRuntime and threaded in, so the resource
 // modules stay free of wiring and are individually testable.
 
-// Base URL for Runpod REST API. Override via RUNPOD_REST_API_URL to point at a
-// non-production environment (e.g. when authenticating with a dev API key).
-const API_BASE_URL =
-  process.env.RUNPOD_REST_API_URL ?? 'https://rest.runpod.io/v1';
-
-// Serverless API base URL for endpoint runtime operations (run, status, cancel, etc.).
-// Override via RUNPOD_SERVERLESS_API_URL for non-production environments.
-const SERVERLESS_API_BASE_URL =
-  process.env.RUNPOD_SERVERLESS_API_URL ?? 'https://api.runpod.ai/v2';
-
-// GraphQL endpoint for public queries (GPU types, data centers). Override via
-// RUNPOD_PUBLIC_GRAPHQL_URL for non-production environments. This is distinct
-// from the flash auth backend (RUNPOD_GRAPHQL_URL, used only by the OAuth flow
-// in api/index.ts).
-const GRAPHQL_URL =
-  process.env.RUNPOD_PUBLIC_GRAPHQL_URL ?? 'https://api.runpod.io/graphql';
+// Base URLs are resolved LIVE per call (via restV1Base/serverlessBase/
+// publicGraphqlBase reading process.env), not frozen at module import — so they
+// match callRestUrl's behavior and a test/env change takes effect without a
+// module reload. The defaults live in _shared/backend.ts. The public GraphQL
+// endpoint is distinct from the flash auth backend (RUNPOD_GRAPHQL_URL, used
+// only by the OAuth flow in api/index.ts).
 
 // ============== CALLER TRACKING ==============
 // Adds structured caller identification to every outbound API call so the
@@ -204,12 +197,17 @@ export interface ToolRuntime {
 }
 
 // Helper to make GraphQL requests to Runpod (public, no auth required). Bound to
-// the per-request tracking headers by createToolRuntime.
+// the per-request tracking headers AND the injected fetch by createToolRuntime —
+// it must use the same `httpFetch` seam as the REST clients, NOT the module-level
+// node-fetch, or test fakes wouldn't intercept the v1 catalog (list-gpu-types /
+// list-data-centers) GraphQL calls and those "offline" goldens would hit the net.
 async function graphqlRequest<T>(
   query: string,
-  tracking: () => Record<string, string>
+  tracking: () => Record<string, string>,
+  fetchImpl: HttpFetch,
+  url: string
 ): Promise<T> {
-  const response = await fetch(GRAPHQL_URL, {
+  const response = await fetchImpl(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -262,7 +260,7 @@ export function createToolRuntime(
     body?: Record<string, unknown>
   ) =>
     withApiErrorLog('Error calling Runpod API:', () =>
-      v1Client(`${API_BASE_URL}${endpoint}`, method, body)
+      v1Client(`${restV1Base(process.env as Env)}${endpoint}`, method, body)
     );
 
   // Serverless runtime client (endpointId + path against the serverless base).
@@ -280,7 +278,7 @@ export function createToolRuntime(
   ) =>
     withApiErrorLog('Error calling Runpod Serverless API:', () =>
       serverlessClient(
-        `${SERVERLESS_API_BASE_URL}/${endpointId}${path}`,
+        `${serverlessBase(process.env as Env)}/${endpointId}${path}`,
         method,
         body
       )
@@ -383,7 +381,13 @@ export function createToolRuntime(
 
   return {
     jsonReply,
-    graphql: <T>(query: string) => graphqlRequest<T>(query, tracking),
+    graphql: <T>(query: string) =>
+      graphqlRequest<T>(
+        query,
+        tracking,
+        httpFetch,
+        publicGraphqlBase(process.env as Env)
+      ),
     runpodRequest,
     serverlessRequest,
     callRestUrl,

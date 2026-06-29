@@ -1417,10 +1417,24 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
     });
   });
 
+  it('create-endpoint v2 missing name → clean 400, no request', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      const out = await handlers.get('create-endpoint')!({
+        imageName: 'img:2',
+        gpuPoolIds: ['AMPERE_80'],
+      });
+      assert.equal(outbound.length, 0);
+      assert.equal(parseText(out).status, 400);
+      assert.match(parseText(out).error as string, /name/);
+    });
+  });
+
   it('create-endpoint v2 missing imageName → clean 400, no request', async () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({ jsonBody: {} });
       const out = await handlers.get('create-endpoint')!({
+        name: 'e',
         gpuPoolIds: ['AMPERE_80'],
       });
       assert.equal(outbound.length, 0);
@@ -1433,6 +1447,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({ jsonBody: {} });
       const out = await handlers.get('create-endpoint')!({
+        name: 'e',
         imageName: 'img:2',
       });
       assert.equal(outbound.length, 0);
@@ -1479,18 +1494,35 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
 });
 
 describe('endpoint routing under v1 (templateId model preserved)', () => {
-  it('create-endpoint v1 → POST <rest>/v1/endpoints, templateId passthrough', async () => {
+  it('create-endpoint v1 → POST <rest>/v1/endpoints, sends only v1 fields (v2-only dropped)', async () => {
     const { handlers, outbound } = harness({ jsonBody: { id: 'ep_1' } });
     await handlers.get('create-endpoint')!({
       name: 'e',
       templateId: 'tpl_1',
       workersMax: 3,
+      // v2-only fields a confused caller might also pass — must NOT reach v1:
+      imageName: 'img:2',
+      gpuPoolIds: ['AMPERE_80'],
+      flashboot: 'FLASHBOOT',
+      networkVolumeIds: ['nv_1'],
+      executionTimeoutMs: 600000,
     });
     assert.equal(outbound[0].url, 'https://rest.runpod.io/v1/endpoints');
     assert.equal(outbound[0].method, 'POST');
     const body = JSON.parse(outbound[0].body!);
     assert.equal(body.templateId, 'tpl_1');
+    assert.equal(body.name, 'e');
+    assert.equal(body.workersMax, 3);
     assert.equal('gpu' in body, false); // no v2 nesting on v1
+    for (const k of [
+      'imageName',
+      'gpuPoolIds',
+      'flashboot',
+      'networkVolumeIds',
+      'executionTimeoutMs',
+    ]) {
+      assert.equal(k in body, false, `v2-only field ${k} must not reach v1`);
+    }
   });
 
   it('create-endpoint v1 missing templateId → clean 400, no request', async () => {
@@ -1516,3 +1548,34 @@ describe('endpoint routing under v1 (templateId model preserved)', () => {
 // drive end-to-end here. The SSE frame parser (parsePodLogSse) is unit-tested in
 // mappers.test.ts; the harness retains a `streamSse` injection seam for when the
 // tool is re-enabled.
+
+// The v1 catalog path (list-gpu-types / list-data-centers) goes through
+// `graphqlRequest`, which now uses the INJECTED fetch (not module-level
+// node-fetch). This proves the seam: under v1 the GraphQL call is captured by
+// the harness fake — before the fix it bypassed the seam and hit the real net.
+describe('v1 catalog GraphQL uses the injected fetch (offline seam)', () => {
+  it('list-gpu-types v1 → POST <graphql> via the fake fetch, no real network', async () => {
+    const { handlers, outbound } = harness({
+      jsonBody: {
+        data: {
+          gpuTypes: [
+            {
+              id: 'A100',
+              displayName: 'A100',
+              memoryInGb: 80,
+              secureCloud: true,
+              communityCloud: true,
+              lowestPrice: { stockStatus: 'High' },
+            },
+          ],
+        },
+      },
+    });
+    const out = await handlers.get('list-gpu-types')!({});
+    // Captured by the injected fetch ⇒ the seam holds (no real network).
+    assert.equal(outbound.length, 1);
+    assert.equal(outbound[0].url, 'https://api.runpod.io/graphql');
+    assert.equal(outbound[0].method, 'POST');
+    assert.ok((parseText(out).items as unknown[]).length >= 1);
+  });
+});

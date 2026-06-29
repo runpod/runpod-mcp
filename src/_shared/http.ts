@@ -55,10 +55,12 @@ function isJsonContentType(contentType: string | null): boolean {
   return ct.includes('application/json') || ct.includes('+json');
 }
 
-// Only POST/PATCH carry a JSON body; GET/DELETE never do (matches the legacy
-// runpodRequest/serverlessRequest helpers this client replaced).
+// Body-carrying methods. This is now the single unified client for all REST
+// calls, so include PUT — otherwise a future tool passing method='PUT' with a
+// body would have the payload silently dropped (request sent with no body, no
+// error). GET/DELETE never carry a body.
 function methodSendsBody(method: string): boolean {
-  return method === 'POST' || method === 'PATCH';
+  return method === 'POST' || method === 'PATCH' || method === 'PUT';
 }
 
 // The auth + content-type + caller-tracking headers sent on every request.

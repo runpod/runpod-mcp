@@ -328,16 +328,25 @@ describe('createV2Prober', () => {
     assert.equal(calls.n, 1);
   });
 
-  it('memoizes a false (401) verdict: does not re-probe', async () => {
+  it('does NOT cache a 401/403 verdict — re-probes and can recover', async () => {
+    // 401/403 is treated as transient (not definitive): an auth failure during a
+    // rollout, or a key whose v2 scope is later expanded, must not pin the
+    // process to v1 for its lifetime. Each call returns false but re-probes.
+    let status = 401;
     const calls = { n: 0 };
     const probe = createV2Prober({
-      fetch: mkFetch(401, calls),
+      fetch: () => {
+        calls.n++;
+        return Promise.resolve({ status });
+      },
       baseUrl: 'x',
       apiKey: 'k',
     });
     assert.equal(await probe(), false);
-    assert.equal(await probe(), false);
-    assert.equal(calls.n, 1, 'a definitive 401 verdict must be cached');
+    assert.equal(calls.n, 1);
+    status = 200; // v2 access granted later
+    assert.equal(await probe(), true, '401 must not be cached — can recover');
+    assert.equal(calls.n, 2);
   });
 
   it('does NOT cache a transient failure (5xx) — re-probes and can recover', async () => {

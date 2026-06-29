@@ -28,10 +28,30 @@ function apiKey(): string {
 }
 
 async function connect(version: string): Promise<Client> {
+  // StdioClientTransport REPLACES (does not merge) the child env, so without an
+  // explicit passthrough the child boots with prod defaults and a caller-set
+  // RUNPOD_REST_V2_API_URL (e.g. the dev host) silently never reaches it —
+  // making the "v2" smoke actually validate against prod. Forward the relevant
+  // overrides, but keep RUNPOD_REST_VERSION authoritative to THIS run's `version`
+  // (don't let a parent RUNPOD_REST_VERSION override the per-version loop).
+  const childEnv: Record<string, string> = {
+    RUNPOD_API_KEY: apiKey(),
+    RUNPOD_REST_VERSION: version,
+  };
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined || key === 'RUNPOD_REST_VERSION') continue;
+    if (
+      key.startsWith('RUNPOD_REST') ||
+      key === 'RUNPOD_SERVERLESS_API_URL' ||
+      key === 'RUNPOD_PUBLIC_GRAPHQL_URL'
+    ) {
+      childEnv[key] = value;
+    }
+  }
   const transport = new StdioClientTransport({
     command: 'node',
     args: [process.env.SMOKE_SERVER ?? 'dist/stdio.mjs'],
-    env: { RUNPOD_API_KEY: apiKey(), RUNPOD_REST_VERSION: version },
+    env: childEnv,
     stderr: 'inherit',
   });
   const client = new Client({ name: 'smoke-crud', version: '1.0.0' });
@@ -219,10 +239,16 @@ async function runVersion(version: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const versions = process.argv
-    .slice(2)
-    .filter((v) => v === 'v1' || v === 'v2');
-  if (versions.length === 0) versions.push('v1');
+  // Reject unknown args rather than silently dropping them — a typo like `V2`
+  // or `v2 ` must NOT exit 0 having run only the default (false green on a
+  // gating script).
+  const args = process.argv.slice(2);
+  const bad = args.filter((v) => v !== 'v1' && v !== 'v2');
+  if (bad.length) {
+    console.error(`Unknown version arg(s): ${bad.join(', ')} (expected v1|v2)`);
+    process.exit(1);
+  }
+  const versions = args.length ? args : ['v1'];
   for (const v of versions) {
     await runVersion(v);
   }

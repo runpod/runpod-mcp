@@ -108,8 +108,8 @@ describe('createHttpClient — request shape', () => {
     }
   });
 
-  it('does NOT serialize a body for GET/DELETE/PUT (gate is POST/PATCH only)', async () => {
-    for (const method of ['GET', 'DELETE', 'PUT']) {
+  it('does NOT serialize a body for GET/DELETE (gate is POST/PATCH/PUT)', async () => {
+    for (const method of ['GET', 'DELETE']) {
       const cap: Captured = {};
       const client = createHttpClient({
         apiKey: 'k',
@@ -119,6 +119,20 @@ describe('createHttpClient — request shape', () => {
       });
       await client('http://x/pods', method, { name: 'a' });
       assert.equal(cap.init?.body, undefined, method);
+    }
+  });
+
+  it('DOES serialize a body for POST/PATCH/PUT', async () => {
+    for (const method of ['POST', 'PATCH', 'PUT']) {
+      const cap: Captured = {};
+      const client = createHttpClient({
+        apiKey: 'k',
+        fetch: fakeFetch(fakeResponse({ jsonBody: {} }), cap),
+        tracking: noTracking,
+        errorPrefix: 'p',
+      });
+      await client('http://x/pods', method, { name: 'a' });
+      assert.equal(cap.init?.body, JSON.stringify({ name: 'a' }), method);
     }
   });
 

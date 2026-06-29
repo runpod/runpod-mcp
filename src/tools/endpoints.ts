@@ -197,6 +197,14 @@ export function registerEndpointTools(
       if (backend.version === 'v2') {
         // Guard the v2-required fields before calling, so the caller gets a
         // clean 400 rather than a raw 422 from the API (mirrors create-pod).
+        // v2 CreateEndpointRequest marks `name` required too — guard it so an
+        // omitted name is a clean 400, not an opaque 422.
+        if (!params.name) {
+          return jsonReply({
+            error: 'On the v2 REST API, create-endpoint requires a name.',
+            status: 400,
+          });
+        }
         if (!params.imageName) {
           return jsonReply({
             error:
@@ -220,8 +228,7 @@ export function registerEndpointTools(
         return jsonReply(result);
       }
 
-      // v1: legacy /endpoints, templateId-based. Passthrough (mapCreate is
-      // identity under v1), guarding the v1-required field.
+      // v1: legacy /endpoints, templateId-based. Guard the v1-required field.
       if (!params.templateId) {
         return jsonReply({
           error:
@@ -229,10 +236,27 @@ export function registerEndpointTools(
           status: 400,
         });
       }
+      // Send ONLY v1-relevant fields — the tool schema is a v1+v2 union, so
+      // forwarding the raw params would also send v2-only keys (gpuPoolIds,
+      // flashboot, networkVolumeIds, …) to the v1 API. Harmless today (v1 ignores
+      // unknowns) but imprecise; filter explicitly.
+      const v1Body: Record<string, unknown> = {};
+      for (const k of [
+        'templateId',
+        'name',
+        'computeType',
+        'gpuTypeIds',
+        'gpuCount',
+        'workersMin',
+        'workersMax',
+        'dataCenterIds',
+      ] as const) {
+        if (params[k] !== undefined) v1Body[k] = params[k];
+      }
       const result = await callRestUrl(
         `${backend.base}${backend.list}`,
         'POST',
-        params as Record<string, unknown>
+        v1Body
       );
       return jsonReply(result);
     }
