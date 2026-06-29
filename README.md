@@ -25,13 +25,29 @@ npx @runpod/mcp-server@latest remove
 
 ### Connect to the hosted server manually
 
-If you'd rather configure your client by hand, point it at the hosted server URL:
+If you'd rather configure your client by hand, point it at the hosted server over HTTP (no local process, no API key stored).
 
-```
-https://mcp.getrunpod.io/
+**Claude Code** — add it as an HTTP server:
+
+```bash
+claude mcp add --transport http runpod -s user https://mcp.getrunpod.io/
 ```
 
-The hosted server uses the "Sign in with Runpod" OAuth flow for authentication, so no API key is stored. An OAuth-capable client (such as Claude's connector) starts the sign-in flow automatically. See [Sign in with Runpod (authorize flow)](#sign-in-with-runpod-authorize-flow) for details.
+**Other clients** (Cursor, VS Code, Claude Desktop connectors, …) — use a URL-based MCP entry:
+
+```json
+{
+  "mcpServers": {
+    "runpod": {
+      "url": "https://mcp.getrunpod.io/"
+    }
+  }
+}
+```
+
+The hosted server uses the "Sign in with Runpod" OAuth flow for authentication, so no API key is stored. An OAuth-capable client starts the sign-in flow automatically on first connect. See [Sign in with Runpod (authorize flow)](#sign-in-with-runpod-authorize-flow) for details.
+
+> Prefer your own API key instead of OAuth? Append `--header "Authorization: Bearer YOUR_API_KEY"` to the `claude mcp add` command (or add a `headers` block in the JSON), and the server forwards that key to the Runpod API directly.
 
 ### Requirements
 
