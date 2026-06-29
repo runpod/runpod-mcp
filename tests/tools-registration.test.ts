@@ -77,7 +77,7 @@ const EXPECTED_TOOLS = [
   'start-pod',
   'stop-pod',
   'restart-pod',
-  'stream-pod-logs',
+  // 'stream-pod-logs' — DISABLED until prod ships GET /v2/pods/{id}/logs
   'delete-pod',
   // endpoints
   'list-endpoints',
@@ -86,7 +86,7 @@ const EXPECTED_TOOLS = [
   'update-endpoint',
   'delete-endpoint',
   'list-endpoint-workers',
-  'list-endpoint-releases',
+  // 'list-endpoint-releases' — DISABLED until prod ships the releases endpoint
   // serverless runtime (jobs)
   'run-endpoint',
   'runsync-endpoint',

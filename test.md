@@ -30,7 +30,7 @@ pnpm install
 **Run the offline suite (start here — no key, no cost)**
 
 ```bash
-pnpm test       # ~253 tests (live-shape checks skip without a key)
+pnpm test       # ~248 tests (live-shape checks skip without a key)
 ```
 
 **Start the server for the live walkthrough (dev, v2)**
@@ -102,15 +102,15 @@ This is what CI runs. Hermetic — no network, no API key.
 ```bash
 pnpm type-check     # tsc, no errors
 pnpm lint           # eslint, clean
-pnpm test           # ~253 tests; the 8 live-shape checks are skipped without a key
+pnpm test           # ~248 tests; the 8 live-shape checks are skipped without a key
 pnpm build          # tsup bundle succeeds
 ```
 
 `pnpm test` covers:
 
-- **Outbound-request goldens** — pins the exact URL / method / body each of the 52 tools puts on the wire, for **both** v1 and v2. A behavior regression fails here.
+- **Outbound-request goldens** — pins the exact URL / method / body each of the 50 tools puts on the wire, for **both** v1 and v2. A behavior regression fails here.
 - **Adapter / mappers / http / pagination** units — version resolution, v1→v2 body mapping (incl. endpoint inline config), SSE log-frame parsing, the list cap envelope.
-- **Tool registration snapshot** — the full 52-tool surface is frozen; a dropped registrar fails.
+- **Tool registration snapshot** — the full 50-tool surface is frozen; a dropped registrar fails.
 - **Spec-parity drift gate** (`tests/spec-parity.test.ts`) — walks every operation in the vendored v2 OpenAPI spec (`tests/fixtures/v2-openapi.yaml`) and fails if a v2 endpoint has **no** MCP tool covering it. This is how we know the tool surface matches the API. To refresh the spec when v2 changes:
 
   ```bash
@@ -207,8 +207,11 @@ pnpm build && pnpm smoke:stdio        # build first — smoke:stdio runs dist/st
 > the dev-v2 env, and the forwarded `RUNPOD_REST_V2_API_URL` is honored by the
 > spawned server — same surface and routing as HTTP.)
 >
-> (Surface is now **52** tools after the v2-parity additions: `stream-pod-logs`,
-> `list-endpoint-releases`, and the v2 inline-config `create-endpoint`/`update-endpoint`.)
+> (Surface is **50** tools. The v2-parity pass migrated `create-endpoint`/
+> `update-endpoint` to the v2 inline-config model and added two more tools —
+> `stream-pod-logs` + `list-endpoint-releases` — but those two are **registered-
+> disabled** (commented out) because their API ops are live on dev only and 422 on
+> prod. Their code + offline tests remain; re-enable when prod ships the ops.)
 
 ---
 
@@ -432,28 +435,29 @@ GPU type ids. `workersMin: 0` = scale-to-zero = **free at rest**.
 | J1 | `create-endpoint` | `name: mcptest-ep`, `imageName: runpod/test-output:0.0.1`, `gpuPoolIds: [<a pool from A1, e.g. AMPERE_80>]`, `workersMin: 0`, `workersMax: 1`, `scalerType: QUEUE_DELAY`, `scalerValue: 4`, `idleTimeout: 5` | returns `id`; body nests `gpu.pools`/`workers`/`scaling` | appears in console → Serverless |
 | J2 | `get-endpoint` | `endpointId` from J1 | round-trips image + gpu.pools | — |
 | J3 | `update-endpoint` | `endpointId`, `workersMax: 2` | `workers.max` reflects 2 | — |
-| J4 | `list-endpoint-releases` | `endpointId` | **dev only** — `{items, rollout, endpointVersion}` on dev; **422 "path not found" on prod** (not yet shipped) | — |
-| J5 | `delete-endpoint` | `endpointId` | 204 success | gone from console |
-| J6 | `list-endpoints` | — | J1 **absent** | no `mcptest-*` remain |
+| J4 | `delete-endpoint` | `endpointId` | 204 success | gone from console |
+| J5 | `list-endpoints` | — | J1 **absent** | no `mcptest-*` remain |
 
 > **`create-endpoint` v2 guards:** missing `imageName` → clean 400 ("needs an
 > imageName"); missing `gpuPoolIds` → clean 400 ("needs gpuPoolIds"). On **v1**
 > (`RUNPOD_REST_VERSION` unset) `create-endpoint` keeps the **templateId** model and
 > 400s if `templateId` is missing.
 
-#### K — Stream pod logs (v2-only, SSE)
-`stream-pod-logs` reads `GET /v2/pods/{id}/logs` (`text/event-stream`) for a bounded
-window (`maxWaitMs`, default 5s) and returns the collected `{source,line,ts}` lines.
+#### K — Dev-only tools, currently DISABLED (not registered)
+Two tools are **implemented but their registration is commented out** because their
+API ops are live on **dev only** and 422 on prod:
 
-| # | Check | How | Expect |
-|---|-------|-----|--------|
-| K1 | logs from a running pod (dev) | `stream-pod-logs` `podId:` a RUNNING pod, `tail: 100`, `source: both` | `{ items, count, truncated }`; **dev only** — **422 on prod** (endpoint not yet shipped) |
-| K2 | v1 → 501 | run on a server with `RUNPOD_REST_VERSION` unset | clean 501 notice, no request |
+| Tool | Op | Why disabled |
+|------|----|----|
+| `stream-pod-logs` | `GET /v2/pods/{id}/logs` (SSE) | dev v2 spec (47 ops) has it; prod (45 ops) 422s "path not found" |
+| `list-endpoint-releases` | `GET /v2/serverless/{id}/releases` | same — dev-only, prod 422s |
 
-> **J4 / K1 are dev-ahead-of-prod:** `getPodLogs` and `listEndpointReleases` exist in
-> the dev v2 spec (47 ops) but are **not yet on prod** (45 ops) — prod returns
-> **422 "path not found"**. They're covered offline by the goldens (SSE-frame parser,
-> v2 wire-lock, v1→501) and live-verified on dev only.
+They are **not callable** today (absent from `tools/list`). Their code stays in the
+tree and is offline-tested (SSE-frame parser `parsePodLogSse`; mapper goldens); to
+re-enable, uncomment the `server.tool(...)` block in `src/tools/pods.ts` /
+`src/tools/endpoints.ts`, re-add the SPEC_OP_TO_TOOLS mapping (remove the
+ALLOWLIST_UNMAPPED_OPS entry) in `tests/spec-parity.test.ts`, and add them back to
+the `tools-registration` snapshot — do this once prod ships the ops.
 
 #### F — v1 ↔ v2 parity (relaunch server on v1, repeat a subset)
 Re-run **A1, A2, B1–B6** under v1 (`RUNPOD_REST_VERSION` unset). Expect the same
@@ -519,11 +523,10 @@ Server: version `1.3.0`  base `v2-rest.runpod.io/v2` (prod)  date `2026-06-26`  
 | J1 | create-endpoint (v2 inline) | PASS | prod v2; `image`+`gpu.pools:["AMPERE_80"]`+`workers`+`scaling` round-tripped; `workersMin:0` (free) |
 | J2 | get-endpoint | PASS | prod v2; round-trips image + gpu.pools |
 | J3 | update-endpoint | PASS | prod v2; `workers.max` 1→2 |
-| J4 | list-endpoint-releases | N/A (prod) | **422 "path not found" on prod** (dev-only op); offline goldens + v1→501 PASS |
-| J5 | delete-endpoint | PASS | prod v2; 204 |
-| J6 | list-endpoints (gone) | PASS | no `mcptest-*` remain (swept) |
-| K1 | stream-pod-logs | N/A (prod) | dev-only op (422 on prod); offline SSE-parser + wire-lock + v1→501 PASS |
-| K2 | stream-pod-logs under v1 | PASS | clean 501, no request |
+| J4 | delete-endpoint | PASS | prod v2; 204 |
+| J5 | list-endpoints (gone) | PASS | no `mcptest-*` remain (swept) |
+| K — stream-pod-logs | (disabled) | N/A | registration commented out — dev-only op, 422 on prod; parser unit-tested offline |
+| K — list-endpoint-releases | (disabled) | N/A | registration commented out — dev-only op, 422 on prod; offline-tested |
 | F | v1↔v2 parity | PASS | A1/A2 + template CRUD re-run on v1 prod, same shapes |
 | G1 | v2-only under v1 (list-cpu-types) | PASS | clean 501 |
 | G2 | v2-only under v1 (get-gpu/cpu/dc-type, restart-pod, list-tags, get-billing) | PASS | clean 501 each |
@@ -544,10 +547,9 @@ remain**. (The automated equivalent for free resources is `pnpm smoke:crud v1 v2
 - #47 Split + new tools — H (tags), I (billing), A5/A6 (catalog gets), G2 (new v2-only 501s): ✅
 
 **v2 full-parity addendum** (prod v2, 2026-06-29) — close the last 3 v2 gaps:
-- **Endpoint CRUD migrated to v2** (`/v2/serverless`, inline image+gpu.pools+workers+scaling; v1 templateId model preserved): J1–J3, J5, J6 ✅ live on prod, all `mcptest-*` torn down.
-- **`list-endpoint-releases`** (new tool, `GET /v2/serverless/{id}/releases`): offline goldens + v1→501 ✅; dev-only on the API → 422 on prod (J4).
-- **`stream-pod-logs`** (new tool, SSE `GET /v2/pods/{id}/logs`): offline SSE-frame parser + v2 wire-lock + v1→501 ✅ (K1/K2); dev-only on the API → can't prod-test.
-- Spec re-vendored from dev (45→47 ops); spec-parity gate green (every op mapped). Surface 50→**52** tools. Suite 219→**253** tests, all green.
+- **Endpoint CRUD migrated to v2** (`/v2/serverless`, inline image+gpu.pools+workers+scaling; v1 templateId model preserved): J1–J5 ✅ live on prod, all `mcptest-*` torn down. **This is the part that ships now** (the op is on prod).
+- **`list-endpoint-releases`** + **`stream-pod-logs`** implemented but **registration DISABLED (commented out)** — their ops (`GET /v2/serverless/{id}/releases`, `GET /v2/pods/{id}/logs`) are live on **dev only** and 422 on prod, so they're not callable until prod ships them. Code + offline tests (SSE parser, mapper goldens) remain in the tree; the two dev-only ops are in `ALLOWLIST_UNMAPPED_OPS` so the parity gate stays green against the dev superset spec.
+- Spec re-vendored from dev (45→47 ops); spec-parity gate green. Surface stays **50** tools (the 2 dev-only tools are not registered). Suite 219→**248** tests, all green.
 
 ---
 

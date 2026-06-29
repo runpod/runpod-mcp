@@ -1324,8 +1324,8 @@ describe('all v2-only tools: v1 → 501 with no request', () => {
     ['detach-tag', { tagId: 't1', resourceType: 'POD', resourceId: 'p1' }],
     ['get-billing', {}],
     ['list-endpoint-workers', { endpointId: 'ep_1' }],
-    ['list-endpoint-releases', { endpointId: 'ep_1' }],
-    ['stream-pod-logs', { podId: 'pod_1' }],
+    // list-endpoint-releases + stream-pod-logs are DISABLED (dev-only ops not
+    // yet on prod) — not registered, so they're out of this 501 sweep.
     ['get-cpu-type', { cpuTypeId: 'cpu5c' }],
     ['get-data-center', { dataCenterId: 'EU-RO-1' }],
     ['list-cpu-types', {}],
@@ -1473,29 +1473,9 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
     });
   });
 
-  it('list-endpoint-releases v2 → GET …/releases, caps releases, preserves rollout', async () => {
-    await withV2(async () => {
-      const releases = Array.from({ length: 3 }, (_, i) => ({ id: `r${i}` }));
-      const { handlers, outbound } = harness({
-        jsonBody: {
-          releases,
-          rollout: { inProgress: false },
-          endpointVersion: 7,
-        },
-      });
-      const out = await handlers.get('list-endpoint-releases')!({
-        endpointId: 'ep_1',
-      });
-      assert.equal(
-        outbound[0].url,
-        'https://v2-rest.runpod.io/v2/serverless/ep_1/releases'
-      );
-      const env = parseText(out);
-      assert.equal((env.items as unknown[]).length, 3);
-      assert.deepEqual(env.rollout, { inProgress: false });
-      assert.equal(env.endpointVersion, 7);
-    });
-  });
+  // NOTE: list-endpoint-releases is implemented but its registration is DISABLED
+  // (dev-only op, prod 422s) — so there is no handler to drive here. Its mapper-
+  // level coverage stays; re-add a wire-lock when the tool is re-enabled.
 });
 
 describe('endpoint routing under v1 (templateId model preserved)', () => {
@@ -1531,53 +1511,8 @@ describe('endpoint routing under v1 (templateId model preserved)', () => {
   });
 });
 
-describe('stream-pod-logs (v2-only, SSE)', () => {
-  const SSE = [
-    'data: {"source":"container","line":"hello","ts":"2026-01-01T00:00:00Z"}',
-    '',
-    'data: {"source":"system","line":"boot","ts":"2026-01-01T00:00:01Z"}',
-    '',
-    ': comment-keepalive',
-    '',
-  ].join('\n');
-
-  it('v2 → reads <v2>/v2/pods/{id}/logs SSE, parses frames into items', async () => {
-    await withV2(async () => {
-      const calls: Array<{ url: string; maxWaitMs: number }> = [];
-      const { handlers } = harness({
-        streamSse: async (url, o) => {
-          calls.push({ url, maxWaitMs: o.maxWaitMs });
-          return { raw: SSE, truncated: false };
-        },
-      });
-      const out = await handlers.get('stream-pod-logs')!({
-        podId: 'pod_1',
-        source: 'both',
-        tail: 50,
-        maxWaitMs: 2000,
-      });
-      assert.equal(
-        calls[0].url,
-        'https://v2-rest.runpod.io/v2/pods/pod_1/logs?source=both&tail=50'
-      );
-      assert.equal(calls[0].maxWaitMs, 2000);
-      const env = parseText(out);
-      assert.equal(env.count, 2);
-      assert.deepEqual((env.items as Array<{ line: string }>).map((i) => i.line), [
-        'hello',
-        'boot',
-      ]);
-      assert.equal(env.truncated, false);
-    });
-  });
-
-  it('v2 propagates the truncated flag from the reader', async () => {
-    await withV2(async () => {
-      const { handlers } = harness({
-        streamSse: async () => ({ raw: SSE, truncated: true }),
-      });
-      const out = await handlers.get('stream-pod-logs')!({ podId: 'pod_1' });
-      assert.equal(parseText(out).truncated, true);
-    });
-  });
-});
+// NOTE: stream-pod-logs is implemented but its registration is DISABLED
+// (dev-only op, prod 422s GET /v2/pods/{id}/logs) — so there's no handler to
+// drive end-to-end here. The SSE frame parser (parsePodLogSse) is unit-tested in
+// mappers.test.ts; the harness retains a `streamSse` injection seam for when the
+// tool is re-enabled.

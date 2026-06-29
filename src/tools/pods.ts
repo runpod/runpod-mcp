@@ -44,7 +44,9 @@ export function parsePodLogSse(raw: string): PodLogEntry[] {
 }
 
 export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
-  const { jsonReply, callRestUrl, backendFor, streamSse, podAction, env } = rt;
+  // NOTE: `streamSse` (used by the stream-pod-logs tool) is intentionally not
+  // destructured while that tool is disabled — see the commented block below.
+  const { jsonReply, callRestUrl, backendFor, podAction, env } = rt;
 
   // List Pods
   server.tool(
@@ -404,12 +406,15 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
     }
   );
 
-  // Stream Pod Logs — v2-only (GET /v2/pods/{id}/logs, text/event-stream).
-  // The endpoint streams live container/system log lines as SSE. Because a live
-  // stream never ends on its own, we read it time-bounded (maxWaitMs) and
-  // byte-capped, then return the collected lines as a JSON array — so a one-shot
-  // MCP tool call gets a bounded snapshot rather than hanging. v1 has no logs
-  // endpoint → 501 notice.
+  // ⛔ DISABLED until prod ships the endpoint — DO NOT register yet.
+  // `stream-pod-logs` calls GET /v2/pods/{id}/logs (SSE). That op exists ONLY on
+  // the dev v2 deployment (v2-rest.runpod.dev, 47-op spec); prod
+  // (v2-rest.runpod.io, 45-op spec) returns 422 "path not found". Keeping the
+  // tool registered would expose a call that 422s in prod. The implementation
+  // (parsePodLogSse + the runtime streamSse reader) stays in the tree and is
+  // unit-tested; re-enable this block (and re-add `streamSse` to the destructure
+  // above) once getPodLogs is live on prod.
+  /*
   server.tool(
     'stream-pod-logs',
     'Fetch a bounded snapshot of a pod\'s live logs (container and/or system) via Server-Sent Events. v2-only — returns a 501 notice on the v1 API. Reads for up to maxWaitMs (default 5s) and returns the collected log lines; use `tail` to backfill recent lines first. Large output is truncated (see the `truncated` flag).',
@@ -462,6 +467,7 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
       }
     }
   );
+  */
 
   // Delete Pod
   server.tool(
