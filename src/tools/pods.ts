@@ -7,8 +7,44 @@ import { READ_ONLY, WRITE, DESTRUCTIVE, type ToolRuntime } from './runtime.js';
 
 // ============== POD MANAGEMENT TOOLS ==============
 
+// One parsed Server-Sent-Events log frame from GET /v2/pods/{id}/logs. The API
+// emits `data: {"source","line","ts"}` events; a frame that doesn't parse as
+// JSON is preserved verbatim under `raw` rather than dropped.
+export interface PodLogEntry {
+  source?: string;
+  line?: string;
+  ts?: string;
+  raw?: string;
+}
+
+// Parse the raw accumulated event-stream text into log entries. Pure (no I/O),
+// so the risky parsing logic is unit-tested without a network. SSE events are
+// separated by a blank line; the payload is the `data:` field (possibly spanning
+// multiple `data:` lines per the SSE spec). Non-JSON payloads fall back to
+// `{raw}`. Comment lines (`:`...) and other fields (event:/id:) are ignored.
+export function parsePodLogSse(raw: string): PodLogEntry[] {
+  const items: PodLogEntry[] = [];
+  for (const block of raw.split(/\r?\n\r?\n/)) {
+    const dataLines = block
+      .split(/\r?\n/)
+      .filter((l) => l.startsWith('data:'));
+    if (!dataLines.length) continue;
+    // Strip the `data:` field name and one optional leading space per line.
+    const payload = dataLines
+      .map((l) => l.slice(5).replace(/^ /, ''))
+      .join('\n');
+    if (!payload.trim()) continue;
+    try {
+      items.push(JSON.parse(payload) as PodLogEntry);
+    } catch {
+      items.push({ raw: payload });
+    }
+  }
+  return items;
+}
+
 export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
-  const { jsonReply, callRestUrl, backendFor, podAction, env } = rt;
+  const { jsonReply, callRestUrl, backendFor, streamSse, podAction, env } = rt;
 
   // List Pods
   server.tool(
@@ -365,6 +401,65 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
       }
       const result = await podAction(params.podId, 'restart');
       return jsonReply(result);
+    }
+  );
+
+  // Stream Pod Logs — v2-only (GET /v2/pods/{id}/logs, text/event-stream).
+  // The endpoint streams live container/system log lines as SSE. Because a live
+  // stream never ends on its own, we read it time-bounded (maxWaitMs) and
+  // byte-capped, then return the collected lines as a JSON array — so a one-shot
+  // MCP tool call gets a bounded snapshot rather than hanging. v1 has no logs
+  // endpoint → 501 notice.
+  server.tool(
+    'stream-pod-logs',
+    'Fetch a bounded snapshot of a pod\'s live logs (container and/or system) via Server-Sent Events. v2-only — returns a 501 notice on the v1 API. Reads for up to maxWaitMs (default 5s) and returns the collected log lines; use `tail` to backfill recent lines first. Large output is truncated (see the `truncated` flag).',
+    {
+      podId: z.string().describe('ID of the pod whose logs to stream'),
+      source: z
+        .enum(['container', 'system', 'both'])
+        .optional()
+        .describe('Which log source to read (default: both)'),
+      tail: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe('Number of recent lines to backfill before live output'),
+      maxWaitMs: z
+        .number()
+        .int()
+        .min(500)
+        .max(30000)
+        .optional()
+        .describe('How long to read the stream, in ms (default 5000, max 30000)'),
+    },
+    { title: 'Stream pod logs', ...READ_ONLY },
+    async (params) => {
+      const backend = backendFor('pods');
+      if (backend.version === 'v1') {
+        return jsonReply({
+          error:
+            'stream-pod-logs is only available on the v2 REST API. Set RUNPOD_REST_VERSION=v2.',
+          status: 501,
+        });
+      }
+      const qs = new URLSearchParams();
+      if (params.source) qs.append('source', params.source);
+      if (params.tail !== undefined) qs.append('tail', String(params.tail));
+      const queryString = qs.toString() ? `?${qs.toString()}` : '';
+      try {
+        const { raw, truncated } = await streamSse(
+          `${backend.base}${backend.get!(params.podId)}/logs${queryString}`,
+          { maxWaitMs: params.maxWaitMs ?? 5000, maxBytes: 256 * 1024 }
+        );
+        const items = parsePodLogSse(raw);
+        return jsonReply({ items, count: items.length, truncated });
+      } catch (error) {
+        if (error instanceof HttpError) {
+          return jsonReply({ error: error.message, status: error.status });
+        }
+        throw error;
+      }
     }
   );
 

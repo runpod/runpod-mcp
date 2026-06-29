@@ -77,6 +77,7 @@ const EXPECTED_TOOLS = [
   'start-pod',
   'stop-pod',
   'restart-pod',
+  'stream-pod-logs',
   'delete-pod',
   // endpoints
   'list-endpoints',
@@ -85,6 +86,7 @@ const EXPECTED_TOOLS = [
   'update-endpoint',
   'delete-endpoint',
   'list-endpoint-workers',
+  'list-endpoint-releases',
   // serverless runtime (jobs)
   'run-endpoint',
   'runsync-endpoint',

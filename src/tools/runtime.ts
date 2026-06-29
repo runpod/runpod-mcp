@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import fetch from 'node-fetch';
 import { randomUUID } from 'node:crypto';
-import { createHttpClient } from '../_shared/http.js';
+import { createHttpClient, HttpError } from '../_shared/http.js';
 import { buildTrackingHeaders } from '../_shared/tracking.js';
 import {
   resolveBackend,
@@ -141,7 +141,23 @@ export const DESTRUCTIVE = {
 export interface ToolDeps {
   fetch?: HttpFetch;
   v2Available?: boolean;
+  // Test seam for the SSE log stream (stream-pod-logs). Production builds a
+  // node-fetch reader; tests inject a fake returning canned event-stream text.
+  streamSse?: StreamSse;
 }
+
+// A bounded Server-Sent-Events read. Returns the raw accumulated stream text
+// (caller parses frames) plus whether the byte cap truncated it. Time-bounded
+// by maxWaitMs (the stream may stay open for live tail), so a clean timeout is
+// a normal end, not an error.
+export interface StreamSseResult {
+  raw: string;
+  truncated: boolean;
+}
+export type StreamSse = (
+  url: string,
+  opts: { maxWaitMs: number; maxBytes: number }
+) => Promise<StreamSseResult>;
 
 /**
  * The shared, server-instance-bound runtime threaded into every per-resource
@@ -173,6 +189,10 @@ export interface ToolRuntime {
   ) => Promise<unknown>;
   // Resolve a resource's v1/v2 backend descriptor for the current env/transport.
   backendFor: (resource: Resource) => Backend;
+  // Bounded SSE reader (stream-pod-logs). Authenticated + tracked; reads a
+  // text/event-stream until the byte cap or the time bound, returning the raw
+  // accumulated text. Throws HttpError on a non-OK response.
+  streamSse: StreamSse;
   // Pod state transition (v1 subpaths vs v2 unified /action).
   podAction: (
     podId: string,
@@ -283,6 +303,60 @@ export function createToolRuntime(
       restClient(url, method, body)
     );
 
+  // Bounded SSE reader for stream-pod-logs. Uses node-fetch directly (not the
+  // JSON client) so we can read the response body incrementally and stop on the
+  // byte cap or the time bound. The log stream stays open to tail live output,
+  // so a timeout-abort is a NORMAL end (return what we collected), not an error;
+  // only a non-OK HTTP status throws. Overridable via deps for offline tests.
+  const streamSse: StreamSse =
+    deps.streamSse ??
+    (async (url, opts) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), opts.maxWaitMs);
+      try {
+        const res = await fetch(url, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${ctx.apiKey}`,
+            Accept: 'text/event-stream',
+            ...tracking(),
+          },
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          throw new HttpError(
+            'Runpod API Error',
+            res.status,
+            await res.text().catch(() => '')
+          );
+        }
+        // Collect raw Buffers and decode ONCE at the end: avoids both a UTF-8
+        // char being split across two network chunks (per-chunk toString would
+        // corrupt it) and the O(n²) cost of re-measuring a growing string.
+        const chunks: Buffer[] = [];
+        let bytes = 0;
+        let truncated = false;
+        try {
+          for await (const chunk of res.body as AsyncIterable<Buffer>) {
+            chunks.push(chunk);
+            bytes += chunk.length;
+            if (bytes >= opts.maxBytes) {
+              truncated = true;
+              controller.abort();
+              break;
+            }
+          }
+        } catch (err) {
+          // AbortError (timeout or byte-cap abort) is the expected stream end —
+          // keep what we read. Anything else propagates.
+          if (!(err instanceof Error && err.name === 'AbortError')) throw err;
+        }
+        return { raw: Buffer.concat(chunks).toString('utf8'), truncated };
+      } finally {
+        clearTimeout(timer);
+      }
+    });
+
   const backendFor = (resource: Resource): Backend =>
     resolveBackend({
       resource,
@@ -314,6 +388,7 @@ export function createToolRuntime(
     serverlessRequest,
     callRestUrl,
     backendFor,
+    streamSse,
     podAction,
     env: process.env as Env,
   };

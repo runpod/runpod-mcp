@@ -578,6 +578,120 @@ components:
             Null if unknown.
           example: 4
 
+    ReleaseSource:
+      type: string
+      description: |
+        What produced the release.
+        - `GIT_BUILD` — a completed GitHub build (see `buildId`)
+        - `MANUAL`    — a manual configuration change
+      x-enum-varnames:
+        - ReleaseSourceGitBuild
+        - ReleaseSourceManual
+      enum:
+        - GIT_BUILD
+        - MANUAL
+
+    ReleaseDiffEntry:
+      type: object
+      required: [field, old, new]
+      properties:
+        field:
+          type: string
+          description: |
+            The changed configuration field. Top-level (e.g. `gpuCount`,
+            `locations`) or template-scoped (e.g. `template.imageName`,
+            `template.env`).
+          example: template.imageName
+        old:
+          nullable: true
+          description: Previous value, as raw JSON. Null when the field was added.
+        new:
+          nullable: true
+          description: New value, as raw JSON. Null when the field was removed.
+
+    Release:
+      type: object
+      required: [id, source, createdAt, workerCount, diff]
+      properties:
+        id:
+          type: string
+          example: rel_abc123
+        version:
+          type: integer
+          nullable: true
+          description: The endpoint configuration version this release produced.
+          example: 4
+        source:
+          $ref: "#/components/schemas/ReleaseSource"
+        buildId:
+          type: string
+          nullable: true
+          description: |
+            The GitHub build that produced this release. Set when `source` is
+            `GIT_BUILD`; null for `MANUAL` releases. Fetch build detail/logs via
+            `/v2/serverless/{id}/builds/{buildId}`.
+          example: build_abc123
+        createdByUserId:
+          type: string
+          nullable: true
+          description: ID of the user who created the release.
+        workerCount:
+          type: integer
+          minimum: 0
+          description: Workers currently running this release's version.
+          example: 2
+        createdAt:
+          type: string
+          format: date-time
+          example: "2026-03-13T20:00:00Z"
+        diff:
+          type: array
+          description: Configuration fields that changed in this release.
+          items:
+            $ref: "#/components/schemas/ReleaseDiffEntry"
+
+    RolloutSummary:
+      type: object
+      required: [inProgress, workersOnLatest, workersTotal, percentOnLatest]
+      properties:
+        inProgress:
+          type: boolean
+          description: True while any worker is still running an older version.
+          example: true
+        workersOnLatest:
+          type: integer
+          minimum: 0
+          description: Workers running the endpoint's current version.
+          example: 2
+        workersTotal:
+          type: integer
+          minimum: 0
+          description: All workers currently allocated to the endpoint.
+          example: 3
+        percentOnLatest:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Percentage of workers on the current version (0 when there are no workers).
+          example: 67
+
+    ListEndpointReleasesResponse:
+      type: object
+      required: [rollout, releases]
+      properties:
+        endpointVersion:
+          type: integer
+          nullable: true
+          description: The endpoint's current configuration version. Null if unknown.
+          example: 4
+        rollout:
+          $ref: "#/components/schemas/RolloutSummary"
+        releases:
+          type: array
+          description: Release history, newest first.
+          items:
+            $ref: "#/components/schemas/Release"
+
     CreateEndpointRequest:
       allOf:
         - $ref: "#/components/schemas/ContainerConfig"
@@ -763,6 +877,19 @@ components:
         - stop
         - restart
         - terminate
+
+    PodLogSource:
+      type: string
+      description: |
+        Log source to include in a pod log stream.
+        - `container` — container stdout/stderr log stream
+        - `system`    — host lifecycle/userlogs stream
+      x-enum-varnames:
+        - PodLogSourceContainer
+        - PodLogSourceSystem
+      enum:
+        - container
+        - system
 
     Cloud:
       type: string
@@ -2346,6 +2473,113 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /v2/pods/{id}/logs:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Pod identifier
+        example: pod_abc123
+
+    get:
+      operationId: getPodLogs
+      summary: Stream pod logs
+      description: |
+        Streams pod logs as Server-Sent Events. The `source` query parameter
+        selects which log source to include.
+
+        The SSE `data` payload shape is:
+        `{ "source": "container", "line": "...", "ts": "..." }`.
+        Log-event `id` values are the event `ts` timestamp so
+        browser/EventSource reconnects can resume with `Last-Event-ID`.
+      tags: [Pods]
+      parameters:
+        - name: source
+          in: query
+          required: false
+          description: Log source to stream. Omit to include both container and system logs.
+          schema:
+            $ref: "#/components/schemas/PodLogSource"
+        - name: tail
+          in: query
+          required: false
+          description: |
+            Number of historical lines to backfill before streaming. Defaults to
+            100 when omitted; set `0` to stream live with no backfill. Maximum 5000.
+            Ignored when `since` or `Last-Event-ID` is provided — the resume cursor
+            drives the backfill instead.
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 5000
+            default: 100
+        - name: since
+          in: query
+          required: false
+          description: |
+            RFC3339 timestamp to resume from. Ignored when `Last-Event-ID` is
+            provided. When set, the stream resumes from this point and `tail` is
+            ignored.
+          schema:
+            type: string
+            format: date-time
+        - name: Last-Event-ID
+          in: header
+          required: false
+          description: |
+            SSE reconnect cursor — a timestamp emitted by this endpoint. Takes
+            precedence over `since` and `tail`: when present, the stream resumes
+            from this point. Sent automatically by EventSource on reconnect.
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Pod log event stream
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              description: Always `no-cache` for SSE responses.
+            Connection:
+              schema:
+                type: string
+              description: Always `keep-alive` to hold the SSE stream open.
+            X-Accel-Buffering:
+              schema:
+                type: string
+              description: Always `no` to disable proxy buffering of the SSE stream.
+          content:
+            text/event-stream:
+              schema:
+                type: object
+                properties:
+                  source:
+                    type: string
+                    enum: [container, system]
+                    example: container
+                  line:
+                    type: string
+                    example: Model loaded.
+                  ts:
+                    type: string
+                    format: date-time
+                    example: "2026-05-01T22:00:00Z"
+        "404":
+          description: Pod not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /v2/pods/{id}/action:
     parameters:
       - name: id
@@ -2558,6 +2792,45 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListEndpointWorkersResponse"
+        "404":
+          description: Serverless endpoint not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/serverless/{id}/releases:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Serverless endpoint identifier
+        example: ep_abc123
+    get:
+      operationId: listEndpointReleases
+      summary: List serverless endpoint releases
+      description: |
+        Returns the endpoint's release history (newest first) plus a rollout
+        summary of how many workers are running the current version. Each
+        release is a versioned configuration snapshot with a `diff` of what
+        changed; build-driven releases carry a `buildId` (fetch build detail via
+        the builds sub-routes).
+      tags: [Serverless]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEndpointReleasesResponse"
         "404":
           description: Serverless endpoint not found
           content:

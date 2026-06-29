@@ -90,11 +90,26 @@ describe('resolveVersion', () => {
   const stdio = { transport: 'stdio' as const };
   const http = { transport: 'http' as const };
 
-  it('jobs and endpoints are always v1, regardless of env', () => {
+  it('jobs is always v1, regardless of env (serverless runtime, no v2 home)', () => {
     const env = { RUNPOD_REST_VERSION: 'v2' };
     assert.equal(resolveVersion({ resource: 'jobs', env, ctx: stdio }), 'v1');
+  });
+
+  it('endpoints follow the version flag (v2 → /v2/serverless, v1 → /endpoints)', () => {
     assert.equal(
-      resolveVersion({ resource: 'endpoints', env, ctx: stdio }),
+      resolveVersion({
+        resource: 'endpoints',
+        env: { RUNPOD_REST_VERSION: 'v2' },
+        ctx: stdio,
+      }),
+      'v2'
+    );
+    assert.equal(
+      resolveVersion({
+        resource: 'endpoints',
+        env: { RUNPOD_REST_VERSION: 'v1' },
+        ctx: stdio,
+      }),
       'v1'
     );
   });
@@ -638,16 +653,21 @@ describe('resolveBackend (v2 descriptors)', () => {
     assert.equal(templates.list, '/templates');
   });
 
-  it('jobs/endpoints stay v1 even under RUNPOD_REST_VERSION=v2', () => {
+  it('jobs stays v1 even under RUNPOD_REST_VERSION=v2 (serverless runtime)', () => {
     const jobs = resolveBackend({ resource: 'jobs', env: v2env, ctx: stdio });
     assert.equal(jobs.version, 'v1');
     assert.equal(jobs.base, 'https://api.runpod.ai/v2'); // serverless, not v2 REST
+  });
+
+  it('endpoints resolve to the v2 /serverless descriptor under v2', () => {
     const ep = resolveBackend({
       resource: 'endpoints',
       env: v2env,
       ctx: stdio,
     });
-    assert.equal(ep.version, 'v1');
-    assert.equal(ep.base, 'https://rest.runpod.io/v1');
+    assert.equal(ep.version, 'v2');
+    assert.equal(ep.base, 'https://v2-rest.runpod.io/v2');
+    assert.equal(ep.list, '/serverless');
+    assert.equal(ep.get!('X'), '/serverless/X');
   });
 });

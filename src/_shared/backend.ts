@@ -14,6 +14,8 @@ import {
   mapTemplateCreateToV2,
   mapTemplateUpdateToV2,
   mapNetworkVolumeCreateToV2,
+  mapEndpointCreateToV2,
+  mapEndpointUpdateToV2,
 } from './mappers.js';
 
 // One canonical resource union used by unwrapList, resolveVersion, and
@@ -37,8 +39,8 @@ export type RestVersion = 'v1' | 'v2';
 
 // Resources that have no v2 REST home and stay on v1 regardless of any flag.
 // - jobs: serverless runtime, lives on api.runpod.ai/v2 (a different service)
-// - endpoints: endpoint CRUD, REST base — v2 has no /v2/endpoints yet
-const V1_ONLY: ReadonlySet<Resource> = new Set<Resource>(['jobs', 'endpoints']);
+// (endpoints now route to v2 at /v2/serverless — see V2_REST_PATHS/V2_MAPPERS.)
+const V1_ONLY: ReadonlySet<Resource> = new Set<Resource>(['jobs']);
 
 // The key each v2 list response is wrapped in: `{ pods: [...] }`, etc.
 // `billing` wraps its rows under `records` (not the resource name); `workers`
@@ -306,6 +308,10 @@ const V2_REST_PATHS: Partial<
     get: (id) => `/catalog/datacenters/${id}`,
   },
   tags: { list: '/tags', get: (id) => `/tags/${id}` },
+  // Endpoints live under /v2/serverless on v2 (NOT /v2/endpoints). The v2 list
+  // response wraps rows under `endpoints` (see V2_UNWRAP_KEY), so the existing
+  // unwrap key stays correct.
+  endpoints: { list: '/serverless', get: (id) => `/serverless/${id}` },
   // workers/billing build their own sub-paths in the tool from `base`; the
   // list entry just satisfies buildV2Backend (which requires a paths entry).
   workers: { list: '/serverless' },
@@ -342,14 +348,21 @@ const V2_MAPPERS: Partial<
     update: identity,
   },
   registries: { create: identity, update: identity },
+  endpoints: {
+    create: (b) =>
+      mapEndpointCreateToV2(b as Parameters<typeof mapEndpointCreateToV2>[0]),
+    update: (b) =>
+      mapEndpointUpdateToV2(b as Parameters<typeof mapEndpointUpdateToV2>[0]),
+  },
 };
 
 // The unwrap closure is built once in resolveBackend and threaded into whichever
 // builder runs, so the per-version builders stay free of unwrap plumbing.
 type Unwrap = Backend['unwrap'];
 
-// jobs/endpoints never reach here (pinned v1 by resolveVersion). Catalog v2 is
-// REST (not GraphQL); CRUD resources use their v2 paths + body mappers.
+// jobs never reaches here (pinned v1 by resolveVersion). Endpoints DO reach here
+// on v2 → /v2/serverless via V2_REST_PATHS + V2_MAPPERS. Catalog v2 is REST (not
+// GraphQL); CRUD resources use their v2 paths + body mappers.
 function buildV2Backend(resource: Resource, env: Env, unwrap: Unwrap): Backend {
   const paths = V2_REST_PATHS[resource];
   if (!paths) throw new Error(`no v2 REST paths for resource "${resource}"`);

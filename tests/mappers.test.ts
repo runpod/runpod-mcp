@@ -9,7 +9,10 @@ import {
   mapNetworkVolumeCreateToV2,
   mapTemplateCreateToV2,
   mapTemplateUpdateToV2,
+  mapEndpointCreateToV2,
+  mapEndpointUpdateToV2,
 } from '../src/_shared/mappers.js';
+import { parsePodLogSse } from '../src/tools/pods.js';
 
 const fixture = JSON.parse(
   readFileSync(
@@ -181,5 +184,125 @@ describe('mapTemplateUpdateToV2', () => {
     assert.deepEqual(out, { image: 'i', name: 'n' });
     assert.equal('imageName' in out, false);
     assert.equal('category' in out, false);
+  });
+});
+
+describe('mapEndpointCreateToV2', () => {
+  it('builds the nested v2 /serverless body (gpu.pools/workers/scaling)', () => {
+    const out = mapEndpointCreateToV2({
+      name: 'e',
+      imageName: 'img:2',
+      args: '--port 8000',
+      gpuPoolIds: ['AMPERE_80'],
+      gpuCount: 1,
+      workersMin: 0,
+      workersMax: 3,
+      scalerType: 'QUEUE_DELAY',
+      scalerValue: 4,
+      idleTimeout: 5,
+      containerDiskInGb: 20,
+      ports: ['8000/http'],
+      env: { K: 'V' },
+      containerRegistryAuthId: 'cra_1',
+      networkVolumeIds: ['nv_1'],
+      executionTimeoutMs: 600000,
+      flashboot: 'FLASHBOOT',
+    });
+    assert.deepEqual(out, {
+      name: 'e',
+      image: 'img:2',
+      args: '--port 8000',
+      disk: 20,
+      ports: ['8000/http'],
+      env: { K: 'V' },
+      registry: 'cra_1',
+      gpu: { pools: ['AMPERE_80'], count: 1 },
+      workers: { min: 0, max: 3 },
+      scaling: { type: 'QUEUE_DELAY', value: 4, idleTimeout: 5 },
+      networkVolumes: ['nv_1'],
+      timeout: 600000,
+      flashboot: 'FLASHBOOT',
+    });
+  });
+
+  it('imageName→image, containerRegistryAuthId→registry, networkVolumeIds→networkVolumes', () => {
+    const out = mapEndpointCreateToV2({
+      imageName: 'i',
+      containerRegistryAuthId: 'c',
+      networkVolumeIds: ['v'],
+    });
+    assert.equal(out.image, 'i');
+    assert.equal('imageName' in out, false);
+    assert.equal(out.registry, 'c');
+    assert.deepEqual(out.networkVolumes, ['v']);
+    assert.equal('networkVolumeIds' in out, false);
+  });
+
+  it('never emits a pod-style mounts field', () => {
+    const out = mapEndpointCreateToV2({ imageName: 'i', gpuPoolIds: ['P'] });
+    assert.equal('mounts' in out, false);
+  });
+
+  it('drops empty gpu pools (no idless gpu object)', () => {
+    const out = mapEndpointCreateToV2({ imageName: 'i', gpuCount: 2 });
+    assert.equal('gpu' in out, false);
+  });
+
+  it('drops empty workers/scaling objects', () => {
+    const out = mapEndpointCreateToV2({ imageName: 'i' });
+    assert.equal('workers' in out, false);
+    assert.equal('scaling' in out, false);
+  });
+
+  it('emits workers.min:0 (a meaningful scale-to-zero, not dropped)', () => {
+    const out = mapEndpointCreateToV2({ imageName: 'i', workersMin: 0 });
+    assert.deepEqual(out.workers, { min: 0 });
+  });
+});
+
+describe('mapEndpointUpdateToV2', () => {
+  it('is the same shape as create (every field optional)', () => {
+    const out = mapEndpointUpdateToV2({ workersMax: 5, imageName: 'img:3' });
+    assert.deepEqual(out, { workers: { max: 5 }, image: 'img:3' });
+  });
+});
+
+describe('parsePodLogSse', () => {
+  it('parses data: JSON frames separated by blank lines', () => {
+    const raw = [
+      'data: {"source":"container","line":"a","ts":"t1"}',
+      '',
+      'data: {"source":"system","line":"b","ts":"t2"}',
+      '',
+    ].join('\n');
+    const items = parsePodLogSse(raw);
+    assert.equal(items.length, 2);
+    assert.deepEqual(items[0], { source: 'container', line: 'a', ts: 't1' });
+    assert.equal(items[1].line, 'b');
+  });
+
+  it('handles CRLF line endings', () => {
+    const raw = 'data: {"line":"x"}\r\n\r\ndata: {"line":"y"}\r\n\r\n';
+    const items = parsePodLogSse(raw);
+    assert.deepEqual(
+      items.map((i) => i.line),
+      ['x', 'y']
+    );
+  });
+
+  it('ignores comment lines and non-data fields', () => {
+    const raw = ': keepalive\n\nevent: ping\nid: 5\n\ndata: {"line":"z"}\n\n';
+    const items = parsePodLogSse(raw);
+    assert.equal(items.length, 1);
+    assert.equal(items[0].line, 'z');
+  });
+
+  it('keeps non-JSON payloads verbatim under raw (never drops a line)', () => {
+    const items = parsePodLogSse('data: plain text line\n\n');
+    assert.deepEqual(items, [{ raw: 'plain text line' }]);
+  });
+
+  it('empty stream → no items', () => {
+    assert.deepEqual(parsePodLogSse(''), []);
   });
 });

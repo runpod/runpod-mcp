@@ -86,6 +86,7 @@ const SPEC_OP_TO_TOOLS: Record<string, string[]> = {
   updatePod: ['update-pod'],
   deletePod: ['delete-pod'],
   podAction: ['start-pod', 'stop-pod', 'restart-pod'],
+  getPodLogs: ['stream-pod-logs'],
   // serverless endpoints
   listEndpoints: ['list-endpoints'],
   createEndpoint: ['create-endpoint'],
@@ -93,6 +94,7 @@ const SPEC_OP_TO_TOOLS: Record<string, string[]> = {
   updateEndpoint: ['update-endpoint'],
   deleteEndpoint: ['delete-endpoint'],
   listEndpointWorkers: ['list-endpoint-workers'],
+  listEndpointReleases: ['list-endpoint-releases'],
   // templates
   listTemplates: ['list-templates'],
   createTemplate: ['create-template'],

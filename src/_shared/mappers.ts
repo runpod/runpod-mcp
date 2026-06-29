@@ -109,6 +109,93 @@ export function mapPodUpdateToV2(params: V1PodParams): Record<string, unknown> {
   };
 }
 
+// ---- Endpoint (serverless) create/update → v2 /v2/serverless body ----
+// v1 create-endpoint is templateId-based (a fundamentally different model); v2
+// takes an INLINE container + compute config (image, gpu.pools, workers, scaling)
+// and has NO templateId. So this mapper translates the v2-shaped tool params into
+// the nested v2 body. It deliberately does NOT reuse containerConfigToV2 — that
+// helper emits `mounts` (a pod/template concept), which the endpoint schema
+// rejects; endpoints attach storage via `networkVolumes` instead.
+//
+// Required by v2 CreateEndpointRequest: `name` and `gpu` (with `gpu.pools`
+// minItems 1). The create-endpoint handler guards those before calling, so a
+// missing field yields a clean 400 rather than a raw 422 from the API.
+interface V2EndpointParams {
+  name?: string;
+  imageName?: string;
+  args?: string;
+  gpuPoolIds?: string[];
+  gpuCount?: number;
+  workersMin?: number;
+  workersMax?: number;
+  scalerType?: 'QUEUE_DELAY' | 'REQUEST_COUNT';
+  scalerValue?: number;
+  idleTimeout?: number;
+  dataCenterIds?: string[];
+  networkVolumeIds?: string[];
+  executionTimeoutMs?: number;
+  flashboot?: 'OFF' | 'FLASHBOOT' | 'PRIORITY_FLASHBOOT';
+  containerDiskInGb?: number;
+  ports?: string[];
+  env?: Record<string, string>;
+  containerRegistryAuthId?: string;
+}
+
+// Emit a nested object only when at least one field is set, else undefined (so
+// compact drops it). Prevents sending an empty `workers: {}` / `scaling: {}`.
+function nestedOrUndefined(
+  obj: Record<string, unknown>
+): Record<string, unknown> | undefined {
+  const c = compact(obj);
+  return Object.keys(c).length ? c : undefined;
+}
+
+// gpu requires `pools` (minItems 1) — return undefined when no pools so the
+// handler's guard, not the API, reports the omission.
+function endpointGpuConfig(
+  pools?: string[],
+  count?: number
+): Record<string, unknown> | undefined {
+  if (!pools?.length) return undefined;
+  return compact({ pools, count });
+}
+
+function mapEndpointToV2(params: V2EndpointParams): Record<string, unknown> {
+  return compact({
+    name: params.name,
+    image: params.imageName,
+    args: params.args,
+    disk: params.containerDiskInGb,
+    ports: params.ports,
+    env: params.env,
+    registry: params.containerRegistryAuthId,
+    gpu: endpointGpuConfig(params.gpuPoolIds, params.gpuCount),
+    workers: nestedOrUndefined({
+      min: params.workersMin,
+      max: params.workersMax,
+    }),
+    scaling: nestedOrUndefined({
+      type: params.scalerType,
+      value: params.scalerValue,
+      idleTimeout: params.idleTimeout,
+    }),
+    dataCenterIds: params.dataCenterIds?.length
+      ? params.dataCenterIds
+      : undefined,
+    networkVolumes: params.networkVolumeIds?.length
+      ? params.networkVolumeIds
+      : undefined,
+    timeout: params.executionTimeoutMs,
+    flashboot: params.flashboot,
+  });
+}
+
+// Create and update share the same v2 body shape (Update just makes every field
+// optional — including `name`/`gpu`). Same mapper for both; the handler decides
+// which fields are required.
+export const mapEndpointCreateToV2 = mapEndpointToV2;
+export const mapEndpointUpdateToV2 = mapEndpointToV2;
+
 // ---- Network volume: dataCenterId → dataCenter (only field change) ----
 interface V1NetworkVolumeCreate {
   name?: string;

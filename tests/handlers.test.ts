@@ -43,6 +43,12 @@ function harness(opts?: {
   jsonBodies?: unknown[];
   status?: number;
   contentType?: string;
+  // Fake SSE reader for stream-pod-logs (the real one uses node-fetch directly,
+  // bypassing the injected fetch). Records its calls and returns canned text.
+  streamSse?: (
+    url: string,
+    o: { maxWaitMs: number; maxBytes: number }
+  ) => Promise<{ raw: string; truncated: boolean }>;
 }) {
   const handlers = new Map<string, Handler>();
   const outbound: OutboundRecord[] = [];
@@ -84,11 +90,10 @@ function harness(opts?: {
     };
   };
 
-  registerTools(
-    fakeServer,
-    { apiKey: 'rpa_test', transport: 'stdio' },
-    { fetch: fakeFetch as Parameters<typeof registerTools>[2]['fetch'] }
-  );
+  registerTools(fakeServer, { apiKey: 'rpa_test', transport: 'stdio' }, {
+    fetch: fakeFetch as Parameters<typeof registerTools>[2]['fetch'],
+    ...(opts?.streamSse ? { streamSse: opts.streamSse } : {}),
+  } as Parameters<typeof registerTools>[2]);
 
   return { handlers, outbound };
 }
@@ -1319,6 +1324,8 @@ describe('all v2-only tools: v1 → 501 with no request', () => {
     ['detach-tag', { tagId: 't1', resourceType: 'POD', resourceId: 'p1' }],
     ['get-billing', {}],
     ['list-endpoint-workers', { endpointId: 'ep_1' }],
+    ['list-endpoint-releases', { endpointId: 'ep_1' }],
+    ['stream-pod-logs', { podId: 'pod_1' }],
     ['get-cpu-type', { cpuTypeId: 'cpu5c' }],
     ['get-data-center', { dataCenterId: 'EU-RO-1' }],
     ['list-cpu-types', {}],
@@ -1335,4 +1342,242 @@ describe('all v2-only tools: v1 → 501 with no request', () => {
       assert.equal(parseText(out).status, 501, `${tool} must return 501`);
     });
   }
+});
+
+// ============== Endpoint CRUD routing (v1 templateId vs v2 inline config) =====
+describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
+  it('list-endpoints → GET <v2>/v2/serverless, unwraps {endpoints:[…]}, no v1 query', async () => {
+    await withV2(async () => {
+      const eps = Array.from({ length: 2 }, (_, i) => ({ id: `ep${i}` }));
+      const { handlers, outbound } = harness({ jsonBody: { endpoints: eps } });
+      const out = await handlers.get('list-endpoints')!({
+        includeWorkers: true, // v1-only param, must be dropped on v2
+      });
+      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/serverless');
+      assert.equal(outbound[0].method, 'GET');
+      assert.equal((parseText(out).items as unknown[]).length, 2);
+    });
+  });
+
+  it('get-endpoint → GET <v2>/v2/serverless/{id}, no v1 query params', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'ep_1' } });
+      await handlers.get('get-endpoint')!({
+        endpointId: 'ep_1',
+        includeTemplate: true,
+      });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/serverless/ep_1'
+      );
+    });
+  });
+
+  it('create-endpoint → POST <v2>/v2/serverless with nested gpu/workers/scaling body', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'ep_new' } });
+      await handlers.get('create-endpoint')!({
+        name: 'e',
+        imageName: 'img:2',
+        gpuPoolIds: ['AMPERE_80'],
+        gpuCount: 1,
+        workersMin: 0,
+        workersMax: 3,
+        scalerType: 'QUEUE_DELAY',
+        scalerValue: 4,
+        idleTimeout: 5,
+        containerDiskInGb: 20,
+        env: { K: 'V' },
+        networkVolumeIds: ['nv_1'],
+        executionTimeoutMs: 600000,
+        flashboot: 'FLASHBOOT',
+        containerRegistryAuthId: 'cra_1',
+      });
+      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/serverless');
+      assert.equal(outbound[0].method, 'POST');
+      const body = JSON.parse(outbound[0].body!);
+      assert.equal(body.name, 'e');
+      assert.equal(body.image, 'img:2');
+      assert.equal('imageName' in body, false);
+      assert.deepEqual(body.gpu, { pools: ['AMPERE_80'], count: 1 });
+      assert.deepEqual(body.workers, { min: 0, max: 3 });
+      assert.deepEqual(body.scaling, {
+        type: 'QUEUE_DELAY',
+        value: 4,
+        idleTimeout: 5,
+      });
+      assert.equal(body.disk, 20);
+      assert.deepEqual(body.env, { K: 'V' });
+      assert.deepEqual(body.networkVolumes, ['nv_1']);
+      assert.equal('networkVolumeIds' in body, false);
+      assert.equal(body.timeout, 600000);
+      assert.equal(body.flashboot, 'FLASHBOOT');
+      assert.equal(body.registry, 'cra_1');
+      assert.equal('mounts' in body, false); // endpoints don't carry pod mounts
+    });
+  });
+
+  it('create-endpoint v2 missing imageName → clean 400, no request', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      const out = await handlers.get('create-endpoint')!({
+        gpuPoolIds: ['AMPERE_80'],
+      });
+      assert.equal(outbound.length, 0);
+      assert.equal(parseText(out).status, 400);
+      assert.match(parseText(out).error as string, /imageName/);
+    });
+  });
+
+  it('create-endpoint v2 missing gpuPoolIds → clean 400, no request', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      const out = await handlers.get('create-endpoint')!({
+        imageName: 'img:2',
+      });
+      assert.equal(outbound.length, 0);
+      assert.equal(parseText(out).status, 400);
+      assert.match(parseText(out).error as string, /gpuPoolIds/);
+    });
+  });
+
+  it('update-endpoint → PATCH <v2>/v2/serverless/{id} with mapped body, id not in body', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'ep_1' } });
+      await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        workersMax: 5,
+        imageName: 'img:3',
+      });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/serverless/ep_1'
+      );
+      assert.equal(outbound[0].method, 'PATCH');
+      const body = JSON.parse(outbound[0].body!);
+      assert.deepEqual(body.workers, { max: 5 });
+      assert.equal(body.image, 'img:3');
+      assert.equal('endpointId' in body, false);
+    });
+  });
+
+  it('delete-endpoint → DELETE <v2>/v2/serverless/{id}', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('delete-endpoint')!({ endpointId: 'ep_1' });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/serverless/ep_1'
+      );
+      assert.equal(outbound[0].method, 'DELETE');
+    });
+  });
+
+  it('list-endpoint-releases v2 → GET …/releases, caps releases, preserves rollout', async () => {
+    await withV2(async () => {
+      const releases = Array.from({ length: 3 }, (_, i) => ({ id: `r${i}` }));
+      const { handlers, outbound } = harness({
+        jsonBody: {
+          releases,
+          rollout: { inProgress: false },
+          endpointVersion: 7,
+        },
+      });
+      const out = await handlers.get('list-endpoint-releases')!({
+        endpointId: 'ep_1',
+      });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/serverless/ep_1/releases'
+      );
+      const env = parseText(out);
+      assert.equal((env.items as unknown[]).length, 3);
+      assert.deepEqual(env.rollout, { inProgress: false });
+      assert.equal(env.endpointVersion, 7);
+    });
+  });
+});
+
+describe('endpoint routing under v1 (templateId model preserved)', () => {
+  it('create-endpoint v1 → POST <rest>/v1/endpoints, templateId passthrough', async () => {
+    const { handlers, outbound } = harness({ jsonBody: { id: 'ep_1' } });
+    await handlers.get('create-endpoint')!({
+      name: 'e',
+      templateId: 'tpl_1',
+      workersMax: 3,
+    });
+    assert.equal(outbound[0].url, 'https://rest.runpod.io/v1/endpoints');
+    assert.equal(outbound[0].method, 'POST');
+    const body = JSON.parse(outbound[0].body!);
+    assert.equal(body.templateId, 'tpl_1');
+    assert.equal('gpu' in body, false); // no v2 nesting on v1
+  });
+
+  it('create-endpoint v1 missing templateId → clean 400, no request', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    const out = await handlers.get('create-endpoint')!({ name: 'e' });
+    assert.equal(outbound.length, 0);
+    assert.equal(parseText(out).status, 400);
+    assert.match(parseText(out).error as string, /templateId/);
+  });
+
+  it('list-endpoints v1 → GET <rest>/v1/endpoints with include query params', async () => {
+    const { handlers, outbound } = harness({ jsonBody: [] });
+    await handlers.get('list-endpoints')!({ includeWorkers: true });
+    assert.equal(
+      outbound[0].url,
+      'https://rest.runpod.io/v1/endpoints?includeWorkers=true'
+    );
+  });
+});
+
+describe('stream-pod-logs (v2-only, SSE)', () => {
+  const SSE = [
+    'data: {"source":"container","line":"hello","ts":"2026-01-01T00:00:00Z"}',
+    '',
+    'data: {"source":"system","line":"boot","ts":"2026-01-01T00:00:01Z"}',
+    '',
+    ': comment-keepalive',
+    '',
+  ].join('\n');
+
+  it('v2 → reads <v2>/v2/pods/{id}/logs SSE, parses frames into items', async () => {
+    await withV2(async () => {
+      const calls: Array<{ url: string; maxWaitMs: number }> = [];
+      const { handlers } = harness({
+        streamSse: async (url, o) => {
+          calls.push({ url, maxWaitMs: o.maxWaitMs });
+          return { raw: SSE, truncated: false };
+        },
+      });
+      const out = await handlers.get('stream-pod-logs')!({
+        podId: 'pod_1',
+        source: 'both',
+        tail: 50,
+        maxWaitMs: 2000,
+      });
+      assert.equal(
+        calls[0].url,
+        'https://v2-rest.runpod.io/v2/pods/pod_1/logs?source=both&tail=50'
+      );
+      assert.equal(calls[0].maxWaitMs, 2000);
+      const env = parseText(out);
+      assert.equal(env.count, 2);
+      assert.deepEqual((env.items as Array<{ line: string }>).map((i) => i.line), [
+        'hello',
+        'boot',
+      ]);
+      assert.equal(env.truncated, false);
+    });
+  });
+
+  it('v2 propagates the truncated flag from the reader', async () => {
+    await withV2(async () => {
+      const { handlers } = harness({
+        streamSse: async () => ({ raw: SSE, truncated: true }),
+      });
+      const out = await handlers.get('stream-pod-logs')!({ podId: 'pod_1' });
+      assert.equal(parseText(out).truncated, true);
+    });
+  });
 });
