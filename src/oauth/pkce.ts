@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 
 /**
  * True for a loopback host (localhost / 127.0.0.1 / ::1), ignoring IPv6 brackets.
@@ -24,6 +24,18 @@ export function isLoopbackRedirect(redirectUri: string | null): boolean {
  */
 export function s256(verifier: string): string {
   return createHash('sha256').update(verifier).digest('base64url');
+}
+
+/**
+ * Constant-time string compare. Returns false immediately on a length mismatch
+ * (timingSafeEqual throws on unequal-length buffers), else compares without an
+ * early-exit that could leak how many leading chars matched.
+ */
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
 }
 
 /**
@@ -59,7 +71,7 @@ export function verifyPkce(input: {
   if (!codeVerifier) {
     return 'code_verifier is required.';
   }
-  if (s256(codeVerifier) !== codeChallenge) {
+  if (!safeEqual(s256(codeVerifier), codeChallenge)) {
     return 'PKCE verification failed.';
   }
   return null;

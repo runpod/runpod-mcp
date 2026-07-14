@@ -14,12 +14,20 @@
  * Env:
  *   MCP_SERVER_URL   hosted MCP base URL (required)
  */
+import { randomBytes } from 'node:crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { s256 } from '../src/oauth/pkce.js';
 
 const MCP = process.env.MCP_SERVER_URL;
 if (!MCP) throw new Error('MCP_SERVER_URL is required');
 const base = MCP.replace(/\/$/, '');
+
+// Real PKCE pair for this run: a random verifier and its S256 challenge. The
+// happy path sends the matching verifier at /token; the negative check below
+// sends a non-matching one and expects `invalid_grant`.
+const codeVerifier = randomBytes(32).toString('base64url');
+const codeChallenge = s256(codeVerifier);
 
 function log(step: string, data: unknown) {
   console.log(`\n[${step}]`, JSON.stringify(data, null, 2));
@@ -28,14 +36,10 @@ function log(step: string, data: unknown) {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * POST the token endpoint once. Returns the parsed JSON body + HTTP status.
- *
- * PKCE test: we sent `code_challenge=challenge-abc` at /authorize but send a
- * deliberately NON-matching `code_verifier` here. If the token is still minted,
- * the server is not enforcing PKCE (S256 would require the verifier to hash to
- * the challenge).
+ * POST the token endpoint once with the given `code_verifier`. Returns the
+ * parsed JSON body + HTTP status.
  */
-async function postToken(code: string) {
+async function postToken(code: string, verifier: string) {
   const res = await fetch(`${base}/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -43,7 +47,7 @@ async function postToken(code: string) {
       grant_type: 'authorization_code',
       code,
       redirect_uri: 'http://localhost:8765/callback',
-      code_verifier: 'this-verifier-does-not-match-the-challenge',
+      code_verifier: verifier,
     }).toString(),
   });
   const body = (await res.json()) as Record<string, unknown>;
@@ -75,7 +79,7 @@ async function main() {
   const authRes = await fetch(
     `${base}/authorize?client_id=${reg.client_id}&redirect_uri=${encodeURIComponent(
       'http://localhost:8765/callback'
-    )}&state=e2e&code_challenge=challenge-abc&code_challenge_method=S256&response_type=code`,
+    )}&state=e2e&code_challenge=${codeChallenge}&code_challenge_method=S256&response_type=code`,
     { redirect: 'manual' }
   );
   const location = authRes.headers.get('location') ?? '';
@@ -87,14 +91,25 @@ async function main() {
   const code = inner.searchParams.get('request')!;
   log('authorize', { status: authRes.status, code, consoleUrl: location });
 
-  // 4. Approve (manual) + 5. poll /token for the minted key. We only call the
-  // MCP's own token endpoint — it polls the backend server-side and returns the
-  // minted key once the request is APPROVED.
+  // 4. PKCE enforcement check — a non-matching verifier must be rejected with
+  // `invalid_grant`, and the rejection happens before approval (the verifier is
+  // checked on every /token poll). If this mints or pends, PKCE isn't enforced.
+  const bad = await postToken(code, 'this-verifier-does-not-match-the-challenge');
+  if (bad.body.error !== 'invalid_grant') {
+    throw new Error(
+      `PKCE not enforced: bad verifier expected invalid_grant, got ${JSON.stringify(bad.body)}`
+    );
+  }
+  log('pkce-enforced', { status: bad.status, error: bad.body.error });
+
+  // 5. Approve (manual) + 6. poll /token with the MATCHING verifier for the
+  // minted key. We only call the MCP's own token endpoint — it polls the backend
+  // server-side and returns the minted key once the request is APPROVED.
   console.log('\n[approve] Open and approve in your browser:\n' + location);
   process.stdout.write('[token] polling');
   let key: string | undefined;
   for (let i = 0; i < 30; i++) {
-    const { body } = await postToken(code);
+    const { body } = await postToken(code, codeVerifier);
     if (typeof body.access_token === 'string') {
       key = body.access_token;
       break;
