@@ -8,7 +8,7 @@ Always use sentence case for headings and titles.
 
 Always use proper nouns when discussing specific Runpod products and features:
 
-- Runpod (never RunPod).
+- Runpod (never Runpod).
 - Pod/Pods (never lowercase "pod/pods").
 - Serverless (never lowercase "serverless").
 - Hub, Instant Clusters, Secure Cloud, Community Cloud, Tetra, Flash.
