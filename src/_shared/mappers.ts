@@ -29,12 +29,6 @@
 // create-endpoint/update-endpoint. Note the spec-parity gate CANNOT catch this —
 // it checks operationId↔tool coverage only and never validates a request body
 // against a schema.
-//
-// ➜ DELETE THIS BLOCK when the endpoint negotiation lands: once
-//   mapEndpointCreateToV2/...UpdateToV2 take a ServerlessSchema and emit both
-//   shapes, the drift described above no longer exists and this warning becomes
-//   false. (Only the two paragraphs above it — the settled `cloud`/`category`
-//   notes — should remain.)
 
 // v1 params accepted by the create-pod / update-pod tool schemas (the fields the
 // mapper knows how to translate). Unknown keys are intentionally dropped.
