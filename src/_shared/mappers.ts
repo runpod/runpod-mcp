@@ -7,10 +7,34 @@
 // pinned by committed fixtures. When the live spec changes, update the mapper AND
 // its fixture in one commit.
 //
-// The two mid-flight spec questions this file used to carry are now settled, and
-// the workarounds for them are gone: `cloud` dropped `ALL` (the tool never
-// offered it, so nothing to do), and template `category` became optional with a
-// documented server-side `NVIDIA` default, so the mapper no longer forces a value.
+// Two older mid-flight questions this file carried ARE now settled, and their
+// workarounds are gone: `cloud` dropped `ALL` (the tool never offered it), and
+// template `category` became optional with a documented server-side `NVIDIA`
+// default, so the mapper no longer forces a value.
+//
+// ⚠️ SPEC IS STILL MID-FLIGHT — the serverless endpoint request shape.
+// The vendored spec is the DEV spec (see scripts/fetch-v2-spec.ts), and dev has
+// moved ahead of production on `/v2/serverless` writes: `type`
+// (QUEUE|LOAD_BALANCER) became required on create, `scaling` became a union
+// discriminated on `type` (`{queueDelay}` / `{requestCount}`, both
+// additionalProperties:false), and `idleTimeout` moved into `workers`.
+// mapEndpointCreateToV2/mapEndpointUpdateToV2 below still emit the PRODUCTION
+// shape (`scaling: {type, value, idleTimeout}`, no top-level `type`), which is
+// what the default v2 base (v2-rest.runpod.io) accepts today and what dev now
+// rejects with a 422.
+//
+// That is deliberate, not an oversight: the two shapes are mutually exclusive on
+// the wire, so the fix is a per-host negotiation rather than a flip, and it lands
+// separately. Until it does, pointing RUNPOD_REST_V2_API_URL at dev breaks
+// create-endpoint/update-endpoint. Note the spec-parity gate CANNOT catch this —
+// it checks operationId↔tool coverage only and never validates a request body
+// against a schema.
+//
+// ➜ DELETE THIS BLOCK when the endpoint negotiation lands: once
+//   mapEndpointCreateToV2/...UpdateToV2 take a ServerlessSchema and emit both
+//   shapes, the drift described above no longer exists and this warning becomes
+//   false. (Only the two paragraphs above it — the settled `cloud`/`category`
+//   notes — should remain.)
 
 // v1 params accepted by the create-pod / update-pod tool schemas (the fields the
 // mapper knows how to translate). Unknown keys are intentionally dropped.

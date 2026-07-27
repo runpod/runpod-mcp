@@ -77,7 +77,7 @@ export function registerTemplateTools(
   // Create Template
   server.tool(
     'create-template',
-    'Create a reusable pod/endpoint template (image, ports, env, disk/volume). On v2 a category is required and defaults to NVIDIA.',
+    'Create a reusable pod/endpoint template (image, ports, env, disk/volume). Category is optional and defaults to NVIDIA.',
     {
       name: z.string().describe('Name for the template'),
       imageName: z.string().describe('Docker image to use'),
@@ -116,7 +116,7 @@ export function registerTemplateTools(
         .enum(['CPU', 'NVIDIA', 'AMD'])
         .optional()
         .describe(
-          'Hardware category for the template. On v2 a category is required and defaults to NVIDIA when omitted — set CPU or AMD for non-NVIDIA templates so they are not mis-categorized.'
+          'How the template is grouped and filtered in the Runpod console — it does NOT affect hardware selection, scheduling, or billing. Optional; defaults to NVIDIA. Set CPU or AMD only to file the template correctly in the console.'
         ),
       containerRegistryAuthId: z
         .string()

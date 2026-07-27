@@ -385,16 +385,20 @@ Tip: a name prefix of `mcptest-` makes leaks obvious. Free resources first, bill
 | C2 | `get-container-registry-auth` | id | metadata (no secret) | — |
 | C3 | `delete-container-registry-auth` | id | success | gone from console |
 
-#### H — Tags (free; v2-only; CRUD + attach/detach)
+#### H — ECR delegations (free; v2-only)
+> Replaced the former tag section: `/v2/tags` was removed from the API and the seven
+> tag tools were deleted (see the H rows in older run logs below — historical).
+>
+> These steps need no real AWS account: a syntactically-invalid ARN proves the route
+> and body reach a real handler, which is what we are testing. Creating a *valid*
+> delegation requires an ECR repo you control.
+
 | # | Tool | Args | Expect | Manual check |
 |---|------|------|--------|--------------|
-| H1 | `create-tag` | `key: project`, `value: mcptest` | returns `id` | — |
-| H2 | `get-tag` | `tagId` from H1, `includeResources: true` | round-trips key/value | — |
-| H3 | `list-tags` | — | H1 present (`{items,pagination}` envelope) | — |
-| H4 | `attach-tag` | `tagId` from H1, `resourceType: NETWORK_VOLUME`, `resourceId:` a live volume (D1) — **or skip if D was skipped** | success / idempotent | tag shows on the resource in console |
-| H5 | `detach-tag` | same as H4 | success / idempotent | tag removed from the resource |
-| H6 | `update-tag` | `tagId`, `value: mcptest-2` | reflects new value | — |
-| H7 | `delete-tag` | `tagId` | success | gone |
+| H1 | `list-registry-delegations` | — | `{items,pagination}` envelope (may be empty) | — |
+| H2 | `create-registry-delegation` | `resource: arn:aws:ecr:us-east-2:000000000000:repository/mcptest/nope` | `400 "Invalid ARN format"` — a real handler validating, **not** `404 path not found` | nothing created (re-run H1) |
+| H3 | `delete-registry-delegation` | `delegationId: deleg_does_not_exist` | `400 "Delegation not found or access denied"` | — |
+| H4 | *(optional, needs a real ECR repo)* `create-registry-delegation` then `delete-registry-delegation` | a real repository ARN | reply carries `dockerRegistryUri`, resolved repository/tag/region | delegation appears then disappears in H1 |
 
 #### I — Billing (read-only; v2-only)
 | # | Tool | Args | Expect | Manual check |
@@ -472,7 +476,7 @@ behavior and shapes. Note any difference.
 | # | Check | How | Expect |
 |---|-------|-----|--------|
 | G1 | v2-only tool under v1 | run `list-cpu-types` with server on v1 | clean "v2 only" notice (status 501), not a crash |
-| G2 | v2-only tools under v1 | `get-gpu-type`, `get-cpu-type`, `get-data-center`, `restart-pod`, `list-tags`, `get-billing` on v1 | same clean 501 notice each |
+| G2 | v2-only tools under v1 | `get-gpu-type`, `get-cpu-type`, `get-data-center`, `restart-pod`, `list-registry-delegations`, `list-endpoint-releases`, `get-billing` on v1 | same clean 501 notice each |
 | G3 | CPU pod on v2 → routes to v1 | `create-pod` with `imageName`, **`computeType: "CPU"`**, `containerDiskInGb`, on v2 | reply flagged `_servedBy:"v1"`; with `RUNPOD_REST_API_URL=…dev/v1` set it **creates a real CPU pod** on dev v1 (`cpuFlavorId: cpu5c`, ~$0.08/hr). ⚠️ **billable → delete it** (by id against dev v1: `DELETE …dev/v1/pods/{id}`). Without the dev-v1 base it 401s on v1-prod — then G3 only proves routing. |
 | G4 | ambiguous create rejected | `create-pod` with `imageName` only (no `gpuTypeIds`, no `computeType`) on v2 | clean `400` "No pod type specified…" and **no request fired** |
 | G5 | contradiction rejected | `create-pod` with both `gpuTypeIds` and `computeType:"CPU"` on v2 | clean `400` "…not both", no request |
@@ -537,8 +541,8 @@ Server: version `1.3.0`  base `v2-rest.runpod.io/v2` (prod)  date `2026-06-26`  
 **Leak check (run at the end):** ✅ no `mcptest-*` resources remain on v1 or v2 (templates, network-volumes, registry-auths, pods, tags all clean).
 
 **Leak check (run at the end):** `list-templates`, `list-network-volumes`,
-`list-container-registry-auths`, `list-pods`, `list-tags` → confirm **no `mcptest-*`
-remain**. (The automated equivalent for free resources is `pnpm smoke:crud v1 v2`.)
+`list-container-registry-auths`, `list-pods`, `list-registry-delegations` → confirm
+**no `mcptest-*` remain**. (The automated equivalent for free resources is `pnpm smoke:crud v1 v2`.)
 
 **Sign-off:** (prod v2, 2026-06-26)
 - #44 Adapter foundation — v1 unchanged, server boots, handshake OK: ✅ (v1 parity F + G1/G2 pass)
