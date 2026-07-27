@@ -114,14 +114,10 @@ const EXPECTED_TOOLS = [
   'get-container-registry-auth',
   'create-container-registry-auth',
   'delete-container-registry-auth',
-  // tags (v2-only)
-  'list-tags',
-  'get-tag',
-  'create-tag',
-  'update-tag',
-  'delete-tag',
-  'attach-tag',
-  'detach-tag',
+  // ECR delegations (v2-only)
+  'list-registry-delegations',
+  'create-registry-delegation',
+  'delete-registry-delegation',
   // billing (v2-only)
   'get-billing',
 ];

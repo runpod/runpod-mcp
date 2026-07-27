@@ -1,23 +1,191 @@
-openapi: "3.0.3"
+openapi: "3.1.0"
 
 info:
-  title: RunPod REST API
+  title: Runpod REST API
   version: "2.0.0"
-  description: RunPod public REST API — v2
+  description: Runpod public REST API — v2
 
 servers:
-  - url: /
-    description: Current server
+  - url: https://api.runpod.io
+    description: Runpod API v2 production server
 
 security:
   - bearerAuth: []
+
+tags:
+  - name: Pods
+    description: GPU and CPU pod lifecycle, configuration, actions, and log streaming.
+  - name: Serverless
+    description: Serverless endpoint lifecycle, worker visibility, releases, and worker log streaming.
+  - name: Templates
+    description: Reusable pod and endpoint configuration templates.
+  - name: Network Volumes
+    description: Persistent network storage volumes for workloads.
+  - name: Registries
+    description: Container registry credentials used to pull private images.
+  - name: Catalog
+    description: Available GPU, CPU, and data center catalog metadata.
+  - name: Billing
+    description: Billing history and usage cost records across resource types.
 
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: RunPod API Key
+      bearerFormat: Runpod API Key
+      description: >
+        Runpod API key authentication. Generate an API key in the Runpod console
+        and send it in the `Authorization` header as `Bearer <api_key>`.
+        Keys are scoped to the permissions granted when created; requests may
+        return `403` when a valid key lacks access to the requested resource or
+        action.
+
+  responses:
+    UnauthorizedError:
+      description: Authentication failed because the bearer token is missing, malformed, expired, or invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            missingBearerToken:
+              summary: Missing bearer token
+              value:
+                title: Unauthorized
+                status: 401
+                detail: missing bearer token
+    ForbiddenError:
+      headers:
+        RateLimit:
+          $ref: "#/components/headers/RateLimit"
+        RateLimit-Policy:
+          $ref: "#/components/headers/RateLimit-Policy"
+      description: The bearer token is valid, but it does not grant access to the requested resource or action.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            insufficientAccess:
+              summary: Insufficient access
+              value:
+                title: Forbidden
+                status: 403
+                detail: access denied
+
+    BadRequestError:
+      headers:
+        RateLimit:
+          $ref: "#/components/headers/RateLimit"
+        RateLimit-Policy:
+          $ref: "#/components/headers/RateLimit-Policy"
+      description: The request could not be processed because it is malformed or conflicts with request rules.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            badRequest:
+              summary: Bad request
+              value:
+                title: Bad Request
+                status: 400
+                detail: request could not be processed
+    NotFoundError:
+      headers:
+        RateLimit:
+          $ref: "#/components/headers/RateLimit"
+        RateLimit-Policy:
+          $ref: "#/components/headers/RateLimit-Policy"
+      description: The requested resource was not found or is not accessible to the caller.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            notFound:
+              summary: Resource not found
+              value:
+                title: Not Found
+                status: 404
+                detail: resource not found
+    UnprocessableEntityError:
+      headers:
+        RateLimit:
+          $ref: "#/components/headers/RateLimit"
+        RateLimit-Policy:
+          $ref: "#/components/headers/RateLimit-Policy"
+      description: The request body or parameters were syntactically valid but failed validation.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            validationFailed:
+              summary: Validation failed
+              value:
+                title: Unprocessable Entity
+                status: 422
+                detail: Request validation failed.
+    MethodNotAllowedError:
+      description: The request method is not supported for the target path.
+      headers:
+        RateLimit:
+          $ref: "#/components/headers/RateLimit"
+        RateLimit-Policy:
+          $ref: "#/components/headers/RateLimit-Policy"
+        Allow:
+          description: Comma-separated methods supported by the target path.
+          schema:
+            type: string
+          example: GET, POST
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            methodNotAllowed:
+              summary: Method not allowed
+              value:
+                title: Method Not Allowed
+                status: 405
+                detail: The requested method is not allowed for this path.
+    TooManyRequestsError:
+      description: >
+        The caller exceeded its per-user rate limit. The response identifies the
+        window that was exceeded and how long to wait. The `RateLimit` and
+        `RateLimit-Policy` headers (per the IETF ratelimit-headers draft) also
+        accompany successful responses, so clients can track quota before a 429.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying, per the exceeded window.
+          schema:
+            type: integer
+          example: 12
+        RateLimit:
+          $ref: "#/components/headers/RateLimit"
+        RateLimit-Policy:
+          $ref: "#/components/headers/RateLimit-Policy"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            rateLimited:
+              summary: Rate limit exceeded
+              value:
+                title: Too Many Requests
+                status: 429
+                detail: rate limit exceeded for the minute window
+
+  headers:
+    RateLimit:
+      schema:
+        $ref: "#/components/schemas/RateLimitHeader"
+    RateLimit-Policy:
+      schema:
+        $ref: "#/components/schemas/RateLimitPolicyHeader"
 
   parameters:
     # Shared /v2/billing* query params. Routes add their own resource-id filter.
@@ -195,33 +363,32 @@ components:
         image:
           type: string
           description: Docker image reference
-          example: runpod/pytorch:2.8.0-py3.11-cuda12.8.1
+          examples: ["runpod/pytorch:2.8.0-py3.11-cuda12.8.1"]
         args:
           type: string
           description: Arguments passed to the container entrypoint
-          example: ""
+          examples: [""]
         disk:
           type: integer
           minimum: 1
           description: Container disk in GB (ephemeral, wiped on restart)
-          example: 50
+          examples: [50]
         ports:
           type: array
           description: "Exposed ports, formatted as port/protocol"
           items:
             type: string
-          example: ["8888/http", "22/tcp"]
+          examples: [["8888/http", "22/tcp"]]
         env:
           type: object
           additionalProperties:
             type: string
           description: Environment variables as key-value pairs
-          example: { "JUPYTER_PASSWORD": "hunter2" }
+          examples: [{"JUPYTER_PASSWORD": "hunter2"}]
         registry:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Container registry credential ID (for private images)
-          example: null
+          examples: [null]
 
     Mounts:
       type: object
@@ -284,11 +451,11 @@ components:
           type: integer
           minimum: 10
           description: Host-local persistent storage in GB. Upstream enforces a 10 GB floor.
-          example: 20
+          examples: [20]
         path:
           type: string
           description: Mount path inside the container. May be changed via PATCH.
-          example: /workspace
+          examples: [/workspace]
 
     NetworkMount:
       type: object
@@ -302,11 +469,11 @@ components:
         volumeId:
           type: string
           description: ID of an existing NetworkVolume in the same data center as the pod.
-          example: vol_xyz
+          examples: [vol_xyz]
         path:
           type: string
           description: Mount path inside the container. No default — must be specified explicitly.
-          example: /runpod-volume
+          examples: [/runpod-volume]
 
     GpuConfig:
       type: object
@@ -315,13 +482,13 @@ components:
         id:
           type: string
           description: GPU type identifier
-          example: NVIDIA GeForce RTX 4090
+          examples: [NVIDIA GeForce RTX 4090]
         count:
           type: integer
           minimum: 1
           default: 1
           description: Number of GPUs
-          example: 1
+          examples: [1]
 
     BaseCpuConfig:
       type: object
@@ -330,17 +497,18 @@ components:
         id:
           type: string
           description: CPU flavor identifier, as returned by GET /v2/catalog/cpus.
-          example: cpu5c
+          examples: [cpu5c]
           minLength: 1
         vcpuCount:
           type: integer
           minimum: 2
           description: Number of vCPUs. Must be valid for the selected CPU flavor and must be a power of two.
-          example: 4
+          examples: [4]
 
     CreateCpuConfig:
       allOf:
         - $ref: "#/components/schemas/BaseCpuConfig"
+      unevaluatedProperties: false
 
     CpuConfig:
       allOf:
@@ -352,17 +520,7 @@ components:
               type: integer
               minimum: 1
               description: Memory allocated to the pod in GB.
-              example: 16
-
-    ScalerType:
-      type: string
-      description: |
-        Autoscaling strategy.
-        - `QUEUE_DELAY`   — scale on seconds a request waits in queue
-        - `REQUEST_COUNT` — scale on in-flight request count
-      enum:
-        - QUEUE_DELAY
-        - REQUEST_COUNT
+              examples: [16]
 
     FlashBoot:
       type: string
@@ -376,6 +534,91 @@ components:
         - FLASHBOOT
         - PRIORITY_FLASHBOOT
 
+    EndpointType:
+      type: string
+      description: |
+        Request-routing semantics for a modern serverless endpoint.
+        - `QUEUE` — submit asynchronous or synchronous jobs through the managed queue.
+        - `LOAD_BALANCER` — send requests directly to worker-defined HTTP paths.
+      x-enum-varnames:
+        - EndpointTypeQueue
+        - EndpointTypeLoadBalancer
+      enum:
+        - QUEUE
+        - LOAD_BALANCER
+
+    QueueBasedRequestUrls:
+      type: object
+      additionalProperties: false
+      required: [run, runSync, status, stream, cancel, retry, purgeQueue, health]
+      properties:
+        run:
+          type: string
+          format: uri
+          description: URL for asynchronously submitting a queued job.
+          examples: ["https://api.runpod.ai/v2/4m7x2k9q/run"]
+        runSync:
+          type: string
+          format: uri
+          description: URL for synchronously submitting a queued job. Accepts an optional `?wait=x` query parameter to control how long the request waits for job completion, defaulting to 90 seconds.
+          examples: ["https://api.runpod.ai/v2/4m7x2k9q/runsync"]
+        status:
+          type: string
+          format: uri
+          description: Check the current state, execution statistics, and results of a previously submitted job.
+          examples: ["https://api.runpod.ai/v2/4m7x2k9q/status/{job_id}"]
+        stream:
+          type: string
+          format: uri
+          description: Receive incremental results as they become available from a job that generates output progressively.
+          examples: ["https://api.runpod.ai/v2/4m7x2k9q/stream/{job_id}"]
+        cancel:
+          type: string
+          format: uri
+          description: Stop an in-progress job or remove a queued job before it starts.
+          examples: ["https://api.runpod.ai/v2/4m7x2k9q/cancel/{job_id}"]
+        retry:
+          type: string
+          format: uri
+          description: Requeue a failed or timed-out job without submitting a new request.
+          examples: ["https://api.runpod.ai/v2/4m7x2k9q/retry/{job_id}"]
+        purgeQueue:
+          type: string
+          format: uri
+          description: Remove all pending jobs from the queue. Does not affect in-progress jobs.
+          examples: ["https://api.runpod.ai/v2/4m7x2k9q/purge-queue"]
+        health:
+          type: string
+          format: uri
+          description: Overview of an endpoint's operational status.
+          examples: ["https://api.runpod.ai/v2/4m7x2k9q/health"]
+
+    LoadBalancingRequestUrls:
+      type: object
+      additionalProperties: false
+      required: [base, health]
+      properties:
+        base:
+          type: string
+          format: uri
+          description: Base URL for worker-defined HTTP and WebSocket paths.
+          examples: ["https://4m7x2k9q.api.runpod.ai"]
+        health:
+          type: string
+          format: uri
+          description: Health check endpoint the load balancer will periodically ping to decide if the worker is healthy enough to receive traffic. Configurable by setting the `HEALTH_CHECK_PATH` environment variable. Defaults to `/ping` if the variable is not set.
+          examples: ["https://4m7x2k9q.api.runpod.ai/ping"]
+
+    EndpointRequestUrls:
+      description: |
+        Request URLs appropriate to the endpoint's top-level `type`.
+        Queue-based endpoints provide job submission and management URLs;
+        load-balancing endpoints provide `base` and `health` because their
+        remaining paths are worker-defined.
+      oneOf:
+        - $ref: "#/components/schemas/QueueBasedRequestUrls"
+        - $ref: "#/components/schemas/LoadBalancingRequestUrls"
+
     EndpointGpuConfig:
       type: object
       required: [pools]
@@ -388,13 +631,87 @@ components:
             `pool`). Workers are placed on whichever listed pool has capacity.
           items:
             type: string
-          example: ["ADA_24"]
+          examples: [["ADA_24"]]
         count:
           type: integer
           minimum: 1
           default: 1
           description: GPUs per worker
-          example: 1
+          examples: [1]
+
+    EndpointWorkers:
+      type: object
+      additionalProperties: false
+      properties:
+        min:
+          type: integer
+          minimum: 0
+          description: Minimum number of workers.
+          examples: [0]
+        max:
+          type: integer
+          minimum: 0
+          description: Maximum number of workers.
+          examples: [5]
+        idleTimeout:
+          type: integer
+          minimum: 1
+          maximum: 3600
+          description: |
+            Seconds before idle workers scale down. Not applicable to queue-based
+            endpoints scaling on `requestCount` — rejected on create/update and
+            omitted from responses for that combination.
+          examples: [5]
+
+    QueueDelayScaling:
+      type: object
+      additionalProperties: false
+      description: Scale on queue wait time. Queue-based endpoints only.
+      required: [type, queueDelay]
+      properties:
+        type:
+          type: string
+          description: Scaler discriminator. Always `QUEUE_DELAY` for this variant.
+          enum: [QUEUE_DELAY]
+        queueDelay:
+          type: number
+          format: float
+          minimum: 0.5
+          description: Adjusts the number of workers based on how long requests wait in the queue.
+          examples: [4]
+
+    RequestCountScaling:
+      type: object
+      additionalProperties: false
+      description: |
+        Scale on concurrent in-flight requests per worker. Required for
+        load-balancing endpoints; also selectable for queue-based.
+      required: [type, requestCount]
+      properties:
+        type:
+          type: string
+          description: Scaler discriminator. Always `REQUEST_COUNT` for this variant.
+          enum: [REQUEST_COUNT]
+        requestCount:
+          type: integer
+          minimum: 1
+          description: Adjusts the number of workers based on active in-flight requests.
+          examples: [4]
+
+    EndpointScaling:
+      description: |
+        Autoscaling signal — a discriminated union on `type`: `QUEUE_DELAY`
+        (queue-based endpoints only) or `REQUEST_COUNT`. The scaler is chosen
+        independently of the endpoint's routing `type` and can be switched on
+        update.
+      oneOf:
+        - $ref: "#/components/schemas/QueueDelayScaling"
+        - $ref: "#/components/schemas/RequestCountScaling"
+      discriminator:
+        propertyName: type
+        mapping:
+          QUEUE_DELAY: "#/components/schemas/QueueDelayScaling"
+          REQUEST_COUNT: "#/components/schemas/RequestCountScaling"
 
     Endpoint:
       allOf:
@@ -413,66 +730,49 @@ components:
           properties:
             id:
               type: string
-              example: ep_abc123
+              examples: [ep_abc123]
             name:
               type: string
-              example: my-inference
+              examples: [my-inference]
+            type:
+              $ref: "#/components/schemas/EndpointType"
+            requestUrls:
+              $ref: "#/components/schemas/EndpointRequestUrls"
             gpu:
-              nullable: true
-              allOf:
+              anyOf:
                 - $ref: "#/components/schemas/EndpointGpuConfig"
+                - type: "null"
             cpu:
-              nullable: true
               description: Read-only. Present for CPU serverless endpoints; CPU create/update is not yet supported.
-              allOf:
+              anyOf:
                 - $ref: "#/components/schemas/CpuConfig"
+                - type: "null"
             workers:
-              type: object
+              allOf:
+                - $ref: "#/components/schemas/EndpointWorkers"
               required: [min, max]
-              properties:
-                min:
-                  type: integer
-                  minimum: 0
-                  example: 0
-                max:
-                  type: integer
-                  minimum: 0
-                  example: 5
             scaling:
-              type: object
-              required: [type, value, idleTimeout]
-              properties:
-                type:
-                  $ref: "#/components/schemas/ScalerType"
-                value:
-                  type: integer
-                  minimum: 1
-                  example: 4
-                idleTimeout:
-                  type: integer
-                  minimum: 0
-                  description: Seconds before idle workers scale down
-                  example: 5
+              $ref: "#/components/schemas/EndpointScaling"
             dataCenterIds:
               type: array
               items:
                 type: string
-              example: ["US-TX-3"]
+              examples: [["US-TX-3"]]
             networkVolumes:
               type: array
               items:
                 type: string
-              example: ["vol_abc"]
+              examples: [["vol_abc"]]
             timeout:
               type: integer
               description: Per-request execution timeout in milliseconds
-              example: 300000
+              examples: [300000]
             flashboot:
               $ref: "#/components/schemas/FlashBoot"
             createdAt:
               type: string
               format: date-time
-              example: "2026-03-13T20:00:00Z"
+              examples: ["2026-03-13T20:00:00Z"]
 
     ListEndpointsResponse:
       type: object
@@ -515,7 +815,7 @@ components:
       properties:
         id:
           type: string
-          example: worker_abc
+          examples: [worker_abc]
         status:
           $ref: "#/components/schemas/WorkerStatus"
         isStale:
@@ -526,46 +826,40 @@ components:
             flag: it is derived from `version` vs the response's `endpointVersion`,
             except on legacy endpoints (`endpointVersion` 1) where it falls back
             to a container-image comparison.
-          example: false
+          examples: [false]
         version:
-          type: integer
-          nullable: true
+          type: [integer, "null"]
           description: |
             Endpoint configuration version this worker is running. Compare with
             the response's `endpointVersion`. Null if unknown.
-          example: 4
+          examples: [4]
         gpuCount:
           type: integer
           minimum: 0
           description: GPUs allocated to the worker.
-          example: 1
+          examples: [1]
         image:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Container image the worker is running.
-          example: my-org/sdxl-worker:latest
+          examples: ["my-org/sdxl-worker:latest"]
         uptimeSeconds:
-          type: integer
+          type: [integer, "null"]
           minimum: 0
-          nullable: true
           description: Seconds the worker has been running. Null until the worker is placed and running.
-          example: 3600
+          examples: [3600]
         gpuTypeId:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: GPU type the worker is placed on. Null until the worker is placed.
-          example: NVIDIA RTX 4090
+          examples: [NVIDIA RTX 4090]
         dataCenterId:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Data center the worker is placed in. Null until the worker is placed.
-          example: US-TX-3
+          examples: [US-TX-3]
         startedAt:
-          type: string
+          type: [string, "null"]
           format: date-time
-          nullable: true
           description: When the worker last started. Null if it has not started.
-          example: "2026-03-26T00:00:00Z"
+          examples: ["2026-03-26T00:00:00Z"]
 
     WorkerSummary:
       type: object
@@ -579,32 +873,32 @@ components:
           type: integer
           minimum: 0
           description: Workers actively processing a job.
-          example: 2
+          examples: [2]
         idle:
           type: integer
           minimum: 0
           description: Ready workers polling for jobs.
-          example: 1
+          examples: [1]
         initializing:
           type: integer
           minimum: 0
           description: Workers starting up, not yet ready.
-          example: 0
+          examples: [0]
         throttled:
           type: integer
           minimum: 0
           description: Workers waiting on compute capacity.
-          example: 0
+          examples: [0]
         unhealthy:
           type: integer
           minimum: 0
           description: Workers failing health checks.
-          example: 0
+          examples: [0]
         total:
           type: integer
           minimum: 0
           description: All workers currently allocated to the endpoint.
-          example: 3
+          examples: [3]
 
     ListEndpointWorkersResponse:
       type: object
@@ -617,13 +911,12 @@ components:
         summary:
           $ref: "#/components/schemas/WorkerSummary"
         endpointVersion:
-          type: integer
-          nullable: true
+          type: [integer, "null"]
           description: |
             The endpoint's current configuration version. A worker whose
             `version` differs is running stale config (see `worker.isStale`).
             Null if unknown.
-          example: 4
+          examples: [4]
 
     ReleaseSource:
       type: string
@@ -648,12 +941,10 @@ components:
             The changed configuration field. Top-level (e.g. `gpuCount`,
             `locations`) or template-scoped (e.g. `template.imageName`,
             `template.env`).
-          example: template.imageName
+          examples: [template.imageName]
         old:
-          nullable: true
           description: Previous value, as raw JSON. Null when the field was added.
         new:
-          nullable: true
           description: New value, as raw JSON. Null when the field was removed.
 
     Release:
@@ -662,35 +953,32 @@ components:
       properties:
         id:
           type: string
-          example: rel_abc123
+          examples: [rel_abc123]
         version:
-          type: integer
-          nullable: true
+          type: [integer, "null"]
           description: The endpoint configuration version this release produced.
-          example: 4
+          examples: [4]
         source:
           $ref: "#/components/schemas/ReleaseSource"
         buildId:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: |
             The GitHub build that produced this release. Set when `source` is
             `GIT_BUILD`; null for `MANUAL` releases. Fetch build detail/logs via
             `/v2/serverless/{id}/builds/{buildId}`.
-          example: build_abc123
+          examples: [build_abc123]
         createdByUserId:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: ID of the user who created the release.
         workerCount:
           type: integer
           minimum: 0
           description: Workers currently running this release's version.
-          example: 2
+          examples: [2]
         createdAt:
           type: string
           format: date-time
-          example: "2026-03-13T20:00:00Z"
+          examples: ["2026-03-13T20:00:00Z"]
         diff:
           type: array
           description: Configuration fields that changed in this release.
@@ -704,33 +992,32 @@ components:
         inProgress:
           type: boolean
           description: True while any worker is still running an older version.
-          example: true
+          examples: [true]
         workersOnLatest:
           type: integer
           minimum: 0
           description: Workers running the endpoint's current version.
-          example: 2
+          examples: [2]
         workersTotal:
           type: integer
           minimum: 0
           description: All workers currently allocated to the endpoint.
-          example: 3
+          examples: [3]
         percentOnLatest:
           type: integer
           minimum: 0
           maximum: 100
           description: Percentage of workers on the current version (0 when there are no workers).
-          example: 67
+          examples: [67]
 
     ListEndpointReleasesResponse:
       type: object
       required: [rollout, releases]
       properties:
         endpointVersion:
-          type: integer
-          nullable: true
+          type: [integer, "null"]
           description: The endpoint's current configuration version. Null if unknown.
-          example: 4
+          examples: [4]
         rollout:
           $ref: "#/components/schemas/RolloutSummary"
         releases:
@@ -743,38 +1030,37 @@ components:
       allOf:
         - $ref: "#/components/schemas/ContainerConfig"
         - type: object
-          required: [name, image, gpu]
+          required: [name, image, gpu, type, scaling]
           properties:
             name:
               type: string
               minLength: 1
-              example: my-inference
+              examples: [my-inference]
+            type:
+              allOf:
+                - $ref: "#/components/schemas/EndpointType"
+              description: |
+                Request-routing model. Required — it determines the valid scaler
+                and request URLs, so it must be chosen explicitly on every create.
             gpu:
-              $ref: "#/components/schemas/EndpointGpuConfig"
+              allOf:
+                - $ref: "#/components/schemas/EndpointGpuConfig"
+              unevaluatedProperties: false
             workers:
-              type: object
+              allOf:
+                - $ref: "#/components/schemas/EndpointWorkers"
               properties:
                 min:
                   type: integer
-                  minimum: 0
                   default: 0
                 max:
                   type: integer
-                  minimum: 0
                   default: 3
-            scaling:
-              type: object
-              properties:
-                type:
-                  $ref: "#/components/schemas/ScalerType"
-                value:
-                  type: integer
-                  minimum: 1
-                  default: 4
                 idleTimeout:
                   type: integer
-                  minimum: 0
-                  default: 5
+                  default: 10
+            scaling:
+              $ref: "#/components/schemas/EndpointScaling"
             dataCenterIds:
               type: array
               items:
@@ -791,6 +1077,19 @@ components:
               allOf:
                 - $ref: "#/components/schemas/FlashBoot"
               default: OFF
+      unevaluatedProperties: false
+      # Load-balancing endpoints have no request queue, so they scale only on
+      # requestCount — forbid queueDelay for them. Queue-based endpoints may use
+      # either signal (mutual exclusivity is enforced on the scaling object).
+      if:
+        required: [type]
+        properties:
+          type:
+            const: LOAD_BALANCER
+      then:
+        properties:
+          scaling:
+            $ref: "#/components/schemas/RequestCountScaling"
 
     UpdateEndpointRequest:
       allOf:
@@ -802,27 +1101,13 @@ components:
               type: string
               minLength: 1
             gpu:
-              $ref: "#/components/schemas/EndpointGpuConfig"
+              allOf:
+                - $ref: "#/components/schemas/EndpointGpuConfig"
+              unevaluatedProperties: false
             workers:
-              type: object
-              properties:
-                min:
-                  type: integer
-                  minimum: 0
-                max:
-                  type: integer
-                  minimum: 0
+              $ref: "#/components/schemas/EndpointWorkers"
             scaling:
-              type: object
-              properties:
-                type:
-                  $ref: "#/components/schemas/ScalerType"
-                value:
-                  type: integer
-                  minimum: 1
-                idleTimeout:
-                  type: integer
-                  minimum: 0
+              $ref: "#/components/schemas/EndpointScaling"
             dataCenterIds:
               type: array
               items:
@@ -836,6 +1121,7 @@ components:
               type: integer
             flashboot:
               $ref: "#/components/schemas/FlashBoot"
+      unevaluatedProperties: false
 
     Utilization:
       type: object
@@ -843,7 +1129,7 @@ components:
       properties:
         util:
           type: integer
-          example: 45
+          examples: [45]
 
     PodGpuUtilization:
       type: object
@@ -851,10 +1137,10 @@ components:
       properties:
         util:
           type: integer
-          example: 94
+          examples: [94]
         memoryUtil:
           type: integer
-          example: 78
+          examples: [78]
 
     PodRuntimePort:
       type: object
@@ -862,18 +1148,16 @@ components:
       properties:
         private:
           type: integer
-          example: 8888
+          examples: [8888]
         public:
-          type: integer
-          nullable: true
-          example: 43210
+          type: [integer, "null"]
+          examples: [43210]
         type:
           type: string
-          example: http
+          examples: [http]
         ip:
-          type: string
-          nullable: true
-          example: 45.23.12.1
+          type: [string, "null"]
+          examples: [45.23.12.1]
 
     PodRuntime:
       type: object
@@ -882,7 +1166,7 @@ components:
         uptime:
           type: integer
           description: Seconds since the container started
-          example: 3600
+          examples: [3600]
         gpus:
           type: array
           items:
@@ -942,19 +1226,17 @@ components:
       type: string
       description: |
         Cloud tier.
-        - `SECURE`    — RunPod-owned datacenter hardware
+        - `SECURE`    — Runpod-owned datacenter hardware
         - `COMMUNITY` — community-hosted hardware
-        - `ALL`       — eligible for either tier (request-only; responses always
-          report the concrete tier the pod was placed on)
       enum:
         - SECURE
         - COMMUNITY
-        - ALL
 
     TemplateCategory:
       type: string
       description: |
-        Hardware family this template targets.
+        Controls how the template is grouped and filtered in the Runpod console.
+        It does not affect hardware selection, scheduling, or billing.
         - `CPU`    — CPU-only workloads
         - `NVIDIA` — NVIDIA GPU workloads
         - `AMD`    — AMD GPU workloads
@@ -975,18 +1257,18 @@ components:
             Whether global networking is enabled, giving the pod a private IP
             reachable across data centers. Derived from whether the pod has an
             assigned global-network address.
-          example: true
+          examples: [true]
         ip:
           type: string
           description: >-
             The pod's assigned global-networking IP. Present only when enabled.
-          example: 10.65.1.42
+          examples: [10.65.1.42]
         internalDns:
           type: string
           description: >-
             Internal DNS name (`<podId>.runpod.internal`), reachable from other
             globally-networked pods in the same account. Present only when enabled.
-          example: gfj8b292vyg08g.runpod.internal
+          examples: [gfj8b292vyg08g.runpod.internal]
 
     Pod:
       allOf:
@@ -1009,7 +1291,6 @@ components:
             - template
             - cost
             - locked
-            - tags
             - runtime
             - createdAt
             - startedAt
@@ -1017,10 +1298,10 @@ components:
           properties:
             id:
               type: string
-              example: pod_abc123
+              examples: [pod_abc123]
             name:
               type: string
-              example: my-training-pod
+              examples: [my-training-pod]
             status:
               $ref: "#/components/schemas/PodStatus"
             actions:
@@ -1043,51 +1324,42 @@ components:
             cloud:
               $ref: "#/components/schemas/Cloud"
             dataCenterId:
-              type: string
-              nullable: true
+              type: [string, "null"]
               description: Data center where the pod is running (assigned by scheduler)
-              example: US-TX-3
+              examples: [US-TX-3]
 
             # ── Metadata ──
             template:
-              type: string
-              nullable: true
+              type: [string, "null"]
               description: ID of the template this pod was created from
-              example: null
+              examples: [null]
             cost:
               type: number
               format: float
               description: Current cost in USD per hour (0.0 when EXITED or TERMINATED)
-              example: 0.35
+              examples: [0.35]
             locked:
               type: boolean
               description: Whether the pod is locked (prevents stopping or resetting)
-              example: false
+              examples: [false]
             globalNetworking:
               $ref: "#/components/schemas/PodGlobalNetworking"
-            tags:
-              type: array
-              description: Tags attached to this pod.
-              items:
-                $ref: "#/components/schemas/Tag"
-
             # ── Runtime (nullable) ──
             runtime:
-              nullable: true
               description: Live utilization metrics. Null when the pod is not RUNNING.
-              allOf:
+              anyOf:
                 - $ref: "#/components/schemas/PodRuntime"
+                - type: "null"
 
             # ── Timestamps ──
             createdAt:
               type: string
               format: date-time
-              example: "2026-03-13T20:00:00Z"
+              examples: ["2026-03-13T20:00:00Z"]
             startedAt:
-              type: string
+              type: [string, "null"]
               format: date-time
-              nullable: true
-              example: "2026-03-13T20:00:00Z"
+              examples: ["2026-03-13T20:00:00Z"]
 
     CreatePodRequest:
       allOf:
@@ -1105,15 +1377,20 @@ components:
             name:
               type: string
               minLength: 1
-              example: my-training-pod
+              examples: [my-training-pod]
             mounts:
               $ref: "#/components/schemas/Mounts"
             gpu:
-              $ref: "#/components/schemas/GpuConfig"
+              allOf:
+                - $ref: "#/components/schemas/GpuConfig"
+              unevaluatedProperties: false
             cpu:
               $ref: "#/components/schemas/CreateCpuConfig"
             cloud:
-              $ref: "#/components/schemas/Cloud"
+              allOf:
+                - $ref: "#/components/schemas/Cloud"
+              default: SECURE
+              description: Cloud tier. Defaults to `SECURE` when omitted.
             dataCenterIds:
               type: array
               items:
@@ -1121,7 +1398,7 @@ components:
               description: |
                 Preferred data centers for placement. Omit or pass an empty
                 array to let the scheduler choose.
-              example: ["US-TX-3"]
+              examples: [["US-TX-3"]]
             globalNetworking:
               type: boolean
               default: false
@@ -1131,7 +1408,8 @@ components:
                 global-networking-enabled data center (both enforced upstream).
                 See `GET /v2/catalog/datacenters` (`globalNetwork`) for eligible
                 data centers.
-              example: false
+              examples: [false]
+      unevaluatedProperties: false
 
     UpdatePodRequest:
       allOf:
@@ -1154,9 +1432,11 @@ components:
                 and a global-networking-enabled data center (both enforced
                 upstream). See `GET /v2/catalog/datacenters` (`globalNetwork`)
                 for eligible data centers.
+      unevaluatedProperties: false
 
     PodActionRequest:
       type: object
+      additionalProperties: false
       required: [action]
       properties:
         action:
@@ -1177,38 +1457,24 @@ components:
       allOf:
         - $ref: "#/components/schemas/ContainerConfig"
         - type: object
-          required:
-            [
-              id,
-              name,
-              image,
-              args,
-              disk,
-              mounts,
-              ports,
-              env,
-              registry,
-              serverless,
-              public,
-              category,
-            ]
+          required: [id, name, image, args, disk, mounts, ports, env, registry, serverless, public, category]
           properties:
             id:
               type: string
-              example: tpl_abc
+              examples: [tpl_abc]
             name:
               type: string
-              example: My PyTorch Template
+              examples: [My PyTorch Template]
             mounts:
               $ref: "#/components/schemas/TemplateMounts"
             serverless:
               type: boolean
               description: Whether this template is for serverless workers (true) or pods (false)
-              example: false
+              examples: [false]
             public:
               type: boolean
-              description: Whether this template is visible to other RunPod users
-              example: false
+              description: Whether this template is visible to other Runpod users
+              examples: [false]
             category:
               $ref: "#/components/schemas/TemplateCategory"
 
@@ -1216,12 +1482,12 @@ components:
       allOf:
         - $ref: "#/components/schemas/ContainerConfig"
         - type: object
-          required: [name, image, category]
+          required: [name, image]
           properties:
             name:
               type: string
               minLength: 1
-              example: My PyTorch Template
+              examples: [My PyTorch Template]
             mounts:
               $ref: "#/components/schemas/TemplateMounts"
             serverless:
@@ -1231,7 +1497,11 @@ components:
               type: boolean
               default: false
             category:
-              $ref: "#/components/schemas/TemplateCategory"
+              description: Optional. Defaults to `NVIDIA` when omitted.
+              allOf:
+                - $ref: "#/components/schemas/TemplateCategory"
+              default: NVIDIA
+      unevaluatedProperties: false
 
     UpdateTemplateRequest:
       allOf:
@@ -1249,6 +1519,7 @@ components:
               type: boolean
             category:
               $ref: "#/components/schemas/TemplateCategory"
+      unevaluatedProperties: false
 
     ListTemplatesResponse:
       type: object
@@ -1258,108 +1529,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Template"
-
-    # ── Tags ──────────────────────────────────────────────────────────────────
-
-    TagResourceType:
-      type: string
-      description: Resource type attached to a tag.
-      enum:
-        - POD
-        - NETWORK_VOLUME
-        - CLUSTER
-        - SERVERLESS_ENDPOINT
-      example: POD
-
-    TaggedResource:
-      type: object
-      required: [id, type]
-      additionalProperties: false
-      properties:
-        id:
-          type: string
-          description: Resource identifier.
-          example: pod_abc123
-        type:
-          $ref: "#/components/schemas/TagResourceType"
-
-    Tag:
-      type: object
-      required: [id, key, value]
-      additionalProperties: false
-      properties:
-        id:
-          type: string
-          description: Tag identifier
-          example: tag_abc123
-        key:
-          type: string
-          minLength: 1
-          description: Tag key
-          example: project
-        value:
-          type: string
-          minLength: 1
-          description: Tag value
-          example: gpt-training
-        resources:
-          type: array
-          description: Populated only on direct tag responses when `?include=resources` is provided; omitted when the tag appears nested in another resource or if no resources have the tag.
-          items:
-            $ref: "#/components/schemas/TaggedResource"
-
-    CreateTagRequest:
-      type: object
-      required: [key, value]
-      additionalProperties: false
-      properties:
-        key:
-          type: string
-          minLength: 1
-          example: project
-        value:
-          type: string
-          minLength: 1
-          example: gpt-training
-        resources:
-          type: array
-          description: Resources to attach to the tag at create time. If any resource cannot be attached, tag creation returns an error rather than silently dropping the association.
-          items:
-            $ref: "#/components/schemas/TaggedResource"
-
-    UpdateTagRequest:
-      type: object
-      minProperties: 1
-      additionalProperties: false
-      description: At least one of `key`, `value`, or `resources` must be provided.
-      properties:
-        key:
-          type: string
-          minLength: 1
-          example: project
-        value:
-          type: string
-          minLength: 1
-          example: gpt-training
-        resources:
-          type: array
-          description: |
-            Replaces resource associations when present. Omit `resources` to leave
-            existing associations unchanged. Send `resources: []` to remove all
-            associations. Send a non-empty array to replace current associations with
-            exactly those resources.
-          items:
-            $ref: "#/components/schemas/TaggedResource"
-
-    ListTagsResponse:
-      type: object
-      required: [tags]
-      additionalProperties: false
-      properties:
-        tags:
-          type: array
-          items:
-            $ref: "#/components/schemas/Tag"
 
     # ── Network Volumes ───────────────────────────────────────────────────────
 
@@ -1371,38 +1540,32 @@ components:
         - size
         - dataCenter
         - type
-        - tags
       properties:
         id:
           type: string
           description: Unique network volume identifier
-          example: agv6w2qcg7
+          examples: [agv6w2qcg7]
         name:
           type: string
           description: Human-readable name (not required to be unique)
-          example: my-dataset
+          examples: [my-dataset]
         size:
           type: integer
           minimum: 10
           maximum: 4096
           description: Allocated storage in GB
-          example: 50
+          examples: [50]
         dataCenter:
           type: string
           description: Data center location; immutable after creation
-          example: EU-RO-1
+          examples: [EU-RO-1]
         type:
           allOf:
             - $ref: "#/components/schemas/VolumeType"
           description: Storage tier of this volume. Set at creation and immutable.
-        tags:
-          type: array
-          description: Tags attached to this network volume.
-          items:
-            $ref: "#/components/schemas/Tag"
-
     CreateNetworkVolumeRequest:
       type: object
+      additionalProperties: false
       required:
         - name
         - size
@@ -1412,18 +1575,18 @@ components:
           type: string
           minLength: 1
           description: Human-readable name
-          example: my-dataset
+          examples: [my-dataset]
         size:
           type: integer
           minimum: 10
           maximum: 4096
           description: Storage to allocate in GB
-          example: 50
+          examples: [50]
         dataCenter:
           type: string
           minLength: 1
           description: Data center in which to create the volume
-          example: EU-RO-1
+          examples: [EU-RO-1]
         type:
           allOf:
             - $ref: "#/components/schemas/VolumeType"
@@ -1446,7 +1609,7 @@ components:
           type: string
           minLength: 1
           description: New human-readable name
-          example: renamed-volume
+          examples: [renamed-volume]
         size:
           type: integer
           minimum: 10
@@ -1454,7 +1617,7 @@ components:
           description: |
             New size in GB. Must be greater than or equal to the current size —
             network volume storage cannot be reduced.
-          example: 100
+          examples: [100]
 
     ListNetworkVolumesResponse:
       type: object
@@ -1474,19 +1637,20 @@ components:
       properties:
         id:
           type: string
-          example: reg_abc
+          examples: [reg_abc]
         name:
           type: string
-          example: my-private-registry
+          examples: [my-private-registry]
 
     CreateRegistryRequest:
       type: object
+      additionalProperties: false
       required: [name, username, password]
       properties:
         name:
           type: string
           minLength: 1
-          example: my-private-registry
+          examples: [my-private-registry]
         username:
           type: string
           minLength: 1
@@ -1505,50 +1669,114 @@ components:
           items:
             $ref: "#/components/schemas/Registry"
 
-    # ── Catalog ──────────────────────────────────────────────────────────────
+    EcrDelegation:
+      type: object
+      required: [id, delegatorUserId, awsUser, repository, tag, awsRegion, createdAt]
+      properties:
+        id:
+          type: string
+          description: Delegation identifier
+          examples: [deleg_abc123]
+        name:
+          type: [string, "null"]
+          description: Optional name for the delegation
+          examples: [my-delegation]
+        delegatorUserId:
+          type: string
+          description: User ID that created the delegation
+          examples: [user_xyz]
+        awsUser:
+          type: string
+          description: AWS user/role being delegated
+          examples: ["123456789"]
+        repository:
+          type: string
+          description: ECR repository name
+          examples: [runpod/deployment]
+        tag:
+          type: string
+          description: ECR image tag
+          examples: [latest]
+        awsRegion:
+          type: string
+          description: AWS region
+          examples: [us-east-2]
+        dockerRegistryUri:
+          type: string
+          description: Formatted ECR registry URI for Docker login
+          examples: [123456789.dkr.ecr.us-east-2.amazonaws.com]
+        createdAt:
+          type: string
+          format: date-time
+          description: When the delegation was created
+          examples: ["2026-03-13T20:00:00Z"]
+
+    CreateDelegationRequest:
+      type: object
+      additionalProperties: false
+      required: [resource]
+      properties:
+        resource:
+          type: string
+          description: ECR resource ARN
+          examples: ["arn:aws:ecr:us-east-2:418399314813:repository/runpod/deployment"]
+        name:
+          type: [string, "null"]
+          description: Optional name for the delegation
+          examples: [my-delegation]
+
+    ListDelegationsResponse:
+      type: object
+      required: [delegations]
+      properties:
+        delegations:
+          type: array
+          items:
+            $ref: "#/components/schemas/EcrDelegation"
+
+      # ── Catalog ──────────────────────────────────────────────────────────────
+
+    GpuManufacturer:
+      type: string
+      description: Canonical GPU hardware manufacturer.
+      x-enum-varnames:
+        - GpuManufacturerNVIDIA
+        - GpuManufacturerAMD
+        - GpuManufacturerUNKNOWN
+      enum:
+        - NVIDIA
+        - AMD
+        - UNKNOWN
 
     GpuType:
       type: object
-      required:
-        [
-          id,
-          name,
-          pool,
-          manufacturer,
-          memory,
-          secure,
-          community,
-          price,
-          maxCount,
-        ]
+      required: [id, name, pool, manufacturer, memory, secure, community, price, maxCount]
       properties:
         id:
           type: string
           description: Individual GPU type identifier (use for pod creation)
-          example: NVIDIA GeForce RTX 4090
+          examples: [NVIDIA GeForce RTX 4090]
         name:
           type: string
-          example: RTX 4090
+          examples: [RTX 4090]
         pool:
-          type: string
-          nullable: true
+          type: [string, "null"]
           description: Serverless GPU pool ID (use for serverless endpoint creation). Null if GPU is not in a serverless pool.
-          example: ADA_24
+          examples: [ADA_24]
         manufacturer:
-          type: string
-          example: NVIDIA
+          $ref: "#/components/schemas/GpuManufacturer"
         memory:
           type: integer
           description: VRAM in GB
-          example: 24
+          examples: [24]
         secure:
           type: boolean
           description: Available on secure cloud
-          example: true
+          examples: [true]
         community:
           type: boolean
           description: Available on community cloud
-          example: true
+          examples: [true]
         price:
           type: object
           required: [secure, community]
@@ -1556,21 +1784,21 @@ components:
             secure:
               type: number
               format: float
-              example: 0.44
+              examples: [0.44]
             community:
               type: number
               format: float
-              example: 0.31
+              examples: [0.31]
         maxCount:
           type: object
           required: [secure, community]
           properties:
             secure:
               type: integer
-              example: 8
+              examples: [8]
             community:
               type: integer
-              example: 4
+              examples: [4]
         availability:
           description: Overall GPU availability. Present only when requested with include=AVAILABILITY.
           $ref: "#/components/schemas/AvailabilityLevel"
@@ -1638,11 +1866,11 @@ components:
         id:
           type: string
           description: Catalog resource identifier.
-          example: NVIDIA GeForce RTX 4090
+          examples: [NVIDIA GeForce RTX 4090]
         name:
           type: string
           description: Human-readable catalog resource name.
-          example: RTX 4090
+          examples: [RTX 4090]
         availability:
           $ref: "#/components/schemas/AvailabilityLevel"
 
@@ -1653,11 +1881,11 @@ components:
         id:
           type: string
           description: Data center identifier.
-          example: US-CA-2
+          examples: [US-CA-2]
         name:
           type: string
           description: Human-readable data center name.
-          example: US California 2
+          examples: [US California 2]
         availability:
           $ref: "#/components/schemas/AvailabilityLevel"
 
@@ -1677,25 +1905,25 @@ components:
         id:
           type: string
           description: CPU flavor identifier (use in cpu.id for pod creation)
-          example: cpu5c
+          examples: [cpu5c]
         name:
           type: string
           description: Human-readable flavor name
-          example: Compute-Optimized
+          examples: [Compute-Optimized]
         group:
           type: string
           description: CPU generation group
-          example: Gen 5
+          examples: [Gen 5]
         vcpu:
           type: object
           required: [min, max]
           properties:
             min:
               type: integer
-              example: 2
+              examples: [2]
             max:
               type: integer
-              example: 32
+              examples: [32]
         ramGbPerVcpu:
           type: number
           format: float
@@ -1703,7 +1931,7 @@ components:
             GB of RAM allocated per vCPU. Multiply by the chosen vCPU
             count (within `vcpu.min`..`vcpu.max`) to get the total RAM
             for an instance of this flavor. May be fractional.
-          example: 2.5
+          examples: [2.5]
         price:
           type: object
           required: [securePerVcpu, serverlessPerVcpu]
@@ -1714,14 +1942,14 @@ components:
               description: |
                 Price for secure pods per vCPU. Multiply by the chosen vCPU
                 count (within `vcpu.min`..`vcpu.max`) to get the total price.
-              example: 0.04
+              examples: [0.04]
             serverlessPerVcpu:
               type: number
               format: float
               description: |
                 Price for serverless per vCPU. Multiply by the chosen vCPU
                 count (within `vcpu.min`..`vcpu.max`) to get the total price.
-              example: 0.03
+              examples: [0.03]
         availability:
           description: Overall CPU availability. Present only when requested with include=AVAILABILITY.
           $ref: "#/components/schemas/AvailabilityLevel"
@@ -1742,21 +1970,20 @@ components:
 
     DataCenter:
       type: object
-      required:
-        [id, name, region, networkVolumeTypes, compliance, globalNetwork]
+      required: [id, name, region, networkVolumeTypes, compliance, globalNetwork]
       properties:
         id:
           type: string
-          example: US-TX-3
+          examples: [US-TX-3]
         name:
           type: string
-          example: US Texas 3
+          examples: [US Texas 3]
         region:
           $ref: "#/components/schemas/DataCenterRegion"
         globalNetwork:
           type: boolean
           description: Whether this data center supports global networking (private cross-datacenter pod-to-pod network).
-          example: true
+          examples: [true]
         networkVolumeTypes:
           type: array
           items:
@@ -1767,22 +1994,22 @@ components:
           description: Compliance certifications held by this data center
           items:
             $ref: "#/components/schemas/Compliance"
-          example: ["GDPR", "ISO_IEC_27001", "SOC_2_TYPE_2"]
+          examples: [["GDPR", "ISO_IEC_27001", "SOC_2_TYPE_2"]]
         gpuAvailability:
           type: array
-          description: Per-GPU availability in this data center. Present only when requested with include=gpuAvailability.
+          description: Per-GPU availability in this data center. Present only when requested with include=GPU_AVAILABILITY.
           items:
             $ref: "#/components/schemas/CatalogResourceAvailability"
         cpuAvailability:
           type: array
-          description: Per-CPU availability in this data center. Present only when requested with include=cpuAvailability.
+          description: Per-CPU availability in this data center. Present only when requested with include=CPU_AVAILABILITY.
           items:
             $ref: "#/components/schemas/CatalogResourceAvailability"
 
     DataCenterRegion:
       type: string
       description: Continental region containing the data center.
-      example: EUROPE
+      examples: [EUROPE]
       enum:
         - NORTH_AMERICA
         - SOUTH_AMERICA
@@ -1840,12 +2067,12 @@ components:
           type: string
           format: date-time
           description: Start of the range, inclusive (RFC 3339).
-          example: "2026-06-01T00:00:00Z"
+          examples: ["2026-06-01T00:00:00Z"]
         endTime:
           type: string
           format: date-time
           description: End of the range, exclusive (RFC 3339).
-          example: "2026-06-02T00:00:00Z"
+          examples: ["2026-06-02T00:00:00Z"]
 
     BillingBucketSize:
       type: string
@@ -1858,12 +2085,12 @@ components:
         - BillingBucketSizeYear
       default: day
       description: Length of each billing time bucket.
-      example: day
+      examples: [day]
 
     BillingAmounts:
       type: object
       description: >
-        Total spend across all billable RunPod resources with each cost component
+        Total spend across all billable Runpod resources with each cost component
         broken out, fully prefixed by resource. Backs the aggregate record's
         amounts and the metadata totals.
       required:
@@ -1886,7 +2113,7 @@ components:
           type: number
           format: double
           description: Total cost in USD for the bucket across all resources.
-          example: 42.34
+          examples: [42.34]
         podGpuAmount:
           type: number
           format: double
@@ -1926,7 +2153,7 @@ components:
         endpointAmount:
           type: number
           format: double
-          description: RunPod public endpoint cost in USD for the bucket.
+          description: Runpod public endpoint cost in USD for the bucket.
         clusterGpuAmount:
           type: number
           format: double
@@ -1942,7 +2169,7 @@ components:
 
     BillingRecord:
       description: >
-        A single time-bucketed record of total spend across all billable RunPod
+        A single time-bucketed record of total spend across all billable Runpod
         resources, with each cost component broken out. Returned by GET
         /v2/billing.
       allOf:
@@ -1960,7 +2187,7 @@ components:
           type: number
           format: double
           description: Total pod cost in USD for the bucket.
-          example: 12.34
+          examples: [12.34]
         gpuAmount:
           type: number
           format: double
@@ -1990,7 +2217,7 @@ components:
                 The pod this record bills. When the podId filter is set every
                 record carries that id; otherwise one record is emitted per pod
                 per bucket.
-              example: "pod_abc123"
+              examples: ["pod_abc123"]
 
     ServerlessBillingAmounts:
       type: object
@@ -2008,7 +2235,7 @@ components:
           type: number
           format: double
           description: Total serverless cost in USD for the bucket.
-          example: 8.90
+          examples: [8.90]
         gpuAmount:
           type: number
           format: double
@@ -2042,12 +2269,12 @@ components:
                 The serverless endpoint this record bills. When the serverlessId
                 filter is set every record carries that id; otherwise one record
                 is emitted per serverless endpoint per bucket.
-              example: "ep_abc123"
+              examples: ["ep_abc123"]
 
     EndpointBillingAmounts:
       type: object
       description: >
-        RunPod public endpoint cost. Backs a record's amounts and the metadata
+        Runpod public endpoint cost. Backs a record's amounts and the metadata
         totals.
       required: [totalAmount]
       properties:
@@ -2055,11 +2282,11 @@ components:
           type: number
           format: double
           description: Total public endpoint cost in USD for the bucket.
-          example: 3.21
+          examples: [3.21]
 
     EndpointBillingRecord:
       description: >
-        A single time-bucketed RunPod public endpoint billing record. Returned
+        A single time-bucketed Runpod public endpoint billing record. Returned
         by GET /v2/billing/endpoints.
       allOf:
         - $ref: "#/components/schemas/BillingTimeRange"
@@ -2078,7 +2305,7 @@ components:
           description: >
             Total network volume cost in USD for the bucket, across standard and
             high-performance storage.
-          example: 5.79
+          examples: [5.79]
         standardAmount:
           type: number
           format: double
@@ -2105,7 +2332,7 @@ components:
                 The network volume this record bills. When the networkVolumeId
                 filter is set every record carries that id; otherwise one record
                 is emitted per network volume per bucket.
-              example: "vol_abc123"
+              examples: ["vol_abc123"]
 
     ClusterBillingAmounts:
       type: object
@@ -2118,7 +2345,7 @@ components:
           type: number
           format: double
           description: Total Instant Cluster cost in USD for the bucket.
-          example: 99.00
+          examples: [99.00]
         gpuAmount:
           type: number
           format: double
@@ -2148,7 +2375,7 @@ components:
                 The Instant Cluster this record bills. When the clusterId filter
                 is set every record carries that id; otherwise one record is
                 emitted per cluster per bucket.
-              example: "cluster_abc123"
+              examples: ["cluster_abc123"]
 
     # ── Billing metadata ───────────────────────────────────────────────────
     #
@@ -2175,8 +2402,7 @@ components:
         - type: object
           properties:
             podId:
-              type: string
-              nullable: true
+              type: [string, "null"]
               description: The podId filter applied, if any.
 
     ServerlessBillingQuery:
@@ -2185,8 +2411,7 @@ components:
         - type: object
           properties:
             serverlessId:
-              type: string
-              nullable: true
+              type: [string, "null"]
               description: The serverlessId filter applied, if any.
 
     NetworkVolumeBillingQuery:
@@ -2195,8 +2420,7 @@ components:
         - type: object
           properties:
             networkVolumeId:
-              type: string
-              nullable: true
+              type: [string, "null"]
               description: The networkVolumeId filter applied, if any.
 
     ClusterBillingQuery:
@@ -2205,8 +2429,7 @@ components:
         - type: object
           properties:
             clusterId:
-              type: string
-              nullable: true
+              type: [string, "null"]
               description: The clusterId filter applied, if any.
 
     BillingMetadata:
@@ -2294,7 +2517,7 @@ components:
 
     ListBillingResponse:
       type: object
-      description: Aggregated billing records across all RunPod resources.
+      description: Aggregated billing records across all Runpod resources.
       required: [records, metadata]
       properties:
         records:
@@ -2330,7 +2553,9 @@ components:
 
     ListEndpointBillingResponse:
       type: object
-      description: Billing records for RunPod public endpoints.
+      description: >
+        Time-bucketed Runpod public endpoint billing records plus metadata for
+        the resolved query, record count, and total endpoint amount.
       required: [records, metadata]
       properties:
         records:
@@ -2342,7 +2567,9 @@ components:
 
     ListNetworkVolumeBillingResponse:
       type: object
-      description: Billing records for network volumes.
+      description: >
+        Time-bucketed network volume billing records plus metadata for the
+        resolved query, record count, distinct volume count, and storage totals.
       required: [records, metadata]
       properties:
         records:
@@ -2354,7 +2581,9 @@ components:
 
     ListClusterBillingResponse:
       type: object
-      description: Billing records for Instant Clusters.
+      description: >
+        Time-bucketed Instant Cluster billing records plus metadata for the
+        resolved query, record count, distinct cluster count, and compute totals.
       required: [records, metadata]
       properties:
         records:
@@ -2369,37 +2598,52 @@ components:
     # RFC 9457 problem details
     ErrorResponse:
       type: object
+      required: [title, status, detail]
       properties:
         title:
           type: string
           description: Short human-readable summary
-          example: Not Found
+          examples: [Not Found]
         status:
           type: integer
           description: HTTP status code
-          example: 404
+          examples: [404]
         detail:
           type: string
           description: Human-readable explanation
-          example: pod not found
-
-    ValidatationErrorResponse:
-      type: object
-      properties:
-        title:
-          type: string
-          description: Short human-readable summary
-          example: Unprocessable Entity
-        status:
-          type: integer
-          description: HTTP status code
-          example: 422
+          examples: [pod not found]
         errors:
           type: array
+          description: Individual request-validation failures.
           items:
             type: string
-            example: "$: minProperties: got 0, want 1"
-          description: Human-readable explanation
+          examples:
+            - ["$: additional properties 'bogus' not allowed"]
+
+    RateLimitHeader:
+      type: string
+      description: |
+        Live per-window quota state. Optional — omitted for rate-limit-exempt
+        callers.
+
+        A structured-field list with one member per window (`minute`, `hour`,
+        `day`), each carrying the remaining request count `r` and seconds until
+        the window resets `t`. Returned on responses to authenticated requests,
+        not only on 429s.
+      examples:
+        - "\"minute\";r=0;t=12, \"hour\";r=2800;t=1812, \"day\";r=49500;t=45012"
+
+    RateLimitPolicyHeader:
+      type: string
+      description: |
+        Static per-window quota policy. Optional — omitted for rate-limit-exempt
+        callers.
+
+        A structured-field list with one member per window (`minute`, `hour`,
+        `day`), each carrying the quota `q` and the window length in seconds `w`.
+        Returned on responses to authenticated requests, not only on 429s.
+      examples:
+        - "\"minute\";q=60;w=60, \"hour\";q=3000;w=3600, \"day\";q=50000;w=86400"
 
 paths:
   # ── Pods ───────────────────────────────────────────────────────────────────
@@ -2412,12 +2656,67 @@ paths:
       tags: [Pods]
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListPodsResponse"
+              examples:
+                pods:
+                  summary: Successful response
+                  value:
+                    pods:
+                      - id: 7h9k2m4n6p
+                        name: pytorch-training
+                        image: runpod/pytorch:2.8.0-py3.11-cuda12.8.1
+                        args: ""
+                        disk: 50
+                        ports:
+                          - 8888/http
+                          - 22/tcp
+                        env:
+                          MODEL_NAME: llama-3
+                        registry: null
+                        status: RUNNING
+                        actions:
+                          - stop
+                          - restart
+                          - terminate
+                        mounts:
+                          persistent:
+                            size: 20
+                            path: /workspace
+                        gpu:
+                          id: NVIDIA GeForce RTX 4090
+                          count: 1
+                        cloud: SECURE
+                        dataCenterId: US-KS-2
+                        template: 9x4m2p7v
+                        cost: 0.44
+                        locked: false
+                        globalNetworking:
+                          enabled: false
+                        runtime:
+                          uptime: 3600
+                        createdAt: "2026-06-01T12:00:00Z"
+                        startedAt: "2026-06-01T12:02:00Z"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -2428,8 +2727,16 @@ paths:
       operationId: createPod
       summary: Create a pod
       description: |
-        Creates a new pod. Specify `gpu` for compute.
-        ContainerConfig fields can be spread from a template response.
+        Creates a new pod. `name` and `image` are always required; supply
+        exactly one of `gpu` or `cpu` to select compute (a GPU or a CPU pod).
+        Remaining container settings can be spread from a template response —
+        see `CreatePodRequest` for the full body.
+
+        Returns `201` with the created pod. Provisioning is asynchronous: the
+        pod starts in `PROVISIONING`, transitions through `STARTING`, and
+        reaches `RUNNING` once its container is healthy. Poll `getPod` (or
+        watch the pod's `status`) to observe readiness rather than assuming
+        the pod is running when this call returns.
       tags: [Pods]
       requestBody:
         required: true
@@ -2437,14 +2744,80 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/CreatePodRequest"
+            examples:
+              gpuPod:
+                summary: GPU pod
+                value:
+                  name: pytorch-training
+                  image: runpod/pytorch:2.8.0-py3.11-cuda12.8.1
+                  gpu:
+                    id: NVIDIA GeForce RTX 4090
+                    count: 1
+                  disk: 50
       responses:
         "201":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Created
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Pod"
+              examples:
+                pod:
+                  summary: Successful response
+                  value:
+                    id: 7h9k2m4n6p
+                    name: pytorch-training
+                    image: runpod/pytorch:2.8.0-py3.11-cuda12.8.1
+                    args: ""
+                    disk: 50
+                    ports:
+                      - 8888/http
+                      - 22/tcp
+                    env:
+                      MODEL_NAME: llama-3
+                    registry: null
+                    status: PROVISIONING
+                    actions:
+                      - start
+                      - terminate
+                    mounts:
+                      persistent:
+                        size: 20
+                        path: /workspace
+                    gpu:
+                      id: NVIDIA GeForce RTX 4090
+                      count: 1
+                    cloud: SECURE
+                    dataCenterId: US-KS-2
+                    template: 9x4m2p7v
+                    cost: 0.44
+                    locked: false
+                    globalNetworking:
+                      enabled: false
+                    runtime: {}
+                    createdAt: "2026-06-01T12:00:00Z"
+                    startedAt: null
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntityError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -2468,18 +2841,68 @@ paths:
       tags: [Pods]
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Pod"
+              examples:
+                pod:
+                  summary: Successful response
+                  value:
+                    id: 7h9k2m4n6p
+                    name: pytorch-training
+                    image: runpod/pytorch:2.8.0-py3.11-cuda12.8.1
+                    args: ""
+                    disk: 50
+                    ports:
+                      - 8888/http
+                      - 22/tcp
+                    env:
+                      MODEL_NAME: llama-3
+                    registry: null
+                    status: RUNNING
+                    actions:
+                      - stop
+                      - restart
+                      - terminate
+                    mounts:
+                      persistent:
+                        size: 20
+                        path: /workspace
+                    gpu:
+                      id: NVIDIA GeForce RTX 4090
+                      count: 1
+                    cloud: SECURE
+                    dataCenterId: US-KS-2
+                    template: 9x4m2p7v
+                    cost: 0.44
+                    locked: false
+                    globalNetworking:
+                      enabled: false
+                    runtime:
+                      uptime: 3600
+                    createdAt: "2026-06-01T12:00:00Z"
+                    startedAt: "2026-06-01T12:02:00Z"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "404":
-          description: Pod not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFoundError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -2489,7 +2912,19 @@ paths:
     patch:
       operationId: updatePod
       summary: Update a pod
-      description: Updates pod configuration. Only provided fields are changed.
+      description: |
+        Partially updates a pod's configuration. This is a PATCH: only the
+        fields present in the body are changed, and omitted fields are left
+        untouched. Use empty values only when you explicitly mean to clear a
+        field (for example, set `registry` to `null` or set `ports` to `[]`).
+        See `UpdatePodRequest` for the full body.
+
+        Mutable fields: `name`, `image`, `args`, `disk`, `ports`, `env`,
+        `registry`, `mounts`, `locked`, and `globalNetworking`. Some changes
+        apply immediately while others (e.g. `globalNetworking`) take effect
+        on the pod's next start/restart, as noted on the individual fields.
+
+        Returns `200` with the full updated pod.
       tags: [Pods]
       requestBody:
         required: true
@@ -2497,20 +2932,79 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/UpdatePodRequest"
+            examples:
+              renamePod:
+                summary: Rename pod
+                value:
+                  name: renamed-training-pod
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Pod"
+              examples:
+                pod:
+                  summary: Successful response
+                  value:
+                    id: 7h9k2m4n6p
+                    name: renamed-training-pod
+                    image: runpod/pytorch:2.8.0-py3.11-cuda12.8.1
+                    args: ""
+                    disk: 50
+                    ports:
+                      - 8888/http
+                      - 22/tcp
+                    env:
+                      MODEL_NAME: llama-3
+                    registry: null
+                    status: RUNNING
+                    actions:
+                      - stop
+                      - restart
+                      - terminate
+                    mounts:
+                      persistent:
+                        size: 20
+                        path: /workspace
+                    gpu:
+                      id: NVIDIA GeForce RTX 4090
+                      count: 1
+                    cloud: SECURE
+                    dataCenterId: US-KS-2
+                    template: 9x4m2p7v
+                    cost: 0.44
+                    locked: false
+                    globalNetworking:
+                      enabled: false
+                    runtime:
+                      uptime: 3600
+                    createdAt: "2026-06-01T12:00:00Z"
+                    startedAt: "2026-06-01T12:02:00Z"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "404":
-          description: Pod not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFoundError"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntityError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -2520,18 +3014,35 @@ paths:
     delete:
       operationId: deletePod
       summary: Terminate a pod
-      description: Permanently terminates and deletes a pod.
+      description: |
+        Permanently terminates and deletes a pod. This is irreversible:
+        compute is released, any `mounts.persistent` host-local storage is
+        destroyed with it (a `mounts.network` volume is only detached — the
+        volume itself is not deleted), and the pod no longer appears in
+        `listPods`.
       tags: [Pods]
       responses:
         "204":
-          description: Terminated
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Deleted. Response has no body.
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "404":
-          description: Pod not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFoundError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -2569,6 +3080,10 @@ paths:
         "200":
           description: Pod log event stream
           headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
             Cache-Control:
               schema:
                 type: string
@@ -2584,26 +3099,29 @@ paths:
           content:
             text/event-stream:
               schema:
-                type: object
-                properties:
-                  source:
-                    type: string
-                    enum: [container, system]
-                    example: container
-                  line:
-                    type: string
-                    example: Model loaded.
-                  ts:
-                    type: string
-                    format: date-time
-                    example: "2026-05-01T22:00:00Z"
+                type: string
+                description: Server-Sent Events stream. Each event includes an `id:` line and a JSON `data:` payload with `source`, `line`, and `ts` fields.
+              examples:
+                logLine:
+                  summary: Successful response
+                  value: |
+                    id: 2026-06-01T12:02:03Z/000000000001
+                    data: {"ts":"2026-06-01T12:02:03Z","source":"container","line":"Model loaded."}
+
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "404":
-          description: Pod not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFoundError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -2623,8 +3141,27 @@ paths:
       operationId: podAction
       summary: Trigger a pod state transition
       description: |
-        Triggers a state transition on a pod. Valid actions depend on the current status
-        and are listed in the pod's `actions` field.
+        Triggers a state transition on a pod. Send a JSON body with a single
+        `action` field, e.g. `{ "action": "stop" }`.
+
+        Valid actions:
+        - `start`     — boot a stopped pod (`EXITED` or `ERROR`) back toward
+          `RUNNING`.
+        - `stop`      — stop a running or provisioning pod, releasing GPU/CPU
+          compute while keeping its disk. The pod moves to `EXITED`.
+        - `restart`   — restart a `RUNNING` pod's container in place.
+        - `terminate` — permanently delete the pod and release its resources
+          (equivalent to `deletePod`).
+
+        Which actions are valid depends on the pod's current status, and the
+        currently permitted set is published in the pod's `actions` field:
+        `RUNNING` allows `stop`/`restart`/`terminate`; `EXITED` and `ERROR`
+        allow `start`/`terminate`; `PROVISIONING` and `STARTING` allow
+        `stop`/`terminate`.
+
+        `start`, `stop`, and `restart` return `200` with the updated pod.
+        `terminate` returns `204` with no body. Requesting an action that is
+        not valid for the pod's current status returns `409`.
       tags: [Pods]
       requestBody:
         required: true
@@ -2632,28 +3169,97 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/PodActionRequest"
+            examples:
+              startPod:
+                summary: Start pod
+                value:
+                  action: start
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Action applied — returns updated pod
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Pod"
+              examples:
+                pod:
+                  summary: Successful response
+                  value:
+                    id: 7h9k2m4n6p
+                    name: pytorch-training
+                    image: runpod/pytorch:2.8.0-py3.11-cuda12.8.1
+                    args: ""
+                    disk: 50
+                    ports:
+                      - 8888/http
+                      - 22/tcp
+                    env:
+                      MODEL_NAME: llama-3
+                    registry: null
+                    status: RUNNING
+                    actions:
+                      - stop
+                      - restart
+                      - terminate
+                    mounts:
+                      persistent:
+                        size: 20
+                        path: /workspace
+                    gpu:
+                      id: NVIDIA GeForce RTX 4090
+                      count: 1
+                    cloud: SECURE
+                    dataCenterId: US-KS-2
+                    template: 9x4m2p7v
+                    cost: 0.44
+                    locked: false
+                    globalNetworking:
+                      enabled: false
+                    runtime:
+                      uptime: 3600
+                    createdAt: "2026-06-01T12:00:00Z"
+                    startedAt: "2026-06-01T12:02:00Z"
         "204":
-          description: Pod terminated (for action=terminate)
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Only returned when `action=terminate`; response has no body.
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "404":
-          description: Pod not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFoundError"
         "409":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Action not valid for current pod status
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntityError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -2670,12 +3276,71 @@ paths:
       tags: [Serverless]
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListEndpointsResponse"
+              examples:
+                endpoints:
+                  summary: Successful response
+                  value:
+                    endpoints:
+                      - id: 4m7x2k9q
+                        name: image-generator
+                        type: QUEUE
+                        requestUrls:
+                          run: https://api.runpod.ai/v2/4m7x2k9q/run
+                          runSync: https://api.runpod.ai/v2/4m7x2k9q/runsync
+                          status: https://api.runpod.ai/v2/4m7x2k9q/status/{job_id}
+                          stream: https://api.runpod.ai/v2/4m7x2k9q/stream/{job_id}
+                          cancel: https://api.runpod.ai/v2/4m7x2k9q/cancel/{job_id}
+                          retry: https://api.runpod.ai/v2/4m7x2k9q/retry/{job_id}
+                          purgeQueue: https://api.runpod.ai/v2/4m7x2k9q/purge-queue
+                          health: https://api.runpod.ai/v2/4m7x2k9q/health
+                        image: runpod/pytorch:2.8.0-py3.11-cuda12.8.1
+                        args: ""
+                        disk: 20
+                        ports:
+                          - 8000/http
+                        env:
+                          MODEL_NAME: sdxl
+                        registry: null
+                        gpu:
+                          pools:
+                            - ADA_24
+                          count: 1
+                        workers:
+                          min: 0
+                          max: 5
+                          idleTimeout: 5
+                        scaling:
+                          type: QUEUE_DELAY
+                          queueDelay: 4
+                        dataCenterIds:
+                          - US-KS-2
+                        networkVolumes:
+                          - 2q9m7x4c
+                        timeout: 300000
+                        flashboot: OFF
+                        createdAt: "2026-06-01T12:00:00Z"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -2686,9 +3351,17 @@ paths:
       operationId: createEndpoint
       summary: Create a serverless endpoint
       description: |
-        Creates a serverless endpoint. Specify `gpu` for compute (CPU serverless
-        endpoints are read-only). ContainerConfig fields can be spread from a
-        template response.
+        Creates a serverless endpoint. Specify `gpu` for compute (CPU
+        serverless endpoints are read-only). Container settings can be spread
+        from a template response — see `CreateEndpointRequest` for the full
+        body.
+
+        Returns `201` with the created endpoint. The endpoint can accept jobs
+        immediately, but starts with no active workers unless `workers.min`
+        is greater than 0. Workers are provisioned on demand and autoscaled
+        between `workers.min` and `workers.max` according to the `scaling`
+        policy, so the first request to an idle endpoint may incur cold-start
+        latency while a worker pulls its image and boots.
       tags: [Serverless]
       requestBody:
         required: true
@@ -2696,14 +3369,97 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/CreateEndpointRequest"
+            examples:
+              serverlessEndpoint:
+                summary: Serverless endpoint
+                value:
+                  name: image-generator
+                  image: runpod/pytorch:2.8.0-py3.11-cuda12.8.1
+                  type: QUEUE
+                  gpu:
+                    pools:
+                      - ADA_24
+                    count: 1
+                  workers:
+                    min: 0
+                    max: 5
+                    idleTimeout: 5
+                  scaling:
+                    type: QUEUE_DELAY
+                    queueDelay: 4
+                  dataCenterIds:
+                    - US-KS-2
+                  timeout: 300000
       responses:
         "201":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Created
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Endpoint"
+              examples:
+                endpoint:
+                  summary: Successful response
+                  value:
+                    id: 4m7x2k9q
+                    name: image-generator
+                    type: QUEUE
+                    requestUrls:
+                      run: https://api.runpod.ai/v2/4m7x2k9q/run
+                      runSync: https://api.runpod.ai/v2/4m7x2k9q/runsync
+                      status: https://api.runpod.ai/v2/4m7x2k9q/status/{job_id}
+                      stream: https://api.runpod.ai/v2/4m7x2k9q/stream/{job_id}
+                      cancel: https://api.runpod.ai/v2/4m7x2k9q/cancel/{job_id}
+                      retry: https://api.runpod.ai/v2/4m7x2k9q/retry/{job_id}
+                      purgeQueue: https://api.runpod.ai/v2/4m7x2k9q/purge-queue
+                      health: https://api.runpod.ai/v2/4m7x2k9q/health
+                    image: runpod/pytorch:2.8.0-py3.11-cuda12.8.1
+                    args: ""
+                    disk: 20
+                    ports:
+                      - 8000/http
+                    env:
+                      MODEL_NAME: sdxl
+                    registry: null
+                    gpu:
+                      pools:
+                        - ADA_24
+                      count: 1
+                    workers:
+                      min: 0
+                      max: 5
+                      idleTimeout: 5
+                    scaling:
+                      type: QUEUE_DELAY
+                      queueDelay: 4
+                    dataCenterIds:
+                      - US-KS-2
+                    networkVolumes:
+                      - 2q9m7x4c
+                    timeout: 300000
+                    flashboot: OFF
+                    createdAt: "2026-06-01T12:00:00Z"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntityError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -2726,18 +3482,66 @@ paths:
       tags: [Serverless]
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Endpoint"
+              examples:
+                endpoint:
+                  summary: Successful response
+                  value:
+                    id: 4m7x2k9q
+                    name: image-generator
+                    type: LOAD_BALANCER
+                    requestUrls:
+                      base: https://4m7x2k9q.api.runpod.ai
+                      health: https://4m7x2k9q.api.runpod.ai/ping
+                    image: runpod/pytorch:2.8.0-py3.11-cuda12.8.1
+                    args: ""
+                    disk: 20
+                    ports:
+                      - 8000/http
+                    env:
+                      MODEL_NAME: sdxl
+                    registry: null
+                    gpu:
+                      pools:
+                        - ADA_24
+                      count: 1
+                    workers:
+                      min: 0
+                      max: 5
+                      idleTimeout: 5
+                    scaling:
+                      type: REQUEST_COUNT
+                      requestCount: 4
+                    dataCenterIds:
+                      - US-KS-2
+                    networkVolumes:
+                      - 2q9m7x4c
+                    timeout: 300000
+                    flashboot: OFF
+                    createdAt: "2026-06-01T12:00:00Z"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "404":
-          description: Serverless endpoint not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFoundError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -2747,7 +3551,23 @@ paths:
     patch:
       operationId: updateEndpoint
       summary: Update a serverless endpoint
-      description: Updates serverless endpoint configuration. Only provided fields are changed.
+      description: |
+        Partially updates a serverless endpoint. This is a PATCH: only the
+        fields present in the body are changed; omitted fields are left
+        untouched. See `UpdateEndpointRequest` for the full body.
+
+        Mutable fields: `name`, `gpu`, `workers` (`min`/`max`), `scaling`
+        (`type`/`value`/`idleTimeout`), `dataCenterIds`, `networkVolumes`,
+        `timeout`, `flashboot`, and the container settings (`image`, `args`,
+        `disk`, `ports`, `env`, `registry`).
+
+        Returns `200` with the full updated endpoint. Effect timing differs
+        by field: scaling and worker-bound settings (`workers`, `scaling`,
+        `timeout`) are applied to the autoscaler promptly, while
+        container-affecting changes (e.g. `image`, `env`) create a new
+        endpoint release that rolls out as workers cycle — in-flight workers
+        keep the previous version until they are replaced. Track rollout via
+        `listEndpointReleases`.
       tags: [Serverless]
       requestBody:
         required: true
@@ -2755,20 +3575,89 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/UpdateEndpointRequest"
+            examples:
+              scaleEndpoint:
+                summary: Scale endpoint
+                value:
+                  workers:
+                    min: 1
+                    max: 10
+                    idleTimeout: 10
+                  scaling:
+                    type: QUEUE_DELAY
+                    queueDelay: 8
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Endpoint"
+              examples:
+                endpoint:
+                  summary: Successful response
+                  value:
+                    id: 4m7x2k9q
+                    name: image-generator
+                    type: QUEUE
+                    requestUrls:
+                      run: https://api.runpod.ai/v2/4m7x2k9q/run
+                      runSync: https://api.runpod.ai/v2/4m7x2k9q/runsync
+                      status: https://api.runpod.ai/v2/4m7x2k9q/status/{job_id}
+                      stream: https://api.runpod.ai/v2/4m7x2k9q/stream/{job_id}
+                      cancel: https://api.runpod.ai/v2/4m7x2k9q/cancel/{job_id}
+                      retry: https://api.runpod.ai/v2/4m7x2k9q/retry/{job_id}
+                      purgeQueue: https://api.runpod.ai/v2/4m7x2k9q/purge-queue
+                      health: https://api.runpod.ai/v2/4m7x2k9q/health
+                    image: runpod/pytorch:2.8.0-py3.11-cuda12.8.1
+                    args: ""
+                    disk: 20
+                    ports:
+                      - 8000/http
+                    env:
+                      MODEL_NAME: sdxl
+                    registry: null
+                    gpu:
+                      pools:
+                        - ADA_24
+                      count: 1
+                    workers:
+                      min: 1
+                      max: 10
+                      idleTimeout: 10
+                    scaling:
+                      type: QUEUE_DELAY
+                      queueDelay: 8
+                    dataCenterIds:
+                      - US-KS-2
+                    networkVolumes:
+                      - 2q9m7x4c
+                    timeout: 300000
+                    flashboot: OFF
+                    createdAt: "2026-06-01T12:00:00Z"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "404":
-          description: Serverless endpoint not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFoundError"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntityError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -2778,18 +3667,33 @@ paths:
     delete:
       operationId: deleteEndpoint
       summary: Delete a serverless endpoint
-      description: Permanently deletes a serverless endpoint and its bound template.
+      description: |
+        Permanently deletes a serverless endpoint and its bound template.
+        This is irreversible: all workers are terminated and any queued or
+        in-progress jobs are cancelled.
       tags: [Serverless]
       responses:
         "204":
-          description: Deleted
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Deleted. Response has no body.
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "404":
-          description: Serverless endpoint not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFoundError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -2809,26 +3713,70 @@ paths:
       operationId: listEndpointWorkers
       summary: List serverless endpoint workers
       description: |
-        Returns the active workers for a serverless endpoint plus a summary of
-        worker counts. Each worker's `status` is derived by reconciling the
-        worker pod's lifecycle status with the endpoint's live job-queue view.
-        When the job-queue view is unavailable the response degrades to the
-        pod-derived status and counts.
+        Lists the active workers for a serverless endpoint.
+
+        **Returns.** A `200` with a `ListEndpointWorkersResponse`: a
+        `workers` array (one entry per active worker, each carrying its `id`,
+        `status`, and runtime details) plus a `summary` of worker counts
+        grouped by status. Only currently active workers are included;
+        scaled-down workers are not returned.
+
+        **How `status` is determined.** Each worker's `status` is derived by
+        reconciling the worker pod's lifecycle status with the endpoint's
+        live job-queue view (which workers are actively serving requests).
+        When the job-queue view is unavailable, the response degrades
+        gracefully: the shape is unchanged, but each `status` and the summary
+        counts fall back to pod lifecycle alone.
       tags: [Serverless]
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListEndpointWorkersResponse"
+              examples:
+                workers:
+                  summary: Successful response
+                  value:
+                    endpointVersion: 4
+                    summary:
+                      running: 1
+                      idle: 1
+                      initializing: 0
+                      throttled: 0
+                      unhealthy: 0
+                      total: 2
+                    workers:
+                      - id: 8g3n5t6r
+                        status: RUNNING
+                        isStale: false
+                        version: 4
+                        gpuCount: 1
+                        image: runpod/pytorch:2.8.0-py3.11-cuda12.8.1
+                        uptimeSeconds: 3600
+                        gpuTypeId: NVIDIA GeForce RTX 4090
+                        dataCenterId: US-KS-2
+                        startedAt: "2026-06-01T12:05:00Z"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "404":
-          description: Serverless endpoint not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFoundError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -2856,18 +3804,52 @@ paths:
       tags: [Serverless]
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListEndpointReleasesResponse"
+              examples:
+                releases:
+                  summary: Successful response
+                  value:
+                    endpointVersion: 4
+                    rollout:
+                      inProgress: true
+                      workersOnLatest: 1
+                      workersTotal: 2
+                      percentOnLatest: 50
+                    releases:
+                      - id: 5r9x2m7q
+                        version: 4
+                        source: MANUAL
+                        buildId: null
+                        createdByUserId: null
+                        workerCount: 2
+                        createdAt: "2026-06-01T12:10:00Z"
+                        diff:
+                          - field: workers.max
+                            old: 5
+                            new: 10
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "404":
-          description: Serverless endpoint not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFoundError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -2911,6 +3893,10 @@ paths:
         "200":
           description: Worker log event stream
           headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
             Cache-Control:
               schema:
                 type: string
@@ -2926,26 +3912,29 @@ paths:
           content:
             text/event-stream:
               schema:
-                type: object
-                properties:
-                  source:
-                    type: string
-                    enum: [container, system]
-                    example: container
-                  line:
-                    type: string
-                    example: Model loaded.
-                  ts:
-                    type: string
-                    format: date-time
-                    example: "2026-05-01T22:00:00Z"
+                type: string
+                description: Server-Sent Events stream. Each event includes an `id:` line and a JSON `data:` payload with `source`, `line`, and `ts` fields.
+              examples:
+                logLine:
+                  summary: Successful response
+                  value: |
+                    id: 2026-06-01T12:05:04Z/000000000042
+                    data: {"ts":"2026-06-01T12:05:04Z","source":"container","line":"Worker ready."}
+
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "404":
-          description: Worker not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFoundError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -2962,12 +3951,50 @@ paths:
       tags: [Templates]
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListTemplatesResponse"
+              examples:
+                templates:
+                  summary: Successful response
+                  value:
+                    templates:
+                      - id: 9x4m2p7v
+                        name: PyTorch GPU Template
+                        image: runpod/pytorch:2.8.0-py3.11-cuda12.8.1
+                        args: ""
+                        disk: 50
+                        mounts:
+                          persistent:
+                            size: 20
+                            path: /workspace
+                        ports:
+                          - 8888/http
+                        env:
+                          JUPYTER_ENABLE_LAB: yes
+                        registry: null
+                        serverless: false
+                        public: false
+                        category: NVIDIA
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -2977,6 +4004,12 @@ paths:
     post:
       operationId: createTemplate
       summary: Create a template
+      description: |
+        Creates a reusable container-configuration preset — image, disk,
+        ports, env, registry, and mount settings — for pods and serverless
+        endpoints. `createPod` and `createEndpoint` don't take a template ID;
+        instead, spread a template's fields into the request body directly.
+        Returns the created template.
       tags: [Templates]
       requestBody:
         required: true
@@ -2984,14 +4017,73 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/CreateTemplateRequest"
+            examples:
+              podTemplate:
+                summary: Pod template
+                value:
+                  name: PyTorch GPU Template
+                  image: runpod/pytorch:2.8.0-py3.11-cuda12.8.1
+                  category: NVIDIA
+                  disk: 50
+                  ports:
+                    - 8888/http
+                  env:
+                    JUPYTER_ENABLE_LAB: yes
+                  mounts:
+                    persistent:
+                      size: 20
+                      path: /workspace
+                  serverless: false
+                  public: false
       responses:
         "201":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Created
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Template"
+              examples:
+                template:
+                  summary: Successful response
+                  value:
+                    id: 9x4m2p7v
+                    name: PyTorch GPU Template
+                    image: runpod/pytorch:2.8.0-py3.11-cuda12.8.1
+                    args: ""
+                    disk: 50
+                    mounts:
+                      persistent:
+                        size: 20
+                        path: /workspace
+                    ports:
+                      - 8888/http
+                    env:
+                      JUPYTER_ENABLE_LAB: yes
+                    registry: null
+                    serverless: false
+                    public: false
+                    category: NVIDIA
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntityError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3010,21 +4102,55 @@ paths:
     get:
       operationId: getTemplate
       summary: Get a template
+      description: Returns the full configuration of a single template by ID.
       tags: [Templates]
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Template"
+              examples:
+                template:
+                  summary: Successful response
+                  value:
+                    id: 9x4m2p7v
+                    name: PyTorch GPU Template
+                    image: runpod/pytorch:2.8.0-py3.11-cuda12.8.1
+                    args: ""
+                    disk: 50
+                    mounts:
+                      persistent:
+                        size: 20
+                        path: /workspace
+                    ports:
+                      - 8888/http
+                    env:
+                      JUPYTER_ENABLE_LAB: yes
+                    registry: null
+                    serverless: false
+                    public: false
+                    category: NVIDIA
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "404":
-          description: Template not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFoundError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3034,7 +4160,19 @@ paths:
     patch:
       operationId: updateTemplate
       summary: Update a template
-      description: Updates template configuration. Only provided fields are changed.
+      description: |
+        Partially updates a template. This is a PATCH: only the fields
+        present in the body are changed; omitted fields are left untouched.
+        See `UpdateTemplateRequest` for the full body.
+
+        Mutable fields: `name`, `image`, `args`, `disk`, `ports`, `env`,
+        `registry`, `mounts`, `serverless`, `public`, and `category`.
+
+        Only the template's owner can update it (authenticated via the
+        request's API key); other users' templates are neither visible nor
+        mutable. Returns `200` with the full updated template. Pods and
+        endpoints already created from this template are not changed
+        retroactively — the template is a snapshot applied at creation time.
       tags: [Templates]
       requestBody:
         required: true
@@ -3042,20 +4180,62 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/UpdateTemplateRequest"
+            examples:
+              renameTemplate:
+                summary: Rename template
+                value:
+                  name: Renamed PyTorch Template
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Template"
+              examples:
+                template:
+                  summary: Successful response
+                  value:
+                    id: 9x4m2p7v
+                    name: Renamed PyTorch Template
+                    image: runpod/pytorch:2.8.0-py3.11-cuda12.8.1
+                    args: ""
+                    disk: 50
+                    mounts:
+                      persistent:
+                        size: 20
+                        path: /workspace
+                    ports:
+                      - 8888/http
+                    env:
+                      JUPYTER_ENABLE_LAB: yes
+                    registry: null
+                    serverless: false
+                    public: false
+                    category: NVIDIA
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "404":
-          description: Template not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFoundError"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntityError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3065,239 +4245,44 @@ paths:
     delete:
       operationId: deleteTemplate
       summary: Delete a template
+      description: |
+        Permanently deletes a template by ID. Rejected if the template is
+        currently referenced by a pod (see that pod's `template` field) or
+        bound to a serverless endpoint.
       tags: [Templates]
       responses:
         "204":
-          description: Deleted
-        "404":
-          description: Template not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        default:
-          description: Error
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  # ── Tags ───────────────────────────────────────────────────────────────────
-
-  /v2/tags:
-    get:
-      operationId: listTags
-      summary: List tags
-      description: Returns all tags owned by the authenticated user.
-      tags: [Tags]
-      parameters:
-        - name: include
-          in: query
-          required: false
-          schema:
-            type: string
-          description: "Comma-separated optional expansions. Supported value: `resources`."
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ListTagsResponse"
-        default:
-          description: Error
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-    post:
-      operationId: createTag
-      summary: Create a tag
-      description: Creates a user-defined key-value tag.
-      tags: [Tags]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/CreateTagRequest"
-      responses:
-        "201":
-          description: Created
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Tag"
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Deleted. Response has no body.
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "400":
-          description: Invalid request body
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Template is in use by a pod or serverless endpoint and cannot be deleted
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-        default:
-          description: Error
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /v2/tags/{id}:
-    parameters:
-      - name: id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Tag identifier
-        example: tag_abc123
-
-    get:
-      operationId: getTag
-      summary: Get a tag
-      description: Returns a single tag by ID.
-      tags: [Tags]
-      parameters:
-        - name: include
-          in: query
-          required: false
-          schema:
-            type: string
-          description: "Comma-separated optional expansions. Supported value: `resources`."
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Tag"
         "404":
-          description: Tag not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFoundError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
-          description: Error
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-    patch:
-      operationId: updateTag
-      summary: Update a tag
-      description: |
-        Updates a tag. At least one of `key`, `value`, or `resources` must be provided.
-
-        When `resources` is provided, it replaces the tag's complete resource association set. Resource replacement is not atomic: the API creates missing associations first, then deletes stale associations using separate upstream operations. If an upstream operation fails after earlier operations have succeeded, the response is an error and the tag may contain a partially-applied resource set. Retrying the same request with the same `resources` array is safe and will attempt to converge the tag to the requested set. Use the explicit tag-resource attach/detach operations when you need smaller idempotent association changes.
-      tags: [Tags]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/UpdateTagRequest"
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Tag"
-        "404":
-          description: Tag not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "422":
-          description: Unprocessable request body (missing one of `key`, `value`, or `resources`)
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        default:
-          description: Error
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-    delete:
-      operationId: deleteTag
-      summary: Delete a tag
-      description: Deletes a tag. This operation is idempotent; deleting a tag that does not exist returns `204`.
-      tags: [Tags]
-      responses:
-        "204":
-          description: Deleted or already absent
-        default:
-          description: Error
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /v2/tags/{id}/resources/{resourceType}/{resourceId}:
-    parameters:
-      - name: id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Tag identifier
-        example: tag_abc123
-      - name: resourceType
-        in: path
-        required: true
-        schema:
-          $ref: "#/components/schemas/TagResourceType"
-        description: Resource type to attach or detach.
-      - name: resourceId
-        in: path
-        required: true
-        schema:
-          type: string
-        description: Resource identifier to attach or detach.
-        example: pod_abc123
-
-    put:
-      operationId: attachTagResource
-      summary: Attach a resource to a tag
-      description: Ensures the resource is attached to the tag. This operation is idempotent; attaching an already-associated resource returns `204`.
-      tags: [Tags]
-      responses:
-        "204":
-          description: Attached or already associated
-        "404":
-          description: Tag not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        default:
-          description: Error
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-    delete:
-      operationId: detachTagResource
-      summary: Detach a resource from a tag
-      description: Ensures the resource is detached from the tag. This operation is idempotent; detaching a resource that is not associated with the tag returns `204`.
-      tags: [Tags]
-      responses:
-        "204":
-          description: Detached or already absent
-        "404":
-          description: Tag not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3314,12 +4299,38 @@ paths:
       tags: [Network Volumes]
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListNetworkVolumesResponse"
+              examples:
+                networkVolumes:
+                  summary: Successful response
+                  value:
+                    networkVolumes:
+                      - id: 2q9m7x4c
+                        name: training-dataset
+                        size: 100
+                        dataCenter: US-KS-2
+                        type: HIGH_PERFORMANCE
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3329,7 +4340,17 @@ paths:
     post:
       operationId: createNetworkVolume
       summary: Create a network volume
-      description: Provisions a new network volume in the specified data center.
+      description: |
+        Provisions a new network volume — persistent, network-attached
+        storage that can be mounted into pods and serverless workers.
+        Required inputs are `name`, `size` (in GB), and `dataCenter`; an
+        optional `type` selects the storage tier and is immutable after
+        creation. See `CreateNetworkVolumeRequest` for the size bounds and
+        tier options.
+
+        This creates a billable persistent resource that keeps incurring
+        storage charges until it is deleted. Returns `201` with the created
+        network volume, including its assigned `id`.
       tags: [Network Volumes]
       requestBody:
         required: true
@@ -3337,20 +4358,51 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/CreateNetworkVolumeRequest"
+            examples:
+              networkVolume:
+                summary: Network volume
+                value:
+                  name: training-dataset
+                  dataCenter: US-KS-2
+                  size: 50
+                  type: HIGH_PERFORMANCE
       responses:
         "201":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Created
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/NetworkVolume"
+              examples:
+                networkVolume:
+                  summary: Successful response
+                  value:
+                    id: 2q9m7x4c
+                    name: training-dataset
+                    size: 50
+                    dataCenter: US-KS-2
+                    type: HIGH_PERFORMANCE
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "400":
-          description: Invalid request body
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/BadRequestError"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntityError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3374,18 +4426,39 @@ paths:
       tags: [Network Volumes]
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/NetworkVolume"
+              examples:
+                networkVolume:
+                  summary: Successful response
+                  value:
+                    id: 2q9m7x4c
+                    name: training-dataset
+                    size: 100
+                    dataCenter: US-KS-2
+                    type: HIGH_PERFORMANCE
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "404":
-          description: Network volume not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFoundError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3405,26 +4478,59 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/UpdateNetworkVolumeRequest"
+            examples:
+              resizeNetworkVolume:
+                summary: Resize network volume
+                value:
+                  size: 200
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/NetworkVolume"
+              examples:
+                networkVolume:
+                  summary: Successful response
+                  value:
+                    id: 2q9m7x4c
+                    name: training-dataset
+                    size: 200
+                    dataCenter: US-KS-2
+                    type: HIGH_PERFORMANCE
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "400":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Invalid request body or size decrease attempted
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Network volume not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFoundError"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntityError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3438,14 +4544,26 @@ paths:
       tags: [Network Volumes]
       responses:
         "204":
-          description: Deleted
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Deleted. Response has no body.
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "404":
-          description: Network volume not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFoundError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3462,12 +4580,35 @@ paths:
       tags: [Registries]
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListRegistriesResponse"
+              examples:
+                registries:
+                  summary: Successful response
+                  value:
+                    registries:
+                      - id: 6n2k8v4d
+                        name: dockerhub-private
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3485,14 +4626,47 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/CreateRegistryRequest"
+            examples:
+              dockerHubRegistry:
+                summary: Docker Hub registry
+                value:
+                  name: dockerhub-private
+                  username: runpod-user
+                  password: correct-horse-battery-staple
       responses:
         "201":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Created
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Registry"
+              examples:
+                registry:
+                  summary: Successful response
+                  value:
+                    id: 6n2k8v4d
+                    name: dockerhub-private
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntityError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3511,21 +4685,43 @@ paths:
     get:
       operationId: getRegistry
       summary: Get a container registry credential
+      description: |
+        Returns a single container registry credential by ID. `username` and
+        `password` are never included in the response — credentials are
+        write-only, matching `createRegistry`.
       tags: [Registries]
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Registry"
+              examples:
+                registry:
+                  summary: Successful response
+                  value:
+                    id: 6n2k8v4d
+                    name: dockerhub-private
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "404":
-          description: Registry not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFoundError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3535,24 +4731,165 @@ paths:
     delete:
       operationId: deleteRegistry
       summary: Delete a container registry credential
+      description: |
+        Permanently deletes a container registry credential by ID. Rejected
+        if any pod currently uses this credential to pull its image.
+        Templates that reference it are not part of that check — they
+        silently lose the reference (`registry` becomes null) instead of
+        blocking the delete.
       tags: [Registries]
       responses:
         "204":
-          description: Deleted
-        "404":
-          description: Registry not found
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Deleted. Response has no body.
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "400":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Registry credential is in use by a pod and cannot be deleted
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  # ── Catalog ────────────────────────────────────────────────────────────────
+  /v2/registries/delegations:
+    get:
+      operationId: listDelegations
+      summary: List all ECR delegations
+      tags: [Registries]
+      responses:
+        "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListDelegationsResponse"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
+        default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      operationId: createDelegation
+      summary: Register an ECR delegation
+      tags: [Registries]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDelegationRequest"
+      responses:
+        "201":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Delegation created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EcrDelegation"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
+        default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v2/registries/delegations/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        example: deleg_abc
+
+    delete:
+      operationId: revokeDelegation
+      summary: Revoke an ECR delegation
+      tags: [Registries]
+      responses:
+        "204":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Delegation revoked
+        "404":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Delegation not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
+        default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    # ── Catalog ────────────────────────────────────────────────────────────────
 
   /v2/catalog/gpus:
     get:
@@ -3568,12 +4905,51 @@ paths:
         - $ref: "#/components/parameters/MinCudaVersionFilter"
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListGpuTypesResponse"
+              examples:
+                gpus:
+                  summary: Successful response
+                  value:
+                    gpus:
+                      - id: NVIDIA GeForce RTX 4090
+                        name: RTX 4090
+                        pool: ADA_24
+                        manufacturer: NVIDIA
+                        memory: 24
+                        secure: true
+                        community: true
+                        price:
+                          secure: 0.44
+                          community: 0.31
+                        maxCount:
+                          secure: 8
+                          community: 4
+                        availability: HIGH
+                        dataCenters:
+                          - id: US-KS-2
+                            name: US Kansas 2
+                            availability: HIGH
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3602,18 +4978,52 @@ paths:
         - $ref: "#/components/parameters/MinCudaVersionFilter"
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/GpuType"
+              examples:
+                gpu:
+                  summary: Successful response
+                  value:
+                    id: NVIDIA GeForce RTX 4090
+                    name: RTX 4090
+                    pool: ADA_24
+                    manufacturer: NVIDIA
+                    memory: 24
+                    secure: true
+                    community: true
+                    price:
+                      secure: 0.44
+                      community: 0.31
+                    maxCount:
+                      secure: 8
+                      community: 4
+                    availability: HIGH
+                    dataCenters:
+                      - id: US-KS-2
+                        name: US Kansas 2
+                        availability: HIGH
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "404":
-          description: GPU type not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFoundError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3632,12 +5042,48 @@ paths:
         - $ref: "#/components/parameters/CpuVCPUCountFilter"
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListCpuTypesResponse"
+              examples:
+                cpus:
+                  summary: Successful response
+                  value:
+                    cpus:
+                      - id: cpu3c-2-4
+                        name: Compute-Optimized
+                        group: Gen 3
+                        vcpu:
+                          min: 2
+                          max: 32
+                        ramGbPerVcpu: 2.5
+                        price:
+                          securePerVcpu: 0.04
+                          serverlessPerVcpu: 0.03
+                        availability: MEDIUM
+                        dataCenters:
+                          - id: US-KS-2
+                            name: US Kansas 2
+                            availability: MEDIUM
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3663,18 +5109,49 @@ paths:
         - $ref: "#/components/parameters/CpuVCPUCountFilter"
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/CpuType"
+              examples:
+                cpu:
+                  summary: Successful response
+                  value:
+                    id: cpu3c-2-4
+                    name: Compute-Optimized
+                    group: Gen 3
+                    vcpu:
+                      min: 2
+                      max: 32
+                    ramGbPerVcpu: 2.5
+                    price:
+                      securePerVcpu: 0.04
+                      serverlessPerVcpu: 0.03
+                    availability: MEDIUM
+                    dataCenters:
+                      - id: US-KS-2
+                        name: US Kansas 2
+                        availability: MEDIUM
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "404":
-          description: CPU type not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFoundError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3685,7 +5162,13 @@ paths:
     get:
       operationId: listDataCenters
       summary: List data centers
-      description: Returns available data center locations.
+      description: >
+        Returns available data center locations with region, compliance,
+        supported network volume tiers, and global networking support. Use
+        include=GPU_AVAILABILITY or include=CPU_AVAILABILITY to add per-resource
+        availability arrays to each data center. The regions, networkVolumeTypes,
+        compliance, and globalNetwork query parameters filter the list before it
+        is returned.
       tags: [Catalog]
       parameters:
         - name: include
@@ -3741,12 +5224,51 @@ paths:
           example: true
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListDataCentersResponse"
+              examples:
+                dataCenters:
+                  summary: Successful response
+                  value:
+                    dataCenters:
+                      - id: US-KS-2
+                        name: US Kansas 2
+                        region: NORTH_AMERICA
+                        globalNetwork: true
+                        networkVolumeTypes:
+                          - STANDARD
+                          - HIGH_PERFORMANCE
+                        compliance:
+                          - SOC_2_TYPE_2
+                          - ISO_IEC_27001
+                        gpuAvailability:
+                          - id: NVIDIA GeForce RTX 4090
+                            name: RTX 4090
+                            availability: HIGH
+                        cpuAvailability:
+                          - id: cpu3c-2-4
+                            name: Compute-Optimized
+                            availability: MEDIUM
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3780,18 +5302,52 @@ paths:
             example: [GPU_AVAILABILITY]
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/DataCenter"
+              examples:
+                dataCenter:
+                  summary: Successful response
+                  value:
+                    id: US-KS-2
+                    name: US Kansas 2
+                    region: NORTH_AMERICA
+                    globalNetwork: true
+                    networkVolumeTypes:
+                      - STANDARD
+                      - HIGH_PERFORMANCE
+                    compliance:
+                      - SOC_2_TYPE_2
+                      - ISO_IEC_27001
+                    gpuAvailability:
+                      - id: NVIDIA GeForce RTX 4090
+                        name: RTX 4090
+                        availability: HIGH
+                    cpuAvailability:
+                      - id: cpu3c-2-4
+                        name: Compute-Optimized
+                        availability: MEDIUM
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "404":
-          description: Data center not found
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/NotFoundError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3803,9 +5359,13 @@ paths:
       operationId: listBilling
       summary: Get aggregated billing history
       description: >
-        Returns time-bucketed total spend across all billable RunPod resources
-        for the authenticated user over the requested period, with each cost
-        component broken out.
+        Returns time-bucketed total spend across all billable Runpod resources
+        for the authenticated user. Use startTime/endTime with bucketSize for an
+        explicit range, or lastN with bucketSize for the most recent buckets.
+        Each record reports one bucket's total plus pod, serverless, storage,
+        public endpoint, and Instant Cluster cost components. The metadata block
+        echoes the resolved query window, record count, and totals across all
+        returned buckets.
       tags: [Billing]
       parameters:
         - $ref: "#/components/parameters/BillingStartTime"
@@ -3814,12 +5374,70 @@ paths:
         - $ref: "#/components/parameters/BillingLastN"
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListBillingResponse"
+              examples:
+                billing:
+                  summary: Successful response
+                  value:
+                    records:
+                      - startTime: "2026-06-01T00:00:00Z"
+                        endTime: "2026-06-02T00:00:00Z"
+                        totalAmount: 42.34
+                        podGpuAmount: 18.2
+                        podCpuAmount: 0
+                        podDiskAmount: 1.1
+                        serverlessGpuAmount: 12.6
+                        serverlessCpuAmount: 0
+                        serverlessDiskAmount: 0.44
+                        serverlessFeeAmount: 1.25
+                        storageStandardAmount: 0
+                        storageHighPerformanceAmount: 2.5
+                        endpointAmount: 3.21
+                        clusterGpuAmount: 2.5
+                        clusterDiskAmount: 0.3
+                        clusterNetworkingAmount: 0.24
+                    metadata:
+                      query:
+                        startTime: "2026-06-01T00:00:00Z"
+                        endTime: "2026-06-02T00:00:00Z"
+                        bucketSize: day
+                      recordCount: 1
+                      totals:
+                        totalAmount: 42.34
+                        podGpuAmount: 18.2
+                        podCpuAmount: 0
+                        podDiskAmount: 1.1
+                        serverlessGpuAmount: 12.6
+                        serverlessCpuAmount: 0
+                        serverlessDiskAmount: 0.44
+                        serverlessFeeAmount: 1.25
+                        storageStandardAmount: 0
+                        storageHighPerformanceAmount: 2.5
+                        endpointAmount: 3.21
+                        clusterGpuAmount: 2.5
+                        clusterDiskAmount: 0.3
+                        clusterNetworkingAmount: 0.24
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3831,8 +5449,13 @@ paths:
       operationId: listPodBilling
       summary: Get pod billing history
       description: >
-        Returns time-bucketed pod billing records (GPU and CPU pods) for the
-        authenticated user over the requested period.
+        Returns pod-only billing detail for the authenticated user, split into
+        time buckets by startTime/endTime with bucketSize or by lastN recent
+        buckets. Use podId to narrow the response to one GPU or CPU pod; without
+        it, records are emitted per pod per bucket. Each record includes podId,
+        GPU, CPU, disk, and total amounts, while metadata echoes the resolved
+        query and totals across the pod records. Use listBilling when you need
+        aggregate spend across every billable resource family.
       tags: [Billing]
       parameters:
         - $ref: "#/components/parameters/BillingStartTime"
@@ -3848,12 +5471,53 @@ paths:
           example: pod_abc123
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListPodBillingResponse"
+              examples:
+                podBilling:
+                  summary: Successful response
+                  value:
+                    records:
+                      - startTime: "2026-06-01T00:00:00Z"
+                        endTime: "2026-06-02T00:00:00Z"
+                        podId: 7h9k2m4n6p
+                        totalAmount: 12.34
+                        gpuAmount: 11.1
+                        cpuAmount: 0
+                        diskAmount: 1.24
+                    metadata:
+                      query:
+                        startTime: "2026-06-01T00:00:00Z"
+                        endTime: "2026-06-02T00:00:00Z"
+                        bucketSize: day
+                        podId: 7h9k2m4n6p
+                      recordCount: 1
+                      totals:
+                        totalAmount: 12.34
+                        gpuAmount: 11.1
+                        cpuAmount: 0
+                        diskAmount: 1.24
+                      uniquePodCount: 1
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3865,8 +5529,13 @@ paths:
       operationId: listServerlessBilling
       summary: Get serverless billing history
       description: >
-        Returns time-bucketed serverless billing records for the authenticated
-        user over the requested period.
+        Returns serverless endpoint billing detail for the authenticated user,
+        split into time buckets by startTime/endTime with bucketSize or by lastN
+        recent buckets. Use serverlessId to filter to one endpoint; without it,
+        records are emitted per serverless endpoint per bucket. Each record
+        reports endpoint-level GPU, CPU, disk, platform fee, and total amounts.
+        This is distinct from pod billing, which covers standalone GPU and CPU
+        pod costs rather than serverless endpoint workloads.
       tags: [Billing]
       parameters:
         - $ref: "#/components/parameters/BillingStartTime"
@@ -3882,12 +5551,55 @@ paths:
           example: jpnw0v75y3qoql
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListServerlessBillingResponse"
+              examples:
+                serverlessBilling:
+                  summary: Successful response
+                  value:
+                    records:
+                      - startTime: "2026-06-01T00:00:00Z"
+                        endTime: "2026-06-02T00:00:00Z"
+                        serverlessId: 4m7x2k9q
+                        totalAmount: 8.9
+                        gpuAmount: 7.5
+                        cpuAmount: 0
+                        diskAmount: 0.4
+                        feeAmount: 1.0
+                    metadata:
+                      query:
+                        startTime: "2026-06-01T00:00:00Z"
+                        endTime: "2026-06-02T00:00:00Z"
+                        bucketSize: day
+                        serverlessId: 4m7x2k9q
+                      recordCount: 1
+                      totals:
+                        totalAmount: 8.9
+                        gpuAmount: 7.5
+                        cpuAmount: 0
+                        diskAmount: 0.4
+                        feeAmount: 1.0
+                      uniqueServerlessCount: 1
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3899,8 +5611,11 @@ paths:
       operationId: listEndpointBilling
       summary: Get public endpoint billing history
       description: >
-        Returns time-bucketed RunPod public endpoint billing records for the
-        authenticated user over the requested period.
+        Returns Runpod public endpoint billing history for the authenticated
+        user, split into time buckets by startTime/endTime with bucketSize or by
+        lastN recent buckets. Each record reports the endpoint total for one
+        bucket, and metadata echoes the resolved query window, record count, and
+        total endpoint amount across all returned records.
       tags: [Billing]
       parameters:
         - $ref: "#/components/parameters/BillingStartTime"
@@ -3909,12 +5624,44 @@ paths:
         - $ref: "#/components/parameters/BillingLastN"
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListEndpointBillingResponse"
+              examples:
+                endpointBilling:
+                  summary: Successful response
+                  value:
+                    records:
+                      - startTime: "2026-06-01T00:00:00Z"
+                        endTime: "2026-06-02T00:00:00Z"
+                        totalAmount: 3.21
+                    metadata:
+                      query:
+                        startTime: "2026-06-01T00:00:00Z"
+                        endTime: "2026-06-02T00:00:00Z"
+                        bucketSize: day
+                      recordCount: 1
+                      totals:
+                        totalAmount: 3.21
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3926,8 +5673,13 @@ paths:
       operationId: listNetworkVolumeBilling
       summary: Get network volume billing history
       description: >
-        Returns time-bucketed network volume billing records for the
-        authenticated user over the requested period.
+        Returns network volume billing history for the authenticated user, split
+        into time buckets by startTime/endTime with bucketSize or by lastN recent
+        buckets. Use networkVolumeId to filter to one volume; without it,
+        records are emitted per volume per bucket. Each record includes standard
+        storage, high-performance storage, and total amounts, while metadata
+        reports the resolved query, distinct volume count, and totals across the
+        returned records.
       tags: [Billing]
       parameters:
         - $ref: "#/components/parameters/BillingStartTime"
@@ -3943,12 +5695,51 @@ paths:
           example: vol_abc123
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListNetworkVolumeBillingResponse"
+              examples:
+                networkVolumeBilling:
+                  summary: Successful response
+                  value:
+                    records:
+                      - startTime: "2026-06-01T00:00:00Z"
+                        endTime: "2026-06-02T00:00:00Z"
+                        networkVolumeId: 2q9m7x4c
+                        totalAmount: 5.79
+                        standardAmount: 0
+                        highPerformanceAmount: 5.79
+                    metadata:
+                      query:
+                        startTime: "2026-06-01T00:00:00Z"
+                        endTime: "2026-06-02T00:00:00Z"
+                        bucketSize: day
+                        networkVolumeId: 2q9m7x4c
+                      recordCount: 1
+                      totals:
+                        totalAmount: 5.79
+                        standardAmount: 0
+                        highPerformanceAmount: 5.79
+                      uniqueNetworkVolumeCount: 1
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:
@@ -3960,8 +5751,12 @@ paths:
       operationId: listClusterBilling
       summary: Get Instant Cluster billing history
       description: >
-        Returns time-bucketed Instant Cluster billing records for the
-        authenticated user over the requested period.
+        Returns Instant Cluster billing history for the authenticated user, split
+        into time buckets by startTime/endTime with bucketSize or by lastN recent
+        buckets. Use clusterId to filter to one cluster; without it, records are
+        emitted per cluster per bucket. Each record includes GPU compute, disk,
+        inter-node networking, and total amounts. Instant Clusters are GPU-only,
+        so no CPU cost component is returned.
       tags: [Billing]
       parameters:
         - $ref: "#/components/parameters/BillingStartTime"
@@ -3977,12 +5772,53 @@ paths:
           example: cluster_abc123
       responses:
         "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListClusterBillingResponse"
+              examples:
+                clusterBilling:
+                  summary: Successful response
+                  value:
+                    records:
+                      - startTime: "2026-06-01T00:00:00Z"
+                        endTime: "2026-06-02T00:00:00Z"
+                        clusterId: 5c2n8m4q
+                        totalAmount: 99.0
+                        gpuAmount: 95.0
+                        diskAmount: 3.0
+                        networkingAmount: 1.0
+                    metadata:
+                      query:
+                        startTime: "2026-06-01T00:00:00Z"
+                        endTime: "2026-06-02T00:00:00Z"
+                        bucketSize: day
+                        clusterId: 5c2n8m4q
+                      recordCount: 1
+                      totals:
+                        totalAmount: 99.0
+                        gpuAmount: 95.0
+                        diskAmount: 3.0
+                        networkingAmount: 1.0
+                      uniqueClusterCount: 1
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
         default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
           description: Error
           content:
             application/problem+json:

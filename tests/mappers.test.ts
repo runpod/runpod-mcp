@@ -92,7 +92,10 @@ describe('mapPodCreateToV2', () => {
   });
 
   it('maps containerRegistryAuthId → registry (private-image pull / template override)', () => {
-    const out = mapPodCreateToV2({ name: 'p', containerRegistryAuthId: 'cra_1' });
+    const out = mapPodCreateToV2({
+      name: 'p',
+      containerRegistryAuthId: 'cra_1',
+    });
     assert.equal(out.registry, 'cra_1');
     assert.equal('containerRegistryAuthId' in out, false);
   });
@@ -159,7 +162,9 @@ describe('mapNetworkVolumeCreateToV2', () => {
 });
 
 describe('mapTemplateCreateToV2', () => {
-  it('imageName→image, isServerless→serverless, flatten, category defaults to NVIDIA', () => {
+  it('imageName→image, isServerless→serverless, flatten; omits an unset category', () => {
+    // v2 made `category` optional with a documented server-side NVIDIA default,
+    // so an unset category is left out of the body rather than forced to NVIDIA.
     const out = mapTemplateCreateToV2({
       name: 't',
       imageName: 'i',
@@ -171,7 +176,6 @@ describe('mapTemplateCreateToV2', () => {
       disk: 10,
       name: 't',
       serverless: true,
-      category: 'NVIDIA',
     });
   });
 

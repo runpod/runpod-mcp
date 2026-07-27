@@ -860,7 +860,7 @@ describe('template / network-volume / registry routing under v2', () => {
     });
   });
 
-  it('create-template → POST .../v2/templates with mapped body (serverless + category)', async () => {
+  it('create-template → POST .../v2/templates with mapped body, no forced category', async () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({ jsonBody: {} });
       await handlers.get('create-template')!({
@@ -873,7 +873,9 @@ describe('template / network-volume / registry routing under v2', () => {
       assert.equal(body.image, 'i');
       assert.equal('imageName' in body, false);
       assert.equal(body.serverless, true);
-      assert.equal(body.category, 'NVIDIA');
+      // `category` is optional on v2 now (server defaults it to NVIDIA), so we
+      // no longer send a value the caller never asked for.
+      assert.equal('category' in body, false);
     });
   });
 
@@ -959,6 +961,76 @@ describe('template / network-volume / registry routing under v2', () => {
       const { handlers, outbound } = harness({ jsonBody: { registries: [] } });
       await handlers.get('list-container-registry-auths')!({});
       assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/registries');
+    });
+  });
+
+  // ECR delegations hang off the registries collection, so their URLs are built
+  // from the same base + list path — these lock that they land on
+  // /v2/registries/delegations and not, say, /v2/delegations.
+  it('list-registry-delegations → GET .../v2/registries/delegations, unwraps {delegations:[…]}', async () => {
+    await withV2(async () => {
+      const rows = Array.from({ length: 3 }, (_, i) => ({ id: `deleg_${i}` }));
+      const { handlers, outbound } = harness({
+        jsonBody: { delegations: rows },
+      });
+      const out = await handlers.get('list-registry-delegations')!({});
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/registries/delegations'
+      );
+      assert.equal(outbound[0].method, 'GET');
+      assert.equal((parseText(out).items as unknown[]).length, 3);
+    });
+  });
+
+  it('list-registry-delegations tolerates a missing/odd envelope (no throw)', async () => {
+    await withV2(async () => {
+      const { handlers } = harness({ jsonBody: { unexpected: 'shape' } });
+      const out = await handlers.get('list-registry-delegations')!({});
+      assert.deepEqual(parseText(out).items, []);
+    });
+  });
+
+  it('create-registry-delegation → POST .../v2/registries/delegations, ARN body', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'deleg_1' } });
+      await handlers.get('create-registry-delegation')!({
+        resource: 'arn:aws:ecr:us-east-2:123456789012:repository/org/img',
+        name: 'my-deleg',
+      });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/registries/delegations'
+      );
+      assert.equal(outbound[0].method, 'POST');
+      assert.deepEqual(JSON.parse(outbound[0].body!), {
+        resource: 'arn:aws:ecr:us-east-2:123456789012:repository/org/img',
+        name: 'my-deleg',
+      });
+    });
+  });
+
+  it('create-registry-delegation omits `name` when unset (additionalProperties:false)', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('create-registry-delegation')!({ resource: 'arn:x' });
+      const body = JSON.parse(outbound[0].body!);
+      assert.deepEqual(body, { resource: 'arn:x' });
+      assert.equal('name' in body, false);
+    });
+  });
+
+  it('delete-registry-delegation → DELETE .../v2/registries/delegations/{id}, id encoded', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('delete-registry-delegation')!({
+        delegationId: 'deleg/1',
+      });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/registries/delegations/deleg%2F1'
+      );
+      assert.equal(outbound[0].method, 'DELETE');
     });
   });
 
@@ -1076,7 +1148,10 @@ describe('catalog routing (B5)', () => {
       const out = (await handlers.get('list-gpu-types')!({
         includeAvailability: false,
       })) as { content: Array<{ text: string }> };
-      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/catalog/gpus');
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/catalog/gpus'
+      );
       // no availability data → nothing filtered out
       assert.equal(JSON.parse(out.content[0].text).items.length, 2);
     });
@@ -1317,7 +1392,7 @@ describe('list tools: unwrap + cap (v1 bare array)', () => {
   });
 });
 
-// ============== NEW v2-only tools (tags, billing, workers, catalog gets) ==============
+// ====== NEW v2-only tools (delegations, billing, workers, catalog gets) ======
 // Each is v2-only: on v1 it must return a clean 501 WITHOUT firing a request;
 // on v2 it hits the documented path. Wire-locks mirror the spec endpoints.
 function parseText(out: unknown): Record<string, unknown> {
@@ -1325,124 +1400,6 @@ function parseText(out: unknown): Record<string, unknown> {
     (out as { content: Array<{ text: string }> }).content[0].text
   );
 }
-
-describe('tags tools (v2-only)', () => {
-  it('list-tags: v1 → 501 no request; v2 → GET /v2/tags, includeResources adds ?include=resources', async () => {
-    const v1 = harness({ jsonBody: {} });
-    const v1out = await v1.handlers.get('list-tags')!({});
-    assert.equal(v1.outbound.length, 0);
-    assert.equal(parseText(v1out).status, 501);
-
-    await withV2(async () => {
-      const { handlers, outbound } = harness({
-        jsonBody: { tags: [{ id: 't1', key: 'k', value: 'v' }] },
-      });
-      const out = await handlers.get('list-tags')!({ includeResources: true });
-      assert.equal(
-        outbound[0].url,
-        'https://v2-rest.runpod.io/v2/tags?include=resources'
-      );
-      assert.deepEqual(parseText(out).items, [
-        { id: 't1', key: 'k', value: 'v' },
-      ]);
-    });
-  });
-
-  it('get-tag → GET /v2/tags/{id} (no include when not requested)', async () => {
-    await withV2(async () => {
-      const { handlers, outbound } = harness({ jsonBody: { id: 't1' } });
-      await handlers.get('get-tag')!({ tagId: 't1' });
-      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/tags/t1');
-      assert.equal(outbound[0].method, 'GET');
-    });
-  });
-
-  it('create-tag → POST /v2/tags with {key,value,resources}', async () => {
-    await withV2(async () => {
-      const { handlers, outbound } = harness({ jsonBody: {} });
-      await handlers.get('create-tag')!({
-        key: 'project',
-        value: 'gpt',
-        resources: [{ id: 'pod_1', type: 'POD' }],
-      });
-      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/tags');
-      assert.equal(outbound[0].method, 'POST');
-      assert.deepEqual(JSON.parse(outbound[0].body!), {
-        key: 'project',
-        value: 'gpt',
-        resources: [{ id: 'pod_1', type: 'POD' }],
-      });
-    });
-  });
-
-  it('update-tag → PATCH /v2/tags/{id}, body excludes tagId', async () => {
-    await withV2(async () => {
-      const { handlers, outbound } = harness({ jsonBody: {} });
-      await handlers.get('update-tag')!({ tagId: 't1', value: 'new' });
-      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/tags/t1');
-      assert.equal(outbound[0].method, 'PATCH');
-      const body = JSON.parse(outbound[0].body!);
-      assert.equal('tagId' in body, false);
-      assert.deepEqual(body, { value: 'new' });
-    });
-  });
-
-  it('delete-tag → DELETE /v2/tags/{id}', async () => {
-    await withV2(async () => {
-      const { handlers, outbound } = harness({ jsonBody: {} });
-      await handlers.get('delete-tag')!({ tagId: 't1' });
-      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/tags/t1');
-      assert.equal(outbound[0].method, 'DELETE');
-    });
-  });
-
-  it('attach-tag → PUT /v2/tags/{id}/resources/{type}/{id}', async () => {
-    await withV2(async () => {
-      const { handlers, outbound } = harness({ jsonBody: {} });
-      await handlers.get('attach-tag')!({
-        tagId: 't1',
-        resourceType: 'SERVERLESS_ENDPOINT',
-        resourceId: 'ep_9',
-      });
-      assert.equal(
-        outbound[0].url,
-        'https://v2-rest.runpod.io/v2/tags/t1/resources/SERVERLESS_ENDPOINT/ep_9'
-      );
-      assert.equal(outbound[0].method, 'PUT');
-    });
-  });
-
-  it('detach-tag → DELETE /v2/tags/{id}/resources/{type}/{id}', async () => {
-    await withV2(async () => {
-      const { handlers, outbound } = harness({ jsonBody: {} });
-      await handlers.get('detach-tag')!({
-        tagId: 't1',
-        resourceType: 'POD',
-        resourceId: 'pod_2',
-      });
-      assert.equal(
-        outbound[0].url,
-        'https://v2-rest.runpod.io/v2/tags/t1/resources/POD/pod_2'
-      );
-      assert.equal(outbound[0].method, 'DELETE');
-    });
-  });
-
-  it('attach-tag URL-encodes free-text tagId/resourceId (not the enum resourceType)', async () => {
-    await withV2(async () => {
-      const { handlers, outbound } = harness({ jsonBody: {} });
-      await handlers.get('attach-tag')!({
-        tagId: 'a/b?c',
-        resourceType: 'POD',
-        resourceId: 'p#1',
-      });
-      assert.equal(
-        outbound[0].url,
-        'https://v2-rest.runpod.io/v2/tags/a%2Fb%3Fc/resources/POD/p%231'
-      );
-    });
-  });
-});
 
 describe('billing tool (v2-only)', () => {
   it('get-billing: v1 → 501 no request', async () => {
@@ -1568,13 +1525,12 @@ describe('catalog gets (v2-only)', () => {
 // path that the individual wire-locks above only spot-check.
 describe('all v2-only tools: v1 → 501 with no request', () => {
   const V2_ONLY_CALLS: Array<[string, Record<string, unknown>]> = [
-    ['list-tags', {}],
-    ['get-tag', { tagId: 't1' }],
-    ['create-tag', { key: 'k', value: 'v' }],
-    ['update-tag', { tagId: 't1', value: 'v' }],
-    ['delete-tag', { tagId: 't1' }],
-    ['attach-tag', { tagId: 't1', resourceType: 'POD', resourceId: 'p1' }],
-    ['detach-tag', { tagId: 't1', resourceType: 'POD', resourceId: 'p1' }],
+    ['list-registry-delegations', {}],
+    [
+      'create-registry-delegation',
+      { resource: 'arn:aws:ecr:us-east-2:1:repository/r' },
+    ],
+    ['delete-registry-delegation', { delegationId: 'deleg_1' }],
     ['get-billing', {}],
     ['list-endpoint-workers', { endpointId: 'ep_1' }],
     ['stream-pod-logs', { podId: 'pod_1' }],

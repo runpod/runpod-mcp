@@ -11,7 +11,6 @@ import { registerJobTools } from './tools/jobs.js';
 import { registerTemplateTools } from './tools/templates.js';
 import { registerNetworkVolumeTools } from './tools/network-volumes.js';
 import { registerRegistryTools } from './tools/registries.js';
-import { registerTagTools } from './tools/tags.js';
 import { registerBillingTools } from './tools/billing.js';
 
 // Re-export so existing importers (entrypoints, tests) keep their import path.
@@ -43,6 +42,5 @@ export function registerTools(
   registerTemplateTools(server, rt);
   registerNetworkVolumeTools(server, rt);
   registerRegistryTools(server, rt);
-  registerTagTools(server, rt);
   registerBillingTools(server, rt);
 }

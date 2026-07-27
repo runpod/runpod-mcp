@@ -387,7 +387,16 @@ Notes:
 - **Pinning a deployment** — the env var is read once at startup, so set `RUNPOD_REST_VERSION` (`v1` or `v2`) in the host's environment (e.g. a Vercel project env var) and redeploy; no code change. Hosted HTTP honors this default like any other transport.
 - **What `auto` does:** it probes v2 once at startup and falls back to v1 — but **only on the `stdio` transport** (one process = one key). On hosted HTTP `auto` resolves to **v1**, because a warm instance serves many users and a cached probe verdict could leak across them. `auto` is a stdio-only convenience; on HTTP, rely on the default or pin the version explicitly.
 - `jobs` (serverless runtime) always uses v1 regardless of the setting — it has no v2 REST home (it targets `api.runpod.ai/v2`, a different service).
-- The v2-only tools (`list-cpu-types`, `get-gpu-type`, `restart-pod`) return a clear "v2 only" notice when called under v1.
+- The v2-only tools (`list-cpu-types`, `get-gpu-type`, `restart-pod`, and the three `*-registry-delegation(s)` tools) return a clear "v2 only" notice when called under v1.
+
+### Private image pull: credentials vs ECR delegation
+
+Two ways to let Runpod pull a private image, and they are not interchangeable:
+
+- **`create-container-registry-auth`** — stores a username + password/token. Works for any registry (Docker Hub, GHCR, Quay, a self-hosted one). Available on v1 and v2. Reference the resulting id from `create-pod` / `create-endpoint` via `containerRegistryAuthId`.
+- **`create-registry-delegation`** — **AWS ECR only, v2-only, no credentials stored.** You register an ECR repository ARN and Runpod is granted scoped pull access to it; the reply carries a `dockerRegistryUri` plus the resolved repository, tag, and AWS region. Manage with `list-registry-delegations` and revoke with `delete-registry-delegation`.
+
+Prefer the delegation for ECR — nothing long-lived is stored on Runpod's side.
 
 > **⚠️ Migration note — `create-endpoint` / `update-endpoint` changed shape in v2.** Serverless endpoints now use the v2 API (`/v2/serverless`) with an **inline config** instead of a `templateId`. On v2, `create-endpoint` requires `imageName` + `gpuPoolIds` (GPU **pool** names from `list-gpu-types` — the `pool` field, e.g. `AMPERE_80`), plus optional `workersMin`/`workersMax`, `scalerType`/`scalerValue`/`idleTimeout`, `containerDiskInGb`, `env`, `flashboot`, etc. It no longer accepts `templateId`. **If you previously called `create-endpoint` with `{ templateId }` and have no `RUNPOD_REST_VERSION` set, that call now returns a clean `400` after upgrading** — switch to the inline fields, or pin `RUNPOD_REST_VERSION=v1` to keep the legacy template-based model.
 

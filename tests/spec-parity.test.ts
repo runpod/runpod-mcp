@@ -101,14 +101,6 @@ const SPEC_OP_TO_TOOLS: Record<string, string[]> = {
   getTemplate: ['get-template'],
   updateTemplate: ['update-template'],
   deleteTemplate: ['delete-template'],
-  // tags
-  listTags: ['list-tags'],
-  createTag: ['create-tag'],
-  getTag: ['get-tag'],
-  updateTag: ['update-tag'],
-  deleteTag: ['delete-tag'],
-  attachTagResource: ['attach-tag'],
-  detachTagResource: ['detach-tag'],
   // network volumes
   listNetworkVolumes: ['list-network-volumes'],
   createNetworkVolume: ['create-network-volume'],
@@ -120,6 +112,10 @@ const SPEC_OP_TO_TOOLS: Record<string, string[]> = {
   createRegistry: ['create-container-registry-auth'],
   getRegistry: ['get-container-registry-auth'],
   deleteRegistry: ['delete-container-registry-auth'],
+  // ECR delegations (scoped pull access instead of stored credentials)
+  listDelegations: ['list-registry-delegations'],
+  createDelegation: ['create-registry-delegation'],
+  revokeDelegation: ['delete-registry-delegation'],
   // catalog
   listGpuTypes: ['list-gpu-types'],
   getGpuType: ['get-gpu-type'],
@@ -280,7 +276,7 @@ describe('live v2 shape (opt-in)', () => {
     { path: '/templates', key: 'templates' },
     { path: '/network-volumes', key: 'networkVolumes' },
     { path: '/registries', key: 'registries' },
-    { path: '/tags', key: 'tags' },
+    { path: '/registries/delegations', key: 'delegations' },
   ];
 
   for (const check of CHECKS) {

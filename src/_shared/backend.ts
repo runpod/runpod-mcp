@@ -31,7 +31,6 @@ export type Resource =
   | 'dataCenters'
   | 'endpoints'
   | 'jobs'
-  | 'tags'
   | 'workers'
   | 'billing';
 
@@ -55,7 +54,6 @@ const V2_UNWRAP_KEY: Record<Resource, string> = {
   dataCenters: 'dataCenters',
   endpoints: 'endpoints',
   jobs: 'jobs',
-  tags: 'tags',
   workers: 'workers',
   billing: 'records',
 };
@@ -71,7 +69,6 @@ const RESOURCE_ENV_KEY: Record<Resource, string> = {
   dataCenters: 'DATA_CENTERS',
   endpoints: 'ENDPOINTS',
   jobs: 'JOBS',
-  tags: 'TAGS',
   workers: 'WORKERS',
   billing: 'BILLING',
 };
@@ -326,7 +323,6 @@ const CATALOG: ReadonlySet<Resource> = new Set<Resource>([
 // so the tool emits a clean "v2 only" 501 notice instead of throwing on a
 // missing path table entry (mirrors how get-gpu-type/list-cpu-types degrade).
 const V2_ONLY: ReadonlySet<Resource> = new Set<Resource>([
-  'tags',
   'workers',
   'billing',
 ]);
@@ -353,7 +349,6 @@ const V2_REST_PATHS: Partial<
     list: '/catalog/datacenters',
     get: (id) => `/catalog/datacenters/${id}`,
   },
-  tags: { list: '/tags', get: (id) => `/tags/${id}` },
   // Endpoints live under /v2/serverless on v2 (NOT /v2/endpoints). The v2 list
   // response wraps rows under `endpoints` (see V2_UNWRAP_KEY), so the existing
   // unwrap key stays correct.

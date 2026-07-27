@@ -3,14 +3,14 @@
 // schemas accept today) into v2 REST request bodies. Isolated here so the v2
 // shape is a one-file change when the spec moves.
 //
-// ⚠️ SPEC IS MID-FLIGHT (see PLAN.md Part 7/8). These mappers target the current
-// v2 dev spec snapshot and are pinned by committed fixtures under tests/fixtures.
-// Known pending upstream changes that will require updating these + the fixtures:
-//   - `cloud` enum may drop `ALL`
-//   - template `category` may become optional / be removed (v2 marks it required
-//     today; the create-template tool now exposes `category`, defaulting to
-//     NVIDIA only when the caller omits it)
-// When the live spec changes, update the mapper AND its fixture in one commit.
+// These mappers target the vendored v2 spec snapshot under tests/fixtures and are
+// pinned by committed fixtures. When the live spec changes, update the mapper AND
+// its fixture in one commit.
+//
+// The two mid-flight spec questions this file used to carry are now settled, and
+// the workarounds for them are gone: `cloud` dropped `ALL` (the tool never
+// offered it, so nothing to do), and template `category` became optional with a
+// documented server-side `NVIDIA` default, so the mapper no longer forces a value.
 
 // v1 params accepted by the create-pod / update-pod tool schemas (the fields the
 // mapper knows how to translate). Unknown keys are intentionally dropped.
@@ -243,9 +243,9 @@ interface V1TemplateCreate {
   volumeMountPath?: string;
   // Startup command; joinStartCmd collapses the array into v2's `args` string.
   dockerStartCmd?: string[];
-  // v2 CreateTemplateRequest requires `category` (CPU/NVIDIA/AMD). The v1 tool
-  // has no such field; default to NVIDIA (the documented default) so the body is
-  // valid, and accept an explicit override once the tool schema exposes it.
+  // Template category (CPU/NVIDIA/AMD). Optional on v2, which defaults it to
+  // NVIDIA server-side — so an omitted category is left unsent rather than
+  // filled in here.
   category?: 'CPU' | 'NVIDIA' | 'AMD';
   // Container registry credential for pulling a private image. v1's field is
   // `containerRegistryAuthId`; v2 ContainerConfig calls it `registry`.
@@ -261,9 +261,10 @@ export function mapTemplateCreateToV2(
       serverless: params.isServerless,
       registry: params.containerRegistryAuthId,
       args: joinStartCmd(params.dockerStartCmd),
+      // No longer required by v2 (it defaults to NVIDIA server-side), so an
+      // unset category is dropped by compact instead of being forced here.
+      category: params.category,
     }),
-    // Required by v2 — always emit, defaulting to NVIDIA.
-    category: params.category ?? 'NVIDIA',
   };
 }
 
@@ -279,7 +280,16 @@ export function podBodyFromTemplate(
   template: Record<string, unknown>
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  const keys = ['name', 'image', 'args', 'disk', 'ports', 'env', 'mounts', 'registry'];
+  const keys = [
+    'name',
+    'image',
+    'args',
+    'disk',
+    'ports',
+    'env',
+    'mounts',
+    'registry',
+  ];
   for (const key of keys) {
     const value = template[key];
     if (value !== undefined && value !== null) out[key] = value;
