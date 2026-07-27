@@ -354,10 +354,8 @@ export function registerEndpointTools(
     }
   );
 
-  // List Endpoint Releases — enabled 2026-07-27: GET /v2/serverless/{id}/releases
-  // is now live on prod (verified 200 against v2-rest.runpod.io), so the reason
-  // this was kept unregistered no longer holds. Prod and dev serve the same 44-op
-  // spec. Still v2-only: v1 has no equivalent, hence the 501 notice.
+  // List Endpoint Releases — GET /v2/serverless/{id}/releases. v2-only; v1 has no
+  // equivalent, hence the 501 notice.
   server.tool(
     'list-endpoint-releases',
     "List a Serverless endpoint's release history and current rollout status (workers on the latest version). v2-only — returns a 501 notice on the v1 API. Paginated via limit/cursor.",

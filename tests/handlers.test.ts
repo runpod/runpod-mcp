@@ -1697,10 +1697,6 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       assert.equal(outbound[0].method, 'DELETE');
     });
   });
-
-  // NOTE: list-endpoint-releases is implemented but its registration is DISABLED
-  // (dev-only op, prod 422s) — so there is no handler to drive here. Its mapper-
-  // level coverage stays; re-add a wire-lock when the tool is re-enabled.
 });
 
 describe('endpoint routing under v1 (templateId model preserved)', () => {

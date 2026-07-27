@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { capListResult, listPaginationParams } from '../pagination.js';
 import { READ_ONLY, WRITE, DESTRUCTIVE, type ToolRuntime } from './runtime.js';
 
-// ============== CONTAINER REGISTRY AUTH TOOLS ==============
+// ============== CONTAINER REGISTRY TOOLS ==============
 // Two related things live here, both under the v2 `registries` resource:
 //
 //   1. Container registry auths (`/v2/registries`) — a stored username +
@@ -16,7 +16,6 @@ import { READ_ONLY, WRITE, DESTRUCTIVE, type ToolRuntime } from './runtime.js';
 // The delegation sub-paths are built from the registries backend's own base +
 // list path, so they need no separate Resource entry in the adapter.
 
-// Delegation paths hang off the registries collection.
 const DELEGATIONS = '/delegations';
 
 export function registerRegistryTools(

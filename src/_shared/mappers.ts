@@ -12,23 +12,13 @@
 // template `category` became optional with a documented server-side `NVIDIA`
 // default, so the mapper no longer forces a value.
 //
-// ⚠️ SPEC IS STILL MID-FLIGHT — the serverless endpoint request shape.
-// The vendored spec is the DEV spec (see scripts/fetch-v2-spec.ts), and dev has
-// moved ahead of production on `/v2/serverless` writes: `type`
-// (QUEUE|LOAD_BALANCER) became required on create, `scaling` became a union
-// discriminated on `type` (`{queueDelay}` / `{requestCount}`, both
-// additionalProperties:false), and `idleTimeout` moved into `workers`.
-// mapEndpointCreateToV2/mapEndpointUpdateToV2 below still emit the PRODUCTION
-// shape (`scaling: {type, value, idleTimeout}`, no top-level `type`), which is
-// what the default v2 base (v2-rest.runpod.io) accepts today and what dev now
-// rejects with a 422.
-//
-// That is deliberate, not an oversight: the two shapes are mutually exclusive on
-// the wire, so the fix is a per-host negotiation rather than a flip, and it lands
-// separately. Until it does, pointing RUNPOD_REST_V2_API_URL at dev breaks
-// create-endpoint/update-endpoint. Note the spec-parity gate CANNOT catch this —
-// it checks operationId↔tool coverage only and never validates a request body
-// against a schema.
+// ⚠️ The vendored spec is the DEV spec (see scripts/fetch-v2-spec.ts), and dev has
+// moved ahead of production on `/v2/serverless` writes: `type` became required on
+// create, `scaling` became a union keyed on it, and `idleTimeout` moved into
+// `workers`. mapEndpointCreateToV2/...UpdateToV2 below still emit the shape
+// production accepts today, so they do NOT match the vendored spec for endpoints.
+// That is tracked separately; the spec-parity gate cannot see it, since it checks
+// operationId-to-tool coverage and never validates a request body against a schema.
 
 // v1 params accepted by the create-pod / update-pod tool schemas (the fields the
 // mapper knows how to translate). Unknown keys are intentionally dropped.

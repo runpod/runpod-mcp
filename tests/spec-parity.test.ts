@@ -133,9 +133,9 @@ const SPEC_OP_TO_TOOLS: Record<string, string[]> = {
   listClusterBilling: ['get-billing'],
 };
 
-// Spec operations we deliberately do NOT expose as a tool. Its tool is
-// implemented but registration is COMMENTED OUT (see src/tools/endpoints.ts
-// list-endpoint-releases). Remove the entry + uncomment the tool when it ships.
+// Spec operations deliberately NOT exposed as a tool. Empty today — every operation
+// in the vendored spec maps to a registered tool. Add an entry (with the reason) if
+// an operation ships that we choose not to cover.
 const ALLOWLIST_UNMAPPED_OPS: Record<string, string> = {};
 
 // Registered tools that intentionally have NO v2 REST spec operation. The
