@@ -50,13 +50,19 @@ export function registerNetworkVolumeTools(
   // Create Network Volume
   server.tool(
     'create-network-volume',
-    'Create a persistent network volume in a data center (size 1–4000 GB) that pods can mount.',
+    'Create a persistent network volume in a data center (size 10–4096 GB) that pods can mount. Pass volumeType to pick a storage tier; omit it to get the data center default.',
     {
       name: z.string().describe('Name for the network volume'),
-      size: z.number().describe('Size in GB (1-4000)'),
+      size: z.number().describe('Size in GB (10-4096)'),
       dataCenterId: z
         .string()
         .describe('Data center ID (see list-data-centers)'),
+      volumeType: z
+        .enum(['STANDARD', 'HIGH_PERFORMANCE'])
+        .optional()
+        .describe(
+          "Storage tier. Omit for the data center's default (primary) tier. HIGH_PERFORMANCE provisions an HPS volume. Immutable after creation — update-network-volume cannot change it."
+        ),
     },
     { title: 'Create network volume', ...WRITE },
     async (params) => {

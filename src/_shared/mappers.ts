@@ -218,6 +218,9 @@ interface V1NetworkVolumeCreate {
   name?: string;
   size?: number;
   dataCenterId?: string;
+  // Storage tier. Optional on v2 — omitted means the data center's default
+  // (primary) tier. Immutable after creation, so there is no update equivalent.
+  volumeType?: 'STANDARD' | 'HIGH_PERFORMANCE';
 }
 export function mapNetworkVolumeCreateToV2(
   params: V1NetworkVolumeCreate
@@ -226,6 +229,7 @@ export function mapNetworkVolumeCreateToV2(
     name: params.name,
     size: params.size,
     dataCenter: params.dataCenterId,
+    type: params.volumeType,
   });
 }
 

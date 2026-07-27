@@ -1535,8 +1535,7 @@ describe('all v2-only tools: v1 → 501 with no request', () => {
     ['list-endpoint-workers', { endpointId: 'ep_1' }],
     ['stream-pod-logs', { podId: 'pod_1' }],
     ['stream-worker-logs', { endpointId: 'ep_1', workerId: 'w_1' }],
-    // list-endpoint-releases is DISABLED (dev-only op not yet on prod) — not
-    // registered, so it's out of this 501 sweep.
+    ['list-endpoint-releases', { endpointId: 'ep_1' }],
     ['get-cpu-type', { cpuTypeId: 'cpu5c' }],
     ['get-data-center', { dataCenterId: 'EU-RO-1' }],
     ['list-cpu-types', {}],
@@ -1873,5 +1872,60 @@ describe('v1 catalog GraphQL uses the injected fetch (offline seam)', () => {
     assert.equal(outbound[0].url, 'https://api.runpod.io/graphql');
     assert.equal(outbound[0].method, 'POST');
     assert.ok((parseText(out).items as unknown[]).length >= 1);
+  });
+});
+
+// ============== Network volume storage tier + endpoint releases =============
+describe('v2 additions surfaced by the spec resync', () => {
+  it('create-network-volume forwards volumeType as `type`', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('create-network-volume')!({
+        name: 'v',
+        size: 50,
+        dataCenterId: 'EU-RO-1',
+        volumeType: 'HIGH_PERFORMANCE',
+      });
+      const body = JSON.parse(outbound[0].body!);
+      assert.deepEqual(body, {
+        name: 'v',
+        size: 50,
+        dataCenter: 'EU-RO-1',
+        type: 'HIGH_PERFORMANCE',
+      });
+      assert.equal('volumeType' in body, false);
+    });
+  });
+
+  it('create-network-volume omits `type` when volumeType is unset (DC default)', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('create-network-volume')!({
+        name: 'v',
+        size: 50,
+        dataCenterId: 'EU-RO-1',
+      });
+      assert.equal('type' in JSON.parse(outbound[0].body!), false);
+    });
+  });
+
+  it('list-endpoint-releases → GET <v2>/v2/serverless/{id}/releases, keeps rollout metadata', async () => {
+    await withV2(async () => {
+      const releases = Array.from({ length: 2 }, (_, i) => ({ id: `r${i}` }));
+      const { handlers, outbound } = harness({
+        jsonBody: { releases, endpointVersion: 12, rollout: { done: true } },
+      });
+      const out = await handlers.get('list-endpoint-releases')!({
+        endpointId: 'ep_1',
+      });
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/serverless/ep_1/releases'
+      );
+      assert.equal(outbound[0].method, 'GET');
+      const reply = parseText(out);
+      assert.equal((reply.items as unknown[]).length, 2);
+      assert.equal(reply.endpointVersion, 12);
+    });
   });
 });

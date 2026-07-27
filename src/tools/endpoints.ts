@@ -354,16 +354,13 @@ export function registerEndpointTools(
     }
   );
 
-  // ⛔ DISABLED until prod ships the endpoint — DO NOT register yet.
-  // `list-endpoint-releases` calls GET /v2/serverless/{id}/releases. That op
-  // exists ONLY on the dev v2 deployment (v2-rest.runpod.dev, 47-op spec); prod
-  // (v2-rest.runpod.io, 45-op spec) returns 422 "path not found". Keeping the
-  // tool registered would expose a call that 422s in prod. Re-enable this block
-  // once listEndpointReleases is live on prod.
-  /*
+  // List Endpoint Releases — enabled 2026-07-27: GET /v2/serverless/{id}/releases
+  // is now live on prod (verified 200 against v2-rest.runpod.io), so the reason
+  // this was kept unregistered no longer holds. Prod and dev serve the same 44-op
+  // spec. Still v2-only: v1 has no equivalent, hence the 501 notice.
   server.tool(
     'list-endpoint-releases',
-    'List a Serverless endpoint\'s release history and current rollout status (workers on the latest version). v2-only — returns a 501 notice on the v1 API. Paginated via limit/cursor.',
+    "List a Serverless endpoint's release history and current rollout status (workers on the latest version). v2-only — returns a 501 notice on the v1 API. Paginated via limit/cursor.",
     {
       ...listPaginationParams,
       endpointId: z
@@ -391,7 +388,6 @@ export function registerEndpointTools(
       );
     }
   );
-  */
 
   // List Endpoint Workers (v2-only — GET /v2/serverless/{id}/workers)
   // Returns the workers backing an endpoint plus an aggregate summary. v2-only:

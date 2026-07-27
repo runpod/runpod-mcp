@@ -94,6 +94,7 @@ const SPEC_OP_TO_TOOLS: Record<string, string[]> = {
   updateEndpoint: ['update-endpoint'],
   deleteEndpoint: ['delete-endpoint'],
   listEndpointWorkers: ['list-endpoint-workers'],
+  listEndpointReleases: ['list-endpoint-releases'],
   getWorkerLogs: ['stream-worker-logs'],
   // templates
   listTemplates: ['list-templates'],
@@ -135,10 +136,7 @@ const SPEC_OP_TO_TOOLS: Record<string, string[]> = {
 // Spec operations we deliberately do NOT expose as a tool. Its tool is
 // implemented but registration is COMMENTED OUT (see src/tools/endpoints.ts
 // list-endpoint-releases). Remove the entry + uncomment the tool when it ships.
-const ALLOWLIST_UNMAPPED_OPS: Record<string, string> = {
-  listEndpointReleases:
-    'list-endpoint-releases implemented but disabled — dev-only op, prod 422s GET /v2/serverless/{id}/releases',
-};
+const ALLOWLIST_UNMAPPED_OPS: Record<string, string> = {};
 
 // Registered tools that intentionally have NO v2 REST spec operation. The
 // serverless RUNTIME tools target a different service (api.runpod.ai/v2 — job

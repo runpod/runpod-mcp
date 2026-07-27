@@ -86,6 +86,7 @@ const EXPECTED_TOOLS = [
   'update-endpoint',
   'delete-endpoint',
   'list-endpoint-workers',
+  'list-endpoint-releases',
   'stream-worker-logs',
   // 'list-endpoint-releases' — DISABLED until prod ships the releases endpoint
   // serverless runtime (jobs)
