@@ -53,7 +53,10 @@ export function registerNetworkVolumeTools(
     'Create a persistent network volume in a data center (size 10–4096 GB) that pods can mount. Pass volumeType to pick a storage tier; omit it to get the data center default.',
     {
       name: z.string().describe('Name for the network volume'),
-      size: z.number().describe('Size in GB (10-4096)'),
+      // Bounds mirror the v2 spec (integer, minimum 10, maximum 4096). Enforced
+      // here as well as described, so an out-of-range value fails locally
+      // instead of costing an API roundtrip.
+      size: z.number().int().min(10).max(4096).describe('Size in GB (10-4096)'),
       dataCenterId: z
         .string()
         .describe('Data center ID (see list-data-centers)'),
@@ -86,10 +89,15 @@ export function registerNetworkVolumeTools(
         .string()
         .describe('ID of the network volume to update'),
       name: z.string().optional().describe('New name for the network volume'),
+      // Same absolute bounds as create. "Larger than current" stays server-side —
+      // we do not hold the current size here, so only the range is checked.
       size: z
         .number()
+        .int()
+        .min(10)
+        .max(4096)
         .optional()
-        .describe('New size in GB (must be larger than current)'),
+        .describe('New size in GB, 10-4096 (must be larger than current)'),
     },
     { title: 'Update network volume', ...WRITE, idempotentHint: true },
     async (params) => {

@@ -381,6 +381,8 @@ The server can target either the v1 REST API (`rest.runpod.io/v1`) or the newer 
 | `RUNPOD_REST_API_URL`            | URL                    | `https://rest.runpod.io/v1`    | v1 base URL.                                                                                          |
 | `RUNPOD_SERVERLESS_API_URL`      | URL                    | `https://api.runpod.ai/v2`     | Serverless runtime base URL.                                                                          |
 
+> **⚠️ Migration note — `create-endpoint` / `update-endpoint` changed shape in v2.** Serverless endpoints now use the v2 API (`/v2/serverless`) with an **inline config** instead of a `templateId`. On v2, `create-endpoint` requires `imageName` + `gpuPoolIds` (GPU **pool** names from `list-gpu-types` — the `pool` field, e.g. `AMPERE_80`), plus optional `workersMin`/`workersMax`, `scalerType`/`scalerValue`/`idleTimeout`, `containerDiskInGb`, `env`, `flashboot`, etc. It no longer accepts `templateId`. **If you previously called `create-endpoint` with `{ templateId }` and have no `RUNPOD_REST_VERSION` set, that call now returns a clean `400` after upgrading** — switch to the inline fields, or pin `RUNPOD_REST_VERSION=v1` to keep the legacy template-based model.
+
 Notes:
 
 - **Default is v2** — with nothing set, every control-plane resource uses the v2 REST API. Set `RUNPOD_REST_VERSION=v1` to pin the previous v1 behavior.
@@ -388,9 +390,6 @@ Notes:
 - **What `auto` does:** it probes v2 once at startup and falls back to v1 — but **only on the `stdio` transport** (one process = one key). On hosted HTTP `auto` resolves to **v1**, because a warm instance serves many users and a cached probe verdict could leak across them. `auto` is a stdio-only convenience; on HTTP, rely on the default or pin the version explicitly.
 - `jobs` (serverless runtime) always uses v1 regardless of the setting — it has no v2 REST home (it targets `api.runpod.ai/v2`, a different service).
 - The v2-only tools (`list-cpu-types`, `get-gpu-type`, `restart-pod`, and the three `*-registry-delegation(s)` tools) return a clear "v2 only" notice when called under v1.
-
-  > **⚠️ Migration note — `create-endpoint` / `update-endpoint` changed shape in v2.** Serverless endpoints now use the v2 API (`/v2/serverless`) with an **inline config** instead of a `templateId`. On v2, `create-endpoint` requires `imageName` + `gpuPoolIds` (GPU **pool** names from `list-gpu-types` — the `pool` field, e.g. `AMPERE_80`), plus optional `workersMin`/`workersMax`, `scalerType`/`scalerValue`/`idleTimeout`, `containerDiskInGb`, `env`, `flashboot`, etc. It no longer accepts `templateId`. **If you previously called `create-endpoint` with `{ templateId }` and have no `RUNPOD_REST_VERSION` set, that call now returns a clean `400` after upgrading** — switch to the inline fields, or pin `RUNPOD_REST_VERSION=v1` to keep the legacy template-based model.
-
 - `create-pod` for a **CPU pod** (`computeType: "CPU"`) on v2 is transparently served by the **v1** API — v2 has no CPU pods yet — and the reply is flagged `_servedBy: "v1"`. Because that fallback hits the **v1 base**, set `RUNPOD_REST_API_URL` to match your environment when running v2 against a non-prod host (otherwise CPU creates land on v1 **prod**). On v2 a create with neither `gpuTypeIds` nor `computeType` is rejected — absence is never silently turned into a CPU pod.
 
 ### Private image pull: credentials vs ECR delegation
