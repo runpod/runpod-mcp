@@ -13,24 +13,35 @@ on Windows either, so Claude Code was undetectable on a standard Windows install
 
 Windows now probes `%USERPROFILE%\.local\bin\claude.exe` (the documented native-installer
 location, which also covers installs whose PATH entry is missing) and the npm global
-`claude.cmd` shim, then falls back to `where.exe claude`. Multi-hit output prefers a
-directly-spawnable executable over the `.cmd`.
+`claude.cmd` shim, then falls back to `where.exe claude`. Multi-hit output prefers the
+`.exe` over the `.cmd`.
 
-Registration is NOT routed through `cmd.exe`. A `.cmd` cannot be spawned without a shell,
-and the API key travels in argv — Node only quotes arguments containing whitespace or a
-quote, so a key like `rpa_x&whoami` would reach `cmd.exe` unquoted and split into a second
-command. When only a `.cmd` shim is available the wizard now prints the exact
-`claude mcp add …` command for the user to run instead of shelling out with a credential.
-An `.exe` or extensionless binary is spawned directly with `execFileSync`, exactly as on
-POSIX.
+Registration now spawns through `cross-spawn` instead of `child_process` directly. Node's
+docs are explicit that `.bat`/`.cmd` files "cannot be launched using
+`child_process.execFile()`" and that "if the script filename contains spaces it needs to be
+quoted" — an npm-global Claude Code install is exactly a `.cmd`, often under a path with a
+space, so `execFileSync` could never register it. `cross-spawn` is the ecosystem's answer
+to that (it is what npm itself uses): a `.com`/`.exe` spawns directly with argv preserved,
+and anything else is wrapped in `cmd.exe /d /s /c` with each argument quoted,
+backslash-doubled, `^`-escaped, and `windowsVerbatimArguments` set so libuv does not
+re-quote on top.
+
+One case is still refused rather than escaped: an argument containing a `cmd.exe`
+metacharacter, bound for a shim. npm's generated `claude.cmd` re-expands its arguments
+through `%*`, so they are parsed twice; `cross-spawn` compensates by escaping twice, but
+only for shims matching `node_modules/.bin/*.cmd`, which a global shim in `%APPDATA%\npm`
+does not. Runpod API keys are `rpa_` plus alphanumerics so this never fires in practice,
+but when it does the wizard prints the `claude mcp add …` command instead of guessing at
+escaping around a credential.
 
 `remove` now shares that path. It previously called `execFileSync` directly — which cannot
 spawn a `.cmd` — and reported success regardless, so a failed removal printed a tick while
 the entry stayed in the user's config. That path was unreachable before only because
 detection always failed on Windows.
 
-CI gains a `windows-latest` runner. A Windows-only fix with no Windows CI is how this class
-of bug ships.
+CI gains a `windows-latest` runner, and the suite now runs a real `.cmd` shim out of a
+directory whose name contains a space, asserting the arguments arrive intact. A Windows-only
+fix with no Windows CI is how this class of bug ships.
 
 Preserve GPU SKU exclusions across `update-endpoint` (#63).
 

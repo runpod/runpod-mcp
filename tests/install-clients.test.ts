@@ -1,20 +1,28 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import crossSpawn from 'cross-spawn';
 
 import {
   claudeCandidatePaths,
   claudeLookupCommand,
   pickClaudeBinary,
-  isDirectlySpawnable,
+  needsCmdShell,
+  argsSafeForCmdShell,
   describeCommand,
+  runClaude,
 } from '../src/install/clients.js';
 
 // Regression coverage for issue #56 — the install wizard never detected Claude Code
 // on Windows. The platform-dependent decisions are pure functions, so both branches
 // run on any host with no spawning and no faking of process.platform.
 //
-// Caveat worth knowing: these cover the *decisions*, not the spawn. `runClaude`
-// itself is only meaningfully testable on a Windows runner, which CI does not have.
+// The spawn itself cannot be faked that way, so the last suite here actually runs a
+// `.cmd` shim from a directory whose name contains a space — the exact combination
+// Node's docs call out as unlaunchable via execFile. It is skipped off Windows and
+// runs on the windows-latest CI leg.
 
 describe('claudeLookupCommand', () => {
   it('uses where.exe on Windows, not the POSIX shell builtin', () => {
@@ -44,11 +52,11 @@ describe('claudeCandidatePaths', () => {
         'C:\\Users\\John Doe\\AppData\\Roaming'
       ),
       [
-        // Native installer — a real .exe, spawnable with no shell. First on
-        // purpose; it also covers installs whose PATH entry is missing, which the
-        // lookup could never find.
+        // Native installer — a real .exe, so cross-spawn launches it with no shell.
+        // First on purpose; it also covers installs whose PATH entry is missing,
+        // which the lookup could never find.
         'C:\\Users\\John Doe\\.local\\bin\\claude.exe',
-        // npm -g shim. Last: a .cmd needs a shell, which runClaude refuses to use.
+        // npm -g shim. Runnable, but only via cmd.exe, so it stays last.
         'C:\\Users\\John Doe\\AppData\\Roaming\\npm\\claude.cmd',
       ]
     );
@@ -79,9 +87,9 @@ describe('claudeCandidatePaths', () => {
 });
 
 describe('pickClaudeBinary', () => {
-  it('prefers a directly-spawnable .exe over a .cmd shim', () => {
-    // The .exe launches with no shell. Preferring the .cmd would force the shell
-    // path for no reason — and `remove` can only spawn the .exe.
+  it('prefers a .exe over a .cmd shim', () => {
+    // Both are runnable now. The .exe is still preferred because cross-spawn can
+    // launch it with no shell at all, where the .cmd costs a cmd.exe hop.
     const stdout =
       'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd\r\n' +
       'C:\\Users\\dev\\.local\\bin\\claude.exe\r\n';
@@ -91,7 +99,9 @@ describe('pickClaudeBinary', () => {
     );
   });
 
-  it('treats the extensionless hit as spawnable and prefers it over .cmd', () => {
+  it('falls back to the first hit when none is a .exe', () => {
+    // Neither an extensionless path nor a .cmd avoids cmd.exe, so there is nothing
+    // to prefer and the lookup's own order wins.
     assert.equal(
       pickClaudeBinary('C:\\bin\\claude\r\nC:\\bin\\claude.cmd\r\n', 'win32'),
       'C:\\bin\\claude'
@@ -106,8 +116,7 @@ describe('pickClaudeBinary', () => {
   });
 
   it('falls back to a .cmd when that is the only hit', () => {
-    // Still returned, so detection reports "installed"; runClaude then declines to
-    // shell out and prints the command instead.
+    // The npm-global install. cross-spawn runs it through cmd.exe.
     assert.equal(
       pickClaudeBinary('C:\\bin\\claude.cmd\r\n', 'win32'),
       'C:\\bin\\claude.cmd'
@@ -115,8 +124,8 @@ describe('pickClaudeBinary', () => {
   });
 
   it('returns null on Windows for empty output', () => {
-    // A bare 'claude' would be useless there: execFileSync has no shell to
-    // resolve it against.
+    // A bare 'claude' would be a guess: PATHEXT decides what it resolves to, and
+    // the point of the lookup is to know which file was found.
     assert.equal(pickClaudeBinary('', 'win32'), null);
     assert.equal(pickClaudeBinary('\r\n  \r\n', 'win32'), null);
   });
@@ -130,38 +139,100 @@ describe('pickClaudeBinary', () => {
 
   it("keeps the historic bare 'claude' fallback on POSIX", () => {
     // command -v normally prints a path, but a successful exit with no output
-    // still means "found" on POSIX, where execFileSync resolves via PATH.
+    // still means "found" on POSIX, where the spawn resolves the name via PATH.
     assert.equal(pickClaudeBinary('', 'darwin'), 'claude');
   });
 });
 
-describe('isDirectlySpawnable', () => {
-  // The load-bearing distinction: Node's execFile uses no shell, so a .cmd/.bat
-  // cannot be launched at all. Everything else can, with argv preserved exactly —
-  // which is what keeps the API key out of a parsed command line.
-  it('rejects .cmd and .bat, case-insensitively', () => {
+describe('needsCmdShell', () => {
+  // Mirrors cross-spawn's own rule (lib/parse.js `isExecutableRegExp`): on Windows
+  // it spawns directly only for .com/.exe and wraps everything else in cmd.exe. If
+  // this drifts from that, the guard below fires on the wrong cases.
+  it('is false for .com and .exe on Windows', () => {
+    for (const p of [
+      'C:\\Users\\dev\\.local\\bin\\claude.exe',
+      'C:\\bin\\claude.EXE',
+      'C:\\bin\\claude.com',
+    ]) {
+      assert.equal(needsCmdShell(p, 'win32'), false, p);
+    }
+  });
+
+  it('is true for .cmd, .bat and extensionless paths on Windows', () => {
     for (const p of [
       'C:\\npm\\claude.cmd',
       'C:\\npm\\claude.CMD',
       'C:\\npm\\claude.bat',
-    ]) {
-      assert.equal(isDirectlySpawnable(p), false, p);
-    }
-  });
-
-  it('accepts .exe, extensionless, and POSIX paths', () => {
-    for (const p of [
-      'C:\\Users\\dev\\.local\\bin\\claude.exe',
       'C:\\bin\\claude',
-      '/opt/homebrew/bin/claude',
-      'claude',
     ]) {
-      assert.equal(isDirectlySpawnable(p), true, p);
+      assert.equal(needsCmdShell(p, 'win32'), true, p);
     }
   });
 
-  it('is not fooled by cmd appearing elsewhere in the path', () => {
-    assert.equal(isDirectlySpawnable('C:\\cmd\\tools\\claude.exe'), true);
+  it('is always false off Windows', () => {
+    // A POSIX file called claude.cmd is just a file; execvp runs it if it is
+    // executable. No cmd.exe exists to route through.
+    for (const platform of ['darwin', 'linux']) {
+      assert.equal(needsCmdShell('/opt/bin/claude', platform), false);
+      assert.equal(needsCmdShell('/opt/bin/claude.cmd', platform), false);
+    }
+  });
+
+  it('is not fooled by an extension appearing mid-path', () => {
+    assert.equal(needsCmdShell('C:\\cmd\\tools\\claude.exe', 'win32'), false);
+  });
+});
+
+describe('argsSafeForCmdShell', () => {
+  // cross-spawn escapes correctly for one cmd.exe parse, but an npm-global shim
+  // re-expands its arguments via `%*`. cross-spawn double-escapes only for shims it
+  // recognises (node_modules/.bin), which a global shim is not — so a metacharacter
+  // in an argument bound for one is refused rather than escaped by hand.
+  it('accepts the arguments the wizard actually sends', () => {
+    // If a future arg introduces a metacharacter, this fails here rather than
+    // silently turning into a refusal on Windows only.
+    assert.equal(
+      argsSafeForCmdShell([
+        'mcp',
+        'add',
+        'runpod',
+        '--scope',
+        'user',
+        '-e',
+        'RUNPOD_API_KEY=rpa_ABC123def456',
+        '--',
+        'npx',
+        '-y',
+        '@runpod/mcp-server@latest',
+      ]),
+      true
+    );
+    assert.equal(
+      argsSafeForCmdShell([
+        'mcp',
+        'add',
+        '--transport',
+        'http',
+        '--scope',
+        'user',
+        'runpod',
+        'https://mcp.getrunpod.io/',
+      ]),
+      true
+    );
+  });
+
+  it('rejects the metacharacters that split a cmd command line', () => {
+    for (const arg of [
+      'RUNPOD_API_KEY=rpa_x&whoami',
+      'RUNPOD_API_KEY=rpa_x|whoami',
+      'RUNPOD_API_KEY=rpa_x>out.txt',
+      'RUNPOD_API_KEY=%PATH%',
+      'RUNPOD_API_KEY=rpa_x^y',
+      'RUNPOD_API_KEY=rpa_"x',
+    ]) {
+      assert.equal(argsSafeForCmdShell(['-e', arg]), false, arg);
+    }
   });
 });
 
@@ -180,11 +251,88 @@ describe('describeCommand', () => {
   });
 
   it('leaves a metacharacter-bearing key intact rather than mangling it', () => {
-    // Exactly the value that would have been split into a second command had this
-    // been routed through cmd.exe. Here it is only ever printed.
+    // This is the refusal path's output: the value argsSafeForCmdShell rejected,
+    // shown verbatim so the user can paste it into their own shell.
     assert.match(
       describeCommand('claude.cmd', ['-e', 'RUNPOD_API_KEY=rpa_x&whoami']),
       /RUNPOD_API_KEY=rpa_x&whoami/
     );
   });
 });
+
+// The claims above about .cmd and spaces are Windows-only behaviour, so this suite
+// exercises them for real instead of asserting what Node would do. It runs on the
+// windows-latest CI leg and is skipped everywhere else.
+describe(
+  'runClaude against a real .cmd shim',
+  { skip: process.platform === 'win32' ? false : 'Windows-only behaviour' },
+  () => {
+    // A directory whose name contains a space, because that is the second half of
+    // the documented failure: "if the script filename contains spaces it needs to
+    // be quoted". Under the previous hand-rolled cmd.exe wrapper this combination
+    // failed outright.
+    function shimDir(): string {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runpod mcp '));
+      fs.writeFileSync(
+        path.join(dir, 'print-argv.js'),
+        'console.log(JSON.stringify(process.argv.slice(2)));\n'
+      );
+      return dir;
+    }
+
+    // Shaped like npm's generated global shim: a .cmd that re-expands %* into a
+    // node invocation. That second expansion is why the metacharacter guard exists.
+    function writeShim(dir: string, body: string): string {
+      const shim = path.join(dir, 'claude.cmd');
+      fs.writeFileSync(shim, `@ECHO off\r\n${body}\r\n`);
+      return shim;
+    }
+
+    it('launches a .cmd from a path with a space and round-trips argv', () => {
+      const dir = shimDir();
+      const shim = writeShim(
+        dir,
+        `"${process.execPath}" "%~dp0print-argv.js" %*`
+      );
+      const args = ['mcp', 'add', 'runpod', '--scope', 'user'];
+      const result = runClaude(shim, args);
+      assert.equal(result.success, true, result.message);
+      // runClaude swallows stdout, so re-run to inspect what the shim received.
+      const echoed = crossSpawn.sync(shim, args, { encoding: 'utf8' });
+      assert.deepEqual(JSON.parse(echoed.stdout.trim()), args);
+    });
+
+    it('treats "already exists" on a non-zero exit as success', () => {
+      const dir = shimDir();
+      const shim = writeShim(
+        dir,
+        'echo MCP server runpod already exists in user config 1>&2\r\nexit /b 1'
+      );
+      const result = runClaude(shim, ['mcp', 'add', 'runpod']);
+      assert.deepEqual(result, {
+        success: true,
+        message: 'already configured',
+      });
+    });
+
+    it('reports a genuine non-zero exit as a failure', () => {
+      const dir = shimDir();
+      const shim = writeShim(dir, 'echo boom 1>&2\r\nexit /b 3');
+      const result = runClaude(shim, ['mcp', 'remove', 'runpod']);
+      assert.equal(result.success, false);
+      assert.match(result.message ?? '', /boom/);
+    });
+
+    it('refuses a metacharacter-bearing argument instead of escaping it', () => {
+      const dir = shimDir();
+      const shim = writeShim(
+        dir,
+        `"${process.execPath}" "%~dp0print-argv.js" %*`
+      );
+      const result = runClaude(shim, ['-e', 'RUNPOD_API_KEY=rpa_x&whoami']);
+      assert.equal(result.success, false);
+      assert.equal(result.refused, true);
+      assert.match(result.message ?? '', /rpa_x&whoami/);
+    });
+  }
+);

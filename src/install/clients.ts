@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync, execFileSync } from 'child_process';
+import { execSync } from 'child_process';
+import crossSpawn from 'cross-spawn';
 import * as jsonc from 'jsonc-parser';
 
 // The npm package and the name the server is registered under in client config.
@@ -173,8 +174,8 @@ function jsonClient(opts: {
  * win32 path semantics regardless of the host so the branch is testable anywhere.
  *
  * `.local\bin\claude.exe` is the documented native-installer location and comes
- * first deliberately: it is a real executable, so it can be spawned directly with
- * no shell. It also covers installs where the native installer failed to add
+ * first deliberately: it is a real executable, so cross-spawn launches it with no
+ * shell at all. It also covers installs where the native installer failed to add
  * itself to PATH, which the lookup below could never find.
  */
 export function claudeCandidatePaths(
@@ -186,8 +187,8 @@ export function claudeCandidatePaths(
     const win = path.win32;
     return [
       win.join(homedir, '.local', 'bin', 'claude.exe'),
-      // npm -g installs a .cmd shim. Last, because a .cmd cannot be spawned
-      // without a shell — see runClaude.
+      // npm -g installs a .cmd shim. cross-spawn can run one, but only by going
+      // through cmd.exe, so it stays last — see runClaude.
       win.join(
         appdata ?? win.join(homedir, 'AppData', 'Roaming'),
         'npm',
@@ -214,9 +215,9 @@ export function claudeLookupCommand(platform: string): string {
 
 /**
  * Picks one path from a lookup's stdout. `where.exe` can print several lines for
- * one name (e.g. `claude` and `claude.cmd`). Prefer a directly-spawnable
- * executable: `execFileSync` uses no shell, so a `.exe` can be launched as-is
- * while a `.cmd` cannot be launched at all. Returns null when nothing came back.
+ * one name (e.g. `claude` and `claude.cmd`). Prefer something cross-spawn can
+ * launch without cmd.exe, so the common case involves no shell at all. Returns
+ * null when nothing came back.
  */
 export function pickClaudeBinary(
   stdout: string,
@@ -228,16 +229,37 @@ export function pickClaudeBinary(
     .filter(Boolean);
   if (hits.length === 0) return platform === 'win32' ? null : 'claude';
   if (platform !== 'win32') return hits[0];
-  return hits.find((h) => isDirectlySpawnable(h)) ?? hits[0];
+  return hits.find((h) => !needsCmdShell(h, platform)) ?? hits[0];
 }
 
 /**
- * True when Node can spawn this path without a shell. `.cmd` and `.bat` are
- * interpreted by cmd.exe rather than being executables, so `execFile` cannot run
- * them — see the Node child_process docs.
+ * True when running this path means going through cmd.exe. Mirrors cross-spawn's
+ * own rule (lib/parse.js): on Windows it spawns directly only when the resolved
+ * file ends in `.com`/`.exe`; anything else — a `.cmd` shim, an extensionless hit —
+ * is wrapped in `cmd.exe /d /s /c`. Always false off Windows.
  */
-export function isDirectlySpawnable(binary: string): boolean {
-  return !/\.(cmd|bat)$/i.test(binary);
+export function needsCmdShell(binary: string, platform: string): boolean {
+  if (platform !== 'win32') return false;
+  return !/\.(com|exe)$/i.test(binary);
+}
+
+// cmd.exe metacharacters, the same set cross-spawn escapes in lib/util/escape.js.
+const CMD_META = /[()\][%!^"`<>&|;, *?]/;
+
+/**
+ * Whether it is safe to hand these args to a `.cmd` shim.
+ *
+ * cross-spawn escapes arguments properly for a single cmd.exe parse, but a shim
+ * re-expands them: npm's generated `claude.cmd` ends in `node "…cli.js" %*`, so
+ * the arguments are parsed a second time. cross-spawn compensates by escaping
+ * twice, but only for shims it recognises — its check is
+ * `/node_modules[\\/]\.bin[\\/][^\\/]+\.cmd$/i`, which a global npm shim in
+ * `%APPDATA%\npm` does not match. Rather than reimplement its escaping, refuse the
+ * narrow case: an argument carrying a metacharacter, bound for a shim. Runpod API
+ * keys are `rpa_` + alphanumerics, so in practice this never triggers.
+ */
+export function argsSafeForCmdShell(args: string[]): boolean {
+  return !args.some((arg) => CMD_META.test(arg));
 }
 
 function findClaudeBinary(): string | null {
@@ -252,9 +274,9 @@ function findClaudeBinary(): string | null {
   }
 
   try {
-    // Resolve to a real path rather than returning the bare name: runClaude uses
-    // execFileSync, which does not go through a shell and so cannot resolve a
-    // .cmd shim from a bare 'claude' on Windows.
+    // Resolve to a real path rather than returning the bare name, so the choice
+    // between a .exe and a .cmd shim is made here (see pickClaudeBinary) instead of
+    // being left to PATHEXT order inside cmd.exe.
     const out = execSync(claudeLookupCommand(platform), {
       stdio: ['ignore', 'pipe', 'ignore'],
       encoding: 'utf8',
@@ -266,9 +288,10 @@ function findClaudeBinary(): string | null {
 }
 
 /**
- * Renders a command for a human to copy, quoting only what needs it. Plain
- * double-quote wrapping, NOT JSON.stringify — the latter escapes the backslashes
- * in a Windows path, which is exactly wrong for something the user will paste.
+ * Renders a command for a human to copy, quoting only what needs it. Display only:
+ * this string is never executed. Plain double-quote wrapping, NOT JSON.stringify —
+ * the latter escapes the backslashes in a Windows path, which is exactly wrong for
+ * something the user will paste.
  */
 export function describeCommand(binary: string, args: string[]): string {
   const quote = (s: string) => (/\s/.test(s) ? `"${s}"` : s);
@@ -276,34 +299,59 @@ export function describeCommand(binary: string, args: string[]): string {
 }
 
 /**
- * Runs the Claude Code CLI with no shell, so an API key containing shell
- * metacharacters cannot be interpreted.
+ * Runs the Claude Code CLI.
  *
- * A `.cmd` shim can't be run this way — `execFile` has no shell to interpret it —
- * and routing it through `cmd.exe` is deliberately NOT done: the key travels in
- * argv, cmd.exe re-parses the command line, and Node only quotes arguments that
- * contain whitespace or a quote. An argument like `rpa_x&whoami` would reach
- * cmd.exe unquoted and split into a second command. Rather than hand-roll cmd
- * escaping around a credential, print the command for the user to run.
+ * Via cross-spawn rather than `child_process` directly. Node's own docs are blunt
+ * about why: "`.bat` and `.cmd` files are not executable on their own without a
+ * terminal, and therefore cannot be launched using `child_process.execFile()`
+ * […] if the script filename contains spaces it needs to be quoted." An npm-global
+ * install of Claude Code is exactly a `.cmd`, frequently under a path with a space.
+ *
+ * cross-spawn is the ecosystem's answer to that (it is what npm itself uses):
+ * `.com`/`.exe` spawn directly with argv preserved, and anything else is wrapped in
+ * `cmd.exe /d /s /c` with each argument quoted, backslash-doubled, `^`-escaped, and
+ * `windowsVerbatimArguments` set so libuv does not re-quote on top. Hand-rolling
+ * that is how the first attempt at this shipped a quoting bug — the library has had
+ * a decade of npm-scale abuse finding those.
  */
-function runClaude(binary: string, args: string[]): AddResult {
-  if (!isDirectlySpawnable(binary)) {
+// `refused` marks "we declined to run this", as opposed to "we ran it and it
+// failed" — `remove` treats those differently.
+export interface RunResult extends AddResult {
+  refused?: boolean;
+}
+
+export function runClaude(binary: string, args: string[]): RunResult {
+  if (needsCmdShell(binary, process.platform) && !argsSafeForCmdShell(args)) {
     return {
       success: false,
-      message: `found a .cmd shim (${binary}) which can only run via a shell, and this wizard will not pass your API key through one. Run this yourself:\n    ${describeCommand(binary, args)}`,
+      refused: true,
+      message: `running ${binary} means going through cmd.exe, and an argument contains a character this wizard will not risk escaping around a credential. Run it yourself:\n    ${describeCommand(binary, args)}`,
     };
   }
-  try {
-    execFileSync(binary, args, { stdio: 'pipe' });
-    return { success: true };
-  } catch (error) {
-    const message = errMessage(error);
-    // Re-running the wizard should be idempotent, not an error.
-    if (message.includes('already exists')) {
-      return { success: true, message: 'already configured' };
-    }
-    return { success: false, message };
+  const result = crossSpawn.sync(binary, args, {
+    stdio: 'pipe',
+    encoding: 'utf8',
+  });
+  // cross-spawn also synthesises an ENOENT here that raw spawnSync misses on
+  // Windows, where a missing shell command exits 1 instead of failing to spawn.
+  if (result.error)
+    return { success: false, message: errMessage(result.error) };
+  if (result.status === 0) return { success: true };
+  if (result.status === null) {
+    return { success: false, message: `killed by ${result.signal}` };
   }
+  // The CLI reports "already exists" on stderr with a non-zero exit. Re-running
+  // the wizard should be idempotent, not an error.
+  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+  if (output.includes('already exists')) {
+    return { success: true, message: 'already configured' };
+  }
+  return {
+    success: false,
+    message:
+      output.trim() ||
+      `${path.basename(binary)} exited with code ${result.status}`,
+  };
 }
 
 // Claude Code manages its own config, so we drive its CLI rather than writing
@@ -355,7 +403,7 @@ const claudeCodeClient: McpClient = {
         message: 'claude CLI not found',
       });
     }
-    // Through runClaude so this shares the .cmd handling: previously it called
+    // Through runClaude so this shares the spawn handling: previously it called
     // execFileSync directly, which cannot spawn a .cmd — and its catch reported
     // success regardless, so a failed removal printed a tick while the entry
     // stayed in the user's config.
@@ -366,11 +414,9 @@ const claudeCodeClient: McpClient = {
       'user',
       SERVER_NAME,
     ]);
-    // A removal that found nothing to remove is still a success; a shim we refused
-    // to run is not.
-    if (!result.success && result.message?.includes('.cmd shim')) {
-      return Promise.resolve(result);
-    }
+    // A removal that found nothing to remove is still a success (the desired end
+    // state holds either way); one we declined to run is not.
+    if (result.refused) return Promise.resolve(result);
     return Promise.resolve({ success: true, message: result.message });
   },
   describeTarget: () => 'Claude Code user config (via `claude mcp` CLI)',

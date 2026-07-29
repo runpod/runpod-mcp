@@ -12,8 +12,11 @@ const API_KEYS_URL = 'https://www.runpod.io/console/user/settings';
 // Open a URL in the user's default browser. Best-effort and non-fatal.
 function openBrowser(url: string): void {
   try {
-    // No shell: pass the URL as a literal arg. On Windows the opener is the cmd
-    // built-in `start` (first quoted arg is the window title, hence the empty '').
+    // The URL is a literal arg, not an interpolated string. The Windows branch is
+    // the exception: `start` is a cmd built-in, so that one does go through a shell
+    // (the first quoted arg is the window title, hence the empty ''). Safe only
+    // because every URL reaching here is a compile-time constant — do not extend
+    // this to a URL from user input without escaping it.
     if (process.platform === 'darwin') {
       execFileSync('open', [url], { stdio: 'ignore' });
     } else if (process.platform === 'win32') {
