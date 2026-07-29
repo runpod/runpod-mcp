@@ -43,6 +43,11 @@ function harness(opts?: {
   jsonBodies?: unknown[];
   status?: number;
   contentType?: string;
+  // Per-call responses, consumed one per outbound request (falls back to the
+  // single-response options once exhausted). For handlers that make more than one
+  // call with DIFFERENT statuses — e.g. update-endpoint's scaler lookup followed
+  // by the PATCH.
+  steps?: Array<{ status?: number; jsonBody?: unknown; text?: string }>;
   // Fake SSE reader for stream-pod-logs (the real one uses node-fetch directly,
   // bypassing the injected fetch). Records its calls and returns canned text.
   streamSse?: (
@@ -71,8 +76,8 @@ function harness(opts?: {
     },
   } as unknown as McpServer;
 
-  const status = opts?.status ?? 200;
   const queue = opts?.jsonBodies ? [...opts.jsonBodies] : null;
+  const steps = opts?.steps ? [...opts.steps] : null;
   const fakeFetch = async (
     url: string,
     init: { method: string; headers: Record<string, string>; body?: string }
@@ -83,9 +88,13 @@ function harness(opts?: {
       body: init.body,
       headers: init.headers,
     });
-    const jsonBody = queue
-      ? (queue.shift() ?? opts?.jsonBody ?? [])
-      : (opts?.jsonBody ?? []);
+    const step = steps?.shift();
+    const status = step?.status ?? opts?.status ?? 200;
+    const jsonBody = step
+      ? (step.jsonBody ?? {})
+      : queue
+        ? (queue.shift() ?? opts?.jsonBody ?? [])
+        : (opts?.jsonBody ?? []);
     return {
       ok: status >= 200 && status < 300,
       status,
@@ -96,7 +105,7 @@ function harness(opts?: {
             : null,
       },
       json: async () => jsonBody,
-      text: async () => '',
+      text: async () => step?.text ?? '',
     };
   };
 
@@ -1639,12 +1648,11 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       assert.equal(body.image, 'img:2');
       assert.equal('imageName' in body, false);
       assert.deepEqual(body.gpu, { pools: ['AMPERE_80'], count: 1 });
-      assert.deepEqual(body.workers, { min: 0, max: 3 });
-      assert.deepEqual(body.scaling, {
-        type: 'QUEUE_DELAY',
-        value: 4,
-        idleTimeout: 5,
-      });
+      // Typed schema: routing `type` at the top level, idleTimeout under
+      // `workers`, and the scaler target under a per-variant key.
+      assert.equal(body.type, 'QUEUE');
+      assert.deepEqual(body.workers, { min: 0, max: 3, idleTimeout: 5 });
+      assert.deepEqual(body.scaling, { type: 'QUEUE_DELAY', queueDelay: 4 });
       assert.equal(body.disk, 20);
       assert.deepEqual(body.env, { K: 'V' });
       assert.deepEqual(body.networkVolumes, ['nv_1']);
@@ -1692,6 +1700,102 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       assert.equal(outbound.length, 0);
       assert.equal(parseText(out).status, 400);
       assert.match(parseText(out).error as string, /gpuPoolIds/);
+    });
+  });
+
+  it('create-endpoint v2 rejects LOAD_BALANCER + QUEUE_DELAY before any request', async () => {
+    // A load balancer has no queue to measure, so the combination can never be
+    // valid — caught client-side rather than spending a round trip on a 422.
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      const out = await handlers.get('create-endpoint')!({
+        name: 'e',
+        imageName: 'img:2',
+        gpuPoolIds: ['AMPERE_80'],
+        endpointType: 'LOAD_BALANCER',
+        scalerType: 'QUEUE_DELAY',
+      });
+      assert.equal(outbound.length, 0);
+      assert.equal(parseText(out).status, 400);
+      assert.match(parseText(out).error as string, /no request queue/);
+    });
+  });
+
+  it('create-endpoint v2 defaults LOAD_BALANCER to the REQUEST_COUNT scaler', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'ep_lb' } });
+      await handlers.get('create-endpoint')!({
+        name: 'e',
+        imageName: 'img:2',
+        gpuPoolIds: ['AMPERE_80'],
+        endpointType: 'LOAD_BALANCER',
+      });
+      const body = JSON.parse(outbound[0].body!);
+      assert.equal(body.type, 'LOAD_BALANCER');
+      assert.deepEqual(body.scaling, {
+        type: 'REQUEST_COUNT',
+        requestCount: 4,
+      });
+    });
+  });
+
+  it('update-endpoint reads the current scaler when only scalerValue is given', async () => {
+    // `scaling` is a union keyed on the scaler type, so changing just the target
+    // needs the endpoint's existing scaler first — a GET, then the PATCH.
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        steps: [
+          { status: 200, jsonBody: { scaling: { type: 'REQUEST_COUNT' } } },
+          { status: 200, jsonBody: { id: 'ep_1' } },
+        ],
+      });
+      await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        scalerValue: 7,
+      });
+      assert.equal(outbound.length, 2);
+      assert.equal(outbound[0].method, 'GET');
+      assert.equal(
+        outbound[0].url,
+        'https://v2-rest.runpod.io/v2/serverless/ep_1'
+      );
+      assert.equal(outbound[1].method, 'PATCH');
+      assert.deepEqual(JSON.parse(outbound[1].body!).scaling, {
+        type: 'REQUEST_COUNT',
+        requestCount: 7,
+      });
+    });
+  });
+
+  it('update-endpoint treats an unrecognized current scaler as QUEUE_DELAY', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        steps: [
+          { status: 200, jsonBody: { scaling: {} } },
+          { status: 200, jsonBody: { id: 'ep_1' } },
+        ],
+      });
+      await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        scalerValue: 3,
+      });
+      assert.deepEqual(JSON.parse(outbound[1].body!).scaling, {
+        type: 'QUEUE_DELAY',
+        queueDelay: 3,
+      });
+    });
+  });
+
+  it('update-endpoint skips that read when the caller names the scaler', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'ep_1' } });
+      await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        scalerType: 'QUEUE_DELAY',
+        scalerValue: 3,
+      });
+      assert.equal(outbound.length, 1);
+      assert.equal(outbound[0].method, 'PATCH');
     });
   });
 

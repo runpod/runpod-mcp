@@ -22,7 +22,7 @@ export function registerEndpointTools(
   // v2 (GET /v2/serverless) declares none, so we only build the query under v1.
   server.tool(
     'list-endpoints',
-    'List your Serverless endpoints, optionally expanding template and worker details (v1 only). Paginated via limit/cursor.',
+    'List your Serverless endpoints, optionally expanding template and worker details (v1 only). Paginated via limit/cursor. On v2 each endpoint carries its request routing in `type` and the URLs to call it in `requestUrls`.',
     {
       ...listPaginationParams,
       includeTemplate: z
@@ -70,7 +70,7 @@ export function registerEndpointTools(
   // Get Endpoint Details
   server.tool(
     'get-endpoint',
-    'Get one Serverless endpoint by id, optionally expanding template and worker details (v1 only).',
+    'Get one Serverless endpoint by id, optionally expanding template and worker details (v1 only). On v2 the reply carries `type` (queue-based vs load-balancing routing) and `requestUrls` — the run/runsync/status/... URLs for a queue endpoint, or the base + health URLs for a load-balancing one. Read those rather than constructing endpoint URLs by hand.',
     {
       endpointId: z.string().describe('ID of the endpoint to retrieve'),
       includeTemplate: z
@@ -117,7 +117,7 @@ export function registerEndpointTools(
   //   v1: templateId-based.
   server.tool(
     'create-endpoint',
-    'Create a Serverless endpoint. On v2 (default), pass an inline config: imageName + gpuPoolIds (GPU pool names from list-gpu-types — the `pool` field, e.g. AMPERE_80/ADA_24) plus optional workers/scaling/disk/env. On v1, pass a templateId instead. Worker min/max set autoscaling bounds (min 0 = scale to zero).',
+    'Create a Serverless endpoint. On v2 (default), pass an inline config: imageName + gpuPoolIds (GPU pool names from list-gpu-types — the `pool` field, e.g. AMPERE_80/ADA_24) plus optional workers/scaling/disk/env. On v1, pass a templateId instead. Worker min/max set autoscaling bounds (min 0 = scale to zero). Use endpointType to pick queue-based (default) or load-balancing request routing; the response `requestUrls` carries the URLs to call the endpoint with.',
     {
       name: z.string().optional().describe('Name for the endpoint'),
       // --- v2 inline-config fields ---
@@ -125,6 +125,12 @@ export function registerEndpointTools(
         .string()
         .optional()
         .describe('Docker image (v2). Required on v2 instead of a templateId.'),
+      endpointType: z
+        .enum(['QUEUE', 'LOAD_BALANCER'])
+        .optional()
+        .describe(
+          'How requests reach the workers (v2). QUEUE (default) = submit jobs through the managed queue (run/runsync/status/...). LOAD_BALANCER = send HTTP requests straight to worker-defined paths, and forces scalerType REQUEST_COUNT. Fixed at creation — update-endpoint cannot change it.'
+        ),
       gpuPoolIds: z
         .array(z.string())
         .optional()
@@ -180,12 +186,21 @@ export function registerEndpointTools(
       scalerType: z
         .enum(['QUEUE_DELAY', 'REQUEST_COUNT'])
         .optional()
-        .describe('Autoscaler type'),
-      scalerValue: z.number().optional().describe('Autoscaler target value'),
+        .describe(
+          'Autoscaler signal. QUEUE_DELAY scales on how long requests wait in the queue (queue endpoints only); REQUEST_COUNT scales on in-flight requests per worker. Defaults to QUEUE_DELAY for QUEUE endpoints and REQUEST_COUNT for LOAD_BALANCER ones.'
+        ),
+      scalerValue: z
+        .number()
+        .optional()
+        .describe(
+          'Autoscaler target for the chosen scalerType — seconds of queue delay (min 0.5) or in-flight requests per worker (integer, min 1). Defaults to 4.'
+        ),
       idleTimeout: z
         .number()
         .optional()
-        .describe('Idle timeout in seconds before scaling a worker down'),
+        .describe(
+          'Idle timeout in seconds before scaling a worker down (1-3600). Does not apply to QUEUE endpoints scaling on REQUEST_COUNT.'
+        ),
       dataCenterIds: z
         .array(z.string())
         .optional()
@@ -217,6 +232,19 @@ export function registerEndpointTools(
           return jsonReply({
             error:
               'create-endpoint needs gpuPoolIds on v2 (GPU pool names from list-gpu-types — the `pool` field, e.g. ["AMPERE_80"]).',
+            status: 400,
+          });
+        }
+        // A load balancer has no request queue, so there is no queue delay to
+        // scale on. The API rejects this too, but catching it here costs a round
+        // trip less and names the reason directly.
+        if (
+          params.endpointType === 'LOAD_BALANCER' &&
+          params.scalerType === 'QUEUE_DELAY'
+        ) {
+          return jsonReply({
+            error:
+              'LOAD_BALANCER endpoints have no request queue, so they cannot scale on QUEUE_DELAY. Use scalerType REQUEST_COUNT (the default for this endpoint type), or create a QUEUE endpoint instead.',
             status: 400,
           });
         }
@@ -267,7 +295,7 @@ export function registerEndpointTools(
   // /v2/serverless body; v1 passes the flat fields through.
   server.tool(
     'update-endpoint',
-    "Update a Serverless endpoint's config. On v2 you can change image/disk/env/ports/registry/workers/scaling/networkVolumes/timeout/flashboot; on v1, scaling fields (worker min/max, idle timeout, scaler type/value, name). Only provided fields change.",
+    "Update a Serverless endpoint's config. On v2 you can change image/disk/env/ports/registry/workers/scaling/networkVolumes/timeout/flashboot; on v1, scaling fields (worker min/max, idle timeout, scaler type/value, name). Only provided fields change. An endpoint's request routing (queue vs load balancer) is fixed at creation and cannot be changed here — recreate the endpoint instead.",
     {
       endpointId: z.string().describe('ID of the endpoint to update'),
       name: z.string().optional().describe('New name for the endpoint'),
@@ -282,12 +310,21 @@ export function registerEndpointTools(
       idleTimeout: z
         .number()
         .optional()
-        .describe('New idle timeout in seconds'),
+        .describe(
+          'New idle timeout in seconds (1-3600). Does not apply to queue endpoints scaling on REQUEST_COUNT.'
+        ),
       scalerType: z
         .enum(['QUEUE_DELAY', 'REQUEST_COUNT'])
         .optional()
-        .describe('Scaler type'),
-      scalerValue: z.number().optional().describe('Scaler value'),
+        .describe(
+          'New autoscaler signal. Switchable on queue endpoints; load-balancing endpoints only accept REQUEST_COUNT.'
+        ),
+      scalerValue: z
+        .number()
+        .optional()
+        .describe(
+          "New autoscaler target — seconds of queue delay (min 0.5) or in-flight requests per worker (integer, min 1). Applies to the endpoint's current scalerType unless you also pass a new one."
+        ),
       // --- v2-only inline-config fields ---
       imageName: z.string().optional().describe('New Docker image (v2)'),
       gpuPoolIds: z
@@ -326,13 +363,33 @@ export function registerEndpointTools(
     async (params) => {
       const { endpointId, ...updateParams } = params;
       const backend = backendFor('endpoints');
-      const body = backend.mapUpdate(updateParams) as Record<string, unknown>;
-      const result = await callRestUrl(
-        `${backend.base}${backend.get!(endpointId)}`,
-        'PATCH',
-        body
-      );
-      return jsonReply(result);
+      const url = `${backend.base}${backend.get!(endpointId)}`;
+
+      if (backend.version !== 'v2') {
+        const body = backend.mapUpdate(updateParams) as Record<string, unknown>;
+        return jsonReply(await callRestUrl(url, 'PATCH', body));
+      }
+
+      // `scaling` is a union keyed on the scaler type, so a bare "change the target
+      // to N" has no expressible form without knowing which scaler is in effect.
+      // Rather than reject the call, read the endpoint's current scaler and keep
+      // it — which is what such a request has always meant.
+      let scalerType = updateParams.scalerType;
+      if (scalerType === undefined && updateParams.scalerValue !== undefined) {
+        const current = (await callRestUrl(url)) as
+          | { scaling?: { type?: string } }
+          | undefined;
+        scalerType =
+          current?.scaling?.type === 'REQUEST_COUNT'
+            ? 'REQUEST_COUNT'
+            : 'QUEUE_DELAY';
+      }
+
+      const body = backend.mapUpdate({
+        ...updateParams,
+        scalerType,
+      }) as Record<string, unknown>;
+      return jsonReply(await callRestUrl(url, 'PATCH', body));
     }
   );
 

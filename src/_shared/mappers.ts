@@ -12,13 +12,11 @@
 // template `category` became optional with a documented server-side `NVIDIA`
 // default, so the mapper no longer forces a value.
 //
-// ⚠️ The vendored spec is the DEV spec (see scripts/fetch-v2-spec.ts), and dev has
-// moved ahead of production on `/v2/serverless` writes: `type` became required on
-// create, `scaling` became a union keyed on it, and `idleTimeout` moved into
-// `workers`. mapEndpointCreateToV2/...UpdateToV2 below still emit the shape
-// production accepts today, so they do NOT match the vendored spec for endpoints.
-// That is tracked separately; the spec-parity gate cannot see it, since it checks
-// operationId-to-tool coverage and never validates a request body against a schema.
+// `/v2/serverless` writes now match the vendored spec: `type` is a create field,
+// `scaling` is a union keyed on it, and `idleTimeout` sits under `workers`. Note the
+// spec-parity gate cannot police this — it checks operationId-to-tool coverage and
+// never validates a request body against a schema, so the mapper tests in
+// tests/mappers.test.ts are the only guard on the emitted shape.
 
 // v1 params accepted by the create-pod / update-pod tool schemas (the fields the
 // mapper knows how to translate). Unknown keys are intentionally dropped.
@@ -142,18 +140,21 @@ export function mapPodUpdateToV2(params: V1PodParams): Record<string, unknown> {
 // helper emits `mounts` (a pod/template concept), which the endpoint schema
 // rejects; endpoints attach storage via `networkVolumes` instead.
 //
-// Required by v2 CreateEndpointRequest: `name` and `gpu` (with `gpu.pools`
-// minItems 1). The create-endpoint handler guards those before calling, so a
-// missing field yields a clean 400 rather than a raw 422 from the API.
+// Required by v2 CreateEndpointRequest: `name`, `image`, `gpu` (with `gpu.pools`
+// minItems 1), `type` and `scaling`. The create-endpoint handler guards the first
+// three before calling, so a missing field yields a clean 400 rather than a raw
+// 422 from the API; the last two are always emitted, defaulted below.
+
 interface V2EndpointParams {
   name?: string;
   imageName?: string;
   args?: string;
+  endpointType?: EndpointType;
   gpuPoolIds?: string[];
   gpuCount?: number;
   workersMin?: number;
   workersMax?: number;
-  scalerType?: 'QUEUE_DELAY' | 'REQUEST_COUNT';
+  scalerType?: ScalerType;
   scalerValue?: number;
   idleTimeout?: number;
   dataCenterIds?: string[];
@@ -166,13 +167,35 @@ interface V2EndpointParams {
   containerRegistryAuthId?: string;
 }
 
-// Emit a nested object only when at least one field is set, else undefined (so
-// compact drops it). Prevents sending an empty `workers: {}` / `scaling: {}`.
-function nestedOrUndefined(
-  obj: Record<string, unknown>
-): Record<string, unknown> | undefined {
-  const c = compact(obj);
-  return Object.keys(c).length ? c : undefined;
+type EndpointType = 'QUEUE' | 'LOAD_BALANCER';
+type ScalerType = 'QUEUE_DELAY' | 'REQUEST_COUNT';
+
+// `type` and `scaling` are required on create, so something must be sent. These are
+// what the API used to apply server-side, so a caller that passes neither keeps
+// getting the endpoint it always got.
+//
+// DEFAULT_ENDPOINT_TYPE is create-only — update never sends `type`. DEFAULT_SCALER_VALUE
+// applies on BOTH: the scaling union requires a target next to its discriminator, so
+// `scalerType` alone still has to carry a value.
+const DEFAULT_ENDPOINT_TYPE: EndpointType = 'QUEUE';
+const DEFAULT_SCALER_VALUE = 4;
+
+// The scaler each endpoint type uses when the caller does not name one. Queue
+// endpoints may use either signal; load-balancing endpoints have no queue, so
+// REQUEST_COUNT is their only legal choice.
+function defaultScalerType(endpointType: EndpointType): ScalerType {
+  return endpointType === 'LOAD_BALANCER' ? 'REQUEST_COUNT' : 'QUEUE_DELAY';
+}
+
+// `scaling` is a union discriminated on `type`, with the target carried under a
+// per-variant key rather than a shared `value`.
+function endpointScaling(
+  scalerType: ScalerType,
+  value: number
+): Record<string, unknown> {
+  return scalerType === 'REQUEST_COUNT'
+    ? { type: 'REQUEST_COUNT', requestCount: value }
+    : { type: 'QUEUE_DELAY', queueDelay: value };
 }
 
 // gpu requires `pools` (minItems 1) — return undefined when no pools so the
@@ -185,7 +208,22 @@ function endpointGpuConfig(
   return compact({ pools, count });
 }
 
-function mapEndpointToV2(params: V2EndpointParams): Record<string, unknown> {
+// `workers` absorbed `idleTimeout` from `scaling`. Returns undefined when the caller
+// set none of the three, so we never send an empty `workers: {}`.
+function endpointWorkers(
+  params: V2EndpointParams
+): Record<string, unknown> | undefined {
+  const workers = compact({
+    min: params.workersMin,
+    max: params.workersMax,
+    idleTimeout: params.idleTimeout,
+  });
+  return Object.keys(workers).length ? workers : undefined;
+}
+
+// The half of the body shared by create and update: container config, compute,
+// placement and workers. Only `type` and `scaling` differ between the two.
+function endpointCommonToV2(params: V2EndpointParams): Record<string, unknown> {
   return compact({
     name: params.name,
     image: params.imageName,
@@ -195,15 +233,7 @@ function mapEndpointToV2(params: V2EndpointParams): Record<string, unknown> {
     env: params.env,
     registry: params.containerRegistryAuthId,
     gpu: endpointGpuConfig(params.gpuPoolIds, params.gpuCount),
-    workers: nestedOrUndefined({
-      min: params.workersMin,
-      max: params.workersMax,
-    }),
-    scaling: nestedOrUndefined({
-      type: params.scalerType,
-      value: params.scalerValue,
-      idleTimeout: params.idleTimeout,
-    }),
+    workers: endpointWorkers(params),
     dataCenterIds: params.dataCenterIds?.length
       ? params.dataCenterIds
       : undefined,
@@ -215,11 +245,39 @@ function mapEndpointToV2(params: V2EndpointParams): Record<string, unknown> {
   });
 }
 
-// Create and update share the same v2 body shape (Update just makes every field
-// optional — including `name`/`gpu`). Same mapper for both; the handler decides
-// which fields are required.
-export const mapEndpointCreateToV2 = mapEndpointToV2;
-export const mapEndpointUpdateToV2 = mapEndpointToV2;
+// CREATE. `type` and `scaling` are required, so both are always emitted.
+export function mapEndpointCreateToV2(
+  params: V2EndpointParams
+): Record<string, unknown> {
+  const endpointType = params.endpointType ?? DEFAULT_ENDPOINT_TYPE;
+  return compact({
+    ...endpointCommonToV2(params),
+    type: endpointType,
+    scaling: endpointScaling(
+      params.scalerType ?? defaultScalerType(endpointType),
+      params.scalerValue ?? DEFAULT_SCALER_VALUE
+    ),
+  });
+}
+
+// UPDATE. Only provided fields change, so nothing is defaulted into existence —
+// except the scaler target, which the union requires alongside its `type`
+// discriminator (so `scalerType` alone implies the default value). `type` is never
+// sent: the API rejects it on PATCH ("additional properties 'type' not allowed") —
+// an endpoint's routing model is fixed at creation.
+export function mapEndpointUpdateToV2(
+  params: V2EndpointParams
+): Record<string, unknown> {
+  return compact({
+    ...endpointCommonToV2(params),
+    scaling: params.scalerType
+      ? endpointScaling(
+          params.scalerType,
+          params.scalerValue ?? DEFAULT_SCALER_VALUE
+        )
+      : undefined,
+  });
+}
 
 // ---- Network volume: dataCenterId → dataCenter (only field change) ----
 interface V1NetworkVolumeCreate {

@@ -324,42 +324,75 @@ describe('podBodyFromTemplate', () => {
   });
 });
 
+// Full-fidelity tool params for the golden body below.
+const FULL_ENDPOINT_PARAMS = {
+  name: 'e',
+  imageName: 'img:2',
+  args: '--port 8000',
+  gpuPoolIds: ['AMPERE_80'],
+  gpuCount: 1,
+  workersMin: 0,
+  workersMax: 3,
+  scalerType: 'QUEUE_DELAY' as const,
+  scalerValue: 4,
+  idleTimeout: 5,
+  containerDiskInGb: 20,
+  ports: ['8000/http'],
+  env: { K: 'V' },
+  containerRegistryAuthId: 'cra_1',
+  networkVolumeIds: ['nv_1'],
+  executionTimeoutMs: 600000,
+  flashboot: 'FLASHBOOT' as const,
+};
+
+const SHARED_ENDPOINT_BODY = {
+  name: 'e',
+  image: 'img:2',
+  args: '--port 8000',
+  disk: 20,
+  ports: ['8000/http'],
+  env: { K: 'V' },
+  registry: 'cra_1',
+  gpu: { pools: ['AMPERE_80'], count: 1 },
+  networkVolumes: ['nv_1'],
+  timeout: 600000,
+  flashboot: 'FLASHBOOT',
+};
+
 describe('mapEndpointCreateToV2', () => {
-  it('builds the nested v2 /serverless body (gpu.pools/workers/scaling)', () => {
+  it('builds the v2 /serverless body (type + workers.idleTimeout + union scaling)', () => {
+    assert.deepEqual(mapEndpointCreateToV2(FULL_ENDPOINT_PARAMS), {
+      ...SHARED_ENDPOINT_BODY,
+      type: 'QUEUE',
+      workers: { min: 0, max: 3, idleTimeout: 5 },
+      scaling: { type: 'QUEUE_DELAY', queueDelay: 4 },
+    });
+  });
+
+  it('defaults type/scaling, which the typed schema requires', () => {
+    const out = mapEndpointCreateToV2({ imageName: 'i', gpuPoolIds: ['P'] });
+    assert.equal(out.type, 'QUEUE');
+    assert.deepEqual(out.scaling, { type: 'QUEUE_DELAY', queueDelay: 4 });
+  });
+
+  it('LOAD_BALANCER defaults to the REQUEST_COUNT scaler (its only legal one)', () => {
     const out = mapEndpointCreateToV2({
-      name: 'e',
-      imageName: 'img:2',
-      args: '--port 8000',
-      gpuPoolIds: ['AMPERE_80'],
-      gpuCount: 1,
-      workersMin: 0,
-      workersMax: 3,
-      scalerType: 'QUEUE_DELAY',
-      scalerValue: 4,
-      idleTimeout: 5,
-      containerDiskInGb: 20,
-      ports: ['8000/http'],
-      env: { K: 'V' },
-      containerRegistryAuthId: 'cra_1',
-      networkVolumeIds: ['nv_1'],
-      executionTimeoutMs: 600000,
-      flashboot: 'FLASHBOOT',
+      imageName: 'i',
+      gpuPoolIds: ['P'],
+      endpointType: 'LOAD_BALANCER',
     });
-    assert.deepEqual(out, {
-      name: 'e',
-      image: 'img:2',
-      args: '--port 8000',
-      disk: 20,
-      ports: ['8000/http'],
-      env: { K: 'V' },
-      registry: 'cra_1',
-      gpu: { pools: ['AMPERE_80'], count: 1 },
-      workers: { min: 0, max: 3 },
-      scaling: { type: 'QUEUE_DELAY', value: 4, idleTimeout: 5 },
-      networkVolumes: ['nv_1'],
-      timeout: 600000,
-      flashboot: 'FLASHBOOT',
+    assert.equal(out.type, 'LOAD_BALANCER');
+    assert.deepEqual(out.scaling, { type: 'REQUEST_COUNT', requestCount: 4 });
+  });
+
+  it('an explicit scalerType still wins over the per-type default', () => {
+    const out = mapEndpointCreateToV2({
+      imageName: 'i',
+      endpointType: 'QUEUE',
+      scalerType: 'REQUEST_COUNT',
+      scalerValue: 2,
     });
+    assert.deepEqual(out.scaling, { type: 'REQUEST_COUNT', requestCount: 2 });
   });
 
   it('imageName→image, containerRegistryAuthId→registry, networkVolumeIds→networkVolumes', () => {
@@ -385,22 +418,61 @@ describe('mapEndpointCreateToV2', () => {
     assert.equal('gpu' in out, false);
   });
 
-  it('drops empty workers/scaling objects', () => {
+  it('drops an empty workers object but always emits scaling (required)', () => {
     const out = mapEndpointCreateToV2({ imageName: 'i' });
     assert.equal('workers' in out, false);
-    assert.equal('scaling' in out, false);
+    assert.deepEqual(out.scaling, { type: 'QUEUE_DELAY', queueDelay: 4 });
   });
 
   it('emits workers.min:0 (a meaningful scale-to-zero, not dropped)', () => {
     const out = mapEndpointCreateToV2({ imageName: 'i', workersMin: 0 });
     assert.deepEqual(out.workers, { min: 0 });
   });
+
+  it('routes idleTimeout to workers, never to scaling', () => {
+    const out = mapEndpointCreateToV2({ imageName: 'i', idleTimeout: 7 });
+    assert.deepEqual(out.workers, { idleTimeout: 7 });
+    assert.equal('idleTimeout' in (out.scaling as object), false);
+  });
 });
 
 describe('mapEndpointUpdateToV2', () => {
-  it('is the same shape as create (every field optional)', () => {
+  it('maps only the provided fields', () => {
     const out = mapEndpointUpdateToV2({ workersMax: 5, imageName: 'img:3' });
     assert.deepEqual(out, { workers: { max: 5 }, image: 'img:3' });
+  });
+
+  it('never sends `type` — the typed API rejects it on PATCH', () => {
+    const out = mapEndpointUpdateToV2({ endpointType: 'LOAD_BALANCER' });
+    assert.equal('type' in out, false);
+  });
+
+  it('omits scaling entirely when no scalerType is given', () => {
+    const out = mapEndpointUpdateToV2({ scalerValue: 9 });
+    assert.equal('scaling' in out, false);
+  });
+
+  it('scalerType alone implies the default target the union requires', () => {
+    const out = mapEndpointUpdateToV2({ scalerType: 'REQUEST_COUNT' });
+    assert.deepEqual(out.scaling, { type: 'REQUEST_COUNT', requestCount: 4 });
+  });
+
+  it('builds the union variant matching the scalerType', () => {
+    assert.deepEqual(
+      mapEndpointUpdateToV2({ scalerType: 'QUEUE_DELAY', scalerValue: 0.5 })
+        .scaling,
+      { type: 'QUEUE_DELAY', queueDelay: 0.5 }
+    );
+  });
+
+  it('routes idleTimeout to workers, never into scaling', () => {
+    const out = mapEndpointUpdateToV2({
+      scalerType: 'QUEUE_DELAY',
+      scalerValue: 6,
+      idleTimeout: 9,
+    });
+    assert.deepEqual(out.scaling, { type: 'QUEUE_DELAY', queueDelay: 6 });
+    assert.deepEqual(out.workers, { idleTimeout: 9 });
   });
 });
 

@@ -25,6 +25,19 @@ Notes:
 
 > **Migration note — `create-endpoint` / `update-endpoint` changed in v2.** Serverless endpoints now use an **inline config** instead of a `templateId`: `create-endpoint` requires `imageName` + `gpuPoolIds` (GPU **pool** names from `list-gpu-types`, e.g. `AMPERE_80`), plus optional `workersMin`/`workersMax`, scaler settings, `containerDiskInGb`, `env`, `flashboot`, etc. A pre-existing `{ templateId }` call now returns a clean `400`. Switch to the inline fields, or set `RUNPOD_REST_VERSION=v1` to keep the template-based model.
 
+## Serverless endpoint types and autoscaling
+
+`create-endpoint` takes an `endpointType`:
+
+- **`QUEUE`** (default) — jobs go through the managed queue. `run`, `runsync`, `status`, `stream`, `cancel`, `retry`, `purge-queue` and `health` all apply.
+- **`LOAD_BALANCER`** — HTTP requests go straight to worker-defined paths. There is no queue, so these endpoints scale on `REQUEST_COUNT` only; `QUEUE_DELAY` is rejected.
+
+An endpoint's type is fixed at creation — `update-endpoint` cannot change it. Read the URLs to call an endpoint with from `requestUrls` on the `get-endpoint` / `list-endpoints` reply rather than constructing them: a queue endpoint returns the full job-API set, a load-balancing one returns its base and health URLs.
+
+Autoscaling is set with `scalerType` (`QUEUE_DELAY` = seconds a request waits in the queue, min `0.5`; `REQUEST_COUNT` = in-flight requests per worker, integer min `1`), `scalerValue` (default `4`), and `idleTimeout` (seconds, `1`–`3600`). `scalerType` defaults to `QUEUE_DELAY` for queue endpoints and `REQUEST_COUNT` for load-balancing ones. `idleTimeout` does not apply to a queue endpoint scaling on `REQUEST_COUNT`.
+
+> **Requires a host serving the reshaped `/v2/serverless` write schema.** These tools send endpoint `type` on create, a per-scaler `scaling` object (`{type, queueDelay}` / `{type, requestCount}`), and `idleTimeout` under `workers`. A host still on the older flat shape rejects that with a `422` naming `queueDelay`/`requestCount`/`idleTimeout` as not allowed. If you hit that, point `RUNPOD_REST_V2_API_URL` at a host with the new schema, or set `RUNPOD_REST_VERSION=v1` for the legacy template-based model.
+
 ## Private image pull: credentials vs ECR delegation
 
 Two ways to let Runpod pull a private image, and they are not interchangeable:
