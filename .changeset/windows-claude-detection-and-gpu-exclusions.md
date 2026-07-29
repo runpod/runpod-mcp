@@ -13,18 +13,21 @@ on Windows either, so Claude Code was undetectable on a standard Windows install
 
 Windows now probes `%USERPROFILE%\.local\bin\claude.exe` (the documented native-installer
 location, which also covers installs whose PATH entry is missing) and the npm global
-`claude.cmd` shim, then falls back to `where.exe claude`. Multi-hit output prefers the
-`.exe` over the `.cmd`.
+`claude.cmd` shim, then falls back to `where.exe claude`. Multi-hit output is ranked
+`.com`/`.exe` → `.cmd`/`.bat` → anything else, because npm's `cmd-shim` writes three files
+per bin and `where.exe` lists the extensionless `#!/bin/sh` shim first — which Windows
+cannot run at all. A hit in the current directory ranks below equivalent hits elsewhere,
+since `where.exe` searches the working directory before PATH.
 
 Registration now spawns through `cross-spawn` instead of `child_process` directly. Node's
 docs are explicit that `.bat`/`.cmd` files "cannot be launched using
 `child_process.execFile()`" and that "if the script filename contains spaces it needs to be
 quoted" — an npm-global Claude Code install is exactly a `.cmd`, often under a path with a
-space, so `execFileSync` could never register it. `cross-spawn` is the ecosystem's answer
-to that (it is what npm itself uses): a `.com`/`.exe` spawns directly with argv preserved,
-and anything else is wrapped in `cmd.exe /d /s /c` with each argument quoted,
-backslash-doubled, `^`-escaped, and `windowsVerbatimArguments` set so libuv does not
-re-quote on top.
+space, so `execFileSync` could never register it. `cross-spawn` handles it: a `.com`/`.exe`
+spawns directly with argv preserved, and anything else is wrapped in `cmd.exe /d /s /c`
+with each argument quoted, backslash-doubled, `^`-escaped, and `windowsVerbatimArguments`
+set so libuv does not re-quote on top. Hand-rolling that escaping is what went wrong on the
+first attempt, which is the reason for the dependency.
 
 One case is still refused rather than escaped: an argument containing a `cmd.exe`
 metacharacter, bound for a shim. npm's generated `claude.cmd` re-expands its arguments
@@ -32,12 +35,22 @@ through `%*`, so they are parsed twice; `cross-spawn` compensates by escaping tw
 only for shims matching `node_modules/.bin/*.cmd`, which a global shim in `%APPDATA%\npm`
 does not. Runpod API keys are `rpa_` plus alphanumerics so this never fires in practice,
 but when it does the wizard prints the `claude mcp add …` command instead of guessing at
-escaping around a credential.
+escaping around a credential — with the key replaced by a placeholder, since anything
+printed lands in terminal scrollback and in whatever log someone pastes it into.
 
-`remove` now shares that path. It previously called `execFileSync` directly — which cannot
-spawn a `.cmd` — and reported success regardless, so a failed removal printed a tick while
-the entry stayed in the user's config. That path was unreachable before only because
-detection always failed on Windows.
+`remove` no longer reports every outcome as a success. It previously called `execFileSync`
+directly — which cannot spawn a `.cmd` — and reported success from its `catch` regardless.
+Only one non-zero exit is a success now: `No MCP server named "runpod" in user scope`,
+meaning there was nothing to remove. A removal that fails because the config is read-only
+is reported as a failure, instead of printing a tick while the entry — API key included —
+stays on disk.
+
+Re-running the wizard over an existing entry no longer prints a bare success either. The
+CLI does not update an existing entry, so a user re-running the wizard after rotating their
+API key was told "configured" while the old key remained. The result line now says the
+entry was left unchanged and how to replace it. An API key taken from the environment is
+also trimmed, matching the pasted path — a trailing newline used to be written verbatim
+into every client config.
 
 CI gains a `windows-latest` runner, and the suite now runs a real `.cmd` shim out of a
 directory whose name contains a space, asserting the arguments arrive intact. A Windows-only

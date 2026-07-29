@@ -214,14 +214,25 @@ export function claudeLookupCommand(platform: string): string {
 }
 
 /**
- * Picks one path from a lookup's stdout. `where.exe` can print several lines for
- * one name (e.g. `claude` and `claude.cmd`). Prefer something cross-spawn can
- * launch without cmd.exe, so the common case involves no shell at all. Returns
- * null when nothing came back.
+ * Picks one path from a lookup's stdout. `where.exe` prints every match, and an
+ * npm-global install produces three: npm's `cmd-shim` writes an extensionless
+ * `#!/bin/sh` shim next to `claude.cmd` and `claude.ps1`. `where` lists the
+ * exact-name match first, so the naive "first hit" is the sh shim — which Windows
+ * cannot run at all (cross-spawn reads its shebang and tries to spawn `/bin/sh`).
+ *
+ * Hence an explicit ranking rather than a single preference:
+ *   1. `.com`/`.exe`  — cross-spawn spawns these with no shell.
+ *   2. `.cmd`/`.bat`  — need cmd.exe, but cmd.exe genuinely runs them.
+ *   3. anything else  — extensionless, `.ps1`; may not be runnable.
+ * A hit inside `cwd` is ranked below every equivalent hit elsewhere: `where.exe`
+ * searches the current directory before PATH, so running the wizard from a folder
+ * containing a file named `claude.cmd` would otherwise hand it the API key.
+ * Returns null when nothing came back.
  */
 export function pickClaudeBinary(
   stdout: string,
-  platform: string
+  platform: string,
+  cwd?: string
 ): string | null {
   const hits = stdout
     .split(/\r?\n/)
@@ -229,22 +240,48 @@ export function pickClaudeBinary(
     .filter(Boolean);
   if (hits.length === 0) return platform === 'win32' ? null : 'claude';
   if (platform !== 'win32') return hits[0];
-  return hits.find((h) => !needsCmdShell(h, platform)) ?? hits[0];
+
+  const rank = (hit: string): number => {
+    const base = /\.(com|exe)$/i.test(hit)
+      ? 0
+      : /\.(cmd|bat)$/i.test(hit)
+        ? 1
+        : 2;
+    // Case-insensitive: Windows paths are, and where.exe's casing need not match
+    // what process.cwd() reports.
+    const inCwd =
+      cwd !== undefined &&
+      path.win32.dirname(hit).toLowerCase() === cwd.toLowerCase();
+    return inCwd ? base + 10 : base;
+  };
+
+  // Stable: equal ranks keep the lookup's own order.
+  return hits.reduce((best, hit) => (rank(hit) < rank(best) ? hit : best));
 }
 
 /**
- * True when running this path means going through cmd.exe. Mirrors cross-spawn's
- * own rule (lib/parse.js): on Windows it spawns directly only when the resolved
- * file ends in `.com`/`.exe`; anything else — a `.cmd` shim, an extensionless hit —
- * is wrapped in `cmd.exe /d /s /c`. Always false off Windows.
+ * True when running this path means going through cmd.exe. Approximates
+ * cross-spawn's rule (lib/parse.js): on Windows it spawns directly only when the
+ * resolved file ends in `.com`/`.exe`, and wraps everything else in
+ * `cmd.exe /d /s /c`. Always false off Windows.
+ *
+ * "Approximates", not "mirrors": cross-spawn tests the file it resolved via PATHEXT
+ * and shebang substitution, this tests the string as given. They can disagree — an
+ * extensionless path whose `.exe` sibling resolves would be spawned shell-free by
+ * cross-spawn while this says otherwise. The disagreement is deliberately biased
+ * toward over-reporting, since the only consequence is a refusal the guard below
+ * did not strictly need; under-reporting would let an unescaped argument through.
  */
 export function needsCmdShell(binary: string, platform: string): boolean {
   if (platform !== 'win32') return false;
   return !/\.(com|exe)$/i.test(binary);
 }
 
-// cmd.exe metacharacters, the same set cross-spawn escapes in lib/util/escape.js.
-const CMD_META = /[()\][%!^"`<>&|;, *?]/;
+// cmd.exe metacharacters. The set cross-spawn escapes in lib/util/escape.js, plus
+// CR/LF — npm's own escaper treats newlines as needing quotes
+// (@npmcli/promise-spawn/lib/escape.js) and their behaviour on a re-parsed command
+// line is not something to find out with a credential.
+const CMD_META = /[()\][%!^"`<>&|;, *?\r\n]/;
 
 /**
  * Whether it is safe to hand these args to a `.cmd` shim.
@@ -253,10 +290,16 @@ const CMD_META = /[()\][%!^"`<>&|;, *?]/;
  * re-expands them: npm's generated `claude.cmd` ends in `node "…cli.js" %*`, so
  * the arguments are parsed a second time. cross-spawn compensates by escaping
  * twice, but only for shims it recognises — its check is
- * `/node_modules[\\/]\.bin[\\/][^\\/]+\.cmd$/i`, which a global npm shim in
+ * `/node_modules[\\/].bin[\\/][^\\/]+\.cmd$/i`, which a global npm shim in
  * `%APPDATA%\npm` does not match. Rather than reimplement its escaping, refuse the
  * narrow case: an argument carrying a metacharacter, bound for a shim. Runpod API
  * keys are `rpa_` + alphanumerics, so in practice this never triggers.
+ *
+ * Broader than strictly necessary: tracing a single-escaped argument through both
+ * parses, the quotes survive and only `"` actually breaks quote state. The rest of
+ * the set is refused anyway rather than relying on that reasoning — getting exactly
+ * this analysis wrong is what shipped a quoting bug on the first attempt. The known
+ * cost is a false refusal for a `RUNPOD_MCP_URL` override carrying a query string.
  */
 export function argsSafeForCmdShell(args: string[]): boolean {
   return !args.some((arg) => CMD_META.test(arg));
@@ -275,13 +318,13 @@ function findClaudeBinary(): string | null {
 
   try {
     // Resolve to a real path rather than returning the bare name, so the choice
-    // between a .exe and a .cmd shim is made here (see pickClaudeBinary) instead of
-    // being left to PATHEXT order inside cmd.exe.
+    // among the several files an npm install leaves behind is made here (see
+    // pickClaudeBinary) instead of by PATHEXT order inside cmd.exe.
     const out = execSync(claudeLookupCommand(platform), {
       stdio: ['ignore', 'pipe', 'ignore'],
       encoding: 'utf8',
     });
-    return pickClaudeBinary(out, platform);
+    return pickClaudeBinary(out, platform, process.cwd());
   } catch {
     return null;
   }
@@ -298,6 +341,29 @@ export function describeCommand(binary: string, args: string[]): string {
   return [binary, ...args].map(quote).join(' ');
 }
 
+// Placeholder substituted for the key when a command is printed for the user.
+export const KEY_PLACEHOLDER = '<your-runpod-api-key>';
+
+/**
+ * Same as describeCommand, with the API key replaced by a placeholder. Anything
+ * printed to the terminal ends up in scrollback, and in a support thread or CI log
+ * the moment someone pastes wizard output — so a command shown to a user names the
+ * variable but not its value. The user knows their own key.
+ */
+export function describeCommandRedacted(
+  binary: string,
+  args: string[]
+): string {
+  return describeCommand(
+    binary,
+    args.map((arg) =>
+      arg.startsWith('RUNPOD_API_KEY=')
+        ? `RUNPOD_API_KEY=${KEY_PLACEHOLDER}`
+        : arg
+    )
+  );
+}
+
 /**
  * Runs the Claude Code CLI.
  *
@@ -307,12 +373,14 @@ export function describeCommand(binary: string, args: string[]): string {
  * […] if the script filename contains spaces it needs to be quoted." An npm-global
  * install of Claude Code is exactly a `.cmd`, frequently under a path with a space.
  *
- * cross-spawn is the ecosystem's answer to that (it is what npm itself uses):
- * `.com`/`.exe` spawn directly with argv preserved, and anything else is wrapped in
- * `cmd.exe /d /s /c` with each argument quoted, backslash-doubled, `^`-escaped, and
- * `windowsVerbatimArguments` set so libuv does not re-quote on top. Hand-rolling
- * that is how the first attempt at this shipped a quoting bug — the library has had
- * a decade of npm-scale abuse finding those.
+ * cross-spawn handles it: `.com`/`.exe` spawn directly with argv preserved, and
+ * anything else is wrapped in `cmd.exe /d /s /c` with each argument quoted,
+ * backslash-doubled, `^`-escaped, and `windowsVerbatimArguments` set so libuv does
+ * not re-quote on top. Hand-rolling that is how the first attempt at this shipped a
+ * quoting bug, which is the whole reason for taking a dependency here. (npm itself
+ * does NOT use cross-spawn for this — it has its own escaper in
+ * @npmcli/promise-spawn. cross-spawn's claim to trust is ubiquity as a transitive
+ * dependency, not adoption by npm's own spawn path.)
  */
 // `refused` marks "we declined to run this", as opposed to "we ran it and it
 // failed" — `remove` treats those differently.
@@ -325,7 +393,7 @@ export function runClaude(binary: string, args: string[]): RunResult {
     return {
       success: false,
       refused: true,
-      message: `running ${binary} means going through cmd.exe, and an argument contains a character this wizard will not risk escaping around a credential. Run it yourself:\n    ${describeCommand(binary, args)}`,
+      message: `running ${binary} means going through cmd.exe, and an argument contains a character this wizard will not risk escaping around a credential. Run it yourself, substituting your key:\n    ${describeCommandRedacted(binary, args)}`,
     };
   }
   const result = crossSpawn.sync(binary, args, {
@@ -340,11 +408,18 @@ export function runClaude(binary: string, args: string[]): RunResult {
   if (result.status === null) {
     return { success: false, message: `killed by ${result.signal}` };
   }
-  // The CLI reports "already exists" on stderr with a non-zero exit. Re-running
-  // the wizard should be idempotent, not an error.
+  // The CLI reports "already exists" on stderr with a non-zero exit. Re-running the
+  // wizard should be idempotent, not an error — but it is NOT an update: the CLI
+  // leaves the existing entry alone, so a user re-running the wizard after rotating
+  // their API key still has the old key. Say so rather than reporting a bare
+  // success. Observed with claude 2.1.220: `MCP server runpod already exists in
+  // .mcp.json`, exit 1, and the stored key unchanged.
   const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
   if (output.includes('already exists')) {
-    return { success: true, message: 'already configured' };
+    return {
+      success: true,
+      message: `already configured, entry left unchanged (to replace the API key: \`${path.basename(binary)} mcp remove ${SERVER_NAME} --scope user\` first)`,
+    };
   }
   return {
     success: false,
@@ -352,6 +427,28 @@ export function runClaude(binary: string, args: string[]): RunResult {
       output.trim() ||
       `${path.basename(binary)} exited with code ${result.status}`,
   };
+}
+
+/**
+ * Turns a `claude mcp remove` run into a removal outcome.
+ *
+ * Only ONE non-zero exit counts as success: the CLI reports a missing entry as
+ * `No MCP server named "runpod" in user scope` and exits 1 (observed, claude
+ * 2.1.220). Nothing to remove means the desired end state already holds.
+ *
+ * Everything else is a failure, and this function exists because getting that wrong
+ * is a recurring bug here. Two earlier revisions returned `{success: true}`
+ * unconditionally — first from a `catch`, then by discarding `result.success` — so a
+ * removal that failed because the config was read-only printed a green tick while
+ * the entry, API key included, stayed in the user's config.
+ */
+export function interpretRemoveResult(result: RunResult): AddResult {
+  if (result.success) return { success: true, message: result.message };
+  if (result.refused) return result;
+  if (/No MCP server named/i.test(result.message ?? '')) {
+    return { success: true, message: 'nothing to remove' };
+  }
+  return { success: false, message: result.message };
 }
 
 // Claude Code manages its own config, so we drive its CLI rather than writing
@@ -414,10 +511,7 @@ const claudeCodeClient: McpClient = {
       'user',
       SERVER_NAME,
     ]);
-    // A removal that found nothing to remove is still a success (the desired end
-    // state holds either way); one we declined to run is not.
-    if (result.refused) return Promise.resolve(result);
-    return Promise.resolve({ success: true, message: result.message });
+    return Promise.resolve(interpretRemoveResult(result));
   },
   describeTarget: () => 'Claude Code user config (via `claude mcp` CLI)',
 };

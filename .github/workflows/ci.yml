@@ -18,10 +18,11 @@ jobs:
         os: [ubuntu-latest]
         node-version: [18, 20, 22]
         # The install wizard has Windows-specific code paths (Claude Code
-        # detection, and refusing to shell out for a .cmd shim). Without a Windows
-        # runner a POSIX-only regression there ships unnoticed — which is how
-        # issue #56 happened. One combination is enough: the rest of the suite is
-        # platform-agnostic.
+        # detection, and spawning a .cmd shim through cross-spawn). The suite runs a
+        # real .cmd out of a space-containing directory, which only means anything
+        # here. Without a Windows runner a POSIX-only regression ships unnoticed —
+        # which is how issue #56 happened. One combination is enough: the rest of
+        # the suite is platform-agnostic.
         include:
           - os: windows-latest
             node-version: 22

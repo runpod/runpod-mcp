@@ -52,7 +52,10 @@ function bail(message = 'Cancelled.'): never {
 }
 
 async function promptForApiKey(): Promise<string> {
-  const fromEnv = process.env.RUNPOD_API_KEY;
+  // Trimmed like the pasted path below. An env var picked up from a shell profile
+  // or a .env file can carry a trailing newline, which would otherwise be written
+  // verbatim into every client config and, on Windows, reach a shim's `%*`.
+  const fromEnv = process.env.RUNPOD_API_KEY?.trim();
   if (fromEnv) {
     const useEnv = await p.confirm({
       message: 'Use the RUNPOD_API_KEY from your environment?',
@@ -169,7 +172,13 @@ async function runAdd(): Promise<void> {
     const result = await client.add(mode);
     if (result.success) {
       spinner.stop(`${client.name} configured.`);
-      results.push(`✓ ${client.name} — ${client.describeTarget()}`);
+      // A success can still carry a caveat — notably "the entry already existed, so
+      // your key was NOT updated". Dropping the message turned that into an
+      // unqualified tick, which is how a user rotating their key would end up with
+      // the old one still in place.
+      results.push(
+        `✓ ${client.name} — ${result.message ? `${result.message}; ` : ''}${client.describeTarget()}`
+      );
     } else {
       spinner.stop(`${client.name} failed.`);
       results.push(`✗ ${client.name} — ${result.message ?? 'unknown error'}`);

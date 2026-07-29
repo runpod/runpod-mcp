@@ -1,9 +1,8 @@
-import { describe, it } from 'node:test';
+import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import crossSpawn from 'cross-spawn';
 
 import {
   claudeCandidatePaths,
@@ -12,6 +11,8 @@ import {
   needsCmdShell,
   argsSafeForCmdShell,
   describeCommand,
+  describeCommandRedacted,
+  interpretRemoveResult,
   runClaude,
 } from '../src/install/clients.js';
 
@@ -99,12 +100,47 @@ describe('pickClaudeBinary', () => {
     );
   });
 
-  it('falls back to the first hit when none is a .exe', () => {
-    // Neither an extensionless path nor a .cmd avoids cmd.exe, so there is nothing
-    // to prefer and the lookup's own order wins.
+  it('prefers a .cmd over the extensionless sh shim npm writes beside it', () => {
+    // npm's cmd-shim writes THREE files per bin: an extensionless `#!/bin/sh` shim,
+    // a .cmd and a .ps1. `where.exe` lists the exact-name match first, so taking the
+    // first hit picks the sh shim — which Windows cannot run at all (cross-spawn
+    // reads the shebang and tries to spawn /bin/sh). The .cmd is the runnable one.
     assert.equal(
       pickClaudeBinary('C:\\bin\\claude\r\nC:\\bin\\claude.cmd\r\n', 'win32'),
-      'C:\\bin\\claude'
+      'C:\\bin\\claude.cmd'
+    );
+  });
+
+  it('ranks .exe above .cmd above anything else', () => {
+    assert.equal(
+      pickClaudeBinary(
+        'C:\\bin\\claude.ps1\r\nC:\\bin\\claude\r\nC:\\bin\\claude.cmd\r\nC:\\bin\\claude.exe\r\n',
+        'win32'
+      ),
+      'C:\\bin\\claude.exe'
+    );
+  });
+
+  it('deprioritises a hit in the current directory', () => {
+    // `where.exe` searches the current directory BEFORE PATH. Running the wizard
+    // from a folder containing a file named claude.cmd would otherwise hand that
+    // file the user's API key.
+    assert.equal(
+      pickClaudeBinary(
+        'C:\\work\\project\\claude.cmd\r\nC:\\bin\\claude.cmd\r\n',
+        'win32',
+        'C:\\work\\project'
+      ),
+      'C:\\bin\\claude.cmd'
+    );
+  });
+
+  it('still uses a cwd hit when it is the only one', () => {
+    // Deprioritised, not excluded: someone may legitimately be running the wizard
+    // from the directory their claude install lives in.
+    assert.equal(
+      pickClaudeBinary('C:\\work\\claude.cmd\r\n', 'win32', 'C:\\work'),
+      'C:\\work\\claude.cmd'
     );
   });
 
@@ -145,9 +181,12 @@ describe('pickClaudeBinary', () => {
 });
 
 describe('needsCmdShell', () => {
-  // Mirrors cross-spawn's own rule (lib/parse.js `isExecutableRegExp`): on Windows
-  // it spawns directly only for .com/.exe and wraps everything else in cmd.exe. If
-  // this drifts from that, the guard below fires on the wrong cases.
+  // Approximates cross-spawn's rule (lib/parse.js `isExecutableRegExp`): on Windows
+  // it spawns directly only for .com/.exe and wraps everything else in cmd.exe.
+  // Approximates, because cross-spawn tests the file it resolved via PATHEXT while
+  // this tests the string as given — so the two can disagree. The bias is toward
+  // saying "yes, shell", which costs at most an unnecessary refusal; the opposite
+  // error would let an unescaped argument through.
   it('is false for .com and .exe on Windows', () => {
     for (const p of [
       'C:\\Users\\dev\\.local\\bin\\claude.exe',
@@ -234,6 +273,67 @@ describe('argsSafeForCmdShell', () => {
       assert.equal(argsSafeForCmdShell(['-e', arg]), false, arg);
     }
   });
+
+  it('rejects an embedded newline', () => {
+    // A key sourced from a shell profile or .env can carry one. Its behaviour on a
+    // re-parsed cmd command line is not worth discovering with a live credential —
+    // and npm's own escaper treats newlines as needing quotes too.
+    assert.equal(argsSafeForCmdShell(['-e', 'RUNPOD_API_KEY=rpa_x\n']), false);
+    assert.equal(
+      argsSafeForCmdShell(['-e', 'RUNPOD_API_KEY=rpa_x\r\n']),
+      false
+    );
+  });
+});
+
+describe('interpretRemoveResult', () => {
+  // Two earlier revisions of this branch reported EVERY removal as a success —
+  // first from a bare catch, then by discarding result.success. The user saw a green
+  // tick while their API key stayed in the config, so each case is pinned here.
+  it('passes a real success through', () => {
+    assert.deepEqual(interpretRemoveResult({ success: true }), {
+      success: true,
+      message: undefined,
+    });
+  });
+
+  it('treats "No MCP server named" as success — nothing to remove', () => {
+    // Observed with claude 2.1.220: exit 1, stderr
+    // `No MCP server named "runpod" in user scope`. The desired end state holds.
+    assert.deepEqual(
+      interpretRemoveResult({
+        success: false,
+        message: 'No MCP server named "runpod" in user scope',
+      }),
+      { success: true, message: 'nothing to remove' }
+    );
+  });
+
+  it('reports a genuine failure as a failure', () => {
+    // THE regression. A read-only config, a permissions error, a crash — anything
+    // other than "not there" means the entry, API key included, is still on disk.
+    for (const message of [
+      'EACCES: permission denied, open ~/.claude.json',
+      'claude exited with code 3',
+      'killed by SIGKILL',
+      'spawnSync claude ENOENT',
+    ]) {
+      assert.deepEqual(
+        interpretRemoveResult({ success: false, message }),
+        { success: false, message },
+        message
+      );
+    }
+  });
+
+  it('keeps a refusal a failure', () => {
+    const refusal = {
+      success: false,
+      refused: true,
+      message: 'running claude.cmd means going through cmd.exe …',
+    };
+    assert.deepEqual(interpretRemoveResult(refusal), refusal);
+  });
 });
 
 describe('describeCommand', () => {
@@ -250,12 +350,47 @@ describe('describeCommand', () => {
     );
   });
 
-  it('leaves a metacharacter-bearing key intact rather than mangling it', () => {
-    // This is the refusal path's output: the value argsSafeForCmdShell rejected,
-    // shown verbatim so the user can paste it into their own shell.
+  it('leaves a metacharacter-bearing value intact rather than mangling it', () => {
+    // The raw renderer does not redact — describeCommandRedacted is what user-facing
+    // messages go through.
     assert.match(
       describeCommand('claude.cmd', ['-e', 'RUNPOD_API_KEY=rpa_x&whoami']),
       /RUNPOD_API_KEY=rpa_x&whoami/
+    );
+  });
+});
+
+describe('describeCommandRedacted', () => {
+  // Whatever the wizard prints lands in terminal scrollback, and in a support thread
+  // or CI log as soon as someone pastes it. The one thing that must not appear there
+  // is the key itself.
+  it('replaces the API key with a placeholder', () => {
+    const rendered = describeCommandRedacted('C:\\npm\\claude.cmd', [
+      'mcp',
+      'add',
+      'runpod',
+      '--scope',
+      'user',
+      '-e',
+      'RUNPOD_API_KEY=rpa_LIVESECRET123',
+      '--',
+      'npx',
+      '-y',
+      '@runpod/mcp-server@latest',
+    ]);
+    assert.equal(rendered.includes('rpa_LIVESECRET123'), false, rendered);
+    assert.match(rendered, /-e RUNPOD_API_KEY=<your-runpod-api-key>/);
+    // Everything else still pastes.
+    assert.match(rendered, /mcp add runpod --scope user/);
+    assert.match(rendered, /-- npx -y @runpod\/mcp-server@latest/);
+  });
+
+  it('leaves a hosted-mode command untouched', () => {
+    // No key in that flow — OAuth handles auth.
+    const args = ['mcp', 'add', '--transport', 'http', 'runpod', 'https://x/'];
+    assert.equal(
+      describeCommandRedacted('claude', args),
+      describeCommand('claude', args)
     );
   });
 });
@@ -271,11 +406,22 @@ describe(
     // the documented failure: "if the script filename contains spaces it needs to
     // be quoted". Under the previous hand-rolled cmd.exe wrapper this combination
     // failed outright.
+    const dirs: string[] = [];
+    after(() => {
+      for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+    });
+
     function shimDir(): string {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'runpod mcp '));
+      dirs.push(dir);
+      // Records argv to a FILE rather than stdout, because runClaude pipes stdout
+      // away. Asserting the round-trip against a second, direct crossSpawn.sync call
+      // would test cross-spawn instead of the wrapper: runClaude could drop or
+      // reorder every argument and the assertion would still pass.
       fs.writeFileSync(
-        path.join(dir, 'print-argv.js'),
-        'console.log(JSON.stringify(process.argv.slice(2)));\n'
+        path.join(dir, 'record-argv.js'),
+        'const fs = require("fs"), path = require("path");\n' +
+          'fs.writeFileSync(path.join(__dirname, "argv.json"), JSON.stringify(process.argv.slice(2)));\n'
       );
       return dir;
     }
@@ -288,31 +434,38 @@ describe(
       return shim;
     }
 
+    function recordingShim(dir: string): string {
+      return writeShim(dir, `"${process.execPath}" "%~dp0record-argv.js" %*`);
+    }
+
+    function recordedArgv(dir: string): string[] | null {
+      const file = path.join(dir, 'argv.json');
+      return fs.existsSync(file)
+        ? (JSON.parse(fs.readFileSync(file, 'utf8')) as string[])
+        : null;
+    }
+
     it('launches a .cmd from a path with a space and round-trips argv', () => {
       const dir = shimDir();
-      const shim = writeShim(
-        dir,
-        `"${process.execPath}" "%~dp0print-argv.js" %*`
-      );
+      const shim = recordingShim(dir);
       const args = ['mcp', 'add', 'runpod', '--scope', 'user'];
       const result = runClaude(shim, args);
       assert.equal(result.success, true, result.message);
-      // runClaude swallows stdout, so re-run to inspect what the shim received.
-      const echoed = crossSpawn.sync(shim, args, { encoding: 'utf8' });
-      assert.deepEqual(JSON.parse(echoed.stdout.trim()), args);
+      // What the child actually received, through runClaude and nothing else.
+      assert.deepEqual(recordedArgv(dir), args);
     });
 
-    it('treats "already exists" on a non-zero exit as success', () => {
+    it('treats "already exists" on a non-zero exit as success, with a caveat', () => {
       const dir = shimDir();
       const shim = writeShim(
         dir,
         'echo MCP server runpod already exists in user config 1>&2\r\nexit /b 1'
       );
       const result = runClaude(shim, ['mcp', 'add', 'runpod']);
-      assert.deepEqual(result, {
-        success: true,
-        message: 'already configured',
-      });
+      assert.equal(result.success, true);
+      // The caveat is load-bearing: the CLI does NOT update an existing entry, so a
+      // bare success would hide a stale API key after a rotation.
+      assert.match(result.message ?? '', /entry left unchanged/);
     });
 
     it('reports a genuine non-zero exit as a failure', () => {
@@ -323,16 +476,20 @@ describe(
       assert.match(result.message ?? '', /boom/);
     });
 
-    it('refuses a metacharacter-bearing argument instead of escaping it', () => {
+    it('refuses a metacharacter-bearing argument without running the shim', () => {
       const dir = shimDir();
-      const shim = writeShim(
-        dir,
-        `"${process.execPath}" "%~dp0print-argv.js" %*`
-      );
+      const shim = recordingShim(dir);
       const result = runClaude(shim, ['-e', 'RUNPOD_API_KEY=rpa_x&whoami']);
       assert.equal(result.success, false);
       assert.equal(result.refused, true);
-      assert.match(result.message ?? '', /rpa_x&whoami/);
+      // The point of the refusal: the child never ran, so nothing was recorded.
+      assert.equal(recordedArgv(dir), null);
+      // And the printed command names the variable without its value.
+      assert.match(
+        result.message ?? '',
+        /RUNPOD_API_KEY=<your-runpod-api-key>/
+      );
+      assert.equal(/rpa_x&whoami/.test(result.message ?? ''), false);
     });
   }
 );
