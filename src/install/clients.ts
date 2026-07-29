@@ -168,45 +168,55 @@ function jsonClient(opts: {
 // Exported for tests: the platform decisions are pure, so both branches can be
 // exercised on any host without spawning anything or faking process.platform.
 
-/** Install locations to probe before falling back to a PATH lookup. */
+/**
+ * Install locations to probe before falling back to a PATH lookup. Windows uses
+ * win32 path semantics regardless of the host so the branch is testable anywhere.
+ *
+ * `.local\bin\claude.exe` is the documented native-installer location and comes
+ * first deliberately: it is a real executable, so it can be spawned directly with
+ * no shell. It also covers installs where the native installer failed to add
+ * itself to PATH, which the lookup below could never find.
+ */
 export function claudeCandidatePaths(
   platform: string,
   homedir: string,
   appdata?: string
 ): string[] {
   if (platform === 'win32') {
+    const win = path.win32;
     return [
-      // npm -g on Windows installs a .cmd shim next to the extensionless file.
-      path.join(
-        appdata ?? path.join(homedir, 'AppData', 'Roaming'),
+      win.join(homedir, '.local', 'bin', 'claude.exe'),
+      // npm -g installs a .cmd shim. Last, because a .cmd cannot be spawned
+      // without a shell — see runClaude.
+      win.join(
+        appdata ?? win.join(homedir, 'AppData', 'Roaming'),
         'npm',
         'claude.cmd'
       ),
-      path.join(homedir, '.claude', 'local', 'claude.exe'),
-      path.join(homedir, '.claude', 'local', 'claude.cmd'),
     ];
   }
   return [
-    path.join(homedir, '.claude', 'local', 'claude'),
+    path.posix.join(homedir, '.claude', 'local', 'claude'),
     '/usr/local/bin/claude',
     '/opt/homebrew/bin/claude',
   ];
 }
 
 /**
- * The PATH-lookup command. `command -v` is a POSIX shell builtin and execSync on
- * Windows runs through cmd.exe, which has no such builtin — so on Windows it exits
- * non-zero whether or not claude is installed (issue #56). `where.exe`, not bare
- * `where`, because PowerShell aliases `where` to Where-Object.
+ * The PATH-lookup command. `command -v` is a POSIX shell builtin, and execSync on
+ * Windows runs through cmd.exe, which has no such builtin — so on Windows it exited
+ * non-zero whether or not claude was installed (issue #56). `where.exe` is cmd.exe's
+ * native equivalent.
  */
 export function claudeLookupCommand(platform: string): string {
   return platform === 'win32' ? 'where.exe claude' : 'command -v claude';
 }
 
 /**
- * Picks one path from a lookup's stdout. `where.exe` can print several lines
- * (claude and claude.cmd); prefer the .cmd shim, since that is the one runClaude
- * can spawn. Returns null when nothing usable came back.
+ * Picks one path from a lookup's stdout. `where.exe` can print several lines for
+ * one name (e.g. `claude` and `claude.cmd`). Prefer a directly-spawnable
+ * executable: `execFileSync` uses no shell, so a `.exe` can be launched as-is
+ * while a `.cmd` cannot be launched at all. Returns null when nothing came back.
  */
 export function pickClaudeBinary(
   stdout: string,
@@ -218,7 +228,16 @@ export function pickClaudeBinary(
     .filter(Boolean);
   if (hits.length === 0) return platform === 'win32' ? null : 'claude';
   if (platform !== 'win32') return hits[0];
-  return hits.find((h) => h.toLowerCase().endsWith('.cmd')) ?? hits[0];
+  return hits.find((h) => isDirectlySpawnable(h)) ?? hits[0];
+}
+
+/**
+ * True when Node can spawn this path without a shell. `.cmd` and `.bat` are
+ * interpreted by cmd.exe rather than being executables, so `execFile` cannot run
+ * them — see the Node child_process docs.
+ */
+export function isDirectlySpawnable(binary: string): boolean {
+  return !/\.(cmd|bat)$/i.test(binary);
 }
 
 function findClaudeBinary(): string | null {
@@ -246,45 +265,35 @@ function findClaudeBinary(): string | null {
   }
 }
 
-// cmd.exe expands these even inside double quotes (%VAR%) or uses them to escape
-// the next character (^), so a value carrying one cannot be passed through the
-// cmd.exe wrapper below without risk of corruption. Everything else — & | < > —
-// is inert once quoted, and Node quotes each argument.
-export const CMD_UNSAFE = /[%^]/;
-
-/** True when cmd.exe would alter this argument even inside double quotes. */
-export function needsManualWindowsSetup(args: string[]): boolean {
-  return args.some((a) => CMD_UNSAFE.test(a));
+/**
+ * Renders a command for a human to copy, quoting only what needs it. Plain
+ * double-quote wrapping, NOT JSON.stringify — the latter escapes the backslashes
+ * in a Windows path, which is exactly wrong for something the user will paste.
+ */
+export function describeCommand(binary: string, args: string[]): string {
+  const quote = (s: string) => (/\s/.test(s) ? `"${s}"` : s);
+  return [binary, ...args].map(quote).join(' ');
 }
 
+/**
+ * Runs the Claude Code CLI with no shell, so an API key containing shell
+ * metacharacters cannot be interpreted.
+ *
+ * A `.cmd` shim can't be run this way — `execFile` has no shell to interpret it —
+ * and routing it through `cmd.exe` is deliberately NOT done: the key travels in
+ * argv, cmd.exe re-parses the command line, and Node only quotes arguments that
+ * contain whitespace or a quote. An argument like `rpa_x&whoami` would reach
+ * cmd.exe unquoted and split into a second command. Rather than hand-roll cmd
+ * escaping around a credential, print the command for the user to run.
+ */
 function runClaude(binary: string, args: string[]): AddResult {
+  if (!isDirectlySpawnable(binary)) {
+    return {
+      success: false,
+      message: `found a .cmd shim (${binary}) which can only run via a shell, and this wizard will not pass your API key through one. Run this yourself:\n    ${describeCommand(binary, args)}`,
+    };
+  }
   try {
-    // execFileSync (no shell) — args pass directly, so an API key with shell
-    // metacharacters can't be interpreted by a shell.
-    //
-    // Windows needs cmd.exe in the middle: npm installs `claude` as a .cmd shim,
-    // and a .cmd is not directly executable — execFileSync cannot spawn one. Args
-    // still travel as an array (never a concatenated string), so they are quoted
-    // individually rather than parsed as a command line. The one thing quoting
-    // does not neutralise is % / ^, so refuse those rather than silently writing a
-    // mangled key into the user's config.
-    if (process.platform === 'win32') {
-      if (needsManualWindowsSetup(args)) {
-        return {
-          success: false,
-          message:
-            'cannot register automatically on Windows: a value contains "%" or "^", which cmd.exe would alter. Run the `claude mcp add …` command manually instead.',
-        };
-      }
-      execFileSync(
-        process.env.COMSPEC ?? 'cmd.exe',
-        ['/d', '/s', '/c', binary, ...args],
-        {
-          stdio: 'pipe',
-        }
-      );
-      return { success: true };
-    }
     execFileSync(binary, args, { stdio: 'pipe' });
     return { success: true };
   } catch (error) {
@@ -346,14 +355,23 @@ const claudeCodeClient: McpClient = {
         message: 'claude CLI not found',
       });
     }
-    try {
-      execFileSync(binary, ['mcp', 'remove', '--scope', 'user', SERVER_NAME], {
-        stdio: 'pipe',
-      });
-      return Promise.resolve({ success: true });
-    } catch (error) {
-      return Promise.resolve({ success: true, message: errMessage(error) });
+    // Through runClaude so this shares the .cmd handling: previously it called
+    // execFileSync directly, which cannot spawn a .cmd — and its catch reported
+    // success regardless, so a failed removal printed a tick while the entry
+    // stayed in the user's config.
+    const result = runClaude(binary, [
+      'mcp',
+      'remove',
+      '--scope',
+      'user',
+      SERVER_NAME,
+    ]);
+    // A removal that found nothing to remove is still a success; a shim we refused
+    // to run is not.
+    if (!result.success && result.message?.includes('.cmd shim')) {
+      return Promise.resolve(result);
     }
+    return Promise.resolve({ success: true, message: result.message });
   },
   describeTarget: () => 'Claude Code user config (via `claude mcp` CLI)',
 };

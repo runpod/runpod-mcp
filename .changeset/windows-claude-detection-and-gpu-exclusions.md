@@ -11,18 +11,26 @@ three hardcoded candidate paths it checked first (`~/.claude/local/claude`,
 `/usr/local/bin/claude`, `/opt/homebrew/bin/claude`) are POSIX-only and can never resolve
 on Windows either, so Claude Code was undetectable on a standard Windows install.
 
-Windows now probes the npm global `claude.cmd` shim (via `APPDATA`) plus
-`~/.claude/local/claude.{exe,cmd}`, and falls back to `where.exe claude` — `where.exe`
-rather than bare `where`, which PowerShell aliases to `Where-Object`. Multi-line
-`where.exe` output prefers the `.cmd` shim, because `execFileSync` cannot spawn the
-extensionless file.
+Windows now probes `%USERPROFILE%\.local\bin\claude.exe` (the documented native-installer
+location, which also covers installs whose PATH entry is missing) and the npm global
+`claude.cmd` shim, then falls back to `where.exe claude`. Multi-hit output prefers a
+directly-spawnable executable over the `.cmd`.
 
-Registering the server on Windows also has to go through `cmd.exe` for the same reason a
-`.cmd` cannot be executed directly. Arguments still travel as an array rather than a
-concatenated string, so they are quoted individually — but `%` and `^` survive quoting,
-and the API key travels in argv, so a key containing either is now refused with a message
-pointing at the manual `claude mcp add` command instead of being silently mangled into the
-user's config. POSIX behavior is unchanged.
+Registration is NOT routed through `cmd.exe`. A `.cmd` cannot be spawned without a shell,
+and the API key travels in argv — Node only quotes arguments containing whitespace or a
+quote, so a key like `rpa_x&whoami` would reach `cmd.exe` unquoted and split into a second
+command. When only a `.cmd` shim is available the wizard now prints the exact
+`claude mcp add …` command for the user to run instead of shelling out with a credential.
+An `.exe` or extensionless binary is spawned directly with `execFileSync`, exactly as on
+POSIX.
+
+`remove` now shares that path. It previously called `execFileSync` directly — which cannot
+spawn a `.cmd` — and reported success regardless, so a failed removal printed a tick while
+the entry stayed in the user's config. That path was unreachable before only because
+detection always failed on Windows.
+
+CI gains a `windows-latest` runner. A Windows-only fix with no Windows CI is how this class
+of bug ships.
 
 Preserve GPU SKU exclusions across `update-endpoint` (#63).
 
