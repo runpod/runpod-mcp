@@ -8,6 +8,7 @@ import {
   hasGpuExclusions,
   buildSaveEndpointInput,
   saveEndpoint,
+  type EndpointSnapshot,
 } from '../_shared/endpoint-gpu-ids.js';
 
 // ============== ENDPOINT MANAGEMENT TOOLS ==============
@@ -116,7 +117,7 @@ export function registerEndpointTools(
         .boolean()
         .optional()
         .describe(
-          "Add the authoritative `gpuIds` string (pools plus any '-<GPU type id>' SKU exclusions) via GraphQL. The REST `gpu.pools` field cannot represent exclusions, so this is the only way to read an endpoint's real GPU selection. Costs one extra request."
+          "Add the authoritative `gpuIds` string (pools plus any '-<GPU type id>' SKU exclusions) via GraphQL (v2 only). The REST `gpu.pools` field cannot represent exclusions, so this is the only way to read an endpoint's real GPU selection without writing to it. Costs one extra request."
         ),
     },
     { title: 'Get endpoint', ...READ_ONLY },
@@ -145,11 +146,19 @@ export function registerEndpointTools(
         `${backend.base}${backend.get!(params.endpointId)}${queryString}`
       );
 
+      if (!params.includeGpuIds) return jsonReply(result);
+
       // v2 only: the whole point is that v2's `gpu.pools` cannot express exclusions.
       // v1 has no `gpu.pools`, and merging a `gpuIds` key into a v1 payload could
-      // shadow a field of a different type.
-      if (!params.includeGpuIds || backend.version !== 'v2') {
-        return jsonReply(result);
+      // shadow a field of a different type. Say so rather than dropping the flag
+      // silently — a caller who asked for gpuIds and got a reply without them
+      // should not have to guess why.
+      if (backend.version !== 'v2') {
+        return jsonReply({
+          ...(result as Record<string, unknown>),
+          _gpuIdsError:
+            'includeGpuIds applies to v2 only; this request used the v1 REST API, whose payload has no gpu.pools field to disambiguate.',
+        });
       }
 
       // Opt-in because it is a second request against a different API. Reported as
@@ -168,9 +177,13 @@ export function registerEndpointTools(
         });
       }
       if (snapshot === null) {
+        // Not "missing from a list" — the query fetches this endpoint by id, and an
+        // unknown or invisible id makes the resolver throw into the branch above.
+        // A null lands here only when `myself` itself is null, i.e. the credential
+        // carries no user identity on the GraphQL API.
         return jsonReply({
           ...(result as Record<string, unknown>),
-          _gpuIdsError: `Endpoint "${params.endpointId}" was not in the GraphQL endpoint list, so gpuIds could not be read.`,
+          _gpuIdsError: `gpuIds could not be read: the GraphQL API returned no user for this credential, so endpoint "${params.endpointId}" was not visible there.`,
         });
       }
       return jsonReply({
@@ -491,12 +504,17 @@ export function registerEndpointTools(
       // gpuIds first; if it carries exclusions, re-assert it afterwards. Skipped
       // entirely for endpoints without exclusions, which is the common case, so the
       // extra round trips are only paid by the endpoints that need them.
-      const gpuSnapshot = await readEndpointSnapshot(
-        graphqlAuthed,
-        endpointId
-      ).catch(() => null);
-      const exclusionsAtRisk =
-        gpuSnapshot !== null && hasGpuExclusions(gpuSnapshot.gpuIds);
+      let gpuSnapshot: EndpointSnapshot | null = null;
+      let gpuReadFailure: string | undefined;
+      try {
+        gpuSnapshot = await readEndpointSnapshot(graphqlAuthed, endpointId);
+        if (gpuSnapshot === null) {
+          gpuReadFailure =
+            'the GraphQL API returned no user for this credential, so the endpoint was not visible there';
+        }
+      } catch (error) {
+        gpuReadFailure = error instanceof Error ? error.message : String(error);
+      }
 
       const body = backend.mapUpdate({
         ...updateParams,
@@ -504,7 +522,23 @@ export function registerEndpointTools(
       }) as Record<string, unknown>;
       const result = await callRestUrl(url, 'PATCH', body);
 
-      if (!exclusionsAtRisk) return jsonReply(result);
+      // Failing open — still patching — is deliberate: a GPU-config safety net must
+      // not block an unrelated update. Failing open SILENTLY is not. Without this
+      // the caller cannot tell "this endpoint has no exclusions to lose" from "the
+      // check never ran", and the second case is issue #63 happening again behind a
+      // claim that it is fixed. Reachable whenever the credential can PATCH over
+      // REST but cannot read the endpoint through GraphQL `myself` (a team-owned
+      // endpoint, a field-level auth rejection, or any transient GraphQL error).
+      if (gpuSnapshot === null) {
+        return jsonReply({
+          ...(result as Record<string, unknown>),
+          _gpuIdsCheckSkipped: `The update applied, but this endpoint's gpuIds could not be read, so GPU SKU exclusions (which a v2 update drops) were neither checked nor restored. If this endpoint pins specific SKUs, verify with get-endpoint includeGpuIds:true and restore with set-endpoint-gpus. Cause: ${gpuReadFailure ?? 'unknown'}`,
+        });
+      }
+
+      // Narrowed by the type predicate: true implies a non-null gpuIds string.
+      const gpuIdsBeforePatch = gpuSnapshot.gpuIds;
+      if (!hasGpuExclusions(gpuIdsBeforePatch)) return jsonReply(result);
 
       // An explicit gpuPoolIds means the caller is deliberately rewriting the pool
       // list, so their value wins — but say plainly that the exclusions are gone,
@@ -512,7 +546,7 @@ export function registerEndpointTools(
       if (updateParams.gpuPoolIds?.length) {
         return jsonReply({
           ...(result as Record<string, unknown>),
-          _warning: `gpuPoolIds replaced this endpoint's GPU config, dropping its SKU exclusions (was "${gpuSnapshot.gpuIds}"). v2 cannot express exclusions — restore them with set-endpoint-gpus.`,
+          _warning: `gpuPoolIds replaced this endpoint's GPU config, dropping its SKU exclusions (was "${gpuIdsBeforePatch}"). v2 cannot express exclusions — restore them with set-endpoint-gpus.`,
         });
       }
 
@@ -531,12 +565,20 @@ export function registerEndpointTools(
         if (afterPatch === null) {
           return jsonReply({
             ...(result as Record<string, unknown>),
-            _warning: `The update applied, but this endpoint could not be re-read to restore its GPU SKU exclusions, which the patch drops. Expected gpuIds "${gpuSnapshot.gpuIds}" — restore with set-endpoint-gpus.`,
+            _warning: `The update applied, but this endpoint could not be re-read to restore its GPU SKU exclusions, which the patch drops. Expected gpuIds "${gpuIdsBeforePatch}" — restore with set-endpoint-gpus.`,
           });
+        }
+        // Nothing was lost — skip the write entirely. saveEndpoint is never free:
+        // it re-runs validation and can bump the SLS version, which rolls the
+        // endpoint's workers. Paying that to re-assert a value the patch already
+        // left alone is worse than doing nothing. This also makes the restore a
+        // genuine no-op once the v2 facade stops rebuilding gpuIds from gpu.pools.
+        if (afterPatch.gpuIds === gpuIdsBeforePatch) {
+          return jsonReply(result);
         }
         const restored = await saveEndpoint(
           graphqlAuthed,
-          buildSaveEndpointInput(afterPatch, { gpuIds: gpuSnapshot.gpuIds })
+          buildSaveEndpointInput(afterPatch, { gpuIds: gpuIdsBeforePatch })
         );
         return jsonReply({
           ...(result as Record<string, unknown>),
@@ -548,7 +590,7 @@ export function registerEndpointTools(
       } catch (error) {
         return jsonReply({
           ...(result as Record<string, unknown>),
-          _warning: `The update applied, but re-asserting this endpoint's GPU SKU exclusions failed, so they may have been dropped. Expected gpuIds "${gpuSnapshot.gpuIds}" — verify with get-endpoint includeGpuIds:true and restore with set-endpoint-gpus if needed. Cause: ${error instanceof Error ? error.message : String(error)}`,
+          _warning: `The update applied, but re-asserting this endpoint's GPU SKU exclusions failed, so they may have been dropped. Expected gpuIds "${gpuIdsBeforePatch}" — verify with get-endpoint includeGpuIds:true and restore with set-endpoint-gpus if needed. Cause: ${error instanceof Error ? error.message : String(error)}`,
         });
       }
     }

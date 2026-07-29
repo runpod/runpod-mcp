@@ -14,6 +14,7 @@ import {
   podBodyFromTemplate,
 } from '../src/_shared/mappers.js';
 import { parseLogSse } from '../src/tools/logs.js';
+import { hasGpuExclusions } from '../src/_shared/endpoint-gpu-ids.js';
 
 const fixture = JSON.parse(
   readFileSync(
@@ -529,5 +530,55 @@ describe('parseLogSse', () => {
 
   it('empty stream → no items', () => {
     assert.deepEqual(parseLogSse(''), []);
+  });
+});
+
+// ---- hasGpuExclusions: the sole gate on a compensating write ----
+// If this returns false for a gpuIds string that DOES carry exclusions, they are
+// silently lost (issue #63); if it returns true spuriously, every update pays an
+// extra read+write and rolls the endpoint's workers. It had no direct tests.
+describe('hasGpuExclusions', () => {
+  it('is false for pool-only gpuIds, and for absent values', () => {
+    assert.equal(hasGpuExclusions('AMPERE_16'), false);
+    assert.equal(hasGpuExclusions('AMPERE_16,ADA_24'), false);
+    assert.equal(hasGpuExclusions(''), false);
+    assert.equal(hasGpuExclusions(null), false);
+    assert.equal(hasGpuExclusions(undefined), false);
+  });
+
+  it('is true when any entry is an exclusion, wherever it sits', () => {
+    assert.equal(hasGpuExclusions('AMPERE_16,-NVIDIA RTX A4500'), true);
+    assert.equal(hasGpuExclusions('-NVIDIA RTX A4500,AMPERE_16'), true);
+    assert.equal(
+      hasGpuExclusions('AMPERE_16,-NVIDIA RTX A4500,-NVIDIA L40'),
+      true
+    );
+  });
+
+  it('trims entries the way the server does', () => {
+    // The server splits on ',' then trims each token, so a spaced list is the same
+    // list. Missing this would drop exclusions on a hand-written gpuIds string.
+    assert.equal(hasGpuExclusions('AMPERE_16, -NVIDIA RTX A4500'), true);
+    assert.equal(hasGpuExclusions('AMPERE_16 , ADA_24'), false);
+  });
+
+  it('ignores empty entries from stray commas', () => {
+    assert.equal(hasGpuExclusions('AMPERE_16,,ADA_24'), false);
+    assert.equal(hasGpuExclusions('AMPERE_16,'), false);
+    assert.equal(hasGpuExclusions(','), false);
+  });
+
+  it('does not treat a lone "-" as an exclusion', () => {
+    // It excludes nothing server-side, so triggering the restore for it would be a
+    // pure cost — hence the length > 1 check.
+    assert.equal(hasGpuExclusions('AMPERE_16,-'), false);
+    assert.equal(hasGpuExclusions('-'), false);
+  });
+
+  it('is not confused by a hyphen inside a pool or SKU name', () => {
+    // Only a LEADING '-' marks an exclusion. Interior hyphens are ordinary.
+    assert.equal(hasGpuExclusions('AMPERE_16,NVIDIA-RTX-A4500'), false);
+    assert.equal(hasGpuExclusions('US-TX-3'), false);
+    assert.equal(hasGpuExclusions('-NVIDIA-RTX-A4500'), true);
   });
 });

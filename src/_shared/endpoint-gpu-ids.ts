@@ -11,47 +11,55 @@
 //      read-verify the live GPU config before or after a write (issue #63).
 //   2. A v2 PATCH round-trips the endpoint through a representation with nowhere
 //      to keep exclusions, so they can be lost even by an update that never
-//      mentions GPUs. Re-asserting the pre-update gpuIds afterwards restores them,
-//      and is a no-op when nothing was dropped.
+//      mentions GPUs. Re-asserting the pre-update gpuIds afterwards restores them.
+//      Callers skip the write entirely when the patch left gpuIds alone, because the
+//      write itself is not free: it re-runs validation and can bump the SLS version,
+//      rolling the endpoint's workers.
 //
 // saveEndpoint is NOT a sparse update: an id+name+gpuIds-only call was measured
 // resetting workersMax 7→3, idleTimeout 42→10 and scalerValue 9→4 to server
-// defaults. So every field read has to be echoed back on write. That is why the
-// snapshot query and the input builder live together here rather than being
-// reimplemented per call site.
+// defaults. So every field the resolver writes unconditionally has to be echoed back
+// — but ONLY those. Echoing a field whose write is gated does damage rather than
+// preventing it (see buildSaveEndpointInput). That balance is why the snapshot query
+// and the input builder live together here rather than being reimplemented per call
+// site.
 
 import type { ToolRuntime } from '../tools/runtime.js';
 
+// Exactly the fields the update resolver writes UNCONDITIONALLY, so that omitting
+// one would reset it. Fields whose write is gated on `input.<field> !== undefined`
+// (compliance, modelReferences) or on a truthy derived value (templateId,
+// networkVolumeIds) are deliberately absent: for those, omission is already a no-op,
+// and echoing them does harm. See buildSaveEndpointInput.
 export interface EndpointSnapshot {
   id: string;
   name: string;
-  gpuIds: string;
+  // Nullable: a CPU endpoint has no gpuIds.
+  gpuIds: string | null;
   gpuCount: number;
   workersMin: number;
   workersMax: number;
   idleTimeout: number;
   scalerType: string;
   scalerValue: number;
-  executionTimeoutMs: number;
+  // Column is `Int? @default(0)` — nullable despite the non-null-looking default.
+  executionTimeoutMs: number | null;
+  // Written unconditionally AND compared for the SLS-version bump, so omitting it
+  // means the comparison sees `{requestTTL: undefined}` against a stored value and
+  // reports a change — a rolling worker restart for a write that changed nothing.
+  requestTTL: number | null;
   flashBootType: string;
   type: string;
   locations: string | null;
-  templateId: string | null;
   // A comma-separated String on read AND write, not a list.
   allowedCudaVersions: string | null;
   minCudaVersion: string | null;
-  // A [Compliance] ENUM on input, not [String] — the server rejects 'gdpr' and
-  // suggests 'GDPR'. Read values are already enum names: pass back verbatim.
-  compliance: string[] | null;
-  modelReferences: string[] | null;
-  // Nulled UNCONDITIONALLY by the server when omitted from the input (it is not a
-  // skip-if-undefined field), so it has to be read and echoed or a CPU endpoint's
-  // instance selection is wiped by any write through this builder.
-  instanceIds: string[] | null;
-  networkVolumeIds: Array<{
-    networkVolumeId: string;
-    dataCenterId: string | null;
-  }> | null;
+  // Nulled UNCONDITIONALLY when omitted (`input?.instanceIds ? join(',') : null`),
+  // so it has to be read and echoed or a CPU endpoint's instance selection is wiped
+  // by any write through this builder. Reads as `[]`, never null, when there are
+  // none — hence echoed only when non-empty, since `[]` is truthy and would be
+  // written as an empty string where the column held NULL.
+  instanceIds: string[];
 }
 
 interface EndpointSnapshotResponse {
@@ -62,8 +70,14 @@ interface EndpointSnapshotResponse {
 
 // Queries ONE endpoint by id. `myself { endpoints }` is capped at 400 rows,
 // oldest-first, with no pagination — so on a large account the endpoint being
-// updated may simply not be in the list, and the exclusion protection would
-// silently no-op. `endpoint(id:)` has no cap and returns one row instead of 400.
+// updated could simply be absent from the list, and the exclusion protection would
+// silently no-op. `endpoint(id:)` has no cap, returns one row instead of 400, and
+// throws for an id it cannot see rather than reporting a false "no exclusions".
+//
+// Selects only what the write needs. Every extra field is a liability: several
+// Endpoint fields carry their own field-level authorisation, and one rejected field
+// fails the entire read even when the rest came back — which turns into a skipped
+// GPU check on an endpoint that needed it.
 const SNAPSHOT_QUERY = `
   query EndpointSnapshot($id: String!) {
     myself {
@@ -78,19 +92,13 @@ const SNAPSHOT_QUERY = `
         scalerType
         scalerValue
         executionTimeoutMs
+        requestTTL
         flashBootType
         type
         locations
-        templateId
         allowedCudaVersions
         minCudaVersion
-        compliance
-        modelReferences
         instanceIds
-        networkVolumeIds {
-          networkVolumeId
-          dataCenterId
-        }
       }
     }
   }
@@ -115,7 +123,9 @@ export async function readEndpointSnapshot(
  * True when a gpuIds string carries at least one SKU exclusion, i.e. an entry
  * beginning with '-'. Those are the entries v2 REST cannot represent.
  */
-export function hasGpuExclusions(gpuIds: string | null | undefined): boolean {
+export function hasGpuExclusions(
+  gpuIds: string | null | undefined
+): gpuIds is string {
   if (!gpuIds) return false;
   return gpuIds
     .split(',')
@@ -144,36 +154,44 @@ export function buildSaveEndpointInput(
     scalerType: snapshot.scalerType,
     scalerValue: snapshot.scalerValue,
     executionTimeoutMs: snapshot.executionTimeoutMs,
+    requestTTL: snapshot.requestTTL,
     flashBootType: snapshot.flashBootType,
     type: snapshot.type,
     locations: snapshot.locations,
-    networkVolumeIds:
-      snapshot.networkVolumeIds && snapshot.networkVolumeIds.length > 0
-        ? // Drop dataCenterId: NetworkVolumeIdsInput takes networkVolumeId ONLY,
-          // and the read shape is rejected outright.
-          snapshot.networkVolumeIds.map((v) => ({
-            networkVolumeId: v.networkVolumeId,
-          }))
-        : null,
-  };
-
-  // Echoed only when set. Omitting a field that currently reads null resets it to
-  // a default that is already null, while an explicit null risks a server-side
-  // type rejection for no gain.
-  for (const [key, value] of Object.entries({
-    templateId: snapshot.templateId,
     allowedCudaVersions:
       overrides.allowedCudaVersions ?? snapshot.allowedCudaVersions,
     minCudaVersion: overrides.minCudaVersion ?? snapshot.minCudaVersion,
-    compliance: snapshot.compliance,
-    modelReferences: snapshot.modelReferences,
-    // Echoed for the same reason as networkVolumeIds: the server writes
-    // `instanceIds ? … : null`, so omitting it clears a CPU endpoint's instance
-    // selection rather than leaving it alone.
-    instanceIds: snapshot.instanceIds,
-  })) {
-    if (value !== null && value !== undefined) input[key] = value;
+  };
+
+  // Only when non-empty: the server writes `input.instanceIds ? join(',') : null`,
+  // and `[]` is truthy — echoing an empty list would store an empty string where
+  // the column held NULL. Omitting it when there are none writes null, which is what
+  // "none" already means.
+  // Guarded rather than `snapshot.instanceIds.length`: this builder runs inside the
+  // restore's try/catch, so a TypeError here would surface as "re-asserting the
+  // exclusions failed" and silently cost the caller their SKU pins.
+  if (snapshot.instanceIds && snapshot.instanceIds.length > 0) {
+    input.instanceIds = snapshot.instanceIds;
   }
+
+  // NOT echoed, deliberately — each of these is written only when the input carries
+  // it, so omission preserves the stored value, and echoing causes real damage:
+  //
+  //   modelReferences: gated on `!== undefined`. Reads as `[]` when there are none,
+  //     and `[]` means "clear all model references" — which strips MODEL_NAME /
+  //     MODEL_NAMES from the endpoint's env and rolls its workers. When non-empty it
+  //     re-validates every reference, and the restore carries no HuggingFace token,
+  //     so a gated model fails the write outright.
+  //   compliance: gated on `!== undefined`. Reads as `[]`, never null, and the
+  //     server re-sorts the stored csv, which can flip the change-detection compare.
+  //   templateId: only a resolved template acts on update, and echoing it re-runs
+  //     template validation — which throws if that template is gone.
+  //   networkVolumeIds: a null/omitted value means "don't touch volumes"; echoing a
+  //     legacy single-volume endpoint's volume creates rows that did not exist and
+  //     bumps the SLS version.
+  //
+  // Verified in runpod-backend node/graphql/schema/aiApi.ts (the isUpdating branch
+  // of saveEndpoint).
 
   return input;
 }

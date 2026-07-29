@@ -15,19 +15,12 @@ import {
 // pool, and '-'-prefixed GPU type ids (from list-gpu-types) exclude SKUs, so
 // a pool minus all-but-one SKU pins that SKU exactly.
 //
-// saveEndpoint is NOT a sparse update. Measured live with an
-// id+name+gpuIds-only update: workersMax 7→3, idleTimeout 42→10, scalerValue
-// 9→4 all reset to server defaults. Everything else held — including templateId,
-// the CUDA fields, compliance and modelReferences. So the reset set is narrower
-// than "every omitted field", but it is undocumented server behavior and could
-// widen, so this tool reads the endpoint and echoes every field back with only
-// gpuIds (and gpuCount) changed.
-//
-// Read shapes are not write shapes: networkVolumeIds reads as `NetworkVolumeIds`
-// (networkVolumeId + dataCenterId) but writes as `NetworkVolumeIdsInput`
-// (networkVolumeId ONLY), so echoing it verbatim gives `Field "dataCenterId" is
-// not defined by type "NetworkVolumeIdsInput"` and breaks every volume-bearing
-// endpoint.
+// saveEndpoint is NOT a sparse update: measured live with an id+name+gpuIds-only
+// update, workersMax 7→3, idleTimeout 42→10 and scalerValue 9→4 all reset to server
+// defaults. Which fields must be echoed, and which must NOT be, is worked out once in
+// src/_shared/endpoint-gpu-ids.ts — see buildSaveEndpointInput for the field-by-field
+// reasoning. Do not restate it here; two copies of this analysis is how it goes
+// stale.
 
 export function registerEndpointGpuTools(
   server: McpServer,
@@ -103,8 +96,11 @@ export function registerEndpointGpuTools(
         params.endpointId
       );
       if (!current) {
+        // The query fetches this endpoint by id and throws for an id it cannot see,
+        // so a null here means the GraphQL API returned no user at all for this
+        // credential — not that the endpoint is missing from some list.
         return jsonReply({
-          error: `No Serverless endpoint found with id "${params.endpointId}". Use list-endpoints to see your endpoints.`,
+          error: `Could not read endpoint "${params.endpointId}": the GraphQL API returned no user for this credential.`,
         });
       }
 

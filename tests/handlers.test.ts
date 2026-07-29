@@ -1908,6 +1908,11 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
     });
   });
 
+  // Shaped like a REAL GraphQL reply, which matters more than it looks: the earlier
+  // version of this fixture used `null` for the list fields and omitted instanceIds.
+  // The live resolvers return `[]` for all of them, never null, so the fixture hid
+  // both a crash (instanceIds undefined) and the reason several fields must not be
+  // echoed at all — `[]` is truthy server-side and means "clear this".
   const gpuSnapshotFixture = {
     id: 'ep_1',
     name: 'ep',
@@ -1919,15 +1924,13 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
     scalerType: 'QUEUE_DELAY',
     scalerValue: 4,
     executionTimeoutMs: 600000,
+    requestTTL: 600,
     flashBootType: 'FLASHBOOT',
     type: 'QB',
     locations: null,
-    templateId: 'tpl_1',
     allowedCudaVersions: null,
     minCudaVersion: null,
-    compliance: null,
-    modelReferences: null,
-    networkVolumeIds: null,
+    instanceIds: [],
   };
 
   // ---- issue #63: v2 cannot represent GPU SKU exclusions ----
@@ -1993,8 +1996,32 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
         restore.variables.input.gpuIds,
         'AMPERE_48,ADA_48_PRO,-NVIDIA RTX A6000,-NVIDIA L40'
       );
-      // saveEndpoint is not sparse, so unrelated fields are echoed back.
-      assert.equal(restore.variables.input.templateId, 'tpl_1');
+      // saveEndpoint is not sparse, so the fields it writes unconditionally are
+      // echoed back — including requestTTL, whose absence would otherwise register as
+      // a change and roll the endpoint's workers.
+      assert.equal(restore.variables.input.requestTTL, 600);
+      assert.equal(restore.variables.input.executionTimeoutMs, 600000);
+      // But NOT the fields whose write is gated on the input carrying them. Echoing
+      // these does damage: `modelReferences: []` means "clear all model references"
+      // and strips MODEL_NAME from the endpoint's env, `compliance: []` re-sorts a
+      // stored csv, templateId re-runs template validation, and networkVolumeIds
+      // creates volume rows on a legacy single-volume endpoint. Omission preserves
+      // all four.
+      for (const gated of [
+        'modelReferences',
+        'compliance',
+        'templateId',
+        'networkVolumeIds',
+      ]) {
+        assert.equal(
+          gated in (restore.variables.input as Record<string, unknown>),
+          false,
+          `${gated} must not be echoed`
+        );
+      }
+      // instanceIds reads as [] and `[]` is truthy server-side, so an empty list
+      // would be written as '' where the column held NULL.
+      assert.equal('instanceIds' in restore.variables.input, false);
 
       const reply = parseText(out);
       assert.equal(
@@ -2143,6 +2170,69 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       // A GraphQL outage must not block an unrelated update.
       assert.equal(outbound.at(-1)!.method, 'PATCH');
       assert.equal(parseText(out).id, 'ep_1');
+      // But it must not pass silently either. Without this the caller cannot tell
+      // "no exclusions to lose" from "the check never ran" — and the second case is
+      // issue #63 recurring behind a claim that it is fixed. Reachable with a
+      // credential that can PATCH over REST but cannot read the endpoint through
+      // GraphQL `myself`.
+      const skipped = parseText(out)._gpuIdsCheckSkipped as string;
+      assert.match(skipped, /could not be read/);
+      assert.match(skipped, /set-endpoint-gpus/);
+    });
+  });
+
+  it('update-endpoint discloses a null GraphQL user as a skipped gpuIds check', async () => {
+    await withV2(async () => {
+      // HTTP 200 with `myself: null` and no errors array — a credential with no user
+      // identity on the GraphQL API. Distinct from a thrown error, same consequence.
+      const { handlers, outbound } = harness({
+        steps: [
+          { status: 200, jsonBody: { data: { myself: null } } },
+          { status: 200, jsonBody: { id: 'ep_1' } },
+        ],
+      });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        imageName: 'img:9',
+      });
+      assert.equal(outbound.at(-1)!.method, 'PATCH');
+      assert.match(
+        parseText(out)._gpuIdsCheckSkipped as string,
+        /no user for this credential/
+      );
+    });
+  });
+
+  it('update-endpoint skips the restore write when the patch left gpuIds alone', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        steps: [
+          {
+            status: 200,
+            jsonBody: { data: { myself: { endpoint: gpuSnapshotFixture } } },
+          },
+          { status: 200, jsonBody: { id: 'ep_1' } },
+          // Exclusions survived the patch.
+          {
+            status: 200,
+            jsonBody: { data: { myself: { endpoint: gpuSnapshotFixture } } },
+          },
+        ],
+      });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        imageName: 'img:9',
+      });
+      // Read, PATCH, re-read — and NO saveEndpoint. The write is not free: it
+      // re-runs validation and can bump the SLS version, which rolls the endpoint's
+      // workers. This is also the path taken once the v2 facade stops dropping
+      // exclusions, so the compensation must disappear on its own.
+      assert.equal(outbound.length, 3);
+      assert.equal(
+        outbound.some((o) => (o.body ?? '').includes('saveEndpoint')),
+        false
+      );
+      assert.equal(parseText(out).id, 'ep_1');
     });
   });
 
@@ -2155,9 +2245,17 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
             jsonBody: { data: { myself: { endpoint: gpuSnapshotFixture } } },
           },
           { status: 200, jsonBody: { id: 'ep_1' } },
+          // The post-patch read has to show the exclusions ACTUALLY dropped, or the
+          // restore is correctly skipped and there is no failure to report.
           {
             status: 200,
-            jsonBody: { data: { myself: { endpoint: gpuSnapshotFixture } } },
+            jsonBody: {
+              data: {
+                myself: {
+                  endpoint: { ...gpuSnapshotFixture, gpuIds: 'AMPERE_48' },
+                },
+              },
+            },
           },
           { status: 500, jsonBody: {} },
         ],
@@ -3035,9 +3133,11 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
       flashBootType: 'PRIORITY_FLASHBOOT',
       type: 'QB',
       locations: 'US-TX-3',
+      requestTTL: 600,
       templateId: 'tpl_pinme',
       allowedCudaVersions: '12.4,12.8',
       minCudaVersion: '12.4',
+      instanceIds: [],
       compliance: ['GDPR'],
       modelReferences: ['model_a'],
       networkVolumeIds: [{ networkVolumeId: 'nv_1', dataCenterId: 'US-TX-3' }],
@@ -3056,20 +3156,38 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
       flashBootType: 'FLASHBOOT',
       type: 'QB',
       locations: null,
+      requestTTL: null,
       templateId: 'tpl_plain',
-      // No CUDA constraint or tags on this endpoint: these read null.
+      // No CUDA constraint on this endpoint: these read null.
       allowedCudaVersions: null,
       minCudaVersion: null,
-      compliance: null,
-      modelReferences: null,
+      // The live resolvers return [] for these, never null.
+      instanceIds: [],
+      compliance: [],
+      modelReferences: [],
       networkVolumeIds: [],
     },
   ];
-  // Fixture keys that must survive the echo unchanged. gpuIds is the one field
-  // the tool replaces; networkVolumeIds is asserted separately because read and
-  // write use different shapes.
+  // Keys the resolver writes only when the input carries them, so omission
+  // preserves the stored value and echoing does damage: `modelReferences: []` clears
+  // every model reference (stripping MODEL_NAME from the endpoint's env),
+  // `compliance: []` re-sorts a stored csv, templateId re-runs template validation
+  // and throws if that template is gone, networkVolumeIds creates volume rows on a
+  // legacy single-volume endpoint, and `instanceIds: []` is truthy server-side so it
+  // writes '' where the column held NULL. Each must be ABSENT from the mutation.
+  const gatedKeys = [
+    'templateId',
+    'compliance',
+    'modelReferences',
+    'networkVolumeIds',
+    'instanceIds',
+  ];
+  // Everything else must survive the echo unchanged, because the resolver writes it
+  // unconditionally. gpuIds is the one field the tool replaces. Derived from the
+  // fixture on purpose: add a field to the fixture and the test demands it be
+  // handled one way or the other.
   const preservedKeys = Object.keys(endpoints[0]).filter(
-    (k) => k !== 'gpuIds' && k !== 'networkVolumeIds'
+    (k) => k !== 'gpuIds' && !gatedKeys.includes(k)
   );
   // The snapshot query fetches ONE endpoint by id (myself.endpoints is capped at
   // 400 rows with no pagination, so it can't be relied on).
@@ -3118,23 +3236,15 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
       );
     }
     assert.equal(input.gpuIds, 'AMPERE_16,-NVIDIA RTX A4500');
-    // NetworkVolumeIdsInput accepts networkVolumeId ONLY; the server rejects
-    // dataCenterId outright, breaking every endpoint with a volume. So assert
-    // the exact key set, not just the id.
-    assert.deepEqual(input.networkVolumeIds, [{ networkVolumeId: 'nv_1' }]);
-    for (const entry of input.networkVolumeIds as Array<
-      Record<string, unknown>
-    >) {
-      assert.deepEqual(
-        Object.keys(entry),
-        ['networkVolumeId'],
-        'NetworkVolumeIdsInput accepts networkVolumeId only'
-      );
+    // The gated fields must not appear at all. This endpoint has a volume, a
+    // compliance tag and a model reference, so an echo would be visible here.
+    for (const key of gatedKeys) {
+      assert.equal(key in input, false, `${key} must NOT be echoed`);
     }
     // No stray fields beyond the echo + the GPU change.
     assert.deepEqual(
       Object.keys(input).sort(),
-      [...preservedKeys, 'gpuIds', 'networkVolumeIds'].sort()
+      [...preservedKeys, 'gpuIds'].sort()
     );
     const payload = parseText(out);
     assert.equal(payload.previousGpuIds, 'AMPERE_16');
@@ -3182,19 +3292,24 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
       'AMPERE_16,AMPERE_24,-NVIDIA RTX A4500,-NVIDIA L4'
     );
     assert.equal(input.gpuCount, 2);
-    assert.equal(input.networkVolumeIds, null);
     assert.equal(input.workersMax, 1);
-    // ep_plain has a template but no CUDA constraint, tags or model references:
-    // the template is carried over, the null fields omitted rather than sent as
-    // explicit nulls.
-    assert.equal(input.templateId, 'tpl_plain');
-    for (const key of [
-      'allowedCudaVersions',
-      'minCudaVersion',
-      'compliance',
-      'modelReferences',
-    ]) {
-      assert.equal(key in input, false, `${key} is null — omit, do not send`);
+    // ep_plain has no volumes, so nothing to echo — but the key must be absent
+    // rather than an explicit null: null and omitted both mean "don't touch
+    // volumes", and sending the key at all is what created rows on a legacy
+    // single-volume endpoint.
+    assert.equal('networkVolumeIds' in input, false);
+    // Its stored requestTTL is null, and that null must still be echoed: the
+    // server compares `'requestTTL' in input` for the version bump, so omitting it
+    // registers as a change and rolls the workers.
+    assert.equal('requestTTL' in input, true);
+    assert.equal(input.requestTTL, null);
+    // The CUDA fields read null on this endpoint and are echoed as null, because the
+    // resolver writes them unconditionally.
+    assert.equal(input.allowedCudaVersions, null);
+    assert.equal(input.minCudaVersion, null);
+    // Gated fields stay out even when they read as empty rather than populated.
+    for (const key of gatedKeys) {
+      assert.equal(key in input, false, `${key} must NOT be echoed`);
     }
   });
 
@@ -3227,9 +3342,11 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
     }
   });
 
-  it('fails BEFORE any mutation: unknown endpoint (after read), and missing GPU params (no calls at all)', async () => {
-    // With endpoint(id:) an unknown id comes back as `endpoint: null` rather than
-    // being filtered out client-side from a 400-row list.
+  it('fails BEFORE any mutation: unreadable endpoint (after read), and missing GPU params (no calls at all)', async () => {
+    // `myself: {endpoint: null}` does NOT mean "unknown id" — the resolver throws
+    // for an id it cannot see. A null reaches here only when the GraphQL API returns
+    // no user for the credential, and the message has to say that rather than
+    // pointing the caller at list-endpoints.
     const unknown = harness({
       jsonBodies: [{ data: { myself: { endpoint: null } } }],
     });
@@ -3240,7 +3357,7 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
     assert.equal(unknown.outbound.length, 1);
     assert.match(
       parseText(unknownOut).error as string,
-      /No Serverless endpoint/
+      /returned no user for this credential/
     );
 
     const none = harness({ jsonBodies: [queryBody] });

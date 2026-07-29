@@ -1,5 +1,5 @@
 ---
-'@runpod/mcp-server': patch
+'@runpod/mcp-server': minor
 ---
 
 Fix Claude Code detection on Windows in the install wizard (#56).
@@ -72,15 +72,37 @@ field survived.
 `update-endpoint` now reads `gpuIds` before patching, then re-reads the endpoint after the
 patch and re-applies that `gpuIds` on top, reporting it under `_gpuIdsPreserved`. The
 re-read matters: `saveEndpoint` is not sparse, so echoing the pre-patch snapshot would put
-back whatever the caller had just changed. Endpoints without exclusions (the common case) are untouched and pay
-no extra write. An explicit `gpuPoolIds` still wins — the caller is deliberately rewriting
-the pool list — but the reply now names the exclusions that were lost. If the restore
-itself fails, the reply says so and quotes the expected `gpuIds` rather than reporting a
-clean success.
+back whatever the caller had just changed. Endpoints without exclusions (the common case)
+are untouched and pay no extra write, and the restore is skipped entirely when the patch
+left `gpuIds` alone — so the compensation disappears on its own once the v2 facade stops
+rebuilding `gpuIds` from `gpu.pools`. An explicit `gpuPoolIds` still wins — the caller is
+deliberately rewriting the pool list — but the reply now names the exclusions that were
+lost. If the restore itself fails, the reply says so and quotes the expected `gpuIds`
+rather than reporting a clean success.
+
+If the `gpuIds` read fails, the update still applies — a GPU safety net must not block an
+unrelated change — but the reply now carries `_gpuIdsCheckSkipped` saying so. Silence there
+was indistinguishable from "this endpoint has no exclusions to lose", which is issue #63
+recurring behind a claim that it is fixed. It is reachable with a credential that can PATCH
+over REST but cannot read the endpoint through GraphQL `myself`.
+
+The restore echoes only the fields `saveEndpoint` writes unconditionally. Fields it writes
+solely when the input carries them are deliberately omitted, because echoing a read value
+back does damage: `modelReferences` reads as `[]` when empty, and `[]` means *clear all
+model references*, which strips `MODEL_NAME` from the endpoint's env and rolls its workers;
+a non-empty value re-validates every reference without a HuggingFace token, so a gated model
+fails the write outright. `compliance` reads as `[]` and is re-sorted server-side;
+`templateId` re-runs template validation and throws if that template is gone;
+`networkVolumeIds` creates volume rows on a legacy single-volume endpoint. `requestTTL` is
+now read and echoed, because it *is* written unconditionally and is compared for the
+version bump — omitting it registered as a change and rolled the workers for nothing.
 
 `get-endpoint` gains `includeGpuIds`, which adds the real `gpuIds` string and a
-`gpuIdsHasExclusions` flag, so an endpoint's true GPU selection can finally be read back.
-Previously there was no way to verify it through the MCP tools at all.
+`gpuIdsHasExclusions` flag, so an endpoint's true GPU selection can be read back. Before
+this, the only way to see it was `set-endpoint-gpus`, which reports `gpuIds` in its reply —
+i.e. you had to write to read.
 
 Cost: one GraphQL read per v2 `update-endpoint` call, plus a re-read and a write only for
-endpoints that actually use exclusions.
+endpoints that actually use exclusions AND actually lost them. Note that this sends the
+caller's API key to the authenticated GraphQL host on every v2 `update-endpoint`; if you
+override `RUNPOD_AUTHED_GRAPHQL_URL`, point it only at a host you trust with that.
