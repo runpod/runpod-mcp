@@ -4,12 +4,20 @@ import assert from 'node:assert/strict';
 import {
   s256,
   validatePkceAuthorization,
+  validatePkceVerifier,
   verifyPkce,
 } from '../src/oauth/pkce.js';
 
 // RFC 7636 Appendix B canonical test vector.
 const VERIFIER = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
 const CHALLENGE = 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM';
+
+function authorizationError(
+  input: Parameters<typeof validatePkceAuthorization>[0]
+): string | null {
+  const result = validatePkceAuthorization(input);
+  return result.ok ? null : result.error;
+}
 
 describe('s256', () => {
   it('reproduces the RFC 7636 Appendix B vector (unpadded base64url)', () => {
@@ -19,18 +27,18 @@ describe('s256', () => {
 
 describe('validatePkceAuthorization', () => {
   it('accepts a valid S256 challenge', () => {
-    assert.equal(
+    assert.deepEqual(
       validatePkceAuthorization({
         codeChallenge: CHALLENGE,
         codeChallengeMethod: 'S256',
       }),
-      null
+      { ok: true, codeChallenge: CHALLENGE }
     );
   });
 
   it('rejects a missing challenge', () => {
     assert.equal(
-      validatePkceAuthorization({
+      authorizationError({
         codeChallenge: null,
         codeChallengeMethod: null,
       }),
@@ -40,7 +48,7 @@ describe('validatePkceAuthorization', () => {
 
   it('rejects a missing method instead of treating it as S256', () => {
     assert.equal(
-      validatePkceAuthorization({
+      authorizationError({
         codeChallenge: CHALLENGE,
         codeChallengeMethod: null,
       }),
@@ -50,7 +58,7 @@ describe('validatePkceAuthorization', () => {
 
   it('rejects plain', () => {
     assert.equal(
-      validatePkceAuthorization({
+      authorizationError({
         codeChallenge: VERIFIER,
         codeChallengeMethod: 'plain',
       }),
@@ -60,12 +68,32 @@ describe('validatePkceAuthorization', () => {
 
   it('rejects a malformed S256 challenge', () => {
     assert.equal(
-      validatePkceAuthorization({
+      authorizationError({
         codeChallenge: `${CHALLENGE}=`,
         codeChallengeMethod: 'S256',
       }),
       'code_challenge must be a 43-character base64url S256 value.'
     );
+  });
+});
+
+describe('validatePkceVerifier', () => {
+  it('returns a normalized valid verifier', () => {
+    assert.deepEqual(validatePkceVerifier(VERIFIER), {
+      ok: true,
+      codeVerifier: VERIFIER,
+    });
+  });
+
+  it('rejects missing and malformed verifiers', () => {
+    assert.deepEqual(validatePkceVerifier(null), {
+      ok: false,
+      error: 'code_verifier is required.',
+    });
+    assert.deepEqual(validatePkceVerifier('too-short'), {
+      ok: false,
+      error: 'code_verifier must be 43 to 128 unreserved characters.',
+    });
   });
 });
 

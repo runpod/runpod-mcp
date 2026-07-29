@@ -188,7 +188,7 @@ describe('OAuth PKCE endpoints', () => {
     flashStatus.codeChallenge = null;
     flashStatus.codeChallengeMethod = null;
 
-    const res = await token();
+    const res = await token(VERIFIER);
     assert.equal(res.statusCode, 400);
     assert.deepEqual(res.body, {
       error: 'invalid_grant',
@@ -197,14 +197,24 @@ describe('OAuth PKCE endpoints', () => {
     });
   });
 
-  it('rejects a missing or wrong verifier', async () => {
+  it('rejects malformed verifiers without reading or consuming the code', async () => {
     const missing = await token();
     assert.equal(missing.statusCode, 400);
     assert.equal(missing.body?.error, 'invalid_grant');
+    assert.equal(backendRequests.length, 0);
+
+    const malformed = await token('too-short');
+    assert.equal(malformed.statusCode, 400);
+    assert.equal(
+      malformed.body?.error_description,
+      'code_verifier must be 43 to 128 unreserved characters.'
+    );
+    assert.equal(backendRequests.length, 0);
 
     const wrong = await token('a'.repeat(43));
     assert.equal(wrong.statusCode, 400);
     assert.equal(wrong.body?.error_description, 'PKCE verification failed.');
+    assert.equal(backendRequests.length, 1);
   });
 
   it('returns the API key only for a matching verifier', async () => {

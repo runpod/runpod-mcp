@@ -12,6 +12,14 @@ export function isLoopbackHost(hostname: string): boolean {
 const S256_CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
 const CODE_VERIFIER = /^[A-Za-z0-9._~-]{43,128}$/;
 
+type PkceAuthorizationResult =
+  | { ok: true; codeChallenge: string }
+  | { ok: false; error: string };
+
+type PkceVerifierResult =
+  | { ok: true; codeVerifier: string }
+  | { ok: false; error: string };
+
 /**
  * S256 transform: base64url(SHA-256(verifier)), unpadded — RFC 7636 §4.2.
  */
@@ -38,19 +46,38 @@ function safeEqual(a: string, b: string): boolean {
 export function validatePkceAuthorization(input: {
   codeChallenge?: string | null;
   codeChallengeMethod?: string | null;
-}): string | null {
+}): PkceAuthorizationResult {
   const { codeChallenge, codeChallengeMethod } = input;
 
   if (!codeChallenge) {
-    return 'code_challenge is required.';
+    return { ok: false, error: 'code_challenge is required.' };
   }
   if (codeChallengeMethod !== 'S256') {
-    return 'code_challenge_method must be S256.';
+    return { ok: false, error: 'code_challenge_method must be S256.' };
   }
   if (!S256_CHALLENGE.test(codeChallenge)) {
-    return 'code_challenge must be a 43-character base64url S256 value.';
+    return {
+      ok: false,
+      error: 'code_challenge must be a 43-character base64url S256 value.',
+    };
   }
-  return null;
+  return { ok: true, codeChallenge };
+}
+
+/** Validate the client-owned verifier before reading or consuming a code. */
+export function validatePkceVerifier(
+  codeVerifier?: string | null
+): PkceVerifierResult {
+  if (!codeVerifier) {
+    return { ok: false, error: 'code_verifier is required.' };
+  }
+  if (!CODE_VERIFIER.test(codeVerifier)) {
+    return {
+      ok: false,
+      error: 'code_verifier must be 43 to 128 unreserved characters.',
+    };
+  }
+  return { ok: true, codeVerifier };
 }
 
 /**
@@ -78,13 +105,10 @@ export function verifyPkce(input: {
   if (!S256_CHALLENGE.test(codeChallenge)) {
     return 'Stored code_challenge is not a valid S256 value.';
   }
-  if (!codeVerifier) {
-    return 'code_verifier is required.';
-  }
-  if (!CODE_VERIFIER.test(codeVerifier)) {
-    return 'code_verifier must be 43 to 128 unreserved characters.';
-  }
-  if (!safeEqual(s256(codeVerifier), codeChallenge)) {
+  const verifier = validatePkceVerifier(codeVerifier);
+  if (!verifier.ok) return verifier.error;
+
+  if (!safeEqual(s256(verifier.codeVerifier), codeChallenge)) {
     return 'PKCE verification failed.';
   }
   return null;

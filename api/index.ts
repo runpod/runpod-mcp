@@ -6,6 +6,7 @@ import { handleMcpRequest } from '../src/http.js';
 import {
   isLoopbackHost,
   validatePkceAuthorization,
+  validatePkceVerifier,
   verifyPkce,
 } from '../src/oauth/pkce.js';
 
@@ -155,18 +156,13 @@ async function flashGraphql<T>(query: string, field: string): Promise<T> {
  * Create a pending flash auth request (guest mutation, no auth header) and
  * return its id. The id doubles as the OAuth authorization code.
  */
-async function createFlashAuthRequest(
-  codeChallenge?: string | null,
-  codeChallengeMethod?: string | null
-): Promise<string> {
+async function createFlashAuthRequest(codeChallenge: string): Promise<string> {
   const parts: string[] = [];
   const apiKeyName = getApiKeyName();
   if (apiKeyName) parts.push(`apiKeyName: ${JSON.stringify(apiKeyName)}`);
   // These fields require the DR-1398 backend schema to be deployed.
-  if (codeChallenge)
-    parts.push(`codeChallenge: ${JSON.stringify(codeChallenge)}`);
-  if (codeChallengeMethod)
-    parts.push(`codeChallengeMethod: ${JSON.stringify(codeChallengeMethod)}`);
+  parts.push(`codeChallenge: ${JSON.stringify(codeChallenge)}`);
+  parts.push('codeChallengeMethod: "S256"');
   const args = parts.length ? `(${parts.join(', ')})` : '';
   const data = await flashGraphql<{ id: string }>(
     `mutation { createFlashAuthRequest${args} { id } }`,
@@ -315,25 +311,22 @@ async function handleAuthorize(
 
     // Require the advertised S256 PKCE policy before issuing an authorization
     // code. This applies to every client; there is no legacy non-PKCE path.
-    const pkceRequestError = validatePkceAuthorization({
+    const pkceRequest = validatePkceAuthorization({
       codeChallenge,
       codeChallengeMethod,
     });
-    if (pkceRequestError) {
+    if (!pkceRequest.ok) {
       console.warn('oauth_authorize_pkce_rejected');
       res.status(400).json({
         error: 'invalid_request',
-        error_description: pkceRequestError,
+        error_description: pkceRequest.error,
       });
       return;
     }
 
     // 1. Create a guest flash auth request; its id is the OAuth code. The PKCE
     //    challenge is persisted with it and verified at /token.
-    const requestId = await createFlashAuthRequest(
-      codeChallenge,
-      codeChallengeMethod
-    );
+    const requestId = await createFlashAuthRequest(pkceRequest.codeChallenge);
 
     console.log('oauth_authorize', {
       clientId: requestUrl.searchParams.get('client_id'),
@@ -399,13 +392,14 @@ async function handleToken(
   const params = new URLSearchParams(encodeBody(req.body));
   const grantType = params.get('grant_type');
   const code = params.get('code');
+  const codeVerifier = params.get('code_verifier');
 
   console.log('oauth_token_request', {
     grantType,
     hasCode: !!code,
     redirectUri: params.get('redirect_uri'),
     clientId: params.get('client_id'),
-    hasCodeVerifier: !!params.get('code_verifier'),
+    hasCodeVerifier: !!codeVerifier,
   });
 
   if (grantType !== 'authorization_code') {
@@ -430,6 +424,14 @@ async function handleToken(
       'invalid_grant',
       'redirect_uri is missing or not allowed.'
     );
+    return;
+  }
+
+  // Reject verifier syntax before reading backend status. An APPROVED status
+  // read consumes the authorization code, so malformed requests must fail first.
+  const verifierRequest = validatePkceVerifier(codeVerifier);
+  if (!verifierRequest.ok) {
+    tokenError(res, 400, 'invalid_grant', verifierRequest.error);
     return;
   }
 
@@ -462,7 +464,7 @@ async function handleToken(
       const pkceError = verifyPkce({
         codeChallenge: status.codeChallenge,
         codeChallengeMethod: status.codeChallengeMethod,
-        codeVerifier: params.get('code_verifier'),
+        codeVerifier: verifierRequest.codeVerifier,
       });
       if (pkceError) {
         console.warn('oauth_token_pkce_rejected', { attempt });
