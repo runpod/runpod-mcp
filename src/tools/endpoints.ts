@@ -145,7 +145,12 @@ export function registerEndpointTools(
         `${backend.base}${backend.get!(params.endpointId)}${queryString}`
       );
 
-      if (!params.includeGpuIds) return jsonReply(result);
+      // v2 only: the whole point is that v2's `gpu.pools` cannot express exclusions.
+      // v1 has no `gpu.pools`, and merging a `gpuIds` key into a v1 payload could
+      // shadow a field of a different type.
+      if (!params.includeGpuIds || backend.version !== 'v2') {
+        return jsonReply(result);
+      }
 
       // Opt-in because it is a second request against a different API. Reported as
       // an error string rather than throwing: the REST read succeeded, and losing
@@ -499,9 +504,7 @@ export function registerEndpointTools(
       }) as Record<string, unknown>;
       const result = await callRestUrl(url, 'PATCH', body);
 
-      if (!exclusionsAtRisk || gpuSnapshot === null) {
-        return jsonReply(result);
-      }
+      if (!exclusionsAtRisk) return jsonReply(result);
 
       // An explicit gpuPoolIds means the caller is deliberately rewriting the pool
       // list, so their value wins — but say plainly that the exclusions are gone,

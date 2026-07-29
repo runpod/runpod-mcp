@@ -1801,7 +1801,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       const { handlers, outbound } = harness({
         steps: [
           { status: 200, jsonBody: { scaling: { type: 'REQUEST_COUNT' } } },
-          { status: 200, jsonBody: { data: { myself: { endpoints: [] } } } },
+          { status: 200, jsonBody: { data: { myself: { endpoint: null } } } },
           { status: 200, jsonBody: { id: 'ep_1' } },
         ],
       });
@@ -1850,7 +1850,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       const { handlers, outbound } = harness({
         steps: [
           { status: 200, jsonBody: { scaling: {} } },
-          { status: 200, jsonBody: { data: { myself: { endpoints: [] } } } },
+          { status: 200, jsonBody: { data: { myself: { endpoint: null } } } },
           { status: 200, jsonBody: { id: 'ep_1' } },
         ],
       });
@@ -1869,7 +1869,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({
         steps: [
-          { status: 200, jsonBody: { data: { myself: { endpoints: [] } } } },
+          { status: 200, jsonBody: { data: { myself: { endpoint: null } } } },
           { status: 200, jsonBody: { id: 'ep_1' } },
         ],
       });
@@ -1889,7 +1889,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({
         steps: [
-          { status: 200, jsonBody: { data: { myself: { endpoints: [] } } } },
+          { status: 200, jsonBody: { data: { myself: { endpoint: null } } } },
           { status: 200, jsonBody: { id: 'ep_1' } },
         ],
       });
@@ -1942,7 +1942,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
           // 1. pre-patch read (for gpuIds)
           {
             status: 200,
-            jsonBody: { data: { myself: { endpoints: [gpuSnapshotFixture] } } },
+            jsonBody: { data: { myself: { endpoint: gpuSnapshotFixture } } },
           },
           // 2. the PATCH
           { status: 200, jsonBody: { id: 'ep_1', image: 'img:9' } },
@@ -1952,13 +1952,11 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
             jsonBody: {
               data: {
                 myself: {
-                  endpoints: [
-                    {
-                      ...gpuSnapshotFixture,
-                      workersMax: 9,
-                      gpuIds: 'AMPERE_48',
-                    },
-                  ],
+                  endpoint: {
+                    ...gpuSnapshotFixture,
+                    workersMax: 9,
+                    gpuIds: 'AMPERE_48',
+                  },
                 },
               },
             },
@@ -2020,7 +2018,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
             jsonBody: {
               data: {
                 myself: {
-                  endpoints: [{ ...gpuSnapshotFixture, workersMax: 1 }],
+                  endpoint: { ...gpuSnapshotFixture, workersMax: 1 },
                 },
               },
             },
@@ -2031,13 +2029,11 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
             jsonBody: {
               data: {
                 myself: {
-                  endpoints: [
-                    {
-                      ...gpuSnapshotFixture,
-                      workersMax: 3,
-                      gpuIds: 'AMPERE_48',
-                    },
-                  ],
+                  endpoint: {
+                    ...gpuSnapshotFixture,
+                    workersMax: 3,
+                    gpuIds: 'AMPERE_48',
+                  },
                 },
               },
             },
@@ -2086,9 +2082,10 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
             jsonBody: {
               data: {
                 myself: {
-                  endpoints: [
-                    { ...gpuSnapshotFixture, gpuIds: 'AMPERE_48,ADA_48_PRO' },
-                  ],
+                  endpoint: {
+                    ...gpuSnapshotFixture,
+                    gpuIds: 'AMPERE_48,ADA_48_PRO',
+                  },
                 },
               },
             },
@@ -2113,7 +2110,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
         steps: [
           {
             status: 200,
-            jsonBody: { data: { myself: { endpoints: [gpuSnapshotFixture] } } },
+            jsonBody: { data: { myself: { endpoint: gpuSnapshotFixture } } },
           },
           { status: 200, jsonBody: { id: 'ep_1' } },
         ],
@@ -2155,12 +2152,12 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
         steps: [
           {
             status: 200,
-            jsonBody: { data: { myself: { endpoints: [gpuSnapshotFixture] } } },
+            jsonBody: { data: { myself: { endpoint: gpuSnapshotFixture } } },
           },
           { status: 200, jsonBody: { id: 'ep_1' } },
           {
             status: 200,
-            jsonBody: { data: { myself: { endpoints: [gpuSnapshotFixture] } } },
+            jsonBody: { data: { myself: { endpoint: gpuSnapshotFixture } } },
           },
           { status: 500, jsonBody: {} },
         ],
@@ -2185,7 +2182,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
           },
           {
             status: 200,
-            jsonBody: { data: { myself: { endpoints: [gpuSnapshotFixture] } } },
+            jsonBody: { data: { myself: { endpoint: gpuSnapshotFixture } } },
           },
         ],
       });
@@ -3074,7 +3071,9 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
   const preservedKeys = Object.keys(endpoints[0]).filter(
     (k) => k !== 'gpuIds' && k !== 'networkVolumeIds'
   );
-  const queryBody = { data: { myself: { endpoints } } };
+  // The snapshot query fetches ONE endpoint by id (myself.endpoints is capped at
+  // 400 rows with no pagination, so it can't be relied on).
+  const queryBody = { data: { myself: { endpoint: endpoints[0] } } };
   const saveBody = {
     data: {
       saveEndpoint: {
@@ -3100,7 +3099,10 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
     assert.equal(outbound.length, 2);
     assert.equal(outbound[0].url, 'https://api.runpod.io/graphql');
     assert.equal(outbound[0].headers?.Authorization, 'Bearer rpa_test');
-    assert.match(JSON.parse(outbound[0].body!).query, /myself[\s\S]*endpoints/);
+    assert.match(
+      JSON.parse(outbound[0].body!).query,
+      /myself[\s\S]*endpoint\(id:/
+    );
     assert.equal(outbound[1].headers?.Authorization, 'Bearer rpa_test');
     const input = (
       JSON.parse(outbound[1].body!) as {
@@ -3159,8 +3161,10 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
   });
 
   it('builds the gpuIds string from pools + excludeGpuTypeIds; empty volume list echoes null; gpuCount overridable', async () => {
+    // ep_plain is the second fixture — no volumes, no CUDA constraints. The
+    // snapshot query returns one endpoint by id, so the fixture must be that one.
     const { handlers, outbound } = harness({
-      jsonBodies: [queryBody, saveBody],
+      jsonBodies: [{ data: { myself: { endpoint: endpoints[1] } } }, saveBody],
     });
     await handlers.get('set-endpoint-gpus')!({
       endpointId: 'ep_plain',
@@ -3224,7 +3228,11 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
   });
 
   it('fails BEFORE any mutation: unknown endpoint (after read), and missing GPU params (no calls at all)', async () => {
-    const unknown = harness({ jsonBodies: [queryBody] });
+    // With endpoint(id:) an unknown id comes back as `endpoint: null` rather than
+    // being filtered out client-side from a 400-row list.
+    const unknown = harness({
+      jsonBodies: [{ data: { myself: { endpoint: null } } }],
+    });
     const unknownOut = await unknown.handlers.get('set-endpoint-gpus')!({
       endpointId: 'ep_nope',
       gpuIds: 'ADA_24',

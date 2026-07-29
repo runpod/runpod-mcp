@@ -44,20 +44,30 @@ export interface EndpointSnapshot {
   // suggests 'GDPR'. Read values are already enum names: pass back verbatim.
   compliance: string[] | null;
   modelReferences: string[] | null;
+  // Nulled UNCONDITIONALLY by the server when omitted from the input (it is not a
+  // skip-if-undefined field), so it has to be read and echoed or a CPU endpoint's
+  // instance selection is wiped by any write through this builder.
+  instanceIds: string[] | null;
   networkVolumeIds: Array<{
     networkVolumeId: string;
     dataCenterId: string | null;
   }> | null;
 }
 
-interface MyEndpointsResponse {
-  myself: { endpoints: EndpointSnapshot[] };
+interface EndpointSnapshotResponse {
+  // Documented live response for a credential with no user identity: HTTP 200 with
+  // `myself: null` and no `errors` array, so this must be nullable.
+  myself: { endpoint: EndpointSnapshot | null } | null;
 }
 
+// Queries ONE endpoint by id. `myself { endpoints }` is capped at 400 rows,
+// oldest-first, with no pagination — so on a large account the endpoint being
+// updated may simply not be in the list, and the exclusion protection would
+// silently no-op. `endpoint(id:)` has no cap and returns one row instead of 400.
 const SNAPSHOT_QUERY = `
-  query {
+  query EndpointSnapshot($id: String!) {
     myself {
-      endpoints {
+      endpoint(id: $id) {
         id
         name
         gpuIds
@@ -76,6 +86,7 @@ const SNAPSHOT_QUERY = `
         minCudaVersion
         compliance
         modelReferences
+        instanceIds
         networkVolumeIds {
           networkVolumeId
           dataCenterId
@@ -86,15 +97,18 @@ const SNAPSHOT_QUERY = `
 `;
 
 /**
- * Reads one endpoint's full GraphQL settings. Returns null when the id is not in
- * the caller's account — callers decide whether that is an error or a skip.
+ * Reads one endpoint's full GraphQL settings. Returns null when the endpoint is not
+ * visible to this credential — callers decide whether that is an error or a skip.
+ * The resolver throws for an unknown id, which surfaces as a rejected promise.
  */
 export async function readEndpointSnapshot(
   graphqlAuthed: ToolRuntime['graphqlAuthed'],
   endpointId: string
 ): Promise<EndpointSnapshot | null> {
-  const data = await graphqlAuthed<MyEndpointsResponse>(SNAPSHOT_QUERY);
-  return data.myself.endpoints.find((e) => e.id === endpointId) ?? null;
+  const data = await graphqlAuthed<EndpointSnapshotResponse>(SNAPSHOT_QUERY, {
+    id: endpointId,
+  });
+  return data?.myself?.endpoint ?? null;
 }
 
 /**
@@ -153,6 +167,10 @@ export function buildSaveEndpointInput(
     minCudaVersion: overrides.minCudaVersion ?? snapshot.minCudaVersion,
     compliance: snapshot.compliance,
     modelReferences: snapshot.modelReferences,
+    // Echoed for the same reason as networkVolumeIds: the server writes
+    // `instanceIds ? … : null`, so omitting it clears a CPU endpoint's instance
+    // selection rather than leaving it alone.
+    instanceIds: snapshot.instanceIds,
   })) {
     if (value !== null && value !== undefined) input[key] = value;
   }
