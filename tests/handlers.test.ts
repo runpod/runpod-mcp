@@ -1939,13 +1939,109 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({
         steps: [
+          // 1. pre-patch read (for gpuIds)
+          {
+            status: 200,
+            jsonBody: { data: { myself: { endpoints: [gpuSnapshotFixture] } } },
+          },
+          // 2. the PATCH
+          { status: 200, jsonBody: { id: 'ep_1', image: 'img:9' } },
+          // 3. post-patch re-read — workersMax now 9, as the patch left it
           {
             status: 200,
             jsonBody: {
-              data: { myself: { endpoints: [gpuSnapshotFixture] } },
+              data: {
+                myself: {
+                  endpoints: [
+                    {
+                      ...gpuSnapshotFixture,
+                      workersMax: 9,
+                      gpuIds: 'AMPERE_48',
+                    },
+                  ],
+                },
+              },
             },
           },
-          { status: 200, jsonBody: { id: 'ep_1', image: 'img:9' } },
+          // 4. the restore
+          {
+            status: 200,
+            jsonBody: {
+              data: {
+                saveEndpoint: {
+                  id: 'ep_1',
+                  name: 'ep',
+                  gpuIds: 'AMPERE_48,ADA_48_PRO,-NVIDIA RTX A6000,-NVIDIA L40',
+                  gpuCount: 1,
+                  workersMin: 0,
+                  workersMax: 9,
+                },
+              },
+            },
+          },
+        ],
+      });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        imageName: 'img:9',
+      });
+
+      assert.equal(outbound.length, 4);
+      assert.equal(outbound[1].method, 'PATCH');
+      const restore = JSON.parse(outbound[3].body!);
+      assert.match(restore.query as string, /saveEndpoint/);
+      // The pre-patch gpuIds is carried over — the one field the patch destroys.
+      assert.equal(
+        restore.variables.input.gpuIds,
+        'AMPERE_48,ADA_48_PRO,-NVIDIA RTX A6000,-NVIDIA L40'
+      );
+      // saveEndpoint is not sparse, so unrelated fields are echoed back.
+      assert.equal(restore.variables.input.templateId, 'tpl_1');
+
+      const reply = parseText(out);
+      assert.equal(
+        (reply._gpuIdsPreserved as { gpuIds: string }).gpuIds,
+        'AMPERE_48,ADA_48_PRO,-NVIDIA RTX A6000,-NVIDIA L40'
+      );
+    });
+  });
+
+  it('update-endpoint restore does NOT revert what the caller just patched', async () => {
+    // The regression that made the first version of this fix worse than the bug:
+    // echoing the PRE-patch snapshot put the caller's own change back. Verified
+    // live — patching workersMax 1→3 silently reverted to 1 while the PATCH reply
+    // still reported 3. The restore must echo the POST-patch state, overriding
+    // only gpuIds.
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        steps: [
+          {
+            status: 200,
+            jsonBody: {
+              data: {
+                myself: {
+                  endpoints: [{ ...gpuSnapshotFixture, workersMax: 1 }],
+                },
+              },
+            },
+          },
+          { status: 200, jsonBody: { id: 'ep_1', workers: { max: 3 } } },
+          {
+            status: 200,
+            jsonBody: {
+              data: {
+                myself: {
+                  endpoints: [
+                    {
+                      ...gpuSnapshotFixture,
+                      workersMax: 3,
+                      gpuIds: 'AMPERE_48',
+                    },
+                  ],
+                },
+              },
+            },
+          },
           {
             status: 200,
             jsonBody: {
@@ -1963,28 +2059,19 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
           },
         ],
       });
-      const out = await handlers.get('update-endpoint')!({
+      await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
-        imageName: 'img:9',
+        workersMax: 3,
       });
-
-      // GraphQL read → REST PATCH → GraphQL saveEndpoint restore.
-      assert.equal(outbound.length, 3);
-      assert.equal(outbound[1].method, 'PATCH');
-      const restore = JSON.parse(outbound[2].body!);
-      assert.match(restore.query as string, /saveEndpoint/);
+      const restore = JSON.parse(outbound[3].body!);
+      // 3, the patched value — NOT 1 from the pre-patch snapshot.
+      assert.equal(
+        restore.variables.input.workersMax,
+        3,
+        "restore reverted the caller's own update"
+      );
       assert.equal(
         restore.variables.input.gpuIds,
-        'AMPERE_48,ADA_48_PRO,-NVIDIA RTX A6000,-NVIDIA L40'
-      );
-      // saveEndpoint is not sparse, so unrelated fields must be echoed back.
-      assert.equal(restore.variables.input.workersMax, 3);
-      assert.equal(restore.variables.input.idleTimeout, 5);
-      assert.equal(restore.variables.input.templateId, 'tpl_1');
-
-      const reply = parseText(out);
-      assert.equal(
-        (reply._gpuIdsPreserved as { gpuIds: string }).gpuIds,
         'AMPERE_48,ADA_48_PRO,-NVIDIA RTX A6000,-NVIDIA L40'
       );
     });
@@ -2071,6 +2158,10 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
             jsonBody: { data: { myself: { endpoints: [gpuSnapshotFixture] } } },
           },
           { status: 200, jsonBody: { id: 'ep_1' } },
+          {
+            status: 200,
+            jsonBody: { data: { myself: { endpoints: [gpuSnapshotFixture] } } },
+          },
           { status: 500, jsonBody: {} },
         ],
       });

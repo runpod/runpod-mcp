@@ -514,15 +514,32 @@ export function registerEndpointTools(
       }
 
       try {
+        // Re-read AFTER the patch. saveEndpoint is not sparse, so the restore has
+        // to echo every endpoint field — and echoing the PRE-patch snapshot would
+        // revert whatever the caller just changed. Verified live: patching
+        // workersMax 1→3 and idleTimeout 5→42, then echoing the stale snapshot,
+        // silently put both back while the PATCH reply still showed 3 and 42. Only
+        // gpuIds is carried over from before, because it is the one field the patch
+        // destroys and the post-patch read cannot recover.
+        const afterPatch = await readEndpointSnapshot(
+          graphqlAuthed,
+          endpointId
+        );
+        if (afterPatch === null) {
+          return jsonReply({
+            ...(result as Record<string, unknown>),
+            _warning: `The update applied, but this endpoint could not be re-read to restore its GPU SKU exclusions, which the patch drops. Expected gpuIds "${gpuSnapshot.gpuIds}" — restore with set-endpoint-gpus.`,
+          });
+        }
         const restored = await saveEndpoint(
           graphqlAuthed,
-          buildSaveEndpointInput(gpuSnapshot)
+          buildSaveEndpointInput(afterPatch, { gpuIds: gpuSnapshot.gpuIds })
         );
         return jsonReply({
           ...(result as Record<string, unknown>),
           _gpuIdsPreserved: {
             gpuIds: restored.saveEndpoint.gpuIds,
-            note: 'This endpoint pins GPU SKUs via gpuIds exclusions, which the v2 update cannot represent. The pre-update value was re-asserted after the patch. Read it back with get-endpoint includeGpuIds:true.',
+            note: 'This endpoint pins GPU SKUs via gpuIds exclusions, which a v2 update drops. The pre-update value was re-applied on top of the patched config. Read it back with get-endpoint includeGpuIds:true.',
           },
         });
       } catch (error) {

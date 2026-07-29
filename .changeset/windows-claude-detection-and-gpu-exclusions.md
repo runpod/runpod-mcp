@@ -32,9 +32,15 @@ card. That value exists only in the GraphQL `gpuIds` string, so a v2 `PATCH` cou
 exclusions even when the update never mentioned GPUs — silently, since nothing in the REST
 reply reveals it.
 
-`update-endpoint` now reads the authoritative `gpuIds` before patching and re-asserts it
-afterwards when it carries exclusions, reporting the preserved value under
-`_gpuIdsPreserved`. Endpoints without exclusions (the common case) are untouched and pay
+Confirmed live on 2026-07-29: an endpoint with `gpuIds` of
+`AMPERE_16,-NVIDIA RTX A4500,-NVIDIA RTX 2000 Ada Generation`, patched with only
+`{"image": "..."}`, came back as plain `AMPERE_16`. Both exclusions were gone; every other
+field survived.
+
+`update-endpoint` now reads `gpuIds` before patching, then re-reads the endpoint after the
+patch and re-applies that `gpuIds` on top, reporting it under `_gpuIdsPreserved`. The
+re-read matters: `saveEndpoint` is not sparse, so echoing the pre-patch snapshot would put
+back whatever the caller had just changed. Endpoints without exclusions (the common case) are untouched and pay
 no extra write. An explicit `gpuPoolIds` still wins — the caller is deliberately rewriting
 the pool list — but the reply now names the exclusions that were lost. If the restore
 itself fails, the reply says so and quotes the expected `gpuIds` rather than reporting a
@@ -44,5 +50,5 @@ clean success.
 `gpuIdsHasExclusions` flag, so an endpoint's true GPU selection can finally be read back.
 Previously there was no way to verify it through the MCP tools at all.
 
-Note this costs one GraphQL read per v2 `update-endpoint` call, since the prior value has
-to be known before the write that might drop it.
+Cost: one GraphQL read per v2 `update-endpoint` call, plus a re-read and a write only for
+endpoints that actually use exclusions.
