@@ -1,6 +1,11 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { WRITE, type ToolRuntime } from './runtime.js';
+import {
+  readEndpointSnapshot,
+  buildSaveEndpointInput,
+  saveEndpoint,
+} from '../_shared/endpoint-gpu-ids.js';
 
 // ============== ENDPOINT GPU PINNING ==============
 // Sets which GPUs a Serverless endpoint's workers run on, including pinning
@@ -23,38 +28,6 @@ import { WRITE, type ToolRuntime } from './runtime.js';
 // (networkVolumeId ONLY), so echoing it verbatim gives `Field "dataCenterId" is
 // not defined by type "NetworkVolumeIdsInput"` and breaks every volume-bearing
 // endpoint.
-
-interface EndpointSnapshot {
-  id: string;
-  name: string;
-  gpuIds: string;
-  gpuCount: number;
-  workersMin: number;
-  workersMax: number;
-  idleTimeout: number;
-  scalerType: string;
-  scalerValue: number;
-  executionTimeoutMs: number;
-  flashBootType: string;
-  type: string;
-  locations: string | null;
-  templateId: string | null;
-  // A comma-separated String on read AND write, not a list.
-  allowedCudaVersions: string | null;
-  minCudaVersion: string | null;
-  // A [Compliance] ENUM on input, not [String] — the server rejects 'gdpr' and
-  // suggests 'GDPR'. Read values are already enum names: pass back verbatim.
-  compliance: string[] | null;
-  modelReferences: string[] | null;
-  networkVolumeIds: Array<{
-    networkVolumeId: string;
-    dataCenterId: string | null;
-  }> | null;
-}
-
-interface MyEndpointsResponse {
-  myself: { endpoints: EndpointSnapshot[] };
-}
 
 export function registerEndpointGpuTools(
   server: McpServer,
@@ -125,38 +98,9 @@ export function registerEndpointGpuTools(
 
       // Read the endpoint's current settings — saveEndpoint resets omitted
       // endpoint-level fields to defaults, so everything must be echoed back.
-      const data = await graphqlAuthed<MyEndpointsResponse>(`
-        query {
-          myself {
-            endpoints {
-              id
-              name
-              gpuIds
-              gpuCount
-              workersMin
-              workersMax
-              idleTimeout
-              scalerType
-              scalerValue
-              executionTimeoutMs
-              flashBootType
-              type
-              locations
-              templateId
-              allowedCudaVersions
-              minCudaVersion
-              compliance
-              modelReferences
-              networkVolumeIds {
-                networkVolumeId
-                dataCenterId
-              }
-            }
-          }
-        }
-      `);
-      const current = data.myself.endpoints.find(
-        (e) => e.id === params.endpointId
+      const current = await readEndpointSnapshot(
+        graphqlAuthed,
+        params.endpointId
       );
       if (!current) {
         return jsonReply({
@@ -164,69 +108,14 @@ export function registerEndpointGpuTools(
         });
       }
 
-      const input: Record<string, unknown> = {
-        id: current.id,
-        name: current.name,
-        gpuIds,
-        gpuCount: params.gpuCount ?? current.gpuCount,
-        workersMin: current.workersMin,
-        workersMax: current.workersMax,
-        idleTimeout: current.idleTimeout,
-        scalerType: current.scalerType,
-        scalerValue: current.scalerValue,
-        executionTimeoutMs: current.executionTimeoutMs,
-        flashBootType: current.flashBootType,
-        type: current.type,
-        locations: current.locations,
-        networkVolumeIds:
-          current.networkVolumeIds && current.networkVolumeIds.length > 0
-            ? // Drop dataCenterId: NetworkVolumeIdsInput takes networkVolumeId
-              // ONLY, and the read shape is rejected outright.
-              current.networkVolumeIds.map((v) => ({
-                networkVolumeId: v.networkVolumeId,
-              }))
-            : null,
-      };
-
-      // Echoed only when set. Omitting a field that currently reads null resets
-      // it to a default that is already null, while an explicit null risks a
-      // server-side type rejection for no gain.
-      for (const [key, value] of Object.entries({
-        templateId: current.templateId,
-        allowedCudaVersions:
-          params.allowedCudaVersions ?? current.allowedCudaVersions,
-        minCudaVersion: params.minCudaVersion ?? current.minCudaVersion,
-        compliance: current.compliance,
-        modelReferences: current.modelReferences,
-      })) {
-        if (value !== null && value !== undefined) input[key] = value;
-      }
-
-      interface SaveEndpointResponse {
-        saveEndpoint: {
-          id: string;
-          name: string;
-          gpuIds: string;
-          gpuCount: number;
-          workersMin: number;
-          workersMax: number;
-        };
-      }
-
-      const result = await graphqlAuthed<SaveEndpointResponse>(
-        `
-          mutation saveEndpoint($input: EndpointInput!) {
-            saveEndpoint(input: $input) {
-              id
-              name
-              gpuIds
-              gpuCount
-              workersMin
-              workersMax
-            }
-          }
-        `,
-        { input }
+      const result = await saveEndpoint(
+        graphqlAuthed,
+        buildSaveEndpointInput(current, {
+          gpuIds,
+          gpuCount: params.gpuCount,
+          allowedCudaVersions: params.allowedCudaVersions,
+          minCudaVersion: params.minCudaVersion,
+        })
       );
 
       return jsonReply({

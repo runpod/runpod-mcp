@@ -159,27 +159,132 @@ function jsonClient(opts: {
 }
 
 // Locate the Claude Code CLI binary across common install locations and PATH.
-function findClaudeBinary(): string | null {
-  const candidates = [
-    path.join(os.homedir(), '.claude', 'local', 'claude'),
+// Claude Code is the only client here detected by locating its executable rather
+// than by an existing config file, so it is the only one that needs a PATH lookup
+// — and the lookup has to be per-platform. `command -v` is a POSIX shell builtin;
+// execSync on Windows runs through cmd.exe, which has no such builtin, so it
+// exits non-zero whether or not claude is installed. Windows uses `where.exe`
+// (not bare `where`, which PowerShell aliases to Where-Object).
+// Exported for tests: the platform decisions are pure, so both branches can be
+// exercised on any host without spawning anything or faking process.platform.
+
+/** Install locations to probe before falling back to a PATH lookup. */
+export function claudeCandidatePaths(
+  platform: string,
+  homedir: string,
+  appdata?: string
+): string[] {
+  if (platform === 'win32') {
+    return [
+      // npm -g on Windows installs a .cmd shim next to the extensionless file.
+      path.join(
+        appdata ?? path.join(homedir, 'AppData', 'Roaming'),
+        'npm',
+        'claude.cmd'
+      ),
+      path.join(homedir, '.claude', 'local', 'claude.exe'),
+      path.join(homedir, '.claude', 'local', 'claude.cmd'),
+    ];
+  }
+  return [
+    path.join(homedir, '.claude', 'local', 'claude'),
     '/usr/local/bin/claude',
     '/opt/homebrew/bin/claude',
   ];
-  for (const candidate of candidates) {
+}
+
+/**
+ * The PATH-lookup command. `command -v` is a POSIX shell builtin and execSync on
+ * Windows runs through cmd.exe, which has no such builtin — so on Windows it exits
+ * non-zero whether or not claude is installed (issue #56). `where.exe`, not bare
+ * `where`, because PowerShell aliases `where` to Where-Object.
+ */
+export function claudeLookupCommand(platform: string): string {
+  return platform === 'win32' ? 'where.exe claude' : 'command -v claude';
+}
+
+/**
+ * Picks one path from a lookup's stdout. `where.exe` can print several lines
+ * (claude and claude.cmd); prefer the .cmd shim, since that is the one runClaude
+ * can spawn. Returns null when nothing usable came back.
+ */
+export function pickClaudeBinary(
+  stdout: string,
+  platform: string
+): string | null {
+  const hits = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (hits.length === 0) return platform === 'win32' ? null : 'claude';
+  if (platform !== 'win32') return hits[0];
+  return hits.find((h) => h.toLowerCase().endsWith('.cmd')) ?? hits[0];
+}
+
+function findClaudeBinary(): string | null {
+  const platform = process.platform;
+
+  for (const candidate of claudeCandidatePaths(
+    platform,
+    os.homedir(),
+    process.env.APPDATA
+  )) {
     if (exists(candidate)) return candidate;
   }
+
   try {
-    execSync('command -v claude', { stdio: 'pipe' });
-    return 'claude';
+    // Resolve to a real path rather than returning the bare name: runClaude uses
+    // execFileSync, which does not go through a shell and so cannot resolve a
+    // .cmd shim from a bare 'claude' on Windows.
+    const out = execSync(claudeLookupCommand(platform), {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf8',
+    });
+    return pickClaudeBinary(out, platform);
   } catch {
     return null;
   }
+}
+
+// cmd.exe expands these even inside double quotes (%VAR%) or uses them to escape
+// the next character (^), so a value carrying one cannot be passed through the
+// cmd.exe wrapper below without risk of corruption. Everything else — & | < > —
+// is inert once quoted, and Node quotes each argument.
+export const CMD_UNSAFE = /[%^]/;
+
+/** True when cmd.exe would alter this argument even inside double quotes. */
+export function needsManualWindowsSetup(args: string[]): boolean {
+  return args.some((a) => CMD_UNSAFE.test(a));
 }
 
 function runClaude(binary: string, args: string[]): AddResult {
   try {
     // execFileSync (no shell) — args pass directly, so an API key with shell
     // metacharacters can't be interpreted by a shell.
+    //
+    // Windows needs cmd.exe in the middle: npm installs `claude` as a .cmd shim,
+    // and a .cmd is not directly executable — execFileSync cannot spawn one. Args
+    // still travel as an array (never a concatenated string), so they are quoted
+    // individually rather than parsed as a command line. The one thing quoting
+    // does not neutralise is % / ^, so refuse those rather than silently writing a
+    // mangled key into the user's config.
+    if (process.platform === 'win32') {
+      if (needsManualWindowsSetup(args)) {
+        return {
+          success: false,
+          message:
+            'cannot register automatically on Windows: a value contains "%" or "^", which cmd.exe would alter. Run the `claude mcp add …` command manually instead.',
+        };
+      }
+      execFileSync(
+        process.env.COMSPEC ?? 'cmd.exe',
+        ['/d', '/s', '/c', binary, ...args],
+        {
+          stdio: 'pipe',
+        }
+      );
+      return { success: true };
+    }
     execFileSync(binary, args, { stdio: 'pipe' });
     return { success: true };
   } catch (error) {

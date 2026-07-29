@@ -3,6 +3,12 @@ import { z } from 'zod';
 import { capListResult, listPaginationParams } from '../pagination.js';
 import { READ_ONLY, WRITE, DESTRUCTIVE, type ToolRuntime } from './runtime.js';
 import { logStreamParams, streamLogsReply } from './logs.js';
+import {
+  readEndpointSnapshot,
+  hasGpuExclusions,
+  buildSaveEndpointInput,
+  saveEndpoint,
+} from '../_shared/endpoint-gpu-ids.js';
 
 // ============== ENDPOINT MANAGEMENT TOOLS ==============
 // Serverless endpoint CRUD, version-aware via the backend adapter.
@@ -41,7 +47,7 @@ export function registerEndpointTools(
   server: McpServer,
   rt: ToolRuntime
 ): void {
-  const { jsonReply, callRestUrl, backendFor } = rt;
+  const { jsonReply, callRestUrl, backendFor, graphqlAuthed } = rt;
 
   // List Endpoints — v1 supports includeTemplate/includeWorkers query params;
   // v2 (GET /v2/serverless) declares none, so we only build the query under v1.
@@ -95,7 +101,7 @@ export function registerEndpointTools(
   // Get Endpoint Details
   server.tool(
     'get-endpoint',
-    'Get one Serverless endpoint by id, optionally expanding template and worker details (v1 only). On v2 the reply carries `type` (queue-based vs load-balancing routing) and `requestUrls` — the run/runsync/status/... URLs for a queue endpoint, or the base + health URLs for a load-balancing one. Read those rather than constructing endpoint URLs by hand.',
+    "Get one Serverless endpoint by id, optionally expanding template and worker details (v1 only). On v2 the reply carries `type` (queue-based vs load-balancing routing) and `requestUrls` — the run/runsync/status/... URLs for a queue endpoint, or the base + health URLs for a load-balancing one. Read those rather than constructing endpoint URLs by hand. NOTE: the `gpu.pools` list does NOT show GPU SKU exclusions; pass includeGpuIds to see an endpoint's true GPU selection.",
     {
       endpointId: z.string().describe('ID of the endpoint to retrieve'),
       includeTemplate: z
@@ -106,6 +112,12 @@ export function registerEndpointTools(
         .boolean()
         .optional()
         .describe('Include information about workers (v1 only)'),
+      includeGpuIds: z
+        .boolean()
+        .optional()
+        .describe(
+          "Add the authoritative `gpuIds` string (pools plus any '-<GPU type id>' SKU exclusions) via GraphQL. The REST `gpu.pools` field cannot represent exclusions, so this is the only way to read an endpoint's real GPU selection. Costs one extra request."
+        ),
     },
     { title: 'Get endpoint', ...READ_ONLY },
     async (params) => {
@@ -133,7 +145,34 @@ export function registerEndpointTools(
         `${backend.base}${backend.get!(params.endpointId)}${queryString}`
       );
 
-      return jsonReply(result);
+      if (!params.includeGpuIds) return jsonReply(result);
+
+      // Opt-in because it is a second request against a different API. Reported as
+      // an error string rather than throwing: the REST read succeeded, and losing
+      // the whole reply because the GraphQL enrichment failed would be worse.
+      const snapshot = await readEndpointSnapshot(
+        graphqlAuthed,
+        params.endpointId
+      ).catch((error: unknown) => {
+        return error instanceof Error ? error.message : String(error);
+      });
+      if (typeof snapshot === 'string') {
+        return jsonReply({
+          ...(result as Record<string, unknown>),
+          _gpuIdsError: `Could not read gpuIds: ${snapshot}`,
+        });
+      }
+      if (snapshot === null) {
+        return jsonReply({
+          ...(result as Record<string, unknown>),
+          _gpuIdsError: `Endpoint "${params.endpointId}" was not in the GraphQL endpoint list, so gpuIds could not be read.`,
+        });
+      }
+      return jsonReply({
+        ...(result as Record<string, unknown>),
+        gpuIds: snapshot.gpuIds,
+        gpuIdsHasExclusions: hasGpuExclusions(snapshot.gpuIds),
+      });
     }
   );
 
@@ -441,11 +480,57 @@ export function registerEndpointTools(
         return jsonReply({ error: scalerError, status: 400 });
       }
 
+      // v2's EndpointGpuConfig is `{pools, count}` — it has nowhere to keep the
+      // '-<GPU type id>' exclusion entries that pin a SKU, so a PATCH can lose them
+      // even when it never mentions GPUs (issue #63). Read the authoritative
+      // gpuIds first; if it carries exclusions, re-assert it afterwards. Skipped
+      // entirely for endpoints without exclusions, which is the common case, so the
+      // extra round trips are only paid by the endpoints that need them.
+      const gpuSnapshot = await readEndpointSnapshot(
+        graphqlAuthed,
+        endpointId
+      ).catch(() => null);
+      const exclusionsAtRisk =
+        gpuSnapshot !== null && hasGpuExclusions(gpuSnapshot.gpuIds);
+
       const body = backend.mapUpdate({
         ...updateParams,
         scalerType,
       }) as Record<string, unknown>;
-      return jsonReply(await callRestUrl(url, 'PATCH', body));
+      const result = await callRestUrl(url, 'PATCH', body);
+
+      if (!exclusionsAtRisk || gpuSnapshot === null) {
+        return jsonReply(result);
+      }
+
+      // An explicit gpuPoolIds means the caller is deliberately rewriting the pool
+      // list, so their value wins — but say plainly that the exclusions are gone,
+      // since nothing in the v2 reply reveals it.
+      if (updateParams.gpuPoolIds?.length) {
+        return jsonReply({
+          ...(result as Record<string, unknown>),
+          _warning: `gpuPoolIds replaced this endpoint's GPU config, dropping its SKU exclusions (was "${gpuSnapshot.gpuIds}"). v2 cannot express exclusions — restore them with set-endpoint-gpus.`,
+        });
+      }
+
+      try {
+        const restored = await saveEndpoint(
+          graphqlAuthed,
+          buildSaveEndpointInput(gpuSnapshot)
+        );
+        return jsonReply({
+          ...(result as Record<string, unknown>),
+          _gpuIdsPreserved: {
+            gpuIds: restored.saveEndpoint.gpuIds,
+            note: 'This endpoint pins GPU SKUs via gpuIds exclusions, which the v2 update cannot represent. The pre-update value was re-asserted after the patch. Read it back with get-endpoint includeGpuIds:true.',
+          },
+        });
+      } catch (error) {
+        return jsonReply({
+          ...(result as Record<string, unknown>),
+          _warning: `The update applied, but re-asserting this endpoint's GPU SKU exclusions failed, so they may have been dropped. Expected gpuIds "${gpuSnapshot.gpuIds}" — verify with get-endpoint includeGpuIds:true and restore with set-endpoint-gpus if needed. Cause: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
     }
   );
 

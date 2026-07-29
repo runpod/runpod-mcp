@@ -1801,6 +1801,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       const { handlers, outbound } = harness({
         steps: [
           { status: 200, jsonBody: { scaling: { type: 'REQUEST_COUNT' } } },
+          { status: 200, jsonBody: { data: { myself: { endpoints: [] } } } },
           { status: 200, jsonBody: { id: 'ep_1' } },
         ],
       });
@@ -1808,14 +1809,16 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
         endpointId: 'ep_1',
         scalerValue: 7,
       });
-      assert.equal(outbound.length, 2);
+      // GET (scaler) → GraphQL (gpuIds preservation check) → PATCH.
+      assert.equal(outbound.length, 3);
       assert.equal(outbound[0].method, 'GET');
       assert.equal(
         outbound[0].url,
         'https://v2-rest.runpod.io/v2/serverless/ep_1'
       );
-      assert.equal(outbound[1].method, 'PATCH');
-      assert.deepEqual(JSON.parse(outbound[1].body!).scaling, {
+      const patch = outbound.at(-1)!;
+      assert.equal(patch.method, 'PATCH');
+      assert.deepEqual(JSON.parse(patch.body!).scaling, {
         type: 'REQUEST_COUNT',
         requestCount: 7,
       });
@@ -1847,6 +1850,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       const { handlers, outbound } = harness({
         steps: [
           { status: 200, jsonBody: { scaling: {} } },
+          { status: 200, jsonBody: { data: { myself: { endpoints: [] } } } },
           { status: 200, jsonBody: { id: 'ep_1' } },
         ],
       });
@@ -1854,43 +1858,268 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
         endpointId: 'ep_1',
         scalerValue: 3,
       });
-      assert.deepEqual(JSON.parse(outbound[1].body!).scaling, {
+      assert.deepEqual(JSON.parse(outbound.at(-1)!.body!).scaling, {
         type: 'QUEUE_DELAY',
         queueDelay: 3,
       });
     });
   });
 
-  it('update-endpoint skips that read when the caller names the scaler', async () => {
+  it('update-endpoint skips the scaler read when the caller names the scaler', async () => {
     await withV2(async () => {
-      const { handlers, outbound } = harness({ jsonBody: { id: 'ep_1' } });
+      const { handlers, outbound } = harness({
+        steps: [
+          { status: 200, jsonBody: { data: { myself: { endpoints: [] } } } },
+          { status: 200, jsonBody: { id: 'ep_1' } },
+        ],
+      });
       await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
         scalerType: 'QUEUE_DELAY',
         scalerValue: 3,
       });
-      assert.equal(outbound.length, 1);
-      assert.equal(outbound[0].method, 'PATCH');
+      // No REST GET for the scaler — only the gpuIds check, then the PATCH.
+      assert.equal(outbound.length, 2);
+      assert.equal(outbound.filter((o) => o.method === 'GET').length, 0);
+      assert.equal(outbound.at(-1)!.method, 'PATCH');
     });
   });
 
   it('update-endpoint → PATCH <v2>/v2/serverless/{id} with mapped body, id not in body', async () => {
     await withV2(async () => {
-      const { handlers, outbound } = harness({ jsonBody: { id: 'ep_1' } });
+      const { handlers, outbound } = harness({
+        steps: [
+          { status: 200, jsonBody: { data: { myself: { endpoints: [] } } } },
+          { status: 200, jsonBody: { id: 'ep_1' } },
+        ],
+      });
       await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
         workersMax: 5,
         imageName: 'img:3',
       });
-      assert.equal(
-        outbound[0].url,
-        'https://v2-rest.runpod.io/v2/serverless/ep_1'
-      );
-      assert.equal(outbound[0].method, 'PATCH');
-      const body = JSON.parse(outbound[0].body!);
+      const sent = outbound.at(-1)!;
+      assert.equal(sent.url, 'https://v2-rest.runpod.io/v2/serverless/ep_1');
+      assert.equal(sent.method, 'PATCH');
+      const body = JSON.parse(sent.body!);
       assert.deepEqual(body.workers, { max: 5 });
       assert.equal(body.image, 'img:3');
       assert.equal('endpointId' in body, false);
+    });
+  });
+
+  const gpuSnapshotFixture = {
+    id: 'ep_1',
+    name: 'ep',
+    gpuIds: 'AMPERE_48,ADA_48_PRO,-NVIDIA RTX A6000,-NVIDIA L40',
+    gpuCount: 1,
+    workersMin: 0,
+    workersMax: 3,
+    idleTimeout: 5,
+    scalerType: 'QUEUE_DELAY',
+    scalerValue: 4,
+    executionTimeoutMs: 600000,
+    flashBootType: 'FLASHBOOT',
+    type: 'QB',
+    locations: null,
+    templateId: 'tpl_1',
+    allowedCudaVersions: null,
+    minCudaVersion: null,
+    compliance: null,
+    modelReferences: null,
+    networkVolumeIds: null,
+  };
+
+  // ---- issue #63: v2 cannot represent GPU SKU exclusions ----
+  // EndpointGpuConfig is {pools, count}, so a PATCH round-trips the endpoint
+  // through a shape with nowhere to keep '-<GPU type id>' entries. update-endpoint
+  // reads the authoritative gpuIds first and re-asserts it after the patch.
+
+  it('update-endpoint re-asserts gpuIds when the endpoint pins GPU SKUs', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        steps: [
+          {
+            status: 200,
+            jsonBody: {
+              data: { myself: { endpoints: [gpuSnapshotFixture] } },
+            },
+          },
+          { status: 200, jsonBody: { id: 'ep_1', image: 'img:9' } },
+          {
+            status: 200,
+            jsonBody: {
+              data: {
+                saveEndpoint: {
+                  id: 'ep_1',
+                  name: 'ep',
+                  gpuIds: 'AMPERE_48,ADA_48_PRO,-NVIDIA RTX A6000,-NVIDIA L40',
+                  gpuCount: 1,
+                  workersMin: 0,
+                  workersMax: 3,
+                },
+              },
+            },
+          },
+        ],
+      });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        imageName: 'img:9',
+      });
+
+      // GraphQL read → REST PATCH → GraphQL saveEndpoint restore.
+      assert.equal(outbound.length, 3);
+      assert.equal(outbound[1].method, 'PATCH');
+      const restore = JSON.parse(outbound[2].body!);
+      assert.match(restore.query as string, /saveEndpoint/);
+      assert.equal(
+        restore.variables.input.gpuIds,
+        'AMPERE_48,ADA_48_PRO,-NVIDIA RTX A6000,-NVIDIA L40'
+      );
+      // saveEndpoint is not sparse, so unrelated fields must be echoed back.
+      assert.equal(restore.variables.input.workersMax, 3);
+      assert.equal(restore.variables.input.idleTimeout, 5);
+      assert.equal(restore.variables.input.templateId, 'tpl_1');
+
+      const reply = parseText(out);
+      assert.equal(
+        (reply._gpuIdsPreserved as { gpuIds: string }).gpuIds,
+        'AMPERE_48,ADA_48_PRO,-NVIDIA RTX A6000,-NVIDIA L40'
+      );
+    });
+  });
+
+  it('update-endpoint does NOT re-assert when the endpoint has no exclusions', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        steps: [
+          {
+            status: 200,
+            jsonBody: {
+              data: {
+                myself: {
+                  endpoints: [
+                    { ...gpuSnapshotFixture, gpuIds: 'AMPERE_48,ADA_48_PRO' },
+                  ],
+                },
+              },
+            },
+          },
+          { status: 200, jsonBody: { id: 'ep_1' } },
+        ],
+      });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        imageName: 'img:9',
+      });
+      // No third call: a plain pool list survives a v2 patch on its own.
+      assert.equal(outbound.length, 2);
+      assert.equal(outbound[1].method, 'PATCH');
+      assert.equal('_gpuIdsPreserved' in parseText(out), false);
+    });
+  });
+
+  it('update-endpoint warns instead of restoring when the caller sets gpuPoolIds', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        steps: [
+          {
+            status: 200,
+            jsonBody: { data: { myself: { endpoints: [gpuSnapshotFixture] } } },
+          },
+          { status: 200, jsonBody: { id: 'ep_1' } },
+        ],
+      });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        gpuPoolIds: ['ADA_24'],
+      });
+      // The caller's explicit pool list wins — no restore — but the loss is named.
+      assert.equal(outbound.length, 2);
+      assert.match(
+        parseText(out)._warning as string,
+        /dropping its SKU exclusions/
+      );
+    });
+  });
+
+  it('update-endpoint still patches when the gpuIds pre-read fails', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        steps: [
+          { status: 500, jsonBody: {} },
+          { status: 200, jsonBody: { id: 'ep_1' } },
+        ],
+      });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        imageName: 'img:9',
+      });
+      // A GraphQL outage must not block an unrelated update.
+      assert.equal(outbound.at(-1)!.method, 'PATCH');
+      assert.equal(parseText(out).id, 'ep_1');
+    });
+  });
+
+  it('update-endpoint reports a failed restore rather than claiming success', async () => {
+    await withV2(async () => {
+      const { handlers } = harness({
+        steps: [
+          {
+            status: 200,
+            jsonBody: { data: { myself: { endpoints: [gpuSnapshotFixture] } } },
+          },
+          { status: 200, jsonBody: { id: 'ep_1' } },
+          { status: 500, jsonBody: {} },
+        ],
+      });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        imageName: 'img:9',
+      });
+      const warning = parseText(out)._warning as string;
+      assert.match(warning, /re-asserting/);
+      assert.match(warning, /AMPERE_48,ADA_48_PRO,-NVIDIA RTX A6000/);
+    });
+  });
+
+  it('get-endpoint includeGpuIds surfaces exclusions the REST reply omits', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        steps: [
+          {
+            status: 200,
+            jsonBody: { id: 'ep_1', gpu: { pools: ['AMPERE_48'], count: 1 } },
+          },
+          {
+            status: 200,
+            jsonBody: { data: { myself: { endpoints: [gpuSnapshotFixture] } } },
+          },
+        ],
+      });
+      const out = await handlers.get('get-endpoint')!({
+        endpointId: 'ep_1',
+        includeGpuIds: true,
+      });
+      assert.equal(outbound.length, 2);
+      const reply = parseText(out);
+      assert.equal(
+        reply.gpuIds,
+        'AMPERE_48,ADA_48_PRO,-NVIDIA RTX A6000,-NVIDIA L40'
+      );
+      assert.equal(reply.gpuIdsHasExclusions, true);
+      // The REST payload is preserved alongside it.
+      assert.deepEqual(reply.gpu, { pools: ['AMPERE_48'], count: 1 });
+    });
+  });
+
+  it('get-endpoint without includeGpuIds makes no GraphQL call', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'ep_1' } });
+      const out = await handlers.get('get-endpoint')!({ endpointId: 'ep_1' });
+      assert.equal(outbound.length, 1);
+      assert.equal('gpuIds' in parseText(out), false);
     });
   });
 
