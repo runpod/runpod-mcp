@@ -1,5 +1,0 @@
----
-'@runpod/mcp-server': minor
----
-
-Diagnose stuck queued jobs instead of leaving them ambiguous. A job that stays IN_QUEUE has two very different causes that its status alone cannot distinguish: no host has the endpoint's GPU available (capacity), or a worker spun up and is crash-looping — the platform marks it UNHEALTHY while the job stays queued indefinitely, and agents reliably misread that as a capacity shortage. `get-job-status` now best-effort attaches the endpoint's worker summary (`workerHealth`) and a plain-language `hint` whenever the job is IN_QUEUE (v2 only; the extra lookup never fails the status call, and the diagnosis is cached ~15s per endpoint so polling loops do not amplify into repeated worker-list fetches): UNHEALTHY workers → crash-loop guidance naming the worker ids to inspect with `stream-worker-logs`; zero workers → capacity guidance; throttled/initializing → wait guidance. The `get-job-status`, `endpoint-health`, `list-endpoint-workers`, and `stream-worker-logs` descriptions now cross-reference each other so agents are routed from a stuck job to the worker logs without prior knowledge of the platform's queueing behavior.

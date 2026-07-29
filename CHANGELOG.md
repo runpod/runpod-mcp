@@ -1,5 +1,33 @@
 # @runpod/mcp-server
 
+## 3.1.0
+
+### Minor Changes
+
+- 259241d: Enforce PKCE (S256) in every hosted OAuth flow. `/authorize` rejects missing, malformed, or non-S256 challenges before issuing a code and forwards a valid challenge to the flash backend. `/token` requires a valid, matching `code_verifier` before returning the minted key; missing PKCE state, `plain`, and non-matching verifiers are rejected.
+
+  Requires the backend `codeChallenge` / `codeChallengeMethod` fields on `createFlashAuthRequest` / `flashAuthRequestStatus` (runpod/RunPod, DR-1398) to be deployed.
+
+- f6208cd: Diagnose stuck queued jobs instead of leaving them ambiguous. A job that stays IN_QUEUE has two very different causes that its status alone cannot distinguish: no host has the endpoint's GPU available (capacity), or a worker spun up and is crash-looping — the platform marks it UNHEALTHY while the job stays queued indefinitely, and agents reliably misread that as a capacity shortage. `get-job-status` now best-effort attaches the endpoint's worker summary (`workerHealth`) and a plain-language `hint` whenever the job is IN_QUEUE (v2 only; the extra lookup never fails the status call, and the diagnosis is cached ~15s per endpoint so polling loops do not amplify into repeated worker-list fetches): UNHEALTHY workers → crash-loop guidance naming the worker ids to inspect with `stream-worker-logs`; zero workers → capacity guidance; throttled/initializing → wait guidance. The `get-job-status`, `endpoint-health`, `list-endpoint-workers`, and `stream-worker-logs` descriptions now cross-reference each other so agents are routed from a stuck job to the worker logs without prior knowledge of the platform's queueing behavior.
+- f36f191: Send the reshaped v2 Serverless write schema, and support load-balancing endpoints.
+
+  `/v2/serverless` changed its create/update contract: endpoint `type` (`QUEUE` or
+  `LOAD_BALANCER`) is now required on create, the autoscaling object moved from a flat
+  `{type, value, idleTimeout}` to a per-scaler `{type, queueDelay}` / `{type, requestCount}`,
+  and `idleTimeout` moved under `workers`. `create-endpoint` and `update-endpoint` now emit
+  that shape; previously they sent the older one and were rejected with a `422`.
+
+  `create-endpoint` gains `endpointType` for queue-based (default) versus load-balancing
+  request routing. `scalerType` defaults per endpoint type, `scalerValue` defaults to `4`, and
+  passing `scalerValue` alone on `update-endpoint` keeps the endpoint's current scaler, so
+  existing calls keep working unchanged. Responses carry `type` and `requestUrls`, and
+  `get-endpoint` / `list-endpoints` now point at `requestUrls` as the source for an endpoint's
+  URLs.
+
+  **This requires a Runpod API host serving the new schema.** Against a host still on the older
+  one, endpoint create/update return a `422` naming `queueDelay`/`requestCount`/`idleTimeout` as
+  not allowed. `RUNPOD_REST_VERSION=v1` remains available for the legacy template-based model.
+
 ## 3.0.0
 
 ### Major Changes
