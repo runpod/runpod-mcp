@@ -12,6 +12,31 @@ import { logStreamParams, streamLogsReply } from './logs.js';
 // list/get/delete route through the adapter on both versions; create/update
 // branch on backend.version because the request model differs fundamentally.
 
+// Autoscaling bounds, mirroring the v2 spec so a bad value is a clean client-side
+// error instead of a server 422. `scalerValue` feeds two different union variants
+// with different bounds — QUEUE_DELAY takes a float >= 0.5, REQUEST_COUNT an
+// integer >= 1 — so the schema can only enforce the looser floor. The
+// REQUEST_COUNT half is checked per-call by scalerValueError() below, which needs
+// the resolved scaler type.
+const MIN_QUEUE_DELAY = 0.5;
+const MIN_REQUEST_COUNT = 1;
+const MIN_IDLE_TIMEOUT = 1;
+const MAX_IDLE_TIMEOUT = 3600;
+
+// Returns a message when scalerValue is illegal for the scaler it will be sent as,
+// or undefined when it is fine (including when either input is absent — the
+// mapper's defaults are always in range).
+function scalerValueError(
+  scalerType: 'QUEUE_DELAY' | 'REQUEST_COUNT' | undefined,
+  scalerValue: number | undefined
+): string | undefined {
+  if (scalerType !== 'REQUEST_COUNT' || scalerValue === undefined) return;
+  if (!Number.isInteger(scalerValue) || scalerValue < MIN_REQUEST_COUNT) {
+    return `REQUEST_COUNT scales on whole in-flight requests per worker, so scalerValue must be an integer >= ${MIN_REQUEST_COUNT} (got ${scalerValue}). For a fractional target use scalerType QUEUE_DELAY, which takes seconds >= ${MIN_QUEUE_DELAY}.`;
+  }
+  return;
+}
+
 export function registerEndpointTools(
   server: McpServer,
   rt: ToolRuntime
@@ -191,12 +216,16 @@ export function registerEndpointTools(
         ),
       scalerValue: z
         .number()
+        .min(MIN_QUEUE_DELAY)
         .optional()
         .describe(
           'Autoscaler target for the chosen scalerType — seconds of queue delay (min 0.5) or in-flight requests per worker (integer, min 1). Defaults to 4.'
         ),
       idleTimeout: z
         .number()
+        .int()
+        .min(MIN_IDLE_TIMEOUT)
+        .max(MAX_IDLE_TIMEOUT)
         .optional()
         .describe(
           'Idle timeout in seconds before scaling a worker down (1-3600). Does not apply to QUEUE endpoints scaling on REQUEST_COUNT.'
@@ -247,6 +276,19 @@ export function registerEndpointTools(
               'LOAD_BALANCER endpoints have no request queue, so they cannot scale on QUEUE_DELAY. Use scalerType REQUEST_COUNT (the default for this endpoint type), or create a QUEUE endpoint instead.',
             status: 400,
           });
+        }
+        // REQUEST_COUNT is the default scaler for a load balancer, so the value
+        // has to be checked against the scaler that will actually be sent, not
+        // just the one the caller named.
+        const scalerError = scalerValueError(
+          params.scalerType ??
+            (params.endpointType === 'LOAD_BALANCER'
+              ? 'REQUEST_COUNT'
+              : undefined),
+          params.scalerValue
+        );
+        if (scalerError) {
+          return jsonReply({ error: scalerError, status: 400 });
         }
         const body = backend.mapCreate(params) as Record<string, unknown>;
         const result = await callRestUrl(
@@ -309,6 +351,9 @@ export function registerEndpointTools(
         .describe('New maximum number of workers'),
       idleTimeout: z
         .number()
+        .int()
+        .min(MIN_IDLE_TIMEOUT)
+        .max(MAX_IDLE_TIMEOUT)
         .optional()
         .describe(
           'New idle timeout in seconds (1-3600). Does not apply to queue endpoints scaling on REQUEST_COUNT.'
@@ -321,6 +366,7 @@ export function registerEndpointTools(
         ),
       scalerValue: z
         .number()
+        .min(MIN_QUEUE_DELAY)
         .optional()
         .describe(
           "New autoscaler target — seconds of queue delay (min 0.5) or in-flight requests per worker (integer, min 1). Applies to the endpoint's current scalerType unless you also pass a new one."
@@ -383,6 +429,16 @@ export function registerEndpointTools(
           current?.scaling?.type === 'REQUEST_COUNT'
             ? 'REQUEST_COUNT'
             : 'QUEUE_DELAY';
+      }
+
+      // Checked against the resolved scaler, so `scalerValue` alone on an endpoint
+      // already scaling on REQUEST_COUNT is still held to the integer bound.
+      const scalerError = scalerValueError(
+        scalerType,
+        updateParams.scalerValue
+      );
+      if (scalerError) {
+        return jsonReply({ error: scalerError, status: 400 });
       }
 
       const body = backend.mapUpdate({

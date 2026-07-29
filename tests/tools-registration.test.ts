@@ -178,4 +178,48 @@ describe('tool registration', () => {
       assert.ok('cursor' in schema, `${tool} missing 'cursor' param`);
     }
   });
+
+  // The autoscaling bounds are in the v2 spec, so an out-of-range value can be
+  // refused here instead of spending a round trip on a 422. Asserted on the
+  // registered zod schema because the handler tests call handlers directly and
+  // never run parameter validation.
+  describe('autoscaling parameter bounds', () => {
+    const parse = (tool: string, param: string, value: unknown) => {
+      const { schemas } = captureRegisteredTools();
+      const schema = schemas.get(tool);
+      assert.ok(schema, `no schema captured for ${tool}`);
+      const field = schema[param] as {
+        safeParse: (v: unknown) => { success: boolean };
+      };
+      assert.ok(
+        field && typeof field.safeParse === 'function',
+        `${tool}.${param} is not a zod schema`
+      );
+      return field.safeParse(value).success;
+    };
+
+    for (const tool of ['create-endpoint', 'update-endpoint']) {
+      it(`${tool} bounds idleTimeout to an integer 1-3600`, () => {
+        assert.equal(parse(tool, 'idleTimeout', 1), true);
+        assert.equal(parse(tool, 'idleTimeout', 3600), true);
+        assert.equal(parse(tool, 'idleTimeout', 0), false, 'accepted 0');
+        assert.equal(parse(tool, 'idleTimeout', 3601), false, 'accepted 3601');
+        assert.equal(
+          parse(tool, 'idleTimeout', 12.5),
+          false,
+          'accepted a float'
+        );
+      });
+
+      it(`${tool} floors scalerValue at the QUEUE_DELAY minimum (0.5)`, () => {
+        // The looser of the two union bounds — REQUEST_COUNT additionally
+        // requires an integer, which is enforced per-call once the scaler that
+        // will be sent is known (see the handler tests).
+        assert.equal(parse(tool, 'scalerValue', 0.5), true);
+        assert.equal(parse(tool, 'scalerValue', 4), true);
+        assert.equal(parse(tool, 'scalerValue', 0.4), false, 'accepted 0.4');
+        assert.equal(parse(tool, 'scalerValue', 0), false, 'accepted 0');
+      });
+    }
+  });
 });

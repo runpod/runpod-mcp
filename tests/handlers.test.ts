@@ -1721,6 +1721,61 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
     });
   });
 
+  it('create-endpoint v2 rejects a fractional scalerValue under REQUEST_COUNT', async () => {
+    // REQUEST_COUNT counts whole in-flight requests. The schema can only floor
+    // scalerValue at 0.5 (the QUEUE_DELAY minimum), so the integer half is
+    // checked here, against the scaler actually being sent.
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      const out = await handlers.get('create-endpoint')!({
+        name: 'e',
+        imageName: 'img:2',
+        gpuPoolIds: ['AMPERE_80'],
+        scalerType: 'REQUEST_COUNT',
+        scalerValue: 2.5,
+      });
+      assert.equal(outbound.length, 0);
+      assert.equal(parseText(out).status, 400);
+      assert.match(parseText(out).error as string, /integer >= 1/);
+    });
+  });
+
+  it('create-endpoint v2 applies the integer bound to a LOAD_BALANCER default scaler', async () => {
+    // No scalerType passed: LOAD_BALANCER defaults to REQUEST_COUNT, so the
+    // bound has to be judged on the resolved scaler, not the named one.
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      const out = await handlers.get('create-endpoint')!({
+        name: 'e',
+        imageName: 'img:2',
+        gpuPoolIds: ['AMPERE_80'],
+        endpointType: 'LOAD_BALANCER',
+        scalerValue: 1.5,
+      });
+      assert.equal(outbound.length, 0);
+      assert.equal(parseText(out).status, 400);
+      assert.match(parseText(out).error as string, /integer >= 1/);
+    });
+  });
+
+  it('create-endpoint v2 allows a fractional scalerValue under QUEUE_DELAY', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'ep_qd' } });
+      await handlers.get('create-endpoint')!({
+        name: 'e',
+        imageName: 'img:2',
+        gpuPoolIds: ['AMPERE_80'],
+        scalerType: 'QUEUE_DELAY',
+        scalerValue: 0.5,
+      });
+      assert.equal(outbound.length, 1);
+      assert.deepEqual(JSON.parse(outbound[0].body!).scaling, {
+        type: 'QUEUE_DELAY',
+        queueDelay: 0.5,
+      });
+    });
+  });
+
   it('create-endpoint v2 defaults LOAD_BALANCER to the REQUEST_COUNT scaler', async () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({ jsonBody: { id: 'ep_lb' } });
@@ -1764,6 +1819,26 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
         type: 'REQUEST_COUNT',
         requestCount: 7,
       });
+    });
+  });
+
+  it('update-endpoint rejects a fractional scalerValue against a REQUEST_COUNT endpoint', async () => {
+    // The caller named no scaler, so the bound can only be judged after the GET
+    // resolves it. The PATCH must not go out.
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        steps: [
+          { status: 200, jsonBody: { scaling: { type: 'REQUEST_COUNT' } } },
+        ],
+      });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        scalerValue: 7.5,
+      });
+      assert.equal(outbound.length, 1, 'expected the GET only, no PATCH');
+      assert.equal(outbound[0].method, 'GET');
+      assert.equal(parseText(out).status, 400);
+      assert.match(parseText(out).error as string, /integer >= 1/);
     });
   });
 
