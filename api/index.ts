@@ -3,7 +3,11 @@ import fetch from 'node-fetch';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { handleMcpRequest } from '../src/http.js';
-import { isLoopbackHost, verifyPkce } from '../src/oauth/pkce.js';
+import {
+  isLoopbackHost,
+  validatePkceAuthorization,
+  verifyPkce,
+} from '../src/oauth/pkce.js';
 
 // Read the package version at runtime. tsup's build-time `__PACKAGE_VERSION__`
 // define does not run here because Vercel compiles api/index.ts itself, so the
@@ -158,9 +162,9 @@ async function createFlashAuthRequest(
   const parts: string[] = [];
   const apiKeyName = getApiKeyName();
   if (apiKeyName) parts.push(`apiKeyName: ${JSON.stringify(apiKeyName)}`);
-  // Only sent when the client supplied a challenge, so a non-PKCE flow never
-  // references the arg (which requires the DR-1398 backend field to be deployed).
-  if (codeChallenge) parts.push(`codeChallenge: ${JSON.stringify(codeChallenge)}`);
+  // These fields require the DR-1398 backend schema to be deployed.
+  if (codeChallenge)
+    parts.push(`codeChallenge: ${JSON.stringify(codeChallenge)}`);
   if (codeChallengeMethod)
     parts.push(`codeChallengeMethod: ${JSON.stringify(codeChallengeMethod)}`);
   const args = parts.length ? `(${parts.join(', ')})` : '';
@@ -309,8 +313,23 @@ async function handleAuthorize(
       return;
     }
 
+    // Require the advertised S256 PKCE policy before issuing an authorization
+    // code. This applies to every client; there is no legacy non-PKCE path.
+    const pkceRequestError = validatePkceAuthorization({
+      codeChallenge,
+      codeChallengeMethod,
+    });
+    if (pkceRequestError) {
+      console.warn('oauth_authorize_pkce_rejected');
+      res.status(400).json({
+        error: 'invalid_request',
+        error_description: pkceRequestError,
+      });
+      return;
+    }
+
     // 1. Create a guest flash auth request; its id is the OAuth code. The PKCE
-    //    challenge (if any) is persisted with it and verified at /token.
+    //    challenge is persisted with it and verified at /token.
     const requestId = await createFlashAuthRequest(
       codeChallenge,
       codeChallengeMethod
@@ -444,7 +463,6 @@ async function handleToken(
         codeChallenge: status.codeChallenge,
         codeChallengeMethod: status.codeChallengeMethod,
         codeVerifier: params.get('code_verifier'),
-        redirectUri: params.get('redirect_uri'),
       });
       if (pkceError) {
         console.warn('oauth_token_pkce_rejected', { attempt });

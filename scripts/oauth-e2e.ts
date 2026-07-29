@@ -54,6 +54,28 @@ async function postToken(code: string, verifier: string) {
   return { status: res.status, body };
 }
 
+async function expectAuthorizeRejected(
+  clientId: string,
+  label: string,
+  pkce: Record<string, string>
+) {
+  const url = new URL(`${base}/authorize`);
+  url.search = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: 'http://localhost:8765/callback',
+    response_type: 'code',
+    ...pkce,
+  }).toString();
+  const res = await fetch(url, { redirect: 'manual' });
+  const body = (await res.json()) as Record<string, unknown>;
+  if (res.status !== 400 || body.error !== 'invalid_request') {
+    throw new Error(
+      `${label}: expected 400 invalid_request, got ${res.status} ${JSON.stringify(body)}`
+    );
+  }
+  log(label, { status: res.status, error: body.error });
+}
+
 async function main() {
   // 1. Discovery
   const asMeta = await (
@@ -75,7 +97,18 @@ async function main() {
   ).json();
   log('register', { client_id: reg.client_id });
 
-  // 3. /authorize -> capture console handoff + flash request id (= the OAuth code)
+  // 3. Invalid authorization requests must fail before a flash request/code is
+  // created. This proves there is no hosted or loopback non-PKCE fallback.
+  await expectAuthorizeRejected(reg.client_id, 'pkce-required', {});
+  await expectAuthorizeRejected(reg.client_id, 'pkce-method-required', {
+    code_challenge: codeChallenge,
+  });
+  await expectAuthorizeRejected(reg.client_id, 'pkce-plain-rejected', {
+    code_challenge: codeChallenge,
+    code_challenge_method: 'plain',
+  });
+
+  // 4. Valid /authorize -> capture console handoff + flash request id (= code)
   const authRes = await fetch(
     `${base}/authorize?client_id=${reg.client_id}&redirect_uri=${encodeURIComponent(
       'http://localhost:8765/callback'
@@ -91,10 +124,10 @@ async function main() {
   const code = inner.searchParams.get('request')!;
   log('authorize', { status: authRes.status, code, consoleUrl: location });
 
-  // 4. PKCE enforcement check — a non-matching verifier must be rejected with
+  // 5. PKCE enforcement check — a non-matching verifier must be rejected with
   // `invalid_grant`, and the rejection happens before approval (the verifier is
   // checked on every /token poll). If this mints or pends, PKCE isn't enforced.
-  const bad = await postToken(code, 'this-verifier-does-not-match-the-challenge');
+  const bad = await postToken(code, 'a'.repeat(43));
   if (bad.body.error !== 'invalid_grant') {
     throw new Error(
       `PKCE not enforced: bad verifier expected invalid_grant, got ${JSON.stringify(bad.body)}`
@@ -102,7 +135,7 @@ async function main() {
   }
   log('pkce-enforced', { status: bad.status, error: bad.body.error });
 
-  // 5. Approve (manual) + 6. poll /token with the MATCHING verifier for the
+  // 6. Approve (manual) + 7. poll /token with the MATCHING verifier for the
   // minted key. We only call the MCP's own token endpoint — it polls the backend
   // server-side and returns the minted key once the request is APPROVED.
   console.log('\n[approve] Open and approve in your browser:\n' + location);
@@ -128,7 +161,7 @@ async function main() {
     note: 'minted Runpod API key — check the dashboard for its name',
   });
 
-  // 6. Connect to the MCP with the minted key and call a tool
+  // 8. Connect to the MCP with the minted key and call a tool
   const client = new Client({ name: 'oauth-e2e', version: '1.0.0' });
   const transport = new StreamableHTTPClientTransport(new URL(base), {
     requestInit: { headers: { Authorization: `Bearer ${key}` } },

@@ -1,18 +1,71 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { s256, verifyPkce } from '../src/oauth/pkce.js';
+import {
+  s256,
+  validatePkceAuthorization,
+  verifyPkce,
+} from '../src/oauth/pkce.js';
 
 // RFC 7636 Appendix B canonical test vector.
 const VERIFIER = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
 const CHALLENGE = 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM';
 
-const HOSTED = 'https://claude.ai/api/mcp/auth_callback';
-const LOOPBACK = 'http://127.0.0.1:53219/callback';
-
 describe('s256', () => {
   it('reproduces the RFC 7636 Appendix B vector (unpadded base64url)', () => {
     assert.equal(s256(VERIFIER), CHALLENGE);
+  });
+});
+
+describe('validatePkceAuthorization', () => {
+  it('accepts a valid S256 challenge', () => {
+    assert.equal(
+      validatePkceAuthorization({
+        codeChallenge: CHALLENGE,
+        codeChallengeMethod: 'S256',
+      }),
+      null
+    );
+  });
+
+  it('rejects a missing challenge', () => {
+    assert.equal(
+      validatePkceAuthorization({
+        codeChallenge: null,
+        codeChallengeMethod: null,
+      }),
+      'code_challenge is required.'
+    );
+  });
+
+  it('rejects a missing method instead of treating it as S256', () => {
+    assert.equal(
+      validatePkceAuthorization({
+        codeChallenge: CHALLENGE,
+        codeChallengeMethod: null,
+      }),
+      'code_challenge_method must be S256.'
+    );
+  });
+
+  it('rejects plain', () => {
+    assert.equal(
+      validatePkceAuthorization({
+        codeChallenge: VERIFIER,
+        codeChallengeMethod: 'plain',
+      }),
+      'code_challenge_method must be S256.'
+    );
+  });
+
+  it('rejects a malformed S256 challenge', () => {
+    assert.equal(
+      validatePkceAuthorization({
+        codeChallenge: `${CHALLENGE}=`,
+        codeChallengeMethod: 'S256',
+      }),
+      'code_challenge must be a 43-character base64url S256 value.'
+    );
   });
 });
 
@@ -23,7 +76,6 @@ describe('verifyPkce', () => {
         codeChallenge: CHALLENGE,
         codeChallengeMethod: 'S256',
         codeVerifier: VERIFIER,
-        redirectUri: HOSTED,
       }),
       null
     );
@@ -34,8 +86,7 @@ describe('verifyPkce', () => {
       verifyPkce({
         codeChallenge: CHALLENGE,
         codeChallengeMethod: 'S256',
-        codeVerifier: 'not-the-verifier',
-        redirectUri: HOSTED,
+        codeVerifier: 'a'.repeat(43),
       }),
       'PKCE verification failed.'
     );
@@ -47,55 +98,54 @@ describe('verifyPkce', () => {
         codeChallenge: CHALLENGE,
         codeChallengeMethod: 'S256',
         codeVerifier: null,
-        redirectUri: HOSTED,
       }),
       'code_verifier is required.'
     );
   });
 
-  it('rejects the plain method (we advertise only S256)', () => {
-    const err = verifyPkce({
-      codeChallenge: VERIFIER, // plain challenge == verifier
-      codeChallengeMethod: 'plain',
-      codeVerifier: VERIFIER,
-      redirectUri: HOSTED,
-    });
-    assert.match(String(err), /only S256 is supported/);
-  });
-
-  it('allows a hosted exact-match redirect with no challenge (legacy flow)', () => {
-    assert.equal(
-      verifyPkce({
-        codeChallenge: null,
-        codeChallengeMethod: null,
-        codeVerifier: null,
-        redirectUri: HOSTED,
-      }),
-      null
-    );
-  });
-
-  it('requires PKCE for a loopback redirect with no challenge', () => {
-    assert.equal(
-      verifyPkce({
-        codeChallenge: null,
-        codeChallengeMethod: null,
-        codeVerifier: null,
-        redirectUri: LOOPBACK,
-      }),
-      'PKCE is required for loopback redirect URIs.'
-    );
-  });
-
-  it('passes a loopback redirect when PKCE is present and correct', () => {
+  it('rejects a malformed verifier', () => {
     assert.equal(
       verifyPkce({
         codeChallenge: CHALLENGE,
         codeChallengeMethod: 'S256',
-        codeVerifier: VERIFIER,
-        redirectUri: LOOPBACK,
+        codeVerifier: 'too-short',
       }),
-      null
+      'code_verifier must be 43 to 128 unreserved characters.'
+    );
+  });
+
+  it('rejects an authorization code with no stored challenge', () => {
+    assert.equal(
+      verifyPkce({
+        codeChallenge: null,
+        codeChallengeMethod: 'S256',
+        codeVerifier: VERIFIER,
+      }),
+      'PKCE code_challenge is missing for this authorization code.'
+    );
+  });
+
+  it('rejects a missing or non-S256 stored method', () => {
+    for (const codeChallengeMethod of [null, 'plain']) {
+      assert.equal(
+        verifyPkce({
+          codeChallenge: CHALLENGE,
+          codeChallengeMethod,
+          codeVerifier: VERIFIER,
+        }),
+        'Stored code_challenge_method must be S256.'
+      );
+    }
+  });
+
+  it('rejects a malformed stored challenge', () => {
+    assert.equal(
+      verifyPkce({
+        codeChallenge: `${CHALLENGE}=`,
+        codeChallengeMethod: 'S256',
+        codeVerifier: VERIFIER,
+      }),
+      'Stored code_challenge is not a valid S256 value.'
     );
   });
 });

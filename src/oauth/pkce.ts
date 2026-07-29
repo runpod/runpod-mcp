@@ -9,15 +9,8 @@ export function isLoopbackHost(hostname: string): boolean {
   return h === 'localhost' || h === '127.0.0.1' || h === '::1';
 }
 
-/** True when `redirectUri` parses and points at a loopback host. */
-export function isLoopbackRedirect(redirectUri: string | null): boolean {
-  if (!redirectUri) return false;
-  try {
-    return isLoopbackHost(new URL(redirectUri).hostname);
-  } catch {
-    return false;
-  }
-}
+const S256_CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
+const CODE_VERIFIER = /^[A-Za-z0-9._~-]{43,128}$/;
 
 /**
  * S256 transform: base64url(SHA-256(verifier)), unpadded — RFC 7636 §4.2.
@@ -39,37 +32,57 @@ function safeEqual(a: string, b: string): boolean {
 }
 
 /**
+ * Validate PKCE parameters before issuing an authorization code. This server
+ * advertises only S256 and requires it for every hosted OAuth flow.
+ */
+export function validatePkceAuthorization(input: {
+  codeChallenge?: string | null;
+  codeChallengeMethod?: string | null;
+}): string | null {
+  const { codeChallenge, codeChallengeMethod } = input;
+
+  if (!codeChallenge) {
+    return 'code_challenge is required.';
+  }
+  if (codeChallengeMethod !== 'S256') {
+    return 'code_challenge_method must be S256.';
+  }
+  if (!S256_CHALLENGE.test(codeChallenge)) {
+    return 'code_challenge must be a 43-character base64url S256 value.';
+  }
+  return null;
+}
+
+/**
  * Verify a PKCE (RFC 7636) code_verifier against the code_challenge stored on the
  * flash auth request. Returns null when the token exchange may proceed, or an
  * OAuth error_description string when it must be rejected (invalid_grant).
  *
  * Policy:
- * - We advertise only S256, so a stored non-S256 method (e.g. `plain`) is rejected.
- * - When a challenge was stored, a code_verifier is mandatory and must match.
- * - Loopback redirect URIs (native apps — the interception case PKCE is designed
- *   for) MUST use PKCE; a loopback flow with no stored challenge is rejected.
- *   Hosted exact-match redirects may still use the legacy non-PKCE flow.
+ * - Every authorization code must have a valid S256 challenge and method.
+ * - A code_verifier is mandatory, must follow RFC 7636 syntax, and must match.
  */
 export function verifyPkce(input: {
   codeChallenge?: string | null;
   codeChallengeMethod?: string | null;
   codeVerifier?: string | null;
-  redirectUri: string | null;
 }): string | null {
-  const { codeChallenge, codeChallengeMethod, codeVerifier, redirectUri } = input;
+  const { codeChallenge, codeChallengeMethod, codeVerifier } = input;
 
   if (!codeChallenge) {
-    if (isLoopbackRedirect(redirectUri)) {
-      return 'PKCE is required for loopback redirect URIs.';
-    }
-    return null; // legacy hosted (exact-match) flow, no PKCE
+    return 'PKCE code_challenge is missing for this authorization code.';
   }
-
-  if (codeChallengeMethod && codeChallengeMethod !== 'S256') {
-    return `Unsupported code_challenge_method '${codeChallengeMethod}'; only S256 is supported.`;
+  if (codeChallengeMethod !== 'S256') {
+    return 'Stored code_challenge_method must be S256.';
+  }
+  if (!S256_CHALLENGE.test(codeChallenge)) {
+    return 'Stored code_challenge is not a valid S256 value.';
   }
   if (!codeVerifier) {
     return 'code_verifier is required.';
+  }
+  if (!CODE_VERIFIER.test(codeVerifier)) {
+    return 'code_verifier must be 43 to 128 unreserved characters.';
   }
   if (!safeEqual(s256(codeVerifier), codeChallenge)) {
     return 'PKCE verification failed.';
