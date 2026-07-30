@@ -594,11 +594,12 @@ describe(
       // The point of the refusal: the child never ran, so nothing was recorded.
       assert.equal(recordedArgv(dir), null);
       // And the printed command names the variable without its value.
-      assert.match(
-        result.message ?? '',
-        /RUNPOD_API_KEY=<your-runpod-api-key>/
-      );
+      assert.match(result.message ?? '', /RUNPOD_API_KEY=YOUR_RUNPOD_API_KEY/);
       assert.equal(/rpa_x&whoami/.test(result.message ?? ''), false);
+      // The whole message is meant to be pasted into cmd.exe, so it must not carry
+      // redirection operators of its own — the earlier `<your-api-key>` placeholder
+      // did, in the one message that only ever appears on the cmd.exe path.
+      assert.equal(/[<>]/.test(result.message ?? ''), false, result.message);
     });
   }
 );
