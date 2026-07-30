@@ -3769,6 +3769,63 @@ describe('onUnauthorized ignores the unauthenticated GraphQL path', () => {
   });
 });
 
+// ---- create-endpoint refuses v1-only fields on v2 instead of dropping them ----
+describe('create-endpoint v1-only fields on v2', () => {
+  async function reject(params: Record<string, unknown>, pattern: RegExp) {
+    return withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'ep_new' } });
+      const out = await handlers.get('create-endpoint')!({
+        name: 'x',
+        imageName: 'img',
+        gpuPoolIds: ['AMPERE_16'],
+        ...params,
+      });
+      const reply = parseText(out);
+      assert.equal(reply.status, 400);
+      assert.match(reply.error as string, pattern);
+      // Nothing may be created for a request that cannot be honoured as asked.
+      assert.equal(outbound.length, 0, 'no endpoint may be created');
+    });
+  }
+
+  it('refuses computeType, which v2 cannot express at all', () => {
+    // The expensive one. mapEndpointCreateToV2 reads only V2EndpointParams, which does
+    // not declare computeType — and v2 cannot create a CPU endpoint in any case (the
+    // spec marks `cpu` read-only: "CPU create/update is not yet supported"). So
+    // computeType:'CPU' silently produced a GPU endpoint, billed at GPU rates, reported
+    // as success. update-endpoint 400s for a lone gpuCount on exactly this reasoning;
+    // create-endpoint applied the opposite standard to the same class of request.
+    return reject({ computeType: 'CPU' }, /cannot create CPU endpoints/);
+  });
+
+  it('refuses gpuTypeIds rather than silently widening the pin to a pool', () => {
+    // gpuTypeIds pins individual SKUs on v1. Dropped on v2, the endpoint runs on every
+    // SKU in the pool instead — the same widening as an unmatched exclusion, and the
+    // reply looked identical to a successful pin.
+    return reject({ gpuTypeIds: ['NVIDIA RTX A4000'] }, /set-endpoint-gpus/);
+  });
+
+  it('names both fields when both are passed, and points at v1', () => {
+    return reject(
+      { computeType: 'CPU', gpuTypeIds: ['NVIDIA RTX A4000'] },
+      /computeType or gpuTypeIds.*RUNPOD_REST_VERSION=v1/s
+    );
+  });
+
+  it('still creates normally when neither is passed', () => {
+    return withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'ep_new' } });
+      const out = await handlers.get('create-endpoint')!({
+        name: 'x',
+        imageName: 'img',
+        gpuPoolIds: ['AMPERE_16'],
+      });
+      assert.equal(parseText(out).error, undefined);
+      assert.equal(outbound.length, 1);
+    });
+  });
+});
+
 // ---- set-endpoint-gpus refuses what it cannot express ----
 // Every one of these was silently accepted at some point: the request vanished, the
 // stored value was echoed back, and the reply looked like success. None of the guards
@@ -3813,11 +3870,152 @@ describe('set-endpoint-gpus input guards', () => {
     );
   }
 
+  // GPU catalog shape: GET /v2/catalog/gpus returns {gpus:[{id, pool, ...}]}. AMPERE_16's
+  // real membership, from runpod-backend util/gpuPools.ts.
+  const catalog = {
+    gpus: [
+      { id: 'NVIDIA RTX A4000', pool: 'AMPERE_16' },
+      { id: 'NVIDIA RTX A4500', pool: 'AMPERE_16' },
+      { id: 'NVIDIA RTX 2000 Ada Generation', pool: 'AMPERE_16' },
+      { id: 'NVIDIA RTX 4000 Ada Generation', pool: 'AMPERE_16' },
+      { id: 'NVIDIA H100 NVL', pool: 'HOPPER_80' },
+    ],
+  };
+
+  it('rejects an exclusion that matches no SKU in the requested pools', async () => {
+    await withV2(async () => {
+      // The server validates less than it appears to. validateGpuIds rejects an exclusion
+      // that IS a pool id, and rejects excluding everything, but membership is an EXACT
+      // string filter — so a near-miss id ("NVIDIA RTX 4000 Ada", real id ends
+      // " Generation") stores happily and excludes nothing. The caller asked to pin one
+      // SKU, got the whole pool, and was told it worked. excludeGpuTypeIds is new in this
+      // PR, so the PR ships the ergonomic form that invites exactly this typo.
+      const { handlers, outbound } = harness({
+        jsonBodies: [catalog, snapshot(gpuEndpoint)],
+      });
+      const out = await handlers.get('set-endpoint-gpus')!({
+        endpointId: 'ep_1',
+        pools: ['AMPERE_16'],
+        excludeGpuTypeIds: ['NVIDIA RTX 4000 Ada'],
+      });
+      const reply = parseText(out);
+      assert.match(reply.error as string, /do(es)? not match any GPU type/);
+      assert.match(reply.error as string, /would exclude nothing/);
+      // The pool's real SKUs come back, because that is what the caller needs to fix it.
+      assert.deepEqual(
+        (reply.availableGpuTypeIds as Record<string, string[]>).AMPERE_16,
+        [
+          'NVIDIA RTX A4000',
+          'NVIDIA RTX A4500',
+          'NVIDIA RTX 2000 Ada Generation',
+          'NVIDIA RTX 4000 Ada Generation',
+        ]
+      );
+      assert.equal(
+        outbound.some((o) => (o.body ?? '').includes('saveEndpoint')),
+        false,
+        'no mutation may be sent'
+      );
+    });
+  });
+
+  it('accepts exclusions that do match, and still writes them', async () => {
+    await withV2(async () => {
+      // The guard must not become a wall: the correct spelling has to go through.
+      const { handlers, outbound } = harness({
+        jsonBodies: [
+          catalog,
+          snapshot(gpuEndpoint),
+          { data: { saveEndpoint: { id: 'ep_1', gpuIds: 'x' } } },
+        ],
+      });
+      const out = await handlers.get('set-endpoint-gpus')!({
+        endpointId: 'ep_1',
+        pools: ['AMPERE_16'],
+        excludeGpuTypeIds: ['NVIDIA RTX 4000 Ada Generation'],
+      });
+      assert.equal(parseText(out).error, undefined);
+      const mutation = outbound.find((o) =>
+        (o.body ?? '').includes('saveEndpoint')
+      );
+      assert.ok(mutation, 'the mutation must be sent');
+      assert.match(
+        mutation!.body ?? '',
+        /AMPERE_16,-NVIDIA RTX 4000 Ada Generation/
+      );
+    });
+  });
+
+  it('discloses when the catalog could not be read, instead of implying it checked', async () => {
+    await withV2(async () => {
+      // Best-effort by design — this is a GraphQL tool and must keep working when the REST
+      // catalog is down. But an unchecked exclusion can silently widen the selection to the
+      // whole pool, so "not checked" has to be visible rather than absent.
+      const { handlers } = harness({
+        steps: [
+          { status: 500, jsonBody: { error: 'catalog down' } },
+          { jsonBody: snapshot(gpuEndpoint) },
+          { jsonBody: { data: { saveEndpoint: { id: 'ep_1', gpuIds: 'x' } } } },
+        ],
+      });
+      const out = await handlers.get('set-endpoint-gpus')!({
+        endpointId: 'ep_1',
+        pools: ['AMPERE_16'],
+        excludeGpuTypeIds: ['NVIDIA RTX 4000 Ada Generation'],
+      });
+      const reply = parseText(out);
+      assert.equal(reply.error, undefined);
+      assert.match(reply._exclusionsUnvalidated as string, /could not be read/);
+    });
+  });
+
+  it('discloses rather than refuses when the catalog carries no pool data', async () => {
+    // A catalog without a `pool` field cannot answer the membership question. Treating
+    // "no data" as "no SKUs" makes every exclusion look unmatched and refuses a valid
+    // request — the same false-refusal defect as misclassifying a client's parser, in
+    // the fix for a false success. Mutating this check to always-build left the suite
+    // green, so it gets its own test.
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        jsonBodies: [
+          { gpus: [{ id: 'NVIDIA RTX A4000' }, { id: 'NVIDIA RTX A4500' }] },
+          snapshot(gpuEndpoint),
+          { data: { saveEndpoint: { id: 'ep_1', gpuIds: 'x' } } },
+        ],
+      });
+      const out = await handlers.get('set-endpoint-gpus')!({
+        endpointId: 'ep_1',
+        pools: ['AMPERE_16'],
+        excludeGpuTypeIds: ['NVIDIA RTX A4500'],
+      });
+      const reply = parseText(out);
+      assert.equal(reply.error, undefined, reply.error as string);
+      assert.match(reply._exclusionsUnvalidated as string, /could not be read/);
+      assert.ok(
+        outbound.some((o) => (o.body ?? '').includes('saveEndpoint')),
+        'the write must still happen'
+      );
+    });
+  });
+
   it('rejects excludeGpuTypeIds without pools', () => {
     // The round-7 blocker: accepted, exclusions discarded, stored gpuIds echoed back.
     return reject(
       { excludeGpuTypeIds: ['NVIDIA L4'], gpuCount: 2 },
       /only applies alongside pools/
+    );
+  });
+
+  it('rejects pools combined with a raw gpuIds', () => {
+    // THE round-9 blocker, and the closest possible miss: identical `??` drop to the
+    // guard below, one parameter over. `params.gpuIds ?? (pools…)` takes the left branch
+    // whenever gpuIds is present, so `pools` reached neither the mutation nor the reply
+    // — the caller asked for two things and was told, without qualification, that it
+    // worked. Untested for two rounds because the comment above the guards claimed the
+    // set was exhaustive.
+    return reject(
+      { gpuIds: 'ADA_24', pools: ['AMPERE_16'] },
+      /gpuIds and pools cannot be combined/
     );
   });
 

@@ -347,6 +347,33 @@ export function registerEndpointTools(
         if (scalerError) {
           return jsonReply({ error: scalerError, status: 400 });
         }
+        // v1-only fields would be dropped on the floor here: mapEndpointCreateToV2 reads
+        // only V2EndpointParams, which declares neither, so they never reach the body.
+        // computeType:'CPU' is the expensive one — v2 cannot create a CPU endpoint at
+        // all (the spec marks `cpu` read-only: "CPU create/update is not yet
+        // supported"), so the request silently produced a GPU endpoint billed at GPU
+        // rates. gpuTypeIds silently widened an SKU pin to the whole pool.
+        //
+        // update-endpoint already 400s for a lone gpuCount and an empty gpuPoolIds on
+        // exactly this reasoning; create-endpoint applied the opposite standard to the
+        // same class of request.
+        const v1OnlyFields = (['computeType', 'gpuTypeIds'] as const).filter(
+          (k) => params[k] !== undefined
+        );
+        if (v1OnlyFields.length > 0) {
+          return jsonReply({
+            error: `create-endpoint cannot apply ${v1OnlyFields.join(' or ')} on the v2 REST API — the field does not exist there, so it would be silently ignored and the endpoint created without it.${
+              params.computeType === 'CPU'
+                ? ' v2 cannot create CPU endpoints at all (the API exposes CPU config as read-only), so this would have created a GPU endpoint.'
+                : ''
+            }${
+              params.gpuTypeIds
+                ? ' To allow specific GPUs on v2, pass gpuPoolIds; to pin an individual SKU, create the endpoint then use set-endpoint-gpus.'
+                : ''
+            } Set RUNPOD_REST_VERSION=v1 to use these fields.`,
+            status: 400,
+          });
+        }
         const body = backend.mapCreate(params) as Record<string, unknown>;
         const result = await callRestUrl(
           `${backend.base}${backend.list}`,
@@ -394,7 +421,7 @@ export function registerEndpointTools(
   // /v2/serverless body; v1 passes the flat fields through.
   server.tool(
     'update-endpoint',
-    "Update a Serverless endpoint's config. On v2 you can change image/disk/env/ports/registry/workers/scaling/networkVolumes/timeout/flashboot; on v1, scaling fields (worker min/max, idle timeout, scaler type/value, name). Only provided fields change. An endpoint's request routing (queue vs load balancer) is fixed at creation and cannot be changed here — recreate the endpoint instead.",
+    "Update a Serverless endpoint's config. On v2 you can change image/disk/env/ports/registry/workers/scaling/networkVolumes/timeout/flashboot; on v1, scaling fields (worker min/max, idle timeout, scaler type/value, name). Only provided fields change, with one exception: on an endpoint that has GPU SKU exclusions, a compensating write is issued to preserve them and that write always resets workersStandby to workersMax. An endpoint's request routing (queue vs load balancer) is fixed at creation and cannot be changed here — recreate the endpoint instead.",
     {
       endpointId: z.string().describe('ID of the endpoint to update'),
       name: z.string().optional().describe('New name for the endpoint'),

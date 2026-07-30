@@ -210,8 +210,35 @@ Cost, stated fully:
   of validity fails the restore and reports `_warning` — honest, but it then sits without its
   exclusions until `set-endpoint-gpus` is run.
 
-`set-endpoint-gpus` now refuses every request it cannot express, rather than accepting it
-and echoing the stored value back as though it had applied:
+The `workersStandby` limitation above is now stated in the `set-endpoint-gpus` and
+`update-endpoint` tool descriptions too. They previously said all other settings were
+"preserved" and "only provided fields change" — which contradicted this changeset, in the
+text an agent reads at call time to decide whether a call is safe.
+
+`set-endpoint-gpus` refuses requests it cannot express, rather than accepting them and
+echoing the stored value back as though they had applied. Round 9 found one still missing,
+and the reason it was missed is worth recording: this list previously claimed to be
+exhaustive, and it was not. `pools` passed together with `gpuIds` was dropped by the same
+`??` precedence, one parameter over from the exclusion case that did have a guard. The
+completeness claim is gone; a new parameter feeding the gpuIds string needs its own guard.
+
+Exclusions are also checked against the pools' real SKUs before anything is written. The
+API validates less than it appears to: it rejects an exclusion that is itself a pool id,
+and rejects excluding every SKU, but membership is an exact string compare — so a
+near-miss id (`-NVIDIA RTX 4000 Ada`, where the real id ends ` Generation`) is stored
+happily and excludes nothing, leaving the endpoint on the whole pool while the reply reads
+as a successful pin. Mismatches are now refused with the pool's actual SKU list. The check
+needs the GPU catalog, so when that cannot be read the write still proceeds and the reply
+carries `_exclusionsUnvalidated` — unchecked is disclosed rather than implied.
+
+`create-endpoint` no longer drops v1-only fields on v2. `computeType` and `gpuTypeIds` do
+not exist in the v2 body, so they were silently ignored: `computeType:'CPU'` produced a
+**GPU endpoint billed at GPU rates** (v2 cannot create CPU endpoints at all — the API
+exposes CPU config as read-only), and `gpuTypeIds` widened an SKU pin to the entire pool.
+Both now return a 400 naming `RUNPOD_REST_VERSION=v1`, matching what `update-endpoint`
+already did for a lone `gpuCount`.
+
+The refusals in full:
 
 - `excludeGpuTypeIds` without `pools` (exclusions are built onto a pool list, so alone
   they have nowhere to go), and `excludeGpuTypeIds` alongside a raw `gpuIds` (which takes
