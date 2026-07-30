@@ -85,19 +85,22 @@ export function upsertJsonServer(
     const edits = jsonc.modify(content, [serverProperty, SERVER_NAME], value, {
       formattingOptions: { tabSize: 2, insertSpaces: true },
     });
-    const updated = jsonc.applyEdits(content, edits);
+    // Strip a leading BOM from what gets WRITTEN, not just from the validity check.
+    // `JSON.parse` throws `Unexpected token '\uFEFF'` on one, and Cursor / Windsurf /
+    // Claude Desktop are Node/Electron apps doing exactly that — so keeping the BOM
+    // would report success for a config the client silently never loads, which is the
+    // one thing this guard exists to prevent. Only VS Code (jsonc) tolerates it.
+    const updated = jsonc.applyEdits(content, edits).replace(/^\uFEFF/, '');
     // jsonc edits a malformed file on a best-effort basis: it will happily insert the
     // entry into a config with an unbalanced brace and hand back something still
     // unparseable, which the client then silently never loads. Refuse instead of
     // reporting success over a file we just confirmed is broken.
     const parseErrors: jsonc.ParseError[] = [];
-    // A leading UTF-8 BOM is not a syntax error to the clients that read these files,
-    // but jsonc reports InvalidSymbol at offset 0 for it — and PowerShell's Set-Content
-    // and Notepad both write BOMs by default, on the platform this wizard targets. So
-    // strip it for the validity check rather than refusing a perfectly loadable config.
-    jsonc.parse(updated.replace(/^\uFEFF/, ''), parseErrors, {
-      allowTrailingComma: true,
-    });
+    // PowerShell's Set-Content and Notepad both write BOMs by default, on the platform
+    // this wizard targets, so refusing a BOM outright would be a new hard failure. It is
+    // removed above instead of tolerated, so the file this writes parses under both
+    // JSON.parse and jsonc. Double or trailing BOMs still fail this check, correctly.
+    jsonc.parse(updated, parseErrors, { allowTrailingComma: true });
     if (parseErrors.length > 0) {
       return {
         success: false,
@@ -523,15 +526,17 @@ export interface ClaudeConfigState {
   // undefined when the file cannot be read or parsed, i.e. "unknown", never a guess.
   userScope: boolean | undefined;
   // Directories whose local-scope config (projects[dir].mcpServers) also carries one.
-  // These hold their own API keys and this wizard never touches them, so a removal
-  // has to name them rather than implying the key is gone.
+  // This wizard never touches those, so a removal names them rather than implying the
+  // key is gone. NOTE: project scope (`<dir>/.mcp.json`) is a separate file per
+  // directory and is NOT covered here — a checked-in team entry can still shadow the
+  // one this writes. Every message therefore scopes its claim to the user config.
   localScopeDirs: string[];
 }
 
 export function claudeUserConfigPath(): string {
   // CLAUDE_CONFIG_DIR is the documented override and is what the CLI itself honours.
   return path.join(
-    process.env.CLAUDE_CONFIG_DIR ?? os.homedir(),
+    process.env.CLAUDE_CONFIG_DIR || os.homedir(),
     '.claude.json'
   );
 }
@@ -541,6 +546,10 @@ export function readClaudeConfigState(configPath: string): ClaudeConfigState {
     userScope: undefined,
     localScopeDirs: [],
   };
+  // Belt and braces on top of the `||` above: a relative path is never the file the
+  // CLI would use, so answering "absent" from it would be a guess. Say unknown.
+  if (!path.isAbsolute(configPath)) return unknown;
+
   let raw: string;
   try {
     if (!fs.existsSync(configPath)) {
@@ -616,7 +625,7 @@ export function interpretRemoveResult(
 
   const alsoElsewhere =
     state.localScopeDirs.length > 0
-      ? ` A local-scope ${SERVER_NAME} entry (with its own API key) also exists in ${state.localScopeDirs.length === 1 ? state.localScopeDirs[0] : `${state.localScopeDirs.length} project directories`} — this wizard does not touch those. Remove with \`${describeCommand(binary, ['mcp', 'remove', SERVER_NAME, '--scope', 'local'])}\` from each.`
+      ? ` A separate local-scope ${SERVER_NAME} entry (which may carry its own API key) also exists in ${state.localScopeDirs.length === 1 ? state.localScopeDirs[0] : `${state.localScopeDirs.length} project directories`} — this wizard does not touch those. Remove with \`${describeCommand(binary, ['mcp', 'remove', SERVER_NAME, '--scope', 'local'])}\` from each.`
       : '';
 
   if (state.userScope === true) {
@@ -669,8 +678,16 @@ export function interpretAddResult(
     };
   }
 
-  // true, or unknown (unreadable config): accept. Failing closed on unknown would
-  // break every user whose config this cannot parse, for a problem that may not exist.
+  if (state.userScope === undefined) {
+    // Accepted — failing closed would break every user whose config this cannot parse,
+    // for a problem that may not exist — but not reported as a clean success, or the
+    // user has no way to know the write went unconfirmed.
+    return {
+      success: true,
+      message: `${result.message ? `${result.message}; ` : ''}could not read ${claudeUserConfigPath()} to confirm the entry landed`,
+    };
+  }
+
   return { success: true, message: result.message };
 }
 

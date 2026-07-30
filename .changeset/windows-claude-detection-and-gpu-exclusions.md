@@ -79,7 +79,7 @@ environment is also trimmed, matching the pasted path — a trailing newline use
 written verbatim into every client config.
 
 Two smaller leaks in the same area: a client config created by this wizard is written `0600`
-rather than `0644`, since it holds a plaintext API key (Claude Code's own config is `0600`);
+rather than `0644`, since it holds a plaintext API key (a freshly created Claude Code config is `0600`);
 and any message built from the CLI's output has the key stripped by value, not just by argv
 shape — that CLI does echo `-e` tokens back on some errors. A malformed existing config is
 also no longer reported as configured: jsonc will best-effort insert an entry into a file

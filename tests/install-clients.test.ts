@@ -18,6 +18,7 @@ import {
   runClaude,
   createClaudeCodeClient,
   readClaudeConfigState,
+  claudeUserConfigPath,
   upsertJsonServer,
 } from '../src/install/clients.js';
 
@@ -451,19 +452,18 @@ describe('interpretAddResult', () => {
     );
   });
 
-  it('accepts an unverifiable success rather than failing a working install', () => {
-    // Failing closed here would break every user whose probe cannot answer, for a
-    // problem that may not exist. Direction chosen deliberately.
-    assert.deepEqual(
-      interpretAddResult(
-        { success: true },
-        { userScope: undefined, localScopeDirs: [] }
-      ),
-      {
-        success: true,
-        message: undefined,
-      }
+  it('accepts an unverifiable success but says it is unconfirmed', () => {
+    // Failing closed would break every user whose config cannot be parsed, for a
+    // problem that may not exist — but a bare success leaves them no way to know the
+    // write went unconfirmed. The remove path says so, and the changeset claims both
+    // paths do, so both must.
+    const out = interpretAddResult(
+      { success: true },
+      { userScope: undefined, localScopeDirs: [] }
     );
+    assert.equal(out.success, true);
+    assert.match(out.message ?? '', /could not read/);
+    assert.match(out.message ?? '', /confirm the entry landed/);
   });
 });
 
@@ -970,7 +970,14 @@ describe('upsertJsonServer validity guard', () => {
     const file = configIn('\uFEFF{\n  "mcpServers": {}\n}\n');
     const result = upsertJsonServer(file, 'mcpServers', entry);
     assert.equal(result.success, true, result.message);
-    assert.match(fs.readFileSync(file, 'utf8'), /rpa_GUARDKEY123456/);
+    const written = fs.readFileSync(file, 'utf8');
+    assert.match(written, /rpa_GUARDKEY123456/);
+    // The BOM must be GONE from what was written, not merely ignored while checking.
+    // JSON.parse throws on a leading BOM, and Cursor / Windsurf / Claude Desktop are
+    // Node/Electron apps doing exactly that — so leaving it would report success for a
+    // config the client silently never loads.
+    assert.equal(written.charCodeAt(0) === 0xfeff, false);
+    assert.doesNotThrow(() => JSON.parse(written));
   });
 
   it('refuses a config that would still not parse afterwards', () => {
@@ -1013,5 +1020,43 @@ describe('argsSafeForCmdShell whitespace coverage', () => {
   it('rejects tab and vertical tab', () => {
     assert.equal(argsSafeForCmdShell(['-e', 'RUNPOD_API_KEY=rpa_a\tb']), false);
     assert.equal(argsSafeForCmdShell(['-e', 'RUNPOD_API_KEY=rpa_a\vb']), false);
+  });
+});
+
+describe('claudeUserConfigPath env handling', () => {
+  const original = process.env.CLAUDE_CONFIG_DIR;
+  after(() => {
+    if (original === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = original;
+  });
+
+  it('honours CLAUDE_CONFIG_DIR when set', () => {
+    process.env.CLAUDE_CONFIG_DIR = path.join(os.tmpdir(), 'cfgdir');
+    assert.equal(
+      claudeUserConfigPath(),
+      path.join(os.tmpdir(), 'cfgdir', '.claude.json')
+    );
+  });
+
+  it('treats an EMPTY CLAUDE_CONFIG_DIR as unset, never as a relative path', () => {
+    // `??` let '' through and path.join('', '.claude.json') yields the RELATIVE
+    // '.claude.json'. Reading that as a definite "no user-scope entry" is how a green
+    // tick got printed over a key still on disk — the same false-success class as every
+    // other blocker on this branch, arriving through an env var this time. The real CLI
+    // treats an empty value as unset, so these must agree.
+    process.env.CLAUDE_CONFIG_DIR = '';
+    const resolved = claudeUserConfigPath();
+    assert.equal(path.isAbsolute(resolved), true, resolved);
+    assert.equal(resolved, path.join(os.homedir(), '.claude.json'));
+  });
+
+  it('reports unknown for a non-absolute config path rather than "absent"', () => {
+    // Defence in depth behind the fix above: whatever produces a relative path, it is
+    // never the file the CLI would use, so answering "no entry" from it is a guess.
+    assert.equal(readClaudeConfigState('.claude.json').userScope, undefined);
+    assert.equal(
+      readClaudeConfigState('relative/dir/.claude.json').userScope,
+      undefined
+    );
   });
 });
