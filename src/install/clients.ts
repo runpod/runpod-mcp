@@ -40,6 +40,11 @@ export interface McpClient {
   remove(): Promise<AddResult>;
   // Where the config lives, for display and manual fallback.
   describeTarget(): string;
+  // How this client parses its config, for clients that own a JSON file. Exposed so the
+  // per-client wiring is assertable: reverting it to a single shared default left every
+  // test green while Cursor was misclassified, because upsertJsonServer was only ever
+  // exercised with an explicit dialect. Absent for Claude Code, which is driven by CLI.
+  dialect?: ConfigDialect;
 }
 
 // The local stdio config: Runpod's MCP server runs via npx and reads the API
@@ -73,15 +78,40 @@ function hostedServerConfig(
 // Exported for tests: the client wrappers hardcode real config paths under $HOME, and
 // a test must never write there.
 /**
- * How the client that owns a config parses it. This decides what "valid" means.
+ * How the client that owns a config parses it. This decides what "valid" means, so
+ * every value here is a claim about a specific shipped parser and must be read out of
+ * that client's own code — not inferred from "it's an Electron app".
  *
- * Only VS Code reads its `mcp.json` as JSONC. Cursor, Windsurf and Claude Desktop are
- * Node/Electron apps using `JSON.parse`, which rejects comments AND trailing commas — so
- * validating everything with jsonc reported "configured" for files those clients silently
- * never load. That is the same defect a leading BOM had, in the same function, and far
- * more reachable: a commented-out server in a hand-edited ~/.cursor/mcp.json is routine.
+ *   'jsonc'      comments and trailing commas are accepted.
+ *   'json'       strict `JSON.parse`; both are fatal.
+ *   'unverified' tolerance not established. Validated leniently (so a config the
+ *                client may well load is never refused) and any reliance on that
+ *                leniency is disclosed to the user instead of being asserted away.
+ *
+ * Getting a value wrong breaks a user either way round: too strict refuses a healthy
+ * config and leaves the client unconfigured, too lenient reports "configured" for a
+ * file the client silently never loads. Verified against the shipped code:
+ *
+ *   Cursor         'jsonc'. Not strict, despite being an Electron app — a VS Code fork,
+ *                  and its reader keeps VS Code's tolerance. `parseMcpServersFromFile`
+ *                  → `t$t(content)`, which is
+ *                    `stripComments` → `JSON.parse`, and on failure
+ *                    `.replace(/,\s*([}\]])/g,'$1')` → `JSON.parse` again.
+ *                  So comments and trailing commas both survive.
+ *                  (workbench.desktop.main.js; a BOM is still fatal, hence the strip
+ *                  on write below.)
+ *   Claude Desktop 'json'. `wxr()` is `JSON.parse(Et.readFileSync(t,'utf8'))` with no
+ *                  preprocessing and no retry (app.asar).
+ *   VS Code        'jsonc'. Reads mcp.json as JSONC by design.
+ *   Windsurf       'unverified' — not installed here, so its parser was never read.
+ *                  It is a VS Code fork like Cursor, so it is probably lenient, but
+ *                  "probably" is not a fact to put in a success message.
  */
-export type ConfigDialect = 'json' | 'jsonc';
+export type ConfigDialect = 'json' | 'jsonc' | 'unverified';
+
+function describeDialect(dialect: ConfigDialect): string {
+  return dialect === 'json' ? 'JSON' : 'JSONC';
+}
 
 function parseFailure(
   content: string,
@@ -102,11 +132,58 @@ function parseFailure(
     : undefined;
 }
 
+// Parse the way the owning client parses, to answer "what will the client actually
+// see?" rather than "is this file well-formed?". The two differ: duplicate keys are
+// legal JSON, and every parser here keeps the LAST occurrence while `jsonc.modify`
+// edits the FIRST.
+function parseAsClient(content: string, dialect: ConfigDialect): unknown {
+  // Lenient for 'unverified' as well as 'jsonc'. Using the strict parser here made a
+  // commented config look as though the entry were absent, so the duplicate-key guard
+  // below refused a perfectly good write — the same false-refusal defect as the Cursor
+  // misclassification, introduced by the fix for it. This question is only "which
+  // duplicate block wins", which is independent of comment tolerance.
+  if (dialect !== 'json') {
+    return jsonc.parse(content, [], { allowTrailingComma: true });
+  }
+  try {
+    return JSON.parse(content);
+  } catch {
+    return undefined;
+  }
+}
+
+// What the client will read at `[serverProperty][SERVER_NAME]` — undefined when absent.
+function readBackEntry(
+  content: string,
+  serverProperty: string,
+  dialect: ConfigDialect
+): unknown {
+  const parsed = parseAsClient(content, dialect);
+  if (typeof parsed !== 'object' || parsed === null) return undefined;
+  const servers = (parsed as Record<string, unknown>)[serverProperty];
+  if (typeof servers !== 'object' || servers === null) return undefined;
+  return (servers as Record<string, unknown>)[SERVER_NAME];
+}
+
+// A file that only parses because the reader is lenient. Used to disclose the risk for
+// 'unverified' clients rather than silently betting on it.
+function reliesOnLeniency(content: string): boolean {
+  if (content.trim() === '') return false;
+  try {
+    JSON.parse(content);
+    return false;
+  } catch {
+    return parseFailure(content, 'jsonc') === undefined;
+  }
+}
+
 export function upsertJsonServer(
   configPath: string,
   serverProperty: string,
   value: unknown,
-  dialect: ConfigDialect = 'jsonc'
+  // Required, with no default: the default used to be the lenient value, so a caller
+  // that forgot it silently got the very behaviour this parameter exists to prevent.
+  dialect: ConfigDialect
 ): AddResult {
   // Refuse a relative target outright rather than trusting every caller to have
   // resolved one. This function creates directories and writes a plaintext API key, so
@@ -149,8 +226,20 @@ export function upsertJsonServer(
       return {
         success: false,
         message: wasAlreadyBroken
-          ? `${configPath} could not be parsed as ${dialect === 'json' ? 'JSON' : 'JSONC'} before this change either (${failure}), so it was left untouched — this client would not load the entry. Fix the file (or move it aside) and re-run.`
+          ? `${configPath} could not be parsed as ${describeDialect(dialect)} before this change either (${failure}), so it was left untouched — this client would not load the entry. Fix the file (or move it aside) and re-run.`
           : `writing to ${configPath} would leave it unparseable (${failure}), so it was left untouched.`,
+      };
+    }
+    // Valid is not the same as effective. `jsonc.modify` edits the FIRST occurrence of a
+    // duplicated key; every parser here keeps the LAST. Duplicate keys are legal JSON, so
+    // the validity check above passes and the entry lands in a block nothing reads —
+    // reporting success while writing a plaintext API key that never takes effect. Ask
+    // the client's own parser what it will see instead of trusting that an edit applied.
+    const landed = readBackEntry(updated, serverProperty, dialect);
+    if (JSON.stringify(landed) !== JSON.stringify(value)) {
+      return {
+        success: false,
+        message: `${configPath} was left untouched: the entry would have been written where this client does not read it, so it would have had no effect. This usually means "${serverProperty}" appears more than once in the file — the last one wins, so merge them into a single block and re-run.`,
       };
     }
     // mode is honoured only when the file is created; an existing config keeps its
@@ -159,15 +248,30 @@ export function upsertJsonServer(
     // No effect on Windows, which has no POSIX mode bits (only the read-only flag is
     // real); there the ACL on the user profile directory is what governs access.
     fs.writeFileSync(configPath, updated, { encoding: 'utf8', mode: 0o600 });
+    // The entry is written and this client's parser accepts the file. When that
+    // acceptance rests on leniency we have not actually verified, say so rather than
+    // print an unqualified tick: refusing would leave a probably-fine client
+    // unconfigured, and claiming success would be asserting the thing we do not know.
+    if (dialect === 'unverified' && reliesOnLeniency(updated)) {
+      return {
+        success: true,
+        message:
+          'written, but this config uses comments or trailing commas and whether this client accepts them is unverified — if the Runpod server does not appear, remove them',
+      };
+    }
     return { success: true };
   } catch (error) {
     return { success: false, message: errMessage(error) };
   }
 }
 
-function removeJsonServer(
+// Exported for the same reason as upsertJsonServer: the client wrappers hardcode real
+// config paths under $HOME. Untested while unexported, which is how the relative-path
+// guard here — and the trailing-comma corruption below — went unnoticed.
+export function removeJsonServer(
   configPath: string,
-  serverProperty: string
+  serverProperty: string,
+  dialect: ConfigDialect
 ): AddResult {
   if (!path.isAbsolute(configPath)) {
     return {
@@ -197,11 +301,65 @@ function removeJsonServer(
       }
       throw error;
     }
+    // Zero edits normally means the entry is absent. It can also mean `jsonc.modify`
+    // targeted a duplicate `serverProperty` block that does not contain it while the
+    // block the client actually reads does — reporting "nothing to remove" over a
+    // plaintext key still on disk. Confirm absence with the client's parser.
     if (edits.length === 0) {
-      return { success: true, message: 'nothing to remove' };
+      return readBackEntry(content, serverProperty, dialect) === undefined
+        ? { success: true, message: 'nothing to remove' }
+        : {
+            success: false,
+            message: `the Runpod entry is still present in ${configPath} and could not be removed automatically — "${serverProperty}" appears more than once, so the edit targeted a block this client does not read. Delete the entry by hand.`,
+          };
     }
-    fs.writeFileSync(configPath, jsonc.applyEdits(content, edits), 'utf8');
-    return { success: true };
+    let updated = jsonc.applyEdits(content, edits);
+    // A surgical delete can leave a hole the parser rejects: removing the sole member of
+    // `servers` that is followed by a trailing comma yields `{ , }`. Verified turning a
+    // clean VS Code mcp.json into one with a parse error while reporting success. Both
+    // VS Code and Cursor happen to recover from that shape, but a strict client would
+    // stop loading every other server in the file, so it cannot be left behind.
+    //
+    // Fall back to a structural rewrite, which cannot produce a hole. It costs the
+    // file's comments and formatting, so it runs ONLY when the surgical edit actually
+    // broke a file that was previously fine — and the key must go either way, which is
+    // why this repairs rather than refusing like the add path does.
+    const brokeIt =
+      parseFailure(updated, dialect) !== undefined &&
+      parseFailure(content, dialect) === undefined;
+    const stillThere =
+      readBackEntry(updated, serverProperty, dialect) !== undefined;
+    let reformatted = false;
+    if (brokeIt || stillThere) {
+      const parsed = parseAsClient(content, dialect);
+      if (typeof parsed !== 'object' || parsed === null) {
+        return {
+          success: false,
+          message: `could not remove the Runpod entry from ${configPath} without leaving it unparseable, and it could not be rewritten safely. Delete the entry by hand.`,
+        };
+      }
+      const root = parsed as Record<string, unknown>;
+      const servers = root[serverProperty];
+      if (typeof servers === 'object' && servers !== null) {
+        delete (servers as Record<string, unknown>)[SERVER_NAME];
+      }
+      updated = `${JSON.stringify(root, null, 2)}\n`;
+      reformatted = true;
+      if (readBackEntry(updated, serverProperty, dialect) !== undefined) {
+        return {
+          success: false,
+          message: `the Runpod entry could not be removed from ${configPath}. Delete it by hand.`,
+        };
+      }
+    }
+    fs.writeFileSync(configPath, updated, 'utf8');
+    return reformatted
+      ? {
+          success: true,
+          message:
+            'removed; the file had to be reformatted to stay valid, so any comments in it were lost',
+        }
+      : { success: true };
   } catch (error) {
     return { success: false, message: errMessage(error) };
   }
@@ -225,10 +383,12 @@ function jsonClient(opts: {
   id: string;
   name: string;
   serverProperty?: string;
-  // How the owning client parses its config. Defaults to strict JSON, because only
-  // VS Code reads JSONC — getting this wrong means reporting success for a file the
-  // client cannot load.
-  dialect?: ConfigDialect;
+  // How the owning client parses its config — see ConfigDialect for the evidence
+  // behind each value. Deliberately required and un-defaulted: Cursor was misread as
+  // strict purely by inheriting a default here, which refused configs Cursor loads fine
+  // and left it unconfigured. A wrong value breaks users in one direction or the other,
+  // so every client has to state its own.
+  dialect: ConfigDialect;
   // Native HTTP support, or the `mcp-remote` bridge for stdio-only clients.
   hostedStrategy?: 'http' | 'mcp-remote';
   configPath: () => string;
@@ -249,16 +409,14 @@ function jsonClient(opts: {
           ? localServerConfig(mode.apiKey, serverProperty)
           : hostedServerConfig(hostedStrategy, serverProperty, mode.url);
       return Promise.resolve(
-        upsertJsonServer(
-          opts.configPath(),
-          serverProperty,
-          value,
-          opts.dialect ?? 'json'
-        )
+        upsertJsonServer(opts.configPath(), serverProperty, value, opts.dialect)
       );
     },
+    dialect: opts.dialect,
     remove: () =>
-      Promise.resolve(removeJsonServer(opts.configPath(), serverProperty)),
+      Promise.resolve(
+        removeJsonServer(opts.configPath(), serverProperty, opts.dialect)
+      ),
     describeTarget: () => opts.configPath(),
   };
 }
@@ -340,9 +498,11 @@ export function claudeLookupCommand(platform: string): string {
  *   1. `.com`/`.exe`  — cross-spawn spawns these with no shell.
  *   2. `.cmd`/`.bat`  — need cmd.exe, but cmd.exe genuinely runs them.
  *   3. anything else  — extensionless, `.ps1`; may not be runnable.
- * A hit inside `cwd` is ranked below every equivalent hit elsewhere: `where.exe`
- * searches the current directory before PATH, so running the wizard from a folder
- * containing a file named `claude.cmd` would otherwise hand it the API key.
+ * A hit inside `cwd` is ranked below every hit elsewhere — not merely below an
+ * equivalent one: the cwd penalty exceeds the whole extension scale, so a cwd `.exe`
+ * loses to an extensionless hit on PATH. Deliberately biased that way, because
+ * `where.exe` searches the current directory before PATH, so running the wizard from a
+ * folder containing a file named `claude.cmd` would otherwise hand it the API key.
  * Returns null when nothing came back.
  */
 export function pickClaudeBinary(
@@ -355,7 +515,22 @@ export function pickClaudeBinary(
     .map((line) => line.trim())
     .filter(Boolean);
   if (hits.length === 0) return platform === 'win32' ? null : 'claude';
-  if (platform !== 'win32') return hits[0];
+  if (platform !== 'win32') {
+    // Absolute hits only, for the same reason the candidate loop rejects relative
+    // candidates: whatever comes back here is spawned with `-e RUNPOD_API_KEY=<live
+    // key>`, so a path resolved against the current directory hands the key to whatever
+    // file happens to sit there.
+    //
+    // Not hypothetical, and not Windows-only. With `.` on PATH, `command -v claude`
+    // prints the RELATIVE `./claude` under dash, bash and zsh — and on Linux `/bin/sh`
+    // IS dash, which is the shell execSync uses. (macOS `/bin/sh` absolutises it, which
+    // is why this looks unreachable when checked only on a Mac.)
+    //
+    // Returning null rather than the bare name: falling back to `claude` would just
+    // re-resolve through the same PATH and find the same cwd file, and "not found" with
+    // manual instructions is the honest answer.
+    return hits.find((hit) => path.isAbsolute(hit)) ?? null;
+  }
 
   const rank = (hit: string): number => {
     const base = /\.(com|exe)$/i.test(hit)
@@ -462,7 +637,13 @@ function findClaudeBinary(): string | null {
  * something the user will paste.
  */
 export function describeCommand(binary: string, args: string[]): string {
-  const quote = (s: string) => (/\s/.test(s) ? `"${s}"` : s);
+  // Quote on cmd.exe metacharacters, not just whitespace. This function renders the
+  // command printed when the wizard REFUSES to spawn something because an argument
+  // holds a metacharacter — so quoting on whitespace alone handed the user a command
+  // broken by the very character that triggered the refusal: with a URL override, a
+  // bare `?a=1&b=2` makes cmd.exe split `&b=2` into a second command.
+  const quote = (s: string) =>
+    /\s/.test(s) || CMD_META.test(s) ? `"${s}"` : s;
   return [binary, ...args].map(quote).join(' ');
 }
 
@@ -808,7 +989,12 @@ export function interpretRemoveResult(
  */
 export function interpretAddResult(
   result: RunResult,
-  state: ClaudeConfigState
+  state: ClaudeConfigState,
+  // Threaded through for the same reason interpretRemoveResult takes it: the
+  // remediation command has to name the binary that was actually found. A bare
+  // `claude` fails for exactly the not-on-PATH installs the candidate paths exist
+  // to serve.
+  binary: string
 ): AddResult {
   if (result.refused || !result.success) return result;
 
@@ -828,7 +1014,7 @@ export function interpretAddResult(
     // because the collision is per-scope.
     return {
       success: true,
-      message: `${result.message ? `${result.message}; ` : ''}note a local-scope ${SERVER_NAME} entry also exists in ${describeDirs(state.localScopeDirs)} and takes precedence over the user config there, so Claude Code will keep using it in those projects — remove it with \`claude mcp remove ${SERVER_NAME} --scope local\` run from each`,
+      message: `${result.message ? `${result.message}; ` : ''}note a local-scope ${SERVER_NAME} entry also exists in ${describeDirs(state.localScopeDirs)} and takes precedence over the user config there, so Claude Code will keep using it in those projects — remove it with \`${describeCommand(binary, ['mcp', 'remove', SERVER_NAME, '--scope', 'local'])}\` run from each`,
     };
   }
 
@@ -917,7 +1103,8 @@ export function createClaudeCodeClient(
                 configPath: claudeUserConfigPath(),
                 userScope: undefined,
                 localScopeDirs: [],
-              }
+              },
+          binary
         )
       );
     },
@@ -1035,11 +1222,18 @@ export const CLIENTS: McpClient[] = [
   jsonClient({
     id: 'cursor',
     name: 'Cursor',
+    // A VS Code fork, and its MCP reader keeps VS Code's tolerance — comments and
+    // trailing commas both parse. Read out of the shipped bundle, not assumed from
+    // "Electron app"; see ConfigDialect.
+    dialect: 'jsonc',
     configPath: () => path.join(home, '.cursor', 'mcp.json'),
   }),
   jsonClient({
     id: 'windsurf',
     name: 'Windsurf',
+    // Not installed on any machine this was checked on, so its parser was never read.
+    // Lenient-and-disclosed rather than a guess in either direction.
+    dialect: 'unverified',
     // Windsurf is stdio-only, so it reaches the hosted server via mcp-remote.
     hostedStrategy: 'mcp-remote',
     configPath: () =>
@@ -1048,6 +1242,9 @@ export const CLIENTS: McpClient[] = [
   jsonClient({
     id: 'claude-desktop',
     name: 'Claude Desktop',
+    // Genuinely strict: its reader is a bare `JSON.parse(readFileSync(...))` with no
+    // preprocessing and no retry, so a comment or trailing comma is fatal.
+    dialect: 'json',
     // Claude Desktop config files are stdio-only; use the mcp-remote bridge.
     hostedStrategy: 'mcp-remote',
     configPath: claudeDesktopConfigPath,

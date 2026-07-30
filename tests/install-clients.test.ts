@@ -23,11 +23,16 @@ import {
   claudeDesktopConfigPath,
   vsCodeConfigPath,
   upsertJsonServer,
+  removeJsonServer,
+  CLIENTS,
 } from '../src/install/clients.js';
 
 // A stand-in for the user config path in state literals. Never read: these suites
 // exercise the interpretation, and the reader has its own suite.
 const TEST_CONFIG_PATH = '/home/dev/.claude.json';
+// Resolved binary the interpret helpers render remediation commands with. A real
+// path, because a bare `claude` is exactly the bug this argument exists to fix.
+const TEST_BINARY = '/opt/homebrew/bin/claude';
 
 // Regression coverage for issue #56 — the install wizard never detected Claude Code
 // on Windows. The platform-dependent decisions are pure functions, so both branches
@@ -436,7 +441,8 @@ describe('interpretAddResult', () => {
   it('fails when nothing is registered afterwards, despite a zero exit', () => {
     const out = interpretAddResult(
       { success: true },
-      { configPath: TEST_CONFIG_PATH, userScope: false, localScopeDirs: [] }
+      { configPath: TEST_CONFIG_PATH, userScope: false, localScopeDirs: [] },
+      TEST_BINARY
     );
     assert.equal(out.success, false);
     assert.match(out.message ?? '', /not writable/);
@@ -456,13 +462,19 @@ describe('interpretAddResult', () => {
         configPath: TEST_CONFIG_PATH,
         userScope: true,
         localScopeDirs: ['/home/dev/projA'],
-      }
+      },
+      TEST_BINARY
     );
     // Still a success — the user-scope write did land.
     assert.equal(out.success, true);
     assert.match(out.message ?? '', /takes precedence/);
     assert.match(out.message ?? '', /projA/);
     assert.match(out.message ?? '', /--scope local/);
+    // Names the binary that was actually found, not a bare `claude`. The candidate
+    // paths exist precisely for installs that are not on PATH, so remediation advice
+    // that assumes PATH fails for exactly the users the lookup was added to serve —
+    // and this newest branch was the one hardcoding it.
+    assert.match(out.message ?? '', /\/opt\/homebrew\/bin\/claude mcp remove/);
   });
 
   it('does not fail an add just because a local-scope entry also exists', () => {
@@ -477,7 +489,8 @@ describe('interpretAddResult', () => {
         configPath: TEST_CONFIG_PATH,
         userScope: true,
         localScopeDirs: ['/home/dev/projA'],
-      }
+      },
+      TEST_BINARY
     );
     assert.equal(out.success, true, out.message);
   });
@@ -486,7 +499,8 @@ describe('interpretAddResult', () => {
     assert.deepEqual(
       interpretAddResult(
         { success: true, message: 'already configured' },
-        { configPath: TEST_CONFIG_PATH, userScope: true, localScopeDirs: [] }
+        { configPath: TEST_CONFIG_PATH, userScope: true, localScopeDirs: [] },
+        TEST_BINARY
       ),
       { success: true, message: 'already configured' }
     );
@@ -495,20 +509,24 @@ describe('interpretAddResult', () => {
   it('does not upgrade a failure or a refusal', () => {
     const failure = { success: false, message: 'boom' };
     assert.deepEqual(
-      interpretAddResult(failure, {
-        configPath: TEST_CONFIG_PATH,
-        userScope: true,
-        localScopeDirs: [],
-      }),
+      interpretAddResult(
+        failure,
+        { configPath: TEST_CONFIG_PATH, userScope: true, localScopeDirs: [] },
+        TEST_BINARY
+      ),
       failure
     );
     const refusal = { success: false, refused: true, message: 'declined' };
     assert.deepEqual(
-      interpretAddResult(refusal, {
-        configPath: TEST_CONFIG_PATH,
-        userScope: undefined,
-        localScopeDirs: [],
-      }),
+      interpretAddResult(
+        refusal,
+        {
+          configPath: TEST_CONFIG_PATH,
+          userScope: undefined,
+          localScopeDirs: [],
+        },
+        TEST_BINARY
+      ),
       refusal
     );
   });
@@ -520,7 +538,12 @@ describe('interpretAddResult', () => {
     // paths do, so both must.
     const out = interpretAddResult(
       { success: true },
-      { configPath: TEST_CONFIG_PATH, userScope: undefined, localScopeDirs: [] }
+      {
+        configPath: TEST_CONFIG_PATH,
+        userScope: undefined,
+        localScopeDirs: [],
+      },
+      TEST_BINARY
     );
     assert.equal(out.success, true);
     assert.match(out.message ?? '', /could not read/);
@@ -1048,7 +1071,8 @@ describe('upsertJsonServer validity guard', () => {
     // InvalidSymbol at offset 0. Refusing here would be a new hard failure where the
     // previous revision succeeded.
     const file = configIn('\uFEFF{\n  "mcpServers": {}\n}\n');
-    const result = upsertJsonServer(file, 'mcpServers', entry);
+    // Checked as a STRICT client, which is where a surviving BOM is actually fatal.
+    const result = upsertJsonServer(file, 'mcpServers', entry, 'json');
     assert.equal(result.success, true, result.message);
     const written = fs.readFileSync(file, 'utf8');
     assert.match(written, /rpa_GUARDKEY123456/);
@@ -1065,7 +1089,7 @@ describe('upsertJsonServer validity guard', () => {
     // unparseable, which the client then silently never loads. Reporting that as
     // configured is the same class of lie as a false success anywhere else here.
     const file = configIn('{"mcpServers": {"other": {},\n');
-    const result = upsertJsonServer(file, 'mcpServers', entry);
+    const result = upsertJsonServer(file, 'mcpServers', entry, 'jsonc');
     assert.equal(result.success, false);
     assert.match(result.message ?? '', /could not be parsed/);
     // Says it was already broken, because that changes the advice.
@@ -1075,11 +1099,11 @@ describe('upsertJsonServer validity guard', () => {
   });
 
   it('refuses comments and trailing commas for a JSON.parse client', () => {
-    // Cursor, Windsurf and Claude Desktop are Node/Electron apps using JSON.parse, which
-    // rejects both. Validating everything as JSONC reported "✓ configured" for files
-    // those clients silently never load — the same defect the BOM had, in this same
-    // function, and far more reachable (a commented-out server in a hand-edited
-    // ~/.cursor/mcp.json is routine).
+    // Claude Desktop reads its config with a bare JSON.parse and no retry, so a comment
+    // or trailing comma is fatal there. Validating as JSONC reported "✓ configured" for
+    // a file it silently never loads — the same defect the BOM had, in this same
+    // function. (NOT true of Cursor, which despite being an Electron app keeps its
+    // VS Code parent's tolerance — see the per-client wiring suite.)
     for (const contents of [
       '{\n  // mine\n  "mcpServers": {}\n}\n',
       '{\n  "mcpServers": {},\n}\n',
@@ -1115,7 +1139,10 @@ describe('upsertJsonServer validity guard', () => {
     dirs.push(dir);
     const file = path.join(dir, 'nested', 'mcp.json');
     // Also covers creating missing parent directories.
-    assert.equal(upsertJsonServer(file, 'mcpServers', entry).success, true);
+    assert.equal(
+      upsertJsonServer(file, 'mcpServers', entry, 'json').success,
+      true
+    );
     assert.match(fs.readFileSync(file, 'utf8'), /rpa_GUARDKEY123456/);
     if (process.platform === 'win32') {
       // Windows has no POSIX mode bits — node reports 0666 and only the read-only
@@ -1133,6 +1160,50 @@ describe('argsSafeForCmdShell whitespace coverage', () => {
   it('rejects tab and vertical tab', () => {
     assert.equal(argsSafeForCmdShell(['-e', 'RUNPOD_API_KEY=rpa_a\tb']), false);
     assert.equal(argsSafeForCmdShell(['-e', 'RUNPOD_API_KEY=rpa_a\vb']), false);
+  });
+});
+
+describe('pickClaudeBinary rejects relative POSIX hits', () => {
+  it('never returns a cwd-relative path from the PATH lookup', () => {
+    // Whatever this returns is spawned with `-e RUNPOD_API_KEY=<live key>`, so a
+    // relative path hands the key to whatever file sits in the current directory. The
+    // candidate loop guards against exactly this and says so; the POSIX branch returned
+    // hits[0] unchecked.
+    //
+    // Reachable: with `.` on PATH, `command -v claude` prints `./claude` under dash,
+    // bash and zsh — and on Linux /bin/sh IS dash, the shell execSync uses. Verified:
+    //   PATH=".:/usr/bin" dash -c 'command -v claude'  ->  ./claude
+    // macOS /bin/sh absolutises it, which is why this reads as unreachable on a Mac.
+    assert.equal(pickClaudeBinary('./claude\n', 'linux', '/work'), null);
+    assert.equal(pickClaudeBinary('claude\n', 'linux', '/work'), null);
+    // An absolute hit later in the list is preferred over a relative one first.
+    assert.equal(
+      pickClaudeBinary('./claude\n/usr/local/bin/claude\n', 'linux', '/work'),
+      '/usr/local/bin/claude'
+    );
+    // The ordinary case is unchanged.
+    assert.equal(
+      pickClaudeBinary('/usr/local/bin/claude\n', 'linux', '/work'),
+      '/usr/local/bin/claude'
+    );
+  });
+});
+
+describe('describeCommand quoting', () => {
+  it('quotes cmd.exe metacharacters, not just whitespace', () => {
+    // This renders the command printed when the wizard REFUSES to spawn because an
+    // argument holds a metacharacter. Quoting on whitespace alone handed the user a
+    // command broken by that same character: cmd.exe splits `&b=2` into a second
+    // command, so the remediation for an unsafe argument was itself unsafe.
+    const rendered = describeCommand('C:\\npm\\claude.cmd', [
+      'mcp',
+      'add',
+      'runpod',
+      'https://mcp.example/?a=1&b=2',
+    ]);
+    assert.match(rendered, /"https:\/\/mcp\.example\/\?a=1&b=2"/);
+    // Plain arguments stay unquoted, so the common case still reads cleanly.
+    assert.match(rendered, /claude\.cmd mcp add runpod /);
   });
 });
 
@@ -1163,9 +1234,26 @@ describe('claudeUserConfigPath env handling', () => {
     assert.equal(resolved, path.join(os.homedir(), '.claude.json'));
   });
 
+  it('resolves a RELATIVE CLAUDE_CONFIG_DIR the way the CLI does', () => {
+    // Not treated as unset, unlike the empty value above, and deliberately NOT routed
+    // through absoluteEnvDir: the CLI honours a relative value, resolved against the
+    // cwd. Verified live — `CLAUDE_CONFIG_DIR=relcfg claude mcp add … --scope user`
+    // prints `File modified: relcfg/.claude.json` and creates ./relcfg. Reading
+    // $HOME/.claude.json instead would report a definite verdict about a file the CLI
+    // never touched.
+    //
+    // Round 9: mutating `path.resolve(configured)` to `configured` left the suite green,
+    // because the only test supplied an already-absolute path, where resolve is a no-op.
+    process.env.CLAUDE_CONFIG_DIR = 'relcfg';
+    const resolved = claudeUserConfigPath();
+    assert.equal(path.isAbsolute(resolved), true, resolved);
+    assert.equal(resolved, path.resolve('relcfg', '.claude.json'));
+  });
+
   it('reports unknown for a non-absolute config path rather than "absent"', () => {
-    // Defence in depth behind the fix above: whatever produces a relative path, it is
-    // never the file the CLI would use, so answering "no entry" from it is a guess.
+    // Defence in depth behind the fix above. A relative path CAN be the one the CLI
+    // uses (see the resolve test above), so the reader cannot know which file it names
+    // — and answering "no entry" from a path it cannot place is a guess either way.
     assert.equal(readClaudeConfigState('.claude.json').userScope, undefined);
     assert.equal(
       readClaudeConfigState('relative/dir/.claude.json').userScope,
@@ -1269,12 +1357,167 @@ describe('config paths never resolve against the current directory', () => {
     const write = upsertJsonServer(
       'Claude/claude_desktop_config.json',
       'mcpServers',
-      {
-        env: { RUNPOD_API_KEY: 'rpa_MUSTNOTLAND' },
-      }
+      { env: { RUNPOD_API_KEY: 'rpa_MUSTNOTLAND' } },
+      'json'
     );
     assert.equal(write.success, false);
     assert.match(write.message ?? '', /absolute path/);
     assert.equal(fs.existsSync('Claude/claude_desktop_config.json'), false);
+  });
+});
+
+// Every finding below was live on a pushed, fully green, four-leg-CI revision. Each
+// mutation named is one that survived the suite as it then stood.
+describe('per-client config dialect wiring', () => {
+  const dialectOf = (id: string) => CLIENTS.find((c) => c.id === id)?.dialect;
+
+  // THE round-9 blocker, pointed the opposite way to every earlier one: not a failure
+  // reported as success, but a WORKING config reported as broken. Cursor inherited a
+  // shared `?? 'json'` default on the belief that "Electron app ⇒ JSON.parse". It is a
+  // VS Code fork and its MCP reader keeps VS Code's tolerance:
+  //   parseMcpServersFromFile → t$t(content)
+  //   t$t = stripComments → JSON.parse, and on throw
+  //         .replace(/,\s*([}\]])/g,'$1') → JSON.parse again
+  // (Cursor.app workbench.desktop.main.js). So one comment in ~/.cursor/mcp.json made
+  // the wizard refuse to write, tell the user their healthy config was unparseable and
+  // that "this client would not load the entry", and leave Cursor unconfigured — where
+  // the previous revision configured it. A regression, and the false premise was
+  // asserted as verified fact in the changeset and the PR body, which a squash merge
+  // writes into main's history.
+  //
+  // Asserted per client because that is the layer that was wrong. Mutating the wiring
+  // back to a shared default left all 73 tests green: upsertJsonServer was only ever
+  // called with an explicit dialect, so the mapping itself had zero coverage.
+  it('classifies Cursor as lenient, because its shipped reader is', () => {
+    assert.equal(dialectOf('cursor'), 'jsonc');
+  });
+
+  it('classifies Claude Desktop as strict, because its shipped reader is', () => {
+    // wxr(): `JSON.parse(Et.readFileSync(t,'utf8'))` — no preprocessing, no retry
+    // (Claude.app app.asar). Refusing a commented config here is correct.
+    assert.equal(dialectOf('claude-desktop'), 'json');
+  });
+
+  it('classifies VS Code as lenient', () => {
+    assert.equal(dialectOf('vscode'), 'jsonc');
+  });
+
+  it('does not claim to know how Windsurf parses', () => {
+    // Not installed on any machine this was checked on, so its parser was never read.
+    // Guessing is precisely what produced the Cursor blocker, and both guesses break a
+    // user: too strict refuses a healthy config, too lenient reports success for a file
+    // the client never loads. 'unverified' validates leniently — so a probably-fine
+    // config is never refused — and discloses the reliance instead of asserting it.
+    assert.equal(dialectOf('windsurf'), 'unverified');
+  });
+
+  it('gives every JSON-config client an explicit dialect', () => {
+    // The default is what did the damage, so there is no longer one. This fails if a
+    // client is added without stating how its config is parsed.
+    for (const client of CLIENTS.filter((c) => c.id !== 'claude-code')) {
+      assert.ok(client.dialect, `${client.id} has no dialect`);
+    }
+  });
+});
+
+describe('config edits land where the client actually reads', () => {
+  const dirs: string[] = [];
+  after(() => {
+    for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  });
+  const configIn = (contents: string) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rp-readback-'));
+    dirs.push(dir);
+    const file = path.join(dir, 'mcp.json');
+    fs.writeFileSync(file, contents);
+    return file;
+  };
+  const entry = { command: 'npx', env: { RUNPOD_API_KEY: 'rpa_READBACK1' } };
+
+  it('refuses when a duplicate key would send the write somewhere unread', () => {
+    // Duplicate keys are legal JSON, so the validity check passes — but `jsonc.modify`
+    // edits the FIRST occurrence and every parser here keeps the LAST. The entry landed
+    // in a block nothing reads: a plaintext API key on disk, reported as configured,
+    // with the client never seeing it.
+    const file = configIn(
+      '{"mcpServers":{"foo":{}},"mcpServers":{"bar":{}}}\n'
+    );
+    const result = upsertJsonServer(file, 'mcpServers', entry, 'json');
+    assert.equal(result.success, false, result.message);
+    assert.match(result.message ?? '', /does not read it/);
+    assert.match(result.message ?? '', /more than once/);
+    // And nothing was written — no stray key in an unread block.
+    assert.equal(fs.readFileSync(file, 'utf8').includes('rpa_'), false);
+  });
+
+  it('does not report "nothing to remove" over an entry still on disk', () => {
+    // The zero-edits path assumed absence. With a duplicate key the edit targets the
+    // block WITHOUT the entry, producing zero edits while the block the client reads
+    // still holds the key — mechanism #3's exact shape, on the cleanup path.
+    const file = configIn(
+      '{"mcpServers":{"other":{}},"mcpServers":{"runpod":{"command":"npx"}}}\n'
+    );
+    const result = removeJsonServer(file, 'mcpServers', 'json');
+    assert.equal(result.success, false, result.message);
+    assert.match(result.message ?? '', /still present/);
+    assert.match(result.message ?? '', /by hand/);
+  });
+
+  it('keeps a config valid when removing its sole entry after a trailing comma', () => {
+    // A surgical delete leaves `{ , }` here. Verified taking a clean VS Code mcp.json to
+    // one with a parse error while printing "✓ cleaned up". VS Code and Cursor both
+    // happen to recover, but a strict client would stop loading every OTHER server in
+    // the file — so it cannot be left behind.
+    const file = configIn('{\n  "servers": {\n    "runpod": {},\n  }\n}\n');
+    const before = removeJsonServer(file, 'servers', 'jsonc');
+    assert.equal(before.success, true, before.message);
+    const after = fs.readFileSync(file, 'utf8');
+    // Valid under the STRICT parser too, which is the point: the repair must not depend
+    // on the reader being forgiving.
+    assert.doesNotThrow(() => JSON.parse(after), after);
+    assert.equal(JSON.parse(after).servers.runpod, undefined);
+    // The rewrite costs comments and formatting, so it is disclosed, not silent.
+    assert.match(before.message ?? '', /reformatted/);
+  });
+
+  it('leaves a comment-bearing config untouched when no repair is needed', () => {
+    // The structural rewrite is a last resort and must not fire on the ordinary path,
+    // or every uninstall would silently strip a user's comments.
+    const file = configIn(
+      '{\n  // keep me\n  "mcpServers": {\n    "runpod": {},\n    "other": {}\n  }\n}\n'
+    );
+    const result = removeJsonServer(file, 'mcpServers', 'jsonc');
+    assert.equal(result.success, true, result.message);
+    const after = fs.readFileSync(file, 'utf8');
+    assert.match(after, /\/\/ keep me/);
+    assert.equal(result.message, undefined);
+  });
+
+  it('discloses, rather than asserts, leniency for an unverified client', () => {
+    // Windsurf: the entry is written (refusing would leave a probably-fine client
+    // unconfigured) but the tick is qualified, because whether it accepts comments is
+    // genuinely unknown.
+    const file = configIn('{\n  // mine\n  "mcpServers": {}\n}\n');
+    const result = upsertJsonServer(file, 'mcpServers', entry, 'unverified');
+    assert.equal(result.success, true, result.message);
+    assert.match(fs.readFileSync(file, 'utf8'), /rpa_READBACK1/);
+    assert.match(result.message ?? '', /unverified/);
+  });
+
+  it('does not qualify a success for an unverified client with a plain config', () => {
+    // The caveat must be earned by the file, not printed at every Windsurf user.
+    const file = configIn('{\n  "mcpServers": {}\n}\n');
+    const result = upsertJsonServer(file, 'mcpServers', entry, 'unverified');
+    assert.equal(result.success, true, result.message);
+    assert.equal(result.message, undefined);
+  });
+
+  it('refuses to delete through a relative config path', () => {
+    // Round 9: mutating this guard to `if (false)` left the suite green. The existing
+    // test was titled "write OR DELETE" but only ever exercised the write half —
+    // removeJsonServer was not exported, so it had no coverage at all.
+    const result = removeJsonServer('Claude/mcp.json', 'mcpServers', 'json');
+    assert.equal(result.success, false);
+    assert.match(result.message ?? '', /not an absolute path/);
   });
 });

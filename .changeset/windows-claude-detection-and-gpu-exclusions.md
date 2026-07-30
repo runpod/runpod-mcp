@@ -101,13 +101,36 @@ rather than `0644`, since it holds a plaintext API key (a freshly created Claude
 and any message built from the CLI's output has the key stripped by value, not just by argv
 shape — that CLI does echo `-e` tokens back on some errors. A config the owning client cannot parse is
 also no longer reported as configured, and validity is now decided by the parser that
-client actually uses: only VS Code reads its `mcp.json` as JSONC, while Cursor, Windsurf and
-Claude Desktop are Node/Electron apps using `JSON.parse`, which rejects comments and
-trailing commas. Validating everything leniently meant reporting success for files those
-clients silently never load — the same defect a leading BOM had, and far more reachable,
-since a commented-out server in a hand-edited config is routine. The message also
+client actually uses, read out of each client's shipped code rather than inferred from
+"it's an Electron app". Claude Desktop is strict — a bare `JSON.parse(readFileSync(...))`
+with no preprocessing and no retry — so validating its config leniently meant reporting
+success for a file it silently never loads, the same defect a leading BOM had and far more
+reachable, since a commented-out server in a hand-edited config is routine. Cursor is
+**not** strict, despite also being an Electron app: it is a VS Code fork and its MCP reader
+keeps VS Code's tolerance, stripping comments and retrying without trailing commas, so it
+is treated as JSONC like VS Code. Windsurf's parser could not be read, so it is marked
+unverified: the entry is written, and if the config relies on that leniency the success
+message says the tolerance is unconfirmed rather than asserting it. Guessing is not
+free in either direction — too strict refuses a healthy config and leaves the client
+unconfigured, too lenient reports success for a file that never loads — so the dialect is
+required per client with no default, and asserted per client in the tests.
+
+Two further ways an edit could be valid yet ineffective are now caught. Duplicate keys are
+legal JSON, and `jsonc.modify` edits the first occurrence while every client keeps the last,
+so the entry could land in a block nothing reads — a plaintext key on disk, reported as
+configured; both the add and the remove path now confirm the result with the client's own
+parser instead of trusting that an edit applied. And removing the sole entry of a
+`servers` block followed by a trailing comma left `{ , }` behind, turning a clean config
+into one with a parse error while printing a tick; that now falls back to a structural
+rewrite, which is disclosed because it costs the file's comments. The message also
 distinguishes "this change would break it" from "it was already broken", because the advice
 differs.
+
+The PATH lookup no longer returns a relative path. Whatever it returns is spawned with the
+live API key, and with `.` on `PATH` `command -v claude` prints `./claude` under dash — which
+is `/bin/sh` on Linux, the shell this uses — so the key could go to whatever file sat in the
+working directory. The candidate list already refused relative entries for this reason; the
+PATH branch did not.
 
 An `add` that lands in user scope while a **local**-scope entry exists now says so. Local
 scope takes precedence, so in those directories the new entry is inert and Claude Code keeps
