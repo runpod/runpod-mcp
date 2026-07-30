@@ -82,21 +82,50 @@ export function registerEndpointGpuTools(
               ...(params.excludeGpuTypeIds ?? []).map((id) => `-${id}`),
             ].join(',')
           : undefined);
-      // An exclusion list only means something alongside pools: gpuIds is built as
-      // `pools + '-'-prefixed exclusions`, so excludeGpuTypeIds on its own has nowhere
-      // to go. Relaxing the old blanket guard to allow a count-only call (correct)
-      // turned this into a silent discard: the request was accepted, the stored gpuIds
-      // was echoed unchanged, and the reply looked like the exclusion had been applied.
-      // That is issue #63's own failure mode, in the tool that exists to express
-      // exclusions.
+      // Every way of asking for something this tool cannot express is refused up front.
+      // Each of these was, at some point, silently accepted — the request vanished, the
+      // stored value was echoed back, and the reply looked like it had been applied.
+      // That is issue #63's own failure mode occurring inside the tool that exists to
+      // fix it, so the guards are exhaustive rather than case-by-case.
+
+      // gpuIds is built as `pools + '-'-prefixed exclusions`, so exclusions with no
+      // pools have nowhere to go.
       if (
         params.excludeGpuTypeIds?.length &&
         !params.pools?.length &&
-        params.gpuIds === undefined
+        !params.gpuIds
       ) {
         return jsonReply({
           error:
             'excludeGpuTypeIds only applies alongside pools: gpuIds is built as the pool list plus the exclusions, so exclusions alone cannot be expressed. Pass pools together with excludeGpuTypeIds (see list-gpu-types), or pass a complete gpuIds string. To keep the current pools and add an exclusion, read the endpoint first with get-endpoint includeGpuIds:true and send the full string.',
+        });
+      }
+
+      // A raw gpuIds takes precedence, so exclusions passed with it would be dropped.
+      // Appending them is not safe either — gpuIds may already carry exclusions, and
+      // merging two sources silently is how this class of bug started.
+      if (params.excludeGpuTypeIds?.length && params.gpuIds) {
+        return jsonReply({
+          error:
+            'gpuIds and excludeGpuTypeIds cannot be combined: a raw gpuIds string is used as-is, so the exclusions would be silently dropped. Put the exclusions in the gpuIds string yourself (comma-separated, each prefixed with "-"), or pass pools + excludeGpuTypeIds instead.',
+        });
+      }
+
+      // An explicit empty pool list is a request, not an omission — and an unfulfillable
+      // one. update-endpoint rejects the identical input on v2; this used to ignore it.
+      if (params.pools !== undefined && params.pools.length === 0) {
+        return jsonReply({
+          error:
+            'pools cannot be empty: an endpoint must allow at least one GPU pool. Pass the pools you want (see list-gpu-types), or omit pools to keep the current selection.',
+        });
+      }
+
+      // '' survives `??`, so it used to reach the "no GPU selection to keep" branch and
+      // be reported as a CPU endpoint.
+      if (params.gpuIds !== undefined && params.gpuIds.trim() === '') {
+        return jsonReply({
+          error:
+            'gpuIds cannot be empty. Pass a pool list (e.g. "AMPERE_16", optionally with "-"-prefixed exclusions), or omit gpuIds to keep the current selection.',
         });
       }
 
@@ -142,12 +171,26 @@ export function registerEndpointGpuTools(
         });
       }
 
+      // A CPU endpoint cannot hold a GPU selection, and the server does not say so — it
+      // silently discards it. `validateAndNormalizeInstanceIds` derives computeType=CPU
+      // from a `cpu*` instanceId, `validateAndNormalizeGpuConfig` returns undefined for
+      // anything not GPU without even looking at the gpuIds, and the update then writes
+      // `gpuIds: normalizedGpuIds || null` — i.e. null. Verified in runpod-backend
+      // (aiApiHelpers.ts validateAndNormalizeGpuConfig, aiApi.ts:2711). So a write DID
+      // happen, re-validating the config and eligible to roll the workers, while the
+      // requested pin was never stored and the reply claimed success.
+      if (requestedGpuIds !== undefined && current.instanceIds.length > 0) {
+        return jsonReply({
+          error: `Endpoint "${params.endpointId}" is a CPU endpoint (instances: ${current.instanceIds.join(', ')}), and a GPU selection cannot be applied to one — the server would discard it silently. Nothing was changed. Use update-endpoint to change a CPU endpoint's instance types.`,
+        });
+      }
+
       // Falls back to the stored value, so a count-only or CUDA-only change preserves
       // the endpoint's GPU selection — SKU exclusions and all.
       const gpuIds = requestedGpuIds ?? current.gpuIds;
       if (!gpuIds) {
         return jsonReply({
-          error: `Endpoint "${params.endpointId}" has no GPU selection to keep (a CPU endpoint has no gpuIds), so gpuIds or pools must be provided.`,
+          error: `Endpoint "${params.endpointId}" has no stored GPU selection to keep, so gpuIds or pools must be provided.`,
         });
       }
 

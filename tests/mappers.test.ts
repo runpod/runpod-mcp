@@ -17,6 +17,7 @@ import { parseLogSse } from '../src/tools/logs.js';
 import {
   hasGpuExclusions,
   SNAPSHOT_QUERY,
+  buildSaveEndpointInput,
 } from '../src/_shared/endpoint-gpu-ids.js';
 
 const fixture = JSON.parse(
@@ -620,6 +621,21 @@ describe('SNAPSHOT_QUERY covers EndpointSnapshot', () => {
     .map((line) => line.trim())
     .filter(Boolean);
   const selected = bodyLines.filter((line) => /^[a-zA-Z]+$/.test(line));
+  // Any bare field the scalar filter would not have matched — `__typename`, an alias,
+  // two fields on one line — is a drift vector the checks below would miss silently.
+  const unrecognised = bodyLines.filter(
+    (line) =>
+      !/^[a-zA-Z]+$/.test(line) &&
+      !/^\}$/.test(line) &&
+      !/^(query|myself|endpoint\(id:)/.test(line)
+  );
+
+  it('contains no line the field checks cannot classify', () => {
+    // Belt and braces on the two assertions below: they iterate bare identifiers, so
+    // anything that is neither a bare identifier nor structural (`__typename`, an alias,
+    // a directive, two fields packed on one line) would slip past both.
+    assert.deepEqual(unrecognised, []);
+  });
 
   it('selects no object-typed subtree', () => {
     // The extra-field check below only sees bare identifiers, so a sub-selection
@@ -664,5 +680,130 @@ describe('SNAPSHOT_QUERY covers EndpointSnapshot', () => {
     // protection would silently no-op.
     assert.match(SNAPSHOT_QUERY, /myself[\s\S]*endpoint\(id:/);
     assert.equal(/endpoints\s*[({]/.test(SNAPSHOT_QUERY), false);
+  });
+});
+
+// ---- buildSaveEndpointInput, directly ----
+// The builder had no unit test at all: everything went through handler fixtures, where
+// `preservedKeys` is derived from the fixture rather than from the builder. So the one
+// direction that caused the instanceIds data loss — a field the builder reads but the
+// query never selects — was unasserted, and the round-2 fix could be deleted with the
+// whole suite still green.
+describe('buildSaveEndpointInput', () => {
+  // Every field EndpointSnapshot declares, with values distinguishable from defaults.
+  const full = {
+    id: 'ep_1',
+    name: 'ep',
+    gpuIds: 'AMPERE_16,-NVIDIA RTX A4500',
+    gpuCount: 3,
+    workersMin: 1,
+    workersMax: 7,
+    idleTimeout: 42,
+    scalerType: 'REQUEST_COUNT',
+    scalerValue: 9,
+    executionTimeoutMs: 123000,
+    requestTTL: 600,
+    flashBootType: 'PRIORITY_FLASHBOOT',
+    locations: 'US-TX-3',
+    allowedCudaVersions: '12.4,12.8',
+    minCudaVersion: '12.4',
+    instanceIds: ['cpu3c-2-4'],
+  };
+
+  it('echoes a non-empty instanceIds', () => {
+    // The resolver writes `input?.instanceIds ? join(',') : null`, so omitting this
+    // NULLS a CPU endpoint's instance selection. Note both current callers can only
+    // reach this with a GPU endpoint, where instanceIds is always empty — so the echo is
+    // defensive, and a handler-level test cannot cover it. Hence this one.
+    assert.deepEqual(buildSaveEndpointInput(full).instanceIds, ['cpu3c-2-4']);
+  });
+
+  it('omits an empty instanceIds rather than sending []', () => {
+    // `[]` is truthy server-side, so it would be written as '' where the column is NULL.
+    const input = buildSaveEndpointInput({ ...full, instanceIds: [] });
+    assert.equal('instanceIds' in input, false);
+  });
+
+  it('tolerates a snapshot missing instanceIds entirely', () => {
+    // This runs inside the restore's try/catch, so a TypeError here would surface to the
+    // user as "re-asserting the exclusions failed" and cost them their SKU pins.
+    const partial = { ...full } as Record<string, unknown>;
+    delete partial.instanceIds;
+    assert.doesNotThrow(() =>
+      buildSaveEndpointInput(
+        partial as unknown as Parameters<typeof buildSaveEndpointInput>[0]
+      )
+    );
+  });
+
+  it('applies overrides and echoes everything else verbatim', () => {
+    const input = buildSaveEndpointInput(full, {
+      gpuIds: 'ADA_24',
+      gpuCount: 1,
+      minCudaVersion: '12.0',
+    });
+    assert.equal(input.gpuIds, 'ADA_24');
+    assert.equal(input.gpuCount, 1);
+    assert.equal(input.minCudaVersion, '12.0');
+    // Untouched by the override, and not reset to a default.
+    assert.equal(input.workersMax, 7);
+    assert.equal(input.idleTimeout, 42);
+    assert.equal(input.scalerValue, 9);
+    assert.equal(input.requestTTL, 600);
+    assert.equal(input.allowedCudaVersions, '12.4,12.8');
+  });
+
+  it('never emits a field whose write is gated on the input carrying it', () => {
+    const input = buildSaveEndpointInput(full);
+    for (const gated of [
+      'modelReferences',
+      'compliance',
+      'templateId',
+      'networkVolumeIds',
+      'type',
+    ]) {
+      assert.equal(gated in input, false, `${gated} must not be echoed`);
+    }
+  });
+
+  it('sends nothing the snapshot query does not select', () => {
+    // THE direction that caused the instanceIds loss: a field the builder reads but the
+    // query omits arrives as `undefined`, JSON.stringify drops it from the variables,
+    // and the echo silently becomes an omission. Comparing the builder's own output to
+    // the query closes it without a hand-copied list in the middle.
+    const selected = new Set(
+      SNAPSHOT_QUERY.split('\n')
+        .map((line) => line.trim())
+        .filter((line) => /^[a-zA-Z]+$/.test(line))
+    );
+    for (const key of Object.keys(buildSaveEndpointInput(full))) {
+      assert.ok(
+        selected.has(key),
+        `buildSaveEndpointInput emits "${key}", which SNAPSHOT_QUERY does not select — it would read as undefined and be dropped`
+      );
+    }
+  });
+});
+
+describe('update-endpoint networkVolumes', () => {
+  // `[]` means "detach every volume" and the v2 spec permits it (networkVolumes is an
+  // array with no minItems), but the mapper used to drop it — a 200 that changed
+  // nothing. Untested until now, so reverting the fix passed the whole suite.
+  it('sends an explicit empty list rather than dropping it', () => {
+    const body = mapEndpointUpdateToV2({ networkVolumeIds: [] });
+    assert.equal('networkVolumes' in body, true);
+    assert.deepEqual(body.networkVolumes, []);
+  });
+
+  it('still omits the key entirely when the caller says nothing', () => {
+    assert.equal('networkVolumes' in mapEndpointUpdateToV2({}), false);
+  });
+
+  it('passes a non-empty list through', () => {
+    assert.deepEqual(
+      mapEndpointUpdateToV2({ networkVolumeIds: ['nv_1', 'nv_2'] })
+        .networkVolumes,
+      ['nv_1', 'nv_2']
+    );
   });
 });

@@ -138,7 +138,7 @@ solely when the input carries them are deliberately omitted, because echoing a r
 back does damage: `modelReferences` reads as `[]` when empty, and `[]` means *clear all
 model references*, which strips `MODEL_NAME` from the endpoint's env and rolls its workers;
 a non-empty value re-validates every reference without a HuggingFace token, so a gated model
-fails the write outright. `compliance` reads as `[]` and is re-sorted server-side;
+fails the write outright. `compliance` reads as `[]`, which resolves to NULL server-side and CLEARS the endpoint's compliance requirements;
 `templateId` is read only on the create path, so echoing it on an update is at best a
 no-op; `networkVolumeIds` creates volume rows on a legacy single-volume endpoint; and
 `type` is both written and validated only when present, so echoing a future `AiApiType`
@@ -170,6 +170,29 @@ Cost, stated fully:
   the GPU pool catalogue, pool access). An endpoint whose stored config has since drifted out
   of validity fails the restore and reports `_warning` — honest, but it then sits without its
   exclusions until `set-endpoint-gpus` is run.
+
+`set-endpoint-gpus` now refuses every request it cannot express, rather than accepting it
+and echoing the stored value back as though it had applied:
+
+- `excludeGpuTypeIds` without `pools` (exclusions are built onto a pool list, so alone
+  they have nowhere to go), and `excludeGpuTypeIds` alongside a raw `gpuIds` (which takes
+  precedence, so they would be dropped).
+- An explicitly empty `pools`, and an empty `gpuIds` string — the latter previously fell
+  through to a message claiming the endpoint was a CPU one.
+- A GPU selection aimed at a **CPU endpoint**. The server discards it silently:
+  `computeType` is derived from `cpu*` instance ids, the GPU validator returns undefined
+  for anything not GPU without reading `gpuIds` at all, and the update then writes
+  `gpuIds: null`. A write happened, the pin was never stored, and the reply claimed
+  success.
+
+`update-endpoint`'s `gpuPoolIds` warning is now established by re-reading rather than
+asserted from the fact that pools were sent — so it disappears on its own if the facade
+stops dropping exclusions, instead of telling callers to repair something that is fine.
+
+`create-pod` / `update-pod` reject `volumeInGb` without `volumeMountPath` (or the
+reverse). The persistent volume is one object, so a lone field was dropped and the pod
+was created with no volume while the call reported success. A test had pinned that drop
+as correct behaviour.
 
 Separately, `update-endpoint` now rejects a `gpuCount` sent without `gpuPoolIds` on v2. The
 v2 `gpu` object requires `pools`, so the mapper dropped `gpu` entirely and the PATCH said

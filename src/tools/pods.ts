@@ -192,6 +192,21 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
     },
     { title: 'Create pod', ...WRITE },
     async (params) => {
+      // volumeInGb and volumeMountPath only mean anything together: the v2 mapper builds
+      // one `mounts.persistent: {size, path}` object and returns undefined unless both
+      // are present, so a lone one is dropped and the request becomes a no-op that
+      // reports success. Same class as update-endpoint's gpuCount guard.
+      if (
+        (params.volumeInGb === undefined) !==
+        (params.volumeMountPath === undefined)
+      ) {
+        return jsonReply({
+          error:
+            'volumeInGb and volumeMountPath must be sent together: the persistent volume is one object (size + path), so one without the other is dropped and nothing changes. Pass both, or neither.',
+          status: 400,
+        });
+      }
+
       const backend = backendFor('pods');
 
       // Template deploy is v2-only: v2 CreatePodRequest has no templateId, so we
@@ -375,6 +390,21 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
     { title: 'Update pod', ...WRITE, idempotentHint: true },
     async (params) => {
       const { podId, ...updateParams } = params;
+      // volumeInGb and volumeMountPath only mean anything together: the v2 mapper builds
+      // one `mounts.persistent: {size, path}` object and returns undefined unless both
+      // are present, so a lone one is dropped and the request becomes a no-op that
+      // reports success. Same class as update-endpoint's gpuCount guard.
+      if (
+        (updateParams.volumeInGb === undefined) !==
+        (updateParams.volumeMountPath === undefined)
+      ) {
+        return jsonReply({
+          error:
+            'volumeInGb and volumeMountPath must be sent together: the persistent volume is one object (size + path), so one without the other is dropped and nothing changes. Pass both, or neither.',
+          status: 400,
+        });
+      }
+
       const backend = backendFor('pods');
       const body = backend.mapUpdate(updateParams) as Record<string, unknown>;
       const result = await callRestUrl(

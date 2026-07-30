@@ -199,10 +199,12 @@ export function buildSaveEndpointInput(
   //     MODEL_NAMES from the endpoint's env and rolls its workers. When non-empty it
   //     re-validates every reference, and the restore carries no HuggingFace token,
   //     so a gated model fails the write outright.
-  //   compliance: gated on `!== undefined`. Reads as `[]`, never null, and the
-  //     server re-sorts the stored csv, which can flip the change-detection compare.
-  //   templateId: only a resolved template acts on update, and echoing it re-runs
-  //     template validation — which throws if that template is gone.
+  //   compliance: gated on `!== undefined`. Reads as `[]`, never null — and `[]`
+  //     resolves to NULL server-side, which CLEARS the endpoint's compliance
+  //     requirements. For a GDPR/HIPAA-tagged endpoint that is a placement change, not
+  //     a bookkeeping one.
+  //   templateId: read only on the create path (`if (isCreating)`), so echoing it on an
+  //     update is at best a no-op — nothing on the update path reads it.
   //   networkVolumeIds: a null/omitted value means "don't touch volumes"; echoing a
   //     legacy single-volume endpoint's volume creates rows that did not exist and
   //     bumps the SLS version.

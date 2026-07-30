@@ -575,15 +575,13 @@ export function registerEndpointTools(
         return jsonReply(result);
       }
 
-      // An explicit gpuPoolIds means the caller is deliberately rewriting the pool
-      // list, so their value wins — but say plainly that the exclusions are gone,
-      // since nothing in the v2 reply reveals it.
-      if (updateParams.gpuPoolIds?.length) {
-        return jsonReply({
-          ...(result as Record<string, unknown>),
-          _warning: `gpuPoolIds replaced this endpoint's GPU config, dropping its SKU exclusions (was "${gpuIdsBeforePatch}"). v2 cannot express exclusions — restore them with set-endpoint-gpus.`,
-        });
-      }
+      // An explicit gpuPoolIds means the caller is deliberately rewriting the pool list,
+      // so their value wins and nothing is restored on top of it. Whether the exclusions
+      // actually went is still established by reading, not asserted: if the v2 facade
+      // stops rebuilding gpuIds from gpu.pools, a hardcoded warning here would start
+      // telling callers to repair something that is fine. Handled below, after the
+      // re-read, so both paths share one source of truth.
+      const callerRewrotePools = Boolean(updateParams.gpuPoolIds?.length);
 
       try {
         // Re-read AFTER the patch. saveEndpoint is not sparse, so the restore has
@@ -600,7 +598,7 @@ export function registerEndpointTools(
         if (afterPatch === null) {
           return jsonReply({
             ...(result as Record<string, unknown>),
-            _warning: `The update applied, but this endpoint could not be re-read to restore its GPU SKU exclusions, which the patch drops. Expected gpuIds "${gpuIdsBeforePatch}" — restore with set-endpoint-gpus.`,
+            _warning: `The update applied, but this endpoint could not be re-read to ${callerRewrotePools ? 'check whether its GPU SKU exclusions survived' : 'restore its GPU SKU exclusions, which the patch drops'}. Expected gpuIds "${gpuIdsBeforePatch}" — verify with get-endpoint includeGpuIds:true and restore with set-endpoint-gpus if needed.`,
           });
         }
         // Nothing was lost — skip the write entirely. saveEndpoint is never free:
@@ -609,7 +607,18 @@ export function registerEndpointTools(
         // left alone is worse than doing nothing. This also makes the restore a
         // genuine no-op once the v2 facade stops rebuilding gpuIds from gpu.pools.
         if (afterPatch.gpuIds === gpuIdsBeforePatch) {
+          // Nothing was lost, so there is nothing to warn about even when the caller
+          // rewrote the pool list.
           return jsonReply(result);
+        }
+
+        // Lost, and the caller asked for the pools to change — their value stands, but
+        // the exclusions really are gone and nothing in the v2 reply reveals it.
+        if (callerRewrotePools) {
+          return jsonReply({
+            ...(result as Record<string, unknown>),
+            _warning: `gpuPoolIds replaced this endpoint's GPU config, dropping its SKU exclusions (was "${gpuIdsBeforePatch}", now "${afterPatch.gpuIds}"). v2 cannot express exclusions — restore them with set-endpoint-gpus.`,
+          });
         }
         const restored = await saveEndpoint(
           graphqlAuthed,
