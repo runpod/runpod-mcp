@@ -95,6 +95,12 @@ The refusals in full:
   `gpuIds: null`. A write happened, the pin was never stored, and the reply claimed
   success.
 
+All `set-endpoint-gpus` refusals and pre-write read failures are marked as MCP tool
+errors, matching `update-endpoint`; clients no longer have to inspect otherwise-successful
+content for an embedded `error` field. A write that proceeds with
+`_exclusionsUnvalidated` remains a success because the warning describes validation that
+was skipped, not a refused operation.
+
 `update-endpoint` treats non-empty `gpuPoolIds` plus a positive integer `gpuCount` with
 `replaceGpuSelection: true` as explicit replacement intent and sends that PATCH directly.
 Omitted pools, omitted count, omitted acknowledgement, and explicitly empty lists are

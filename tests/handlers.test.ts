@@ -3487,6 +3487,7 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
       (out: unknown) => {
         // No read either — nothing to do is decided before any request.
         assert.equal(outbound.length, 0);
+        assert.equal((out as { isError?: boolean }).isError, true);
         assert.match(
           parseText(out as never).error as string,
           /Nothing to change/
@@ -3537,6 +3538,7 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
       gpuIds: 'ADA_24',
     });
     assert.equal(unknown.outbound.length, 1);
+    assert.equal((unknownOut as { isError?: boolean }).isError, true);
     assert.match(
       parseText(unknownOut).error as string,
       /returned no user for this credential/
@@ -3555,6 +3557,7 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
       gpuIds: 'ADA_24',
     });
     assert.equal(rejected.outbound.length, 1, 'must not reach the mutation');
+    assert.equal((rejectedOut as { isError?: boolean }).isError, true);
     const rejectedError = parseText(rejectedOut).error as string;
     // Phrased without asserting a diagnosis — the same catch sees a 401 on an expired
     // key and a GraphQL 500, and "your id is wrong" would send those users the wrong
@@ -3570,6 +3573,7 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
       endpointId: 'ep_pinme',
     });
     assert.equal(none.outbound.length, 0);
+    assert.equal((noneOut as { isError?: boolean }).isError, true);
     assert.match(parseText(noneOut).error as string, /gpuIds .*or pools/);
   });
 });
@@ -3813,6 +3817,7 @@ describe('set-endpoint-gpus input guards', () => {
       endpointId: 'ep_1',
       ...params,
     });
+    assert.equal((out as { isError?: boolean }).isError, true);
     assert.match(parseText(out).error as string, pattern);
     // Nothing may be written for a request that cannot be honoured.
     assert.equal(
@@ -3850,6 +3855,7 @@ describe('set-endpoint-gpus input guards', () => {
         pools: ['AMPERE_16'],
         excludeGpuTypeIds: ['NVIDIA RTX 4000 Ada'],
       });
+      assert.equal((out as { isError?: boolean }).isError, true);
       const reply = parseText(out);
       assert.match(reply.error as string, /do(es)? not match any GPU type/);
       assert.match(reply.error as string, /would exclude nothing/);
@@ -4053,6 +4059,7 @@ describe('set-endpoint-gpus input guards', () => {
       pools: ['ADA_24'],
       excludeGpuTypeIds: ['NVIDIA L4'],
     });
+    assert.equal((out as { isError?: boolean }).isError, true);
     const error = parseText(out).error as string;
     assert.match(error, /is a CPU endpoint/);
     assert.match(error, /cpu3c-2-4/);

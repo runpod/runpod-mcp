@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { WRITE, type ToolRuntime } from './runtime.js';
+import { WRITE, jsonErrorReply, type ToolRuntime } from './runtime.js';
 import {
   readEndpointSnapshot,
   buildSaveEndpointInput,
@@ -143,7 +143,7 @@ export function registerEndpointGpuTools(
         !params.pools?.length &&
         !params.gpuIds
       ) {
-        return jsonReply({
+        return jsonErrorReply({
           error:
             'excludeGpuTypeIds only applies alongside pools: gpuIds is built as the pool list plus the exclusions, so exclusions alone cannot be expressed. Pass pools together with excludeGpuTypeIds (see list-gpu-types), or pass a complete gpuIds string. To keep the current pools and add an exclusion, read the endpoint first with get-endpoint includeGpuIds:true and send the full string.',
         });
@@ -153,7 +153,7 @@ export function registerEndpointGpuTools(
       // Appending them is not safe either — gpuIds may already carry exclusions, and
       // merging two sources silently is how this class of bug started.
       if (params.excludeGpuTypeIds?.length && params.gpuIds) {
-        return jsonReply({
+        return jsonErrorReply({
           error:
             'gpuIds and excludeGpuTypeIds cannot be combined: a raw gpuIds string is used as-is, so the exclusions would be silently dropped. Put the exclusions in the gpuIds string yourself (comma-separated, each prefixed with "-"), or pass pools + excludeGpuTypeIds instead.',
         });
@@ -165,7 +165,7 @@ export function registerEndpointGpuTools(
       // pools went unguarded for two more rounds because the comment above claimed the
       // set was complete.
       if (params.pools?.length && params.gpuIds) {
-        return jsonReply({
+        return jsonErrorReply({
           error:
             'gpuIds and pools cannot be combined: a raw gpuIds string is used as-is, so the pool list would be silently dropped. Pass pools (with optional excludeGpuTypeIds) to have the string built for you, or pass a complete gpuIds string containing the pools you want.',
         });
@@ -174,7 +174,7 @@ export function registerEndpointGpuTools(
       // An explicit empty pool list is a request, not an omission — and an unfulfillable
       // one. update-endpoint rejects the identical input on v2; this used to ignore it.
       if (params.pools !== undefined && params.pools.length === 0) {
-        return jsonReply({
+        return jsonErrorReply({
           error:
             'pools cannot be empty: an endpoint must allow at least one GPU pool. Pass the pools you want (see list-gpu-types), or omit pools to keep the current selection.',
         });
@@ -183,7 +183,7 @@ export function registerEndpointGpuTools(
       // '' survives `??`, so it used to reach the "no GPU selection to keep" branch and
       // be reported as a CPU endpoint.
       if (params.gpuIds !== undefined && params.gpuIds.trim() === '') {
-        return jsonReply({
+        return jsonErrorReply({
           error:
             'gpuIds cannot be empty. Pass a pool list (e.g. "AMPERE_16", optionally with "-"-prefixed exclusions), or omit gpuIds to keep the current selection.',
         });
@@ -199,7 +199,7 @@ export function registerEndpointGpuTools(
         params.minCudaVersion !== undefined ||
         params.allowedCudaVersions !== undefined;
       if (!changesSomething) {
-        return jsonReply({
+        return jsonErrorReply({
           error:
             'Nothing to change. Provide gpuIds (raw string) or pools (with optional excludeGpuTypeIds), and/or gpuCount / minCudaVersion / allowedCudaVersions. See list-gpu-types for pool names and GPU type ids.',
         });
@@ -228,7 +228,7 @@ export function registerEndpointGpuTools(
             (id) => !available.includes(id)
           );
           if (unmatched.length > 0) {
-            return jsonReply({
+            return jsonErrorReply({
               error: `excludeGpuTypeIds ${unmatched.map((id) => `"${id}"`).join(', ')} ${unmatched.length === 1 ? 'does' : 'do'} not match any GPU type in ${params.pools.length === 1 ? 'pool' : 'pools'} ${params.pools.join(', ')}, so ${unmatched.length === 1 ? 'it' : 'they'} would exclude nothing and the endpoint would be left able to run on every SKU in the pool. Exclusions are matched by exact id. Nothing was changed.`,
               availableGpuTypeIds: Object.fromEntries(membership),
             });
@@ -252,12 +252,12 @@ export function registerEndpointGpuTools(
         // endpoint id is wrong when their credential expired sends them the wrong way.
         // An unknown or foreign id is the common case, so it is named as a likely
         // cause rather than the cause.
-        return jsonReply({
+        return jsonErrorReply({
           error: `Could not read endpoint "${params.endpointId}" over GraphQL, so nothing was changed. If the id is right, the credential or the API may be at fault; if it may be wrong, list-endpoints shows the endpoints this credential can see. Cause: ${error instanceof Error ? error.message : String(error)}`,
         });
       }
       if (!current) {
-        return jsonReply({
+        return jsonErrorReply({
           error: `Could not read endpoint "${params.endpointId}": the GraphQL API returned no user for this credential.`,
         });
       }
@@ -271,7 +271,7 @@ export function registerEndpointGpuTools(
       // happen, re-validating the config and eligible to roll the workers, while the
       // requested pin was never stored and the reply claimed success.
       if (requestedGpuIds !== undefined && current.instanceIds.length > 0) {
-        return jsonReply({
+        return jsonErrorReply({
           error: `Endpoint "${params.endpointId}" is a CPU endpoint (instances: ${current.instanceIds.join(', ')}), and a GPU selection cannot be applied to one — the server would discard it silently. Nothing was changed. Use update-endpoint to change a CPU endpoint's instance types.`,
         });
       }
@@ -280,7 +280,7 @@ export function registerEndpointGpuTools(
       // the endpoint's GPU selection — SKU exclusions and all.
       const gpuIds = requestedGpuIds ?? current.gpuIds;
       if (!gpuIds) {
-        return jsonReply({
+        return jsonErrorReply({
           error: `Endpoint "${params.endpointId}" has no stored GPU selection to keep, so gpuIds or pools must be provided.`,
         });
       }
