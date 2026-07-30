@@ -74,7 +74,7 @@ export function registerEndpointGpuTools(
     },
     { title: 'Set endpoint GPUs', ...WRITE, idempotentHint: true },
     async (params) => {
-      const gpuIds =
+      const requestedGpuIds =
         params.gpuIds ??
         (params.pools && params.pools.length > 0
           ? [
@@ -82,10 +82,19 @@ export function registerEndpointGpuTools(
               ...(params.excludeGpuTypeIds ?? []).map((id) => `-${id}`),
             ].join(',')
           : undefined);
-      if (!gpuIds) {
+      // A GPU selection is required only when there is nothing else to change. A
+      // count-only call is legitimate and is what update-endpoint sends people here
+      // for — it keeps the stored gpuIds (exclusions included), which is the whole
+      // reason that advice exists. Rejecting it made the advice a dead end.
+      const changesSomething =
+        requestedGpuIds !== undefined ||
+        params.gpuCount !== undefined ||
+        params.minCudaVersion !== undefined ||
+        params.allowedCudaVersions !== undefined;
+      if (!changesSomething) {
         return jsonReply({
           error:
-            'Provide gpuIds (raw string) or pools (with optional excludeGpuTypeIds). See list-gpu-types for pool names and GPU type ids.',
+            'Nothing to change. Provide gpuIds (raw string) or pools (with optional excludeGpuTypeIds), and/or gpuCount / minCudaVersion / allowedCudaVersions. See list-gpu-types for pool names and GPU type ids.',
         });
       }
 
@@ -107,6 +116,15 @@ export function registerEndpointGpuTools(
       if (!current) {
         return jsonReply({
           error: `Could not read endpoint "${params.endpointId}": the GraphQL API returned no user for this credential.`,
+        });
+      }
+
+      // Falls back to the stored value, so a count-only or CUDA-only change preserves
+      // the endpoint's GPU selection — SKU exclusions and all.
+      const gpuIds = requestedGpuIds ?? current.gpuIds;
+      if (!gpuIds) {
+        return jsonReply({
+          error: `Endpoint "${params.endpointId}" has no GPU selection to keep (a CPU endpoint has no gpuIds), so gpuIds or pools must be provided.`,
         });
       }
 

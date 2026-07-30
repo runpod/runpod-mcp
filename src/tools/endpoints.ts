@@ -507,16 +507,24 @@ export function registerEndpointTools(
       // pools are absent — a lone gpuCount produced a PATCH that said nothing about
       // GPUs, returned 200, and left the count unchanged. Reported here rather than
       // silently: a request that cannot be expressed must not look like it worked.
-      if (
-        backend.version === 'v2' &&
-        updateParams.gpuCount !== undefined &&
-        !updateParams.gpuPoolIds?.length
-      ) {
-        return jsonReply({
-          error:
-            'gpuCount alone cannot be sent on v2: the gpu object requires pools, so the count would be dropped and the update would silently do nothing. Send gpuPoolIds together with gpuCount, or use set-endpoint-gpus to change the count on its own (it also preserves GPU SKU exclusions).',
-          status: 400,
-        });
+      if (backend.version === 'v2' && !updateParams.gpuPoolIds?.length) {
+        if (updateParams.gpuCount !== undefined) {
+          return jsonReply({
+            error:
+              'gpuCount alone cannot be sent on v2: the gpu object requires pools, so the count would be dropped and the update would silently do nothing. Send gpuPoolIds together with gpuCount, or use set-endpoint-gpus with just endpointId + gpuCount — it reads the endpoint first, so the current GPU selection (SKU exclusions included) is kept.',
+            status: 400,
+          });
+        }
+        // An explicitly empty list has the same fate — dropped by the mapper — and an
+        // agent sending it is trying to clear the pool restriction, which v2 cannot
+        // express at all (pools has minItems 1).
+        if (updateParams.gpuPoolIds !== undefined) {
+          return jsonReply({
+            error:
+              'gpuPoolIds cannot be empty on v2: the gpu object requires at least one pool, so an empty list is dropped and the update silently does nothing. Pass the pools you want (see list-gpu-types), or use set-endpoint-gpus to change the GPU selection.',
+            status: 400,
+          });
+        }
       }
 
       // v2's EndpointGpuConfig is `{pools, count}` — it has nowhere to keep the
@@ -610,7 +618,7 @@ export function registerEndpointTools(
           ...(result as Record<string, unknown>),
           _gpuIdsPreserved: {
             gpuIds: restored.saveEndpoint.gpuIds,
-            note: 'This endpoint pins GPU SKUs via gpuIds exclusions, which a v2 update drops. The pre-update value was re-applied on top of the patched config. Read it back with get-endpoint includeGpuIds:true.',
+            note: 'This endpoint pins GPU SKUs via gpuIds exclusions, which a v2 update drops. The pre-update value was re-applied on top of the patched config. Note this is a read-modify-write, so a concurrent change to this endpoint made between the patch and the restore is overwritten. Read the result back with get-endpoint includeGpuIds:true.',
           },
         });
       } catch (error) {

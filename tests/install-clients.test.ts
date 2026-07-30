@@ -13,6 +13,8 @@ import {
   describeCommand,
   describeCommandRedacted,
   interpretRemoveResult,
+  interpretAddResult,
+  redactSecret,
   runClaude,
 } from '../src/install/clients.js';
 
@@ -287,31 +289,52 @@ describe('argsSafeForCmdShell', () => {
 });
 
 describe('interpretRemoveResult', () => {
-  // Two earlier revisions of this branch reported EVERY removal as a success —
-  // first from a bare catch, then by discarding result.success. The user saw a green
-  // tick while their API key stayed in the config, so each case is pinned here.
-  it('passes a real success through', () => {
-    assert.deepEqual(interpretRemoveResult({ success: true }), {
+  // Three earlier revisions reported EVERY removal as a success — from a bare catch,
+  // then by discarding result.success, then by asserting "nothing to remove" from a
+  // scope-pinned probe. Each time the user saw a green tick while their API key stayed
+  // on disk. The exit code CANNOT decide this, which is why a presence probe is the
+  // deciding input. Every case is pinned here.
+  it('reports a failure when the entry is verifiably still there, whatever the exit code said', () => {
+    // The case the exit code gets wrong in BOTH directions, observed with claude
+    // 2.1.220: (a) with an unwritable config `mcp remove` prints "Removed … File
+    // modified" and exits 0 without writing anything; (b) `mcp add` defaults to LOCAL
+    // scope while this wizard removes from USER scope, so a hand-added entry reports
+    // `No MCP server named … in user scope` and exits 1 while the key sits in
+    // ~/.claude.json.
+    for (const run of [
+      { success: true },
+      { success: false, message: 'No MCP server named "runpod" in user scope' },
+    ]) {
+      const out = interpretRemoveResult(run, true, '/usr/bin/claude');
+      assert.equal(out.success, false, JSON.stringify(run));
+      assert.match(out.message ?? '', /still on disk/);
+      // Actionable: names both causes and how to check.
+      assert.match(out.message ?? '', /scope/);
+      assert.match(out.message ?? '', /mcp get runpod/);
+    }
+  });
+
+  it('is a success only when the entry is verifiably gone', () => {
+    assert.deepEqual(interpretRemoveResult({ success: true }, false), {
       success: true,
       message: undefined,
     });
-  });
-
-  it('treats "No MCP server named" as success — nothing to remove', () => {
-    // Observed with claude 2.1.220: exit 1, stderr
-    // `No MCP server named "runpod" in user scope`. The desired end state holds.
+    // Nothing in user scope AND nothing anywhere else — the desired end state.
     assert.deepEqual(
-      interpretRemoveResult({
-        success: false,
-        message: 'No MCP server named "runpod" in user scope',
-      }),
+      interpretRemoveResult(
+        {
+          success: false,
+          message: 'No MCP server named "runpod" in user scope',
+        },
+        false
+      ),
       { success: true, message: 'nothing to remove' }
     );
   });
 
   it('reports a genuine failure as a failure', () => {
-    // THE regression. A read-only config, a permissions error, a crash — anything
-    // other than "not there" means the entry, API key included, is still on disk.
+    // A permissions error, a crash, a missing binary — none of these removed
+    // anything, and an inconclusive probe must not upgrade them to success.
     for (const message of [
       'EACCES: permission denied, open ~/.claude.json',
       'claude exited with code 3',
@@ -319,20 +342,83 @@ describe('interpretRemoveResult', () => {
       'spawnSync claude ENOENT',
     ]) {
       assert.deepEqual(
-        interpretRemoveResult({ success: false, message }),
+        interpretRemoveResult({ success: false, message }, undefined),
         { success: false, message },
         message
       );
     }
   });
 
-  it('keeps a refusal a failure', () => {
+  it('flags an unverifiable success rather than claiming a clean one', () => {
+    const out = interpretRemoveResult({ success: true }, undefined);
+    assert.equal(out.success, true);
+    assert.match(out.message ?? '', /could not be verified/);
+  });
+
+  it('keeps a refusal a failure and never claims to have verified it', () => {
     const refusal = {
       success: false,
       refused: true,
       message: 'running claude.cmd means going through cmd.exe …',
     };
-    assert.deepEqual(interpretRemoveResult(refusal), refusal);
+    assert.deepEqual(interpretRemoveResult(refusal, undefined), refusal);
+  });
+});
+
+describe('interpretAddResult', () => {
+  // Same root cause as the removal case: with an unwritable config the CLI prints
+  // "Added stdio MCP server runpod …" and exits 0 having written nothing (observed,
+  // claude 2.1.220). A bare exit code reports a configuration that does not exist.
+  it('fails when nothing is registered afterwards, despite a zero exit', () => {
+    const out = interpretAddResult({ success: true }, false);
+    assert.equal(out.success, false);
+    assert.match(out.message ?? '', /not writable/);
+    assert.match(out.message ?? '', /Nothing was configured/);
+  });
+
+  it('passes a verified success through, caveat and all', () => {
+    assert.deepEqual(
+      interpretAddResult(
+        { success: true, message: 'already configured' },
+        true
+      ),
+      { success: true, message: 'already configured' }
+    );
+  });
+
+  it('does not upgrade a failure or a refusal', () => {
+    const failure = { success: false, message: 'boom' };
+    assert.deepEqual(interpretAddResult(failure, true), failure);
+    const refusal = { success: false, refused: true, message: 'declined' };
+    assert.deepEqual(interpretAddResult(refusal, undefined), refusal);
+  });
+
+  it('accepts an unverifiable success rather than failing a working install', () => {
+    // Failing closed here would break every user whose probe cannot answer, for a
+    // problem that may not exist. Direction chosen deliberately.
+    assert.deepEqual(interpretAddResult({ success: true }, undefined), {
+      success: true,
+      message: undefined,
+    });
+  });
+});
+
+describe('redactSecret', () => {
+  // The shape-based redaction cannot cover output produced by another program, and the
+  // claude CLI does echo -e tokens back on some errors.
+  it('strips every occurrence of the key from CLI output', () => {
+    const out = redactSecret(
+      'Invalid environment variable format: RUNPOD_API_KEY_rpa_SECRET123456 (rpa_SECRET123456)',
+      'rpa_SECRET123456'
+    );
+    assert.equal(out.includes('rpa_SECRET123456'), false, out);
+    assert.match(out, /YOUR_RUNPOD_API_KEY/);
+  });
+
+  it('is a no-op without a secret, or for one too short to be a key', () => {
+    assert.equal(redactSecret('nothing to do'), 'nothing to do');
+    // Guard against a short value turning every message into placeholder soup.
+    assert.equal(redactSecret('a b a b', 'a'), 'a b a b');
   });
 });
 
@@ -379,7 +465,15 @@ describe('describeCommandRedacted', () => {
       '@runpod/mcp-server@latest',
     ]);
     assert.equal(rendered.includes('rpa_LIVESECRET123'), false, rendered);
-    assert.match(rendered, /-e RUNPOD_API_KEY=<your-runpod-api-key>/);
+    assert.match(rendered, /-e RUNPOD_API_KEY=YOUR_RUNPOD_API_KEY/);
+    // The placeholder must not itself carry cmd.exe metacharacters: this string is
+    // printed for a user to paste into cmd.exe, and the old `<your-api-key>` form
+    // parsed as stdin redirection. It has to survive the module's own guard.
+    assert.equal(/[<>]/.test(rendered), false, rendered);
+    assert.equal(
+      argsSafeForCmdShell(['RUNPOD_API_KEY=YOUR_RUNPOD_API_KEY']),
+      true
+    );
     // Everything else still pastes.
     assert.match(rendered, /mcp add runpod --scope user/);
     assert.match(rendered, /-- npx -y @runpod\/mcp-server@latest/);
@@ -448,7 +542,22 @@ describe(
     it('launches a .cmd from a path with a space and round-trips argv', () => {
       const dir = shimDir();
       const shim = recordingShim(dir);
-      const args = ['mcp', 'add', 'runpod', '--scope', 'user'];
+      // The argv the wizard ACTUALLY sends, `-e KEY=value` pair and `--` separator
+      // included. A simplified argv would miss a regression mangling exactly the parts
+      // at risk in the %* double-parse.
+      const args = [
+        'mcp',
+        'add',
+        'runpod',
+        '--scope',
+        'user',
+        '-e',
+        'RUNPOD_API_KEY=rpa_ABC123def456',
+        '--',
+        'npx',
+        '-y',
+        '@runpod/mcp-server@latest',
+      ];
       const result = runClaude(shim, args);
       assert.equal(result.success, true, result.message);
       // What the child actually received, through runClaude and nothing else.

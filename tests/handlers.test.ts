@@ -2382,6 +2382,21 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
     });
   });
 
+  it('update-endpoint rejects an empty gpuPoolIds instead of dropping it', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'ep_1' } });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        gpuPoolIds: [],
+      });
+      // v2's pools has minItems 1, so an empty list is dropped by the mapper and the
+      // PATCH says nothing about GPUs. An agent sending it is trying to clear the
+      // pool restriction, which v2 cannot express at all.
+      assert.equal(outbound.length, 0);
+      assert.match(parseText(out).error as string, /cannot be empty/);
+    });
+  });
+
   it('update-endpoint allows gpuCount when sent with gpuPoolIds', async () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({
@@ -3402,6 +3417,41 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
     for (const key of gatedKeys) {
       assert.equal(key in input, false, `${key} must NOT be echoed`);
     }
+  });
+
+  it('accepts a count-only change and keeps the stored gpuIds, exclusions included', async () => {
+    // update-endpoint's 400 for a lone gpuCount points here, so this has to work or
+    // that advice is a dead end: two errors and no path to the thing you asked for.
+    const { handlers, outbound } = harness({
+      jsonBodies: [queryBody, saveBody],
+    });
+    const out = await handlers.get('set-endpoint-gpus')!({
+      endpointId: 'ep_pinme',
+      gpuCount: 4,
+    });
+    const input = (
+      JSON.parse(outbound[1].body!) as {
+        variables: { input: Record<string, unknown> };
+      }
+    ).variables.input;
+    assert.equal(input.gpuCount, 4);
+    // The endpoint's own selection is carried over untouched.
+    assert.equal(input.gpuIds, 'AMPERE_16');
+    assert.equal(parseText(out).previousGpuIds, 'AMPERE_16');
+  });
+
+  it('still refuses a call that changes nothing', () => {
+    const { handlers, outbound } = harness({ jsonBodies: [queryBody] });
+    return handlers.get('set-endpoint-gpus')!({ endpointId: 'ep_pinme' }).then(
+      (out: unknown) => {
+        // No read either — nothing to do is decided before any request.
+        assert.equal(outbound.length, 0);
+        assert.match(
+          parseText(out as never).error as string,
+          /Nothing to change/
+        );
+      }
+    );
   });
 
   it('sends the authenticated GraphQL host, not the public-discovery one', async () => {

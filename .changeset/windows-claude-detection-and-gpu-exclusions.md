@@ -38,19 +38,37 @@ but when it does the wizard prints the `claude mcp add …` command instead of g
 escaping around a credential — with the key replaced by a placeholder, since anything
 printed lands in terminal scrollback and in whatever log someone pastes it into.
 
-`remove` no longer reports every outcome as a success. It previously called `execFileSync`
-directly — which cannot spawn a `.cmd` — and reported success from its `catch` regardless.
-Only one non-zero exit is a success now: `No MCP server named "runpod" in user scope`,
-meaning there was nothing to remove. A removal that fails because the config is read-only
-is reported as a failure, instead of printing a tick while the entry — API key included —
-stays on disk.
+`add` and `remove` are now verified against the config instead of trusting the CLI's exit
+code, because on Claude Code 2.1.220 that exit code does not answer the only question that
+matters — is the API key on disk or not?
+
+- With an unwritable config, `claude mcp remove` prints `Removed MCP server runpod from user
+  config / File modified: …` and exits **0** having written nothing. Same for `add`.
+- `claude mcp add` defaults to **local** scope while this wizard removes from **user** scope,
+  so an entry a user added by hand yields `No MCP server named "runpod" in user scope` and
+  exit 1 — which reads as "nothing to remove" while their key stays in `~/.claude.json`.
+
+Both are settled by a `claude mcp get` probe, which is not scope-pinned. A removal that
+leaves the entry registered is reported as a failure naming both causes and how to check; an
+`add` whose entry is absent afterwards says the config is most likely not writable. An
+outcome that cannot be verified says so rather than claiming a clean result. (`remove` also
+previously called `execFileSync` directly — which cannot spawn a `.cmd` — and reported
+success from its `catch` regardless.)
 
 Re-running the wizard over an existing entry no longer prints a bare success either. The
 CLI does not update an existing entry, so a user re-running the wizard after rotating their
-API key was told "configured" while the old key remained. The result line now says the
-entry was left unchanged and how to replace it. An API key taken from the environment is
-also trimmed, matching the pasted path — a trailing newline used to be written verbatim
-into every client config.
+API key was told "configured" while the old key remained. The result line now says the entry
+was left unchanged and gives the full-path command to replace it. An API key taken from the
+environment is also trimmed, matching the pasted path — a trailing newline used to be
+written verbatim into every client config.
+
+Two smaller leaks in the same area: a client config created by this wizard is written `0600`
+rather than `0644`, since it holds a plaintext API key (Claude Code's own config is `0600`);
+and any message built from the CLI's output has the key stripped by value, not just by argv
+shape — that CLI does echo `-e` tokens back on some errors. A malformed existing config is
+also no longer reported as configured: jsonc will best-effort insert an entry into a file
+with an unbalanced brace and hand back something still unparseable, which the client then
+silently never loads.
 
 CI gains a `windows-latest` runner, and the suite now runs a real `.cmd` shim out of a
 directory whose name contains a space, asserting the arguments arrive intact. A Windows-only
