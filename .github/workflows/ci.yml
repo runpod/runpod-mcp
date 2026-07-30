@@ -20,7 +20,7 @@ jobs:
         # The install wizard has Windows-specific Claude Code detection and npm
         # package-launch paths. The suite models the published native-bin package in
         # a space-containing global prefix and proves its .cmd shim is bypassed.
-        # Without a Windows runner a POSIX-only regression ships unnoticed —
+        # Without a Windows runner a Windows-only regression ships unnoticed —
         # which is how issue #56 happened. One combination is enough: the rest of
         # the suite is platform-agnostic.
         include:
