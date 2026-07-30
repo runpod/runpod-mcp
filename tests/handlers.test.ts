@@ -2309,6 +2309,97 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
     });
   });
 
+  // get-endpoint's three enrichment-failure branches. Untested, they were the last
+  // unguarded reporting surface here — and every blocker on this PR so far has been a
+  // reporting path that turned a failure into a silent success.
+  it('get-endpoint includeGpuIds explains itself instead of silently doing nothing on v1', async () => {
+    const { handlers, outbound } = harness({ jsonBody: { id: 'ep_1' } });
+    const out = await handlers.get('get-endpoint')!({
+      endpointId: 'ep_1',
+      includeGpuIds: true,
+    });
+    // No GraphQL call on v1 — but the caller asked for gpuIds and must be told why
+    // the reply has none, rather than being left to guess.
+    assert.equal(outbound.length, 1);
+    assert.equal('gpuIds' in parseText(out), false);
+    assert.match(parseText(out)._gpuIdsError as string, /v2 only/);
+  });
+
+  it('get-endpoint includeGpuIds keeps the REST reply when the GraphQL read throws', async () => {
+    await withV2(async () => {
+      const { handlers } = harness({
+        steps: [
+          { status: 200, jsonBody: { id: 'ep_1' } },
+          { status: 500, jsonBody: {} },
+        ],
+      });
+      const out = await handlers.get('get-endpoint')!({
+        endpointId: 'ep_1',
+        includeGpuIds: true,
+      });
+      // The REST read succeeded, so losing the whole reply would be worse than
+      // reporting the enrichment failure alongside it.
+      assert.equal(parseText(out).id, 'ep_1');
+      assert.match(
+        parseText(out)._gpuIdsError as string,
+        /Could not read gpuIds/
+      );
+    });
+  });
+
+  it('get-endpoint includeGpuIds reports a null GraphQL user distinctly', async () => {
+    await withV2(async () => {
+      const { handlers } = harness({
+        steps: [
+          { status: 200, jsonBody: { id: 'ep_1' } },
+          { status: 200, jsonBody: { data: { myself: null } } },
+        ],
+      });
+      const out = await handlers.get('get-endpoint')!({
+        endpointId: 'ep_1',
+        includeGpuIds: true,
+      });
+      assert.match(
+        parseText(out)._gpuIdsError as string,
+        /no user for this credential/
+      );
+    });
+  });
+
+  it('update-endpoint rejects a lone gpuCount on v2 instead of dropping it', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'ep_1' } });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        gpuCount: 4,
+      });
+      // v2's gpu object requires pools, so the mapper drops gpu entirely and the
+      // PATCH said nothing about GPUs — 200 OK, count unchanged, caller none the
+      // wiser. Nothing is sent at all now.
+      assert.equal(outbound.length, 0);
+      assert.equal(parseText(out).status, 400);
+      assert.match(parseText(out).error as string, /gpuCount alone/);
+    });
+  });
+
+  it('update-endpoint allows gpuCount when sent with gpuPoolIds', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        steps: [
+          { status: 200, jsonBody: { data: { myself: { endpoint: null } } } },
+          { status: 200, jsonBody: { id: 'ep_1' } },
+        ],
+      });
+      await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        gpuCount: 4,
+        gpuPoolIds: ['AMPERE_80'],
+      });
+      const body = JSON.parse(outbound.at(-1)!.body!);
+      assert.deepEqual(body.gpu, { pools: ['AMPERE_80'], count: 4 });
+    });
+  });
+
   it('delete-endpoint → DELETE <v2>/v2/serverless/{id}', async () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({ jsonBody: {} });
@@ -3359,6 +3450,25 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
       parseText(unknownOut).error as string,
       /returned no user for this credential/
     );
+
+    // The other not-found shape, and the common one: `endpoint(id:)` is a
+    // findFirstOrThrow, so an unknown or foreign id arrives as a REJECTION. Without
+    // catching it the caller gets a raw GraphQL error with no idea what to do next.
+    const rejected = harness({
+      jsonBodies: [
+        { errors: [{ message: 'No AiApi found' }], data: { myself: null } },
+      ],
+    });
+    const rejectedOut = await rejected.handlers.get('set-endpoint-gpus')!({
+      endpointId: 'ep_typo',
+      gpuIds: 'ADA_24',
+    });
+    assert.equal(rejected.outbound.length, 1, 'must not reach the mutation');
+    const rejectedError = parseText(rejectedOut).error as string;
+    assert.match(rejectedError, /No Serverless endpoint readable/);
+    assert.match(rejectedError, /list-endpoints/);
+    // The underlying cause is kept, not swallowed.
+    assert.match(rejectedError, /No AiApi found/);
 
     const none = harness({ jsonBodies: [queryBody] });
     const noneOut = await none.handlers.get('set-endpoint-gpus')!({

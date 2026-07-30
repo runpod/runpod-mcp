@@ -91,14 +91,20 @@ export function registerEndpointGpuTools(
 
       // Read the endpoint's current settings — saveEndpoint resets omitted
       // endpoint-level fields to defaults, so everything must be echoed back.
-      const current = await readEndpointSnapshot(
-        graphqlAuthed,
-        params.endpointId
-      );
+      // Two distinct not-found shapes, and both need to stay actionable. The
+      // resolver THROWS for an id it cannot see (findFirstOrThrow), so an unknown or
+      // foreign id arrives as a rejection, not as a null — catching it is what keeps
+      // the "use list-endpoints" pointer that a raw GraphQL error would lose. A null
+      // means something else entirely: the API returned no user for this credential.
+      let current;
+      try {
+        current = await readEndpointSnapshot(graphqlAuthed, params.endpointId);
+      } catch (error) {
+        return jsonReply({
+          error: `No Serverless endpoint readable with id "${params.endpointId}". Use list-endpoints to see your endpoints. Cause: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
       if (!current) {
-        // The query fetches this endpoint by id and throws for an id it cannot see,
-        // so a null here means the GraphQL API returned no user at all for this
-        // credential — not that the endpoint is missing from some list.
         return jsonReply({
           error: `Could not read endpoint "${params.endpointId}": the GraphQL API returned no user for this credential.`,
         });

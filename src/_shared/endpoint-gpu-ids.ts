@@ -123,9 +123,10 @@ export async function readEndpointSnapshot(
  * True when a gpuIds string carries at least one SKU exclusion, i.e. an entry
  * beginning with '-'. Those are the entries v2 REST cannot represent.
  */
-export function hasGpuExclusions(
-  gpuIds: string | null | undefined
-): gpuIds is string {
+// Deliberately NOT a `gpuIds is string` type predicate: a false result does not mean
+// "not a string" — a pool-only "AMPERE_16" is a perfectly good string with no
+// exclusions — and TS would narrow it to null|undefined in the negative branch.
+export function hasGpuExclusions(gpuIds: string | null | undefined): boolean {
   if (!gpuIds) return false;
   return gpuIds
     .split(',')
@@ -134,8 +135,10 @@ export function hasGpuExclusions(
 
 /**
  * Builds a saveEndpoint input that echoes the snapshot back, with `overrides`
- * applied on top. Every field the snapshot carries is included, because omitting
- * one resets it server-side.
+ * applied on top. Echoes every field the resolver writes unconditionally, because
+ * omitting one of those resets it server-side — and deliberately omits the ones it
+ * writes only when the input carries them, because echoing a read value back is what
+ * does the damage there. The list of omissions and why is below.
  */
 export function buildSaveEndpointInput(
   snapshot: EndpointSnapshot,

@@ -434,7 +434,12 @@ export function registerEndpointTools(
         .array(z.string())
         .optional()
         .describe('New GPU pool names (v2), e.g. ["AMPERE_80"]'),
-      gpuCount: z.number().optional().describe('New GPUs per worker (v2)'),
+      gpuCount: z
+        .number()
+        .optional()
+        .describe(
+          'New GPUs per worker (v2). Must be sent together with gpuPoolIds — the v2 gpu object requires pools, so a count on its own cannot be expressed. To change only the count, use set-endpoint-gpus.'
+        ),
       args: z.string().optional().describe('New container args (v2)'),
       containerDiskInGb: z
         .number()
@@ -498,6 +503,22 @@ export function registerEndpointTools(
         return jsonReply({ error: scalerError, status: 400 });
       }
 
+      // v2's gpu object requires `pools`, so the mapper drops `gpu` entirely when
+      // pools are absent — a lone gpuCount produced a PATCH that said nothing about
+      // GPUs, returned 200, and left the count unchanged. Reported here rather than
+      // silently: a request that cannot be expressed must not look like it worked.
+      if (
+        backend.version === 'v2' &&
+        updateParams.gpuCount !== undefined &&
+        !updateParams.gpuPoolIds?.length
+      ) {
+        return jsonReply({
+          error:
+            'gpuCount alone cannot be sent on v2: the gpu object requires pools, so the count would be dropped and the update would silently do nothing. Send gpuPoolIds together with gpuCount, or use set-endpoint-gpus to change the count on its own (it also preserves GPU SKU exclusions).',
+          status: 400,
+        });
+      }
+
       // v2's EndpointGpuConfig is `{pools, count}` — it has nowhere to keep the
       // '-<GPU type id>' exclusion entries that pin a SKU, so a PATCH can lose them
       // even when it never mentions GPUs (issue #63). Read the authoritative
@@ -538,7 +559,12 @@ export function registerEndpointTools(
 
       // Narrowed by the type predicate: true implies a non-null gpuIds string.
       const gpuIdsBeforePatch = gpuSnapshot.gpuIds;
-      if (!hasGpuExclusions(gpuIdsBeforePatch)) return jsonReply(result);
+      // The `!gpuIdsBeforePatch` half is what narrows it to a string for the code
+      // below — hasGpuExclusions is intentionally not a type predicate, since a
+      // pool-only value is still a perfectly good string.
+      if (!gpuIdsBeforePatch || !hasGpuExclusions(gpuIdsBeforePatch)) {
+        return jsonReply(result);
+      }
 
       // An explicit gpuPoolIds means the caller is deliberately rewriting the pool
       // list, so their value wins — but say plainly that the exclusions are gone,

@@ -102,7 +102,26 @@ version bump — omitting it registered as a change and rolled the workers for n
 this, the only way to see it was `set-endpoint-gpus`, which reports `gpuIds` in its reply —
 i.e. you had to write to read.
 
-Cost: one GraphQL read per v2 `update-endpoint` call, plus a re-read and a write only for
-endpoints that actually use exclusions AND actually lost them. Note that this sends the
-caller's API key to the authenticated GraphQL host on every v2 `update-endpoint`; if you
-override `RUNPOD_AUTHED_GRAPHQL_URL`, point it only at a host you trust with that.
+Cost, stated fully:
+
+- One GraphQL read per v2 `update-endpoint` call — including endpoints with no exclusions,
+  which pay the read but no write.
+- A re-read plus one `saveEndpoint` write only for endpoints that use exclusions AND
+  actually lost them to the patch.
+- The caller's API key now goes to the authenticated GraphQL host on every v2
+  `update-endpoint`. If you override `RUNPOD_AUTHED_GRAPHQL_URL`, point it only at a host
+  you trust with that.
+- `saveEndpoint` writes `workersStandby := workersMax` unconditionally, and `workersStandby`
+  is not a field of `EndpointInput` — so the restore cannot preserve a value that differs
+  from `workersMax`. The echo-everything-written rule cannot cover this one.
+- The restore re-validates the stored config against today's rules (account worker limits,
+  the GPU pool catalogue, pool access). An endpoint whose stored config has since drifted out
+  of validity fails the restore and reports `_warning` — honest, but it then sits without its
+  exclusions until `set-endpoint-gpus` is run.
+
+Separately, `update-endpoint` now rejects a `gpuCount` sent without `gpuPoolIds` on v2. The
+v2 `gpu` object requires `pools`, so the mapper dropped `gpu` entirely and the PATCH said
+nothing about GPUs: HTTP 200, count unchanged, no indication anything was ignored. Send both,
+or use `set-endpoint-gpus` to change the count alone. `set-endpoint-gpus` also keeps its
+actionable "use list-endpoints" error for an unknown id, which now arrives as a rejection
+rather than a null because `endpoint(id:)` throws for an id it cannot see.
