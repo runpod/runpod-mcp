@@ -1,0 +1,16 @@
+{
+  // The main tsconfig excludes **/*.test.ts, so `pnpm type-check` could not see the
+  // suite. That is how a signature change to interpretRemoveResult — the function this
+  // PR has fixed five times — type-checked clean while eight tests passed a boolean
+  // where an object was now required, silently taking the "inconclusive" branch and
+  // reporting a false success. Cheapest available guard against the next iteration.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "composite": false
+  },
+  "include": ["src/**/*", "api/**/*", "scripts/**/*", "tests/**/*"],
+  "exclude": ["dist", "build", "node_modules"]
+}

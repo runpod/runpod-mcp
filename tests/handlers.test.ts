@@ -118,7 +118,9 @@ function harness(opts?: {
       ...(opts?.onUnauthorized ? { onUnauthorized: opts.onUnauthorized } : {}),
     },
     {
-      fetch: fakeFetch as Parameters<typeof registerTools>[2]['fetch'],
+      fetch: fakeFetch as NonNullable<
+        Parameters<typeof registerTools>[2]
+      >['fetch'],
       ...(opts?.streamSse ? { streamSse: opts.streamSse } : {}),
       ...(opts?.sseStatus
         ? {

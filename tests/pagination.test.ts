@@ -95,9 +95,11 @@ describe('capListResult', () => {
 
   it('passes non-array results through untouched (no envelope)', () => {
     const errorShape = { error: 'something went wrong' };
-    const out = parse(capListResult(errorShape, {}));
-    assert.deepEqual(out, errorShape);
+    const out: Record<string, unknown> = parse(capListResult(errorShape, {}));
+    // Order matters: assert.deepEqual is a narrowing assertion (`asserts actual is T`),
+    // so checking for the envelope after it would be checking a narrowed type.
     assert.equal(out.pagination, undefined);
+    assert.deepEqual(out, errorShape);
   });
 
   it('returns an empty page when the cursor is past the end', () => {
