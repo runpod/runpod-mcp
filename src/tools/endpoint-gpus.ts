@@ -82,6 +82,24 @@ export function registerEndpointGpuTools(
               ...(params.excludeGpuTypeIds ?? []).map((id) => `-${id}`),
             ].join(',')
           : undefined);
+      // An exclusion list only means something alongside pools: gpuIds is built as
+      // `pools + '-'-prefixed exclusions`, so excludeGpuTypeIds on its own has nowhere
+      // to go. Relaxing the old blanket guard to allow a count-only call (correct)
+      // turned this into a silent discard: the request was accepted, the stored gpuIds
+      // was echoed unchanged, and the reply looked like the exclusion had been applied.
+      // That is issue #63's own failure mode, in the tool that exists to express
+      // exclusions.
+      if (
+        params.excludeGpuTypeIds?.length &&
+        !params.pools?.length &&
+        params.gpuIds === undefined
+      ) {
+        return jsonReply({
+          error:
+            'excludeGpuTypeIds only applies alongside pools: gpuIds is built as the pool list plus the exclusions, so exclusions alone cannot be expressed. Pass pools together with excludeGpuTypeIds (see list-gpu-types), or pass a complete gpuIds string. To keep the current pools and add an exclusion, read the endpoint first with get-endpoint includeGpuIds:true and send the full string.',
+        });
+      }
+
       // A GPU selection is required only when there is nothing else to change. A
       // count-only call is legitimate and is what update-endpoint sends people here
       // for — it keeps the stored gpuIds (exclusions included), which is the whole

@@ -616,9 +616,26 @@ describe('SNAPSHOT_QUERY covers EndpointSnapshot', () => {
     'instanceIds',
   ];
 
-  const selected = SNAPSHOT_QUERY.split('\n')
+  const bodyLines = SNAPSHOT_QUERY.split('\n')
     .map((line) => line.trim())
-    .filter((line) => /^[a-zA-Z]+$/.test(line));
+    .filter(Boolean);
+  const selected = bodyLines.filter((line) => /^[a-zA-Z]+$/.test(line));
+
+  it('selects no object-typed subtree', () => {
+    // The extra-field check below only sees bare identifiers, so a sub-selection
+    // (`networkVolumeIds { networkVolumeId }`) would slip past it — and those are
+    // exactly the fields with their own field-level authorisation, where one rejection
+    // fails the WHOLE read and silently downgrades every update to a skipped GPU check.
+    const subSelections = bodyLines.filter(
+      (line) =>
+        /^[a-zA-Z]+[^{]*\{$/.test(line) && !/^(query|myself)\b/.test(line)
+    );
+    assert.deepEqual(
+      subSelections.filter((l) => !l.startsWith('endpoint(id:')),
+      [],
+      'SNAPSHOT_QUERY must select only scalars'
+    );
+  });
 
   it('selects every field the snapshot interface declares', () => {
     for (const field of SNAPSHOT_FIELDS) {

@@ -507,7 +507,8 @@ export function registerEndpointTools(
       // pools are absent — a lone gpuCount produced a PATCH that said nothing about
       // GPUs, returned 200, and left the count unchanged. Reported here rather than
       // silently: a request that cannot be expressed must not look like it worked.
-      if (backend.version === 'v2' && !updateParams.gpuPoolIds?.length) {
+      // Already inside the v2 branch — the version check above returned for v1.
+      if (!updateParams.gpuPoolIds?.length) {
         if (updateParams.gpuCount !== undefined) {
           return jsonReply({
             error:
@@ -561,7 +562,7 @@ export function registerEndpointTools(
       if (gpuSnapshot === null) {
         return jsonReply({
           ...(result as Record<string, unknown>),
-          _gpuIdsCheckSkipped: `The update applied, but this endpoint's gpuIds could not be read, so GPU SKU exclusions (which a v2 update drops) were neither checked nor restored. If this endpoint pins specific SKUs, verify with get-endpoint includeGpuIds:true and restore with set-endpoint-gpus. Cause: ${gpuReadFailure ?? 'unknown'}`,
+          _gpuIdsCheckSkipped: `The update applied, but this endpoint's gpuIds could not be read, so GPU SKU exclusions (which a v2 update drops) were neither checked nor restored. If this endpoint pins specific SKUs, verify with get-endpoint includeGpuIds:true and restore with set-endpoint-gpus. Cause: ${gpuReadFailure}`,
         });
       }
 

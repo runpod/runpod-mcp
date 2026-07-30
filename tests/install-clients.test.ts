@@ -17,7 +17,7 @@ import {
   redactSecret,
   runClaude,
   createClaudeCodeClient,
-  parseEntryScope,
+  readClaudeConfigState,
   upsertJsonServer,
 } from '../src/install/clients.js';
 
@@ -310,14 +310,14 @@ describe('interpretRemoveResult', () => {
     ]) {
       const out = interpretRemoveResult(
         run,
-        { exists: true, scope: 'user' },
+        { userScope: true, localScopeDirs: [] },
         '/usr/bin/claude'
       );
       assert.equal(out.success, false, JSON.stringify(run));
       assert.match(out.message ?? '', /still on disk/);
-      // Actionable: names the likely cause and how to check.
+      // Actionable: names the file and the likely cause.
+      assert.match(out.message ?? '', /user config/);
       assert.match(out.message ?? '', /not writable/);
-      assert.match(out.message ?? '', /mcp get runpod/);
     }
   });
 
@@ -329,10 +329,14 @@ describe('interpretRemoveResult', () => {
       { success: true },
       { success: false, message: 'No MCP server named "runpod" in user scope' },
     ]) {
-      const out = interpretRemoveResult(run, { exists: false });
+      const out = interpretRemoveResult(run, {
+        userScope: false,
+        localScopeDirs: [],
+      });
       assert.equal(out.success, true, JSON.stringify(run));
-      assert.match(out.message ?? '', /user config or this directory/);
-      assert.match(out.message ?? '', /another directory/);
+      // Scoped to what was actually established: the user config was read and has no
+      // entry. No claim about project-scope .mcp.json files, which this never touches.
+      assert.match(out.message ?? '', /your user config/);
     }
   });
 
@@ -341,7 +345,7 @@ describe('interpretRemoveResult', () => {
     // gone, and only naming the scope makes that actionable.
     const out = interpretRemoveResult(
       { success: true },
-      { exists: true, scope: 'local' },
+      { userScope: false, localScopeDirs: ['/home/dev/projA'] },
       '/usr/bin/claude'
     );
     assert.equal(out.success, true);
@@ -361,7 +365,7 @@ describe('interpretRemoveResult', () => {
       assert.deepEqual(
         interpretRemoveResult(
           { success: false, message },
-          { exists: undefined }
+          { userScope: undefined, localScopeDirs: [] }
         ),
         { success: false, message },
         message
@@ -370,9 +374,12 @@ describe('interpretRemoveResult', () => {
   });
 
   it('flags an unverifiable success rather than claiming a clean one', () => {
-    const out = interpretRemoveResult({ success: true }, { exists: undefined });
+    const out = interpretRemoveResult(
+      { success: true },
+      { userScope: undefined, localScopeDirs: [] }
+    );
     assert.equal(out.success, true);
-    assert.match(out.message ?? '', /could not be verified/);
+    assert.match(out.message ?? '', /could not be read to confirm it/);
   });
 
   it('keeps a refusal a failure and never claims to have verified it', () => {
@@ -382,7 +389,10 @@ describe('interpretRemoveResult', () => {
       message: 'running claude.cmd means going through cmd.exe …',
     };
     assert.deepEqual(
-      interpretRemoveResult(refusal, { exists: undefined }),
+      interpretRemoveResult(refusal, {
+        userScope: undefined,
+        localScopeDirs: [],
+      }),
       refusal
     );
   });
@@ -393,32 +403,33 @@ describe('interpretAddResult', () => {
   // "Added stdio MCP server runpod …" and exits 0 having written nothing (observed,
   // claude 2.1.220). A bare exit code reports a configuration that does not exist.
   it('fails when nothing is registered afterwards, despite a zero exit', () => {
-    const out = interpretAddResult({ success: true }, { exists: false });
+    const out = interpretAddResult(
+      { success: true },
+      { userScope: false, localScopeDirs: [] }
+    );
     assert.equal(out.success, false);
     assert.match(out.message ?? '', /not writable/);
     assert.match(out.message ?? '', /Nothing was configured/);
   });
 
-  it('fails when the only visible entry is in a scope this wizard does not write', () => {
-    // An unwritable user config PLUS a checked-in team .mcp.json in cwd. A bare
-    // presence check sees the project entry and calls it a verified success while the
-    // user's key was never written anywhere.
-    for (const scope of ['project', 'local'] as const) {
-      const out = interpretAddResult(
-        { success: true },
-        { exists: true, scope }
-      );
-      assert.equal(out.success, false, scope);
-      assert.match(out.message ?? '', new RegExp(`${scope} scope`));
-      assert.match(out.message ?? '', /did not land/);
-    }
+  it('does not fail an add just because a local-scope entry also exists', () => {
+    // The mirror of the round-6 blocker. `claude mcp get` reports only the WINNING
+    // scope and local shadows user, so keying off it announced "nothing was configured"
+    // for a key that HAD just been written — for anyone who had ever run plain
+    // `claude mcp add runpod` in that directory. The user scope is the only thing that
+    // answers whether OUR write landed.
+    const out = interpretAddResult(
+      { success: true },
+      { userScope: true, localScopeDirs: ['/home/dev/projA'] }
+    );
+    assert.equal(out.success, true, out.message);
   });
 
   it('passes a verified success through, caveat and all', () => {
     assert.deepEqual(
       interpretAddResult(
         { success: true, message: 'already configured' },
-        true
+        { userScope: true, localScopeDirs: [] }
       ),
       { success: true, message: 'already configured' }
     );
@@ -427,12 +438,15 @@ describe('interpretAddResult', () => {
   it('does not upgrade a failure or a refusal', () => {
     const failure = { success: false, message: 'boom' };
     assert.deepEqual(
-      interpretAddResult(failure, { exists: true, scope: 'user' }),
+      interpretAddResult(failure, { userScope: true, localScopeDirs: [] }),
       failure
     );
     const refusal = { success: false, refused: true, message: 'declined' };
     assert.deepEqual(
-      interpretAddResult(refusal, { exists: undefined }),
+      interpretAddResult(refusal, {
+        userScope: undefined,
+        localScopeDirs: [],
+      }),
       refusal
     );
   });
@@ -441,7 +455,10 @@ describe('interpretAddResult', () => {
     // Failing closed here would break every user whose probe cannot answer, for a
     // problem that may not exist. Direction chosen deliberately.
     assert.deepEqual(
-      interpretAddResult({ success: true }, { exists: undefined }),
+      interpretAddResult(
+        { success: true },
+        { userScope: undefined, localScopeDirs: [] }
+      ),
       {
         success: true,
         message: undefined,
@@ -673,46 +690,70 @@ describe(
       for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
     });
 
-    // `behaviour` is a sh case body keyed on "$1 $2" (e.g. "mcp remove").
-    function fakeClaude(behaviour: string) {
+    // `behaviour` is a sh case body keyed on "$1 $2" (e.g. "mcp remove"). The config
+    // state is injected rather than scripted through the CLI, for two reasons: the real
+    // signal IS the config file, and a test must never read the developer's own.
+    function fakeClaude(
+      behaviour: string,
+      state: {
+        userScope: boolean | undefined;
+        localScopeDirs: string[];
+      } = { userScope: false, localScopeDirs: [] }
+    ) {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rp-fake-claude-'));
       dirs.push(dir);
       const bin = path.join(dir, 'claude');
       fs.writeFileSync(bin, `#!/bin/sh\ncase "$1 $2" in\n${behaviour}\nesac\n`);
       fs.chmodSync(bin, 0o755);
-      return createClaudeCodeClient(() => bin);
+      return createClaudeCodeClient(
+        () => bin,
+        () => state
+      );
     }
-
-    // What `claude mcp get` prints for an entry in each scope, verbatim shape.
-    const getOutput = (scope: string) =>
-      `runpod:\n  Scope: ${scope} config (…)\n  Type: stdio\n`;
 
     it('fails a removal the entry survives in user scope', async () => {
       // Unwritable config: the CLI says it removed the entry and exits 0, and the
-      // probe still finds it in USER scope.
+      // config still has the user-scope entry.
       const client = fakeClaude(
         `'mcp remove') echo 'Removed MCP server runpod from user config'; exit 0;;\n` +
-          `'mcp get') printf '%s' '${getOutput('User')}'; exit 0;;\n` +
-          `*) exit 1;;`
+          `*) exit 1;;`,
+        { userScope: true, localScopeDirs: [] }
       );
       const result = await client.remove();
       assert.equal(result.success, false, JSON.stringify(result));
       assert.match(result.message ?? '', /still on disk/);
     });
 
-    it('succeeds but names the other scope when one remains there', async () => {
+    it('succeeds but names local-scope entries left behind', async () => {
       // `claude mcp add` defaults to LOCAL scope; this removes USER scope. The
-      // user-scope removal genuinely happened, so this is NOT a failure — but the key
-      // is not gone either, and the reply has to say which scope still has one.
+      // user-scope removal genuinely happened, so this is NOT a failure — but a
+      // local-scope entry elsewhere holds its own key, and reading the config
+      // enumerates those across EVERY directory, not just this one.
       const client = fakeClaude(
         `'mcp remove') echo 'Removed MCP server runpod from user config'; exit 0;;\n` +
-          `'mcp get') printf '%s' '${getOutput('Local')}'; exit 0;;\n` +
-          `*) exit 1;;`
+          `*) exit 1;;`,
+        { userScope: false, localScopeDirs: ['/home/dev/projA'] }
       );
       const result = await client.remove();
       assert.equal(result.success, true, JSON.stringify(result));
       assert.match(result.message ?? '', /local-scope/);
+      assert.match(result.message ?? '', /projA/);
       assert.match(result.message ?? '', /--scope local/);
+    });
+
+    it('fails a removal when a user entry is SHADOWED by a local one', async () => {
+      // The round-6 blocker. `claude mcp get` reports only the winning scope and local
+      // shadows user, so a scope-string probe saw "local" and concluded user scope was
+      // clean — announcing "removed from user config" while the key was still there.
+      // Reading the config sees both independently.
+      const client = fakeClaude(
+        `'mcp remove') echo 'Removed MCP server runpod from user config'; exit 0;;\n` +
+          `*) exit 1;;`,
+        { userScope: true, localScopeDirs: ['/home/dev/projA'] }
+      );
+      const result = await client.remove();
+      assert.equal(result.success, false, JSON.stringify(result));
+      assert.match(result.message ?? '', /STILL in Claude Code's user config/);
     });
 
     it('never claims the key is gone, only that nothing is visible from here', async () => {
@@ -721,25 +762,22 @@ describe(
       // Claiming "nothing to remove" here is what left a plaintext key behind.
       const client = fakeClaude(
         `'mcp remove') echo 'No MCP server named "runpod" in user scope' 1>&2; exit 1;;\n` +
-          `'mcp get') echo 'No MCP server named "runpod".' 1>&2; exit 1;;\n` +
-          `*) exit 1;;`
+          `*) exit 1;;`,
+        { userScope: false, localScopeDirs: [] }
       );
       const result = await client.remove();
       assert.equal(result.success, true, JSON.stringify(result));
-      assert.match(result.message ?? '', /user config or this directory/);
-      // The claim it must NOT make.
-      assert.equal(
-        /^nothing to remove$/.test(result.message ?? ''),
-        false,
-        result.message
+      assert.match(
+        result.message ?? '',
+        /nothing to remove in your user config/
       );
     });
 
     it('fails an add whose entry is absent afterwards', async () => {
       const client = fakeClaude(
         `'mcp add') echo 'Added stdio MCP server runpod'; exit 0;;\n` +
-          `'mcp get') echo 'No MCP server named "runpod".' 1>&2; exit 1;;\n` +
-          `*) exit 1;;`
+          `*) exit 1;;`,
+        { userScope: false, localScopeDirs: [] }
       );
       const result = await client.add({
         kind: 'local',
@@ -749,29 +787,27 @@ describe(
       assert.match(result.message ?? '', /not writable/);
     });
 
-    it('fails an add when the only visible entry is a pre-existing project one', async () => {
-      // The other half of the round-5 blocker: an unwritable user config PLUS a
-      // checked-in team .mcp.json in cwd. A bare presence check sees the project entry
-      // and reports a verified success while the user's key was never written.
+    it('accepts an add even when a local-scope entry also exists', async () => {
+      // The mirror of the round-6 blocker: keying off `mcp get`'s winning scope
+      // reported "nothing was configured" for a key that HAD just been written,
+      // whenever the user had ever run plain `claude mcp add runpod` in that directory.
       const client = fakeClaude(
         `'mcp add') echo 'Added stdio MCP server runpod to user config'; exit 0;;\n` +
-          `'mcp get') printf '%s' '${getOutput('Project')}'; exit 0;;\n` +
-          `*) exit 1;;`
+          `*) exit 1;;`,
+        { userScope: true, localScopeDirs: ['/home/dev/projA'] }
       );
       const result = await client.add({
         kind: 'local',
         apiKey: 'rpa_TESTKEY123456',
       });
-      assert.equal(result.success, false, JSON.stringify(result));
-      assert.match(result.message ?? '', /project scope/);
-      assert.match(result.message ?? '', /did not land/);
+      assert.equal(result.success, true, JSON.stringify(result));
     });
 
     it('accepts an add verified in user scope', async () => {
       const client = fakeClaude(
         `'mcp add') echo 'Added stdio MCP server runpod to user config'; exit 0;;\n` +
-          `'mcp get') printf '%s' '${getOutput('User')}'; exit 0;;\n` +
-          `*) exit 1;;`
+          `*) exit 1;;`,
+        { userScope: true, localScopeDirs: [] }
       );
       const result = await client.add({
         kind: 'local',
@@ -783,7 +819,8 @@ describe(
     it('never echoes the API key in a failure message', async () => {
       const client = fakeClaude(
         `'mcp add') echo "Invalid environment variable format: RUNPOD_API_KEY=rpa_TESTKEY123456" 1>&2; exit 1;;\n` +
-          `*) exit 1;;`
+          `*) exit 1;;`,
+        { userScope: false, localScopeDirs: [] }
       );
       const result = await client.add({
         kind: 'local',
@@ -797,50 +834,111 @@ describe(
       );
       assert.match(result.message ?? '', /YOUR_RUNPOD_API_KEY/);
     });
-
-    it('never surfaces the key that `mcp get` itself prints', async () => {
-      // `claude mcp get` prints `Environment: RUNPOD_API_KEY=<plaintext>`. The probe
-      // parses the scope out of that output and must not carry the rest anywhere.
-      const client = fakeClaude(
-        `'mcp remove') echo 'Removed MCP server runpod from user config'; exit 0;;\n` +
-          `'mcp get') printf 'runpod:\\n  Scope: User config\\n  Environment: RUNPOD_API_KEY=rpa_PROBELEAK99\\n'; exit 0;;\n` +
-          `*) exit 1;;`
-      );
-      const result = await client.remove();
-      assert.equal(
-        JSON.stringify(result).includes('rpa_PROBELEAK99'),
-        false,
-        JSON.stringify(result)
-      );
-    });
   }
 );
+describe('readClaudeConfigState', () => {
+  const dirs: string[] = [];
+  after(() => {
+    for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+  });
 
-describe('parseEntryScope', () => {
-  // The scope decides whether a visible entry says anything about OUR write, so a
-  // parse miss turns into a wrong verdict rather than a missing detail.
-  it('reads each scope claude reports', () => {
-    assert.equal(
-      parseEntryScope(
-        'runpod:\n  Scope: User config (available in all your projects)'
+  function configWith(contents: string | null): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rp-claude-cfg-'));
+    dirs.push(dir);
+    const file = path.join(dir, '.claude.json');
+    if (contents !== null) fs.writeFileSync(file, contents);
+    return file;
+  }
+
+  it('reads the user scope from top-level mcpServers', () => {
+    // `--scope user` writes exactly one place, verified against claude 2.1.220.
+    assert.deepEqual(
+      readClaudeConfigState(
+        configWith('{"mcpServers":{"runpod":{"command":"npx"}}}')
       ),
-      'user'
+      { userScope: true, localScopeDirs: [] }
     );
-    assert.equal(
-      parseEntryScope('  Scope: Local config (private to you in this project)'),
-      'local'
-    );
-    assert.equal(
-      parseEntryScope('  Scope: Project config (shared via .mcp.json)'),
-      'project'
+    assert.deepEqual(
+      readClaudeConfigState(configWith('{"mcpServers":{"other":{}}}')),
+      { userScope: false, localScopeDirs: [] }
     );
   });
 
-  it('reports unknown rather than guessing', () => {
-    // An unknown scope is treated as "possibly ours", i.e. the conservative direction.
-    assert.equal(parseEntryScope('runpod:\n  Type: stdio'), 'unknown');
-    assert.equal(parseEntryScope(''), 'unknown');
-    assert.equal(parseEntryScope('  Scope: Enterprise config'), 'unknown');
+  it('sees a user entry even when a local one shadows it', () => {
+    // THE round-6 blocker: `claude mcp get` prints only `Scope: Local config` here,
+    // while both keys are on disk. Reading the file sees both independently.
+    const state = readClaudeConfigState(
+      configWith(
+        JSON.stringify({
+          mcpServers: { runpod: { command: 'npx' } },
+          projects: {
+            '/home/dev/projA': { mcpServers: { runpod: { command: 'npx' } } },
+          },
+        })
+      )
+    );
+    assert.deepEqual(state, {
+      userScope: true,
+      localScopeDirs: ['/home/dev/projA'],
+    });
+  });
+
+  it('enumerates local-scope entries across every directory, not just cwd', () => {
+    // The gap the cwd-pinned probe could never close: an entry added in another
+    // project is invisible to `mcp get` but plainly present in this file.
+    const state = readClaudeConfigState(
+      configWith(
+        JSON.stringify({
+          mcpServers: {},
+          projects: {
+            '/a': { mcpServers: { runpod: {} } },
+            '/b': { mcpServers: { other: {} } },
+            '/c': { mcpServers: { runpod: {} } },
+            '/d': {},
+          },
+        })
+      )
+    );
+    assert.equal(state.userScope, false);
+    assert.deepEqual(state.localScopeDirs, ['/a', '/c']);
+  });
+
+  it('treats a missing config as definitely no user entry', () => {
+    assert.deepEqual(readClaudeConfigState(configWith(null)), {
+      userScope: false,
+      localScopeDirs: [],
+    });
+  });
+
+  it('reports unknown rather than guessing for an unparseable config', () => {
+    // Saying "absent" here would let a caller announce a key is gone from a file it
+    // could not read. Unknown is the only honest answer.
+    for (const contents of ['{"mcpServers": {', 'not json', '']) {
+      assert.equal(
+        readClaudeConfigState(configWith(contents)).userScope,
+        undefined,
+        JSON.stringify(contents)
+      );
+    }
+  });
+
+  it('tolerates comments, trailing commas and a BOM', () => {
+    // Claude Code's config is JSONC-ish in practice, and Windows editors add BOMs.
+    const state = readClaudeConfigState(
+      configWith('\uFEFF{\n  // mine\n  "mcpServers": { "runpod": {} },\n}\n')
+    );
+    assert.equal(state.userScope, true);
+  });
+
+  it('does not mistake a non-object mcpServers for an entry', () => {
+    assert.equal(
+      readClaudeConfigState(configWith('{"mcpServers": "runpod"}')).userScope,
+      false
+    );
+    assert.equal(
+      readClaudeConfigState(configWith('[1,2,3]')).userScope,
+      undefined
+    );
   });
 });
 

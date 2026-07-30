@@ -1,5 +1,6 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { SNAPSHOT_QUERY } from '../src/_shared/endpoint-gpu-ids.js';
 
 // Defense-in-depth: the v1 goldens assume the version env vars are unset. Clear
 // them before every test so a leak (from another test or the CI env) can't
@@ -117,7 +118,9 @@ function harness(opts?: {
       ...(opts?.onUnauthorized ? { onUnauthorized: opts.onUnauthorized } : {}),
     },
     {
-      fetch: fakeFetch as Parameters<typeof registerTools>[2]['fetch'],
+      fetch: fakeFetch as NonNullable<
+        Parameters<typeof registerTools>[2]
+      >['fetch'],
       ...(opts?.streamSse ? { streamSse: opts.streamSse } : {}),
       ...(opts?.sseStatus
         ? {
@@ -3277,10 +3280,12 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
   // Keys the resolver writes only when the input carries them, so omission
   // preserves the stored value and echoing does damage: `modelReferences: []` clears
   // every model reference (stripping MODEL_NAME from the endpoint's env),
-  // `compliance: []` re-sorts a stored csv, templateId re-runs template validation
-  // and throws if that template is gone, networkVolumeIds creates volume rows on a
-  // legacy single-volume endpoint, and `instanceIds: []` is truthy server-side so it
-  // writes '' where the column held NULL. Each must be ABSENT from the mutation.
+  // `compliance: []` resolves to NULL and CLEARS the endpoint's compliance
+  // requirements, templateId is create-only on the write path, networkVolumeIds creates
+  // volume rows on a legacy single-volume endpoint, and `instanceIds: []` is truthy
+  // server-side so it writes '' where the column held NULL. Note instanceIds is written
+  // UNCONDITIONALLY (as null) — it is here because an empty echo is harmful, not
+  // because omission is safe. Each must be ABSENT from the mutation.
   const gatedKeys = [
     'templateId',
     'compliance',
@@ -3328,10 +3333,10 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
     assert.equal(outbound.length, 2);
     assert.equal(outbound[0].url, 'https://api.runpod.io/graphql');
     assert.equal(outbound[0].headers?.Authorization, 'Bearer rpa_test');
-    assert.match(
-      JSON.parse(outbound[0].body!).query,
-      /myself[\s\S]*endpoint\(id:/
-    );
+    // Exact, not a shape regex: a revision that inlined a different query string would
+    // keep the SNAPSHOT_QUERY unit tests green (they only inspect the exported
+    // constant) and still satisfy a loose match. Test the wiring, not just the helper.
+    assert.equal(JSON.parse(outbound[0].body!).query, SNAPSHOT_QUERY);
     assert.equal(outbound[1].headers?.Authorization, 'Bearer rpa_test');
     const input = (
       JSON.parse(outbound[1].body!) as {
@@ -3682,5 +3687,60 @@ describe('onUnauthorized ignores the unauthenticated GraphQL path', () => {
       'expected the public GraphQL call'
     );
     assert.equal(fired, 0, 'a no-credential 401 invalidated the verdict');
+  });
+});
+
+// ---- the non-empty instanceIds echo (round 2's data-loss fix) ----
+// Every other fixture uses `instanceIds: []` and asserts ABSENCE, so deleting the echo
+// from buildSaveEndpointInput passed the whole suite — while the resolver writes
+// `input?.instanceIds ? join(',') : null`, i.e. omitting it WIPES a CPU endpoint's
+// instance selection. That is verbatim the bug round 2 found.
+describe('set-endpoint-gpus preserves a CPU endpoint instance selection', () => {
+  it('echoes a non-empty instanceIds back', async () => {
+    const cpuEndpoint = {
+      id: 'ep_cpu',
+      name: 'cpu-endpoint',
+      gpuIds: 'AMPERE_16,-NVIDIA RTX A4500',
+      gpuCount: 1,
+      workersMin: 0,
+      workersMax: 2,
+      idleTimeout: 5,
+      scalerType: 'QUEUE_DELAY',
+      scalerValue: 4,
+      executionTimeoutMs: 600000,
+      requestTTL: null,
+      flashBootType: 'FLASHBOOT',
+      locations: null,
+      allowedCudaVersions: null,
+      minCudaVersion: null,
+      instanceIds: ['cpu3c-2-4', 'cpu3c-4-8'],
+    };
+    const { handlers, outbound } = harness({
+      jsonBodies: [
+        { data: { myself: { endpoint: cpuEndpoint } } },
+        {
+          data: {
+            saveEndpoint: {
+              id: 'ep_cpu',
+              name: 'cpu-endpoint',
+              gpuIds: 'AMPERE_16,-NVIDIA RTX A4500',
+              gpuCount: 2,
+              workersMin: 0,
+              workersMax: 2,
+            },
+          },
+        },
+      ],
+    });
+    await handlers.get('set-endpoint-gpus')!({
+      endpointId: 'ep_cpu',
+      gpuCount: 2,
+    });
+    const input = (
+      JSON.parse(outbound[1].body!) as {
+        variables: { input: Record<string, unknown> };
+      }
+    ).variables.input;
+    assert.deepEqual(input.instanceIds, ['cpu3c-2-4', 'cpu3c-4-8']);
   });
 });

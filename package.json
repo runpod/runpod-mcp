@@ -19,7 +19,7 @@
     "build:watch": "pnpm clean && tsup --watch",
     "clean": "rm -rf dist *.tsbuildinfo",
     "lint": "eslint \"./**/*.ts*\"",
-    "type-check": "tsc --noEmit -p tsconfig.json",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc -p tsconfig.tests.json",
     "test": "node --import tsx --test tests/*.test.ts",
     "prettier-check": "prettier --check \"./**/*.ts*\"",
     "start": "node dist/stdio.mjs",

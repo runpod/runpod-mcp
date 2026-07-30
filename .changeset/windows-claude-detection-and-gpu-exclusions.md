@@ -48,27 +48,25 @@ matters — is the API key on disk or not?
   so an entry a user added by hand yields `No MCP server named "runpod" in user scope` and
   exit 1 — which reads as "nothing to remove" while their key stays in `~/.claude.json`.
 
-Both are settled by a `claude mcp get` probe, which reports the scope an entry lives in.
-The scope matters, and a third observation is why: **`mcp get` is cwd-pinned, not
-scope-agnostic.** Local scope lives at `~/.claude.json → projects[<cwd>].mcpServers` and
-project scope in `<cwd>/.mcp.json`, so an entry added in a different directory is invisible
-from here (verified: added in `projA`, `mcp get` from `projB` exits 1 while the key is still
-in `~/.claude.json`).
+Neither is settled by a `claude mcp get` probe, and two further observations are why:
 
-So the wizard reports only what it can actually establish:
+- **`mcp get` is cwd-pinned.** Local scope lives at `~/.claude.json →
+  projects[<cwd>].mcpServers` and project scope in `<cwd>/.mcp.json`, so an entry added
+  in a different directory is invisible from here (verified: added in `projA`, `mcp get`
+  from `projB` exits 1 while the key is still in `~/.claude.json`).
+- **`mcp get` reports only the WINNING scope, and local shadows user.** With a
+  user-scope *and* a local-scope entry both on disk it prints only
+  `Scope: Local config` — so one scope string cannot distinguish "user entry present,
+  shadowed" from "user entry absent", and those need opposite verdicts.
 
-- An entry still in **user** scope after a removal is a failure — the write did not take.
-- An entry in **local** or **project** scope is not: the requested user-scope removal did
-  happen. That is reported as a success which names the other scope and the command to
-  clear it, since the key is not gone.
-- Nothing visible is reported as "nothing remains in your user config or this directory",
-  explicitly noting that a local-scope entry added elsewhere would not be visible. It never
-  claims the key is off disk, because this probe cannot know that.
-- For `add`, only a **user**-scope entry confirms the write. A pre-existing project-scope
-  entry (a checked-in team `.mcp.json`) would otherwise make an unwritable user config look
-  like a verified success.
-- An outcome the probe cannot settle says it is unverified rather than claiming a clean
-  result.
+`--scope user` writes exactly one place: the top-level `mcpServers` of `.claude.json`.
+So the wizard reads that file. It is exact, needs no extra process, cannot be shadowed,
+and it can enumerate local-scope entries across *every* project directory rather than
+only the current one. A removal that leaves the user-scope entry in place is a failure
+naming the file and the likely cause; one that succeeds while local-scope entries remain
+elsewhere is a success that names those directories and the command to clear them; and a
+config that cannot be read or parsed is reported as unverified rather than assumed
+either way.
 
 (`remove` also previously called `execFileSync` directly — which cannot spawn a `.cmd` — and
 reported success from its `catch` regardless.)
@@ -145,8 +143,10 @@ Cost, stated fully:
 
 - One GraphQL read per v2 `update-endpoint` call — including endpoints with no exclusions,
   which pay the read but no write.
-- A re-read plus one `saveEndpoint` write only for endpoints that use exclusions AND
-  actually lost them to the patch.
+- A second GraphQL read for every endpoint that carries exclusions — it happens before
+  the "did anything change?" check, so it is paid whether or not anything was lost.
+- One `saveEndpoint` write only for endpoints that carry exclusions AND actually lost
+  them to the patch.
 - The caller's API key now goes to the authenticated GraphQL host on every v2
   `update-endpoint`. If you override `RUNPOD_AUTHED_GRAPHQL_URL`, point it only at a host
   you trust with that.

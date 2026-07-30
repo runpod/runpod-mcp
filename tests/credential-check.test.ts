@@ -626,7 +626,13 @@ describe('createCredentialChecker — races and eviction order', () => {
     // (fresher) verdict was dropped on settle, and the token had to re-probe — a
     // flood of distinct tokens could evict a legit user's in-flight check and let
     // a since-revoked key cache as valid. maxEntries=1 reproduces with two tokens.
-    const pending: { token: string; resolve: (r: unknown) => void }[] = [];
+    // `resolve` is the promise executor's own resolve, so it is typed by what
+    // createCredentialChecker's fetch must return — not `unknown`.
+    type ProbeResponse = Awaited<
+      ReturnType<Parameters<typeof createCredentialChecker>[0]['fetch']>
+    >;
+    type PendingResolve = (r: ProbeResponse) => void;
+    const pending: { token: string; resolve: PendingResolve }[] = [];
     const settle = (token: string, status: number) => {
       const i = pending.findIndex((p) => p.token === token);
       const [p] = pending.splice(i, 1);
