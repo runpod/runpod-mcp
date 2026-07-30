@@ -237,9 +237,10 @@ function endpointCommonToV2(params: V2EndpointParams): Record<string, unknown> {
     dataCenterIds: params.dataCenterIds?.length
       ? params.dataCenterIds
       : undefined,
-    networkVolumes: params.networkVolumeIds?.length
-      ? params.networkVolumeIds
-      : undefined,
+    // An explicit empty list is sent, not dropped: `networkVolumes` has no minItems in
+    // the v2 spec, so `[]` is the expressible way to detach every volume. Dropping it
+    // (as `?.length` does) made "detach all" a 200 that changed nothing.
+    networkVolumes: params.networkVolumeIds,
     timeout: params.executionTimeoutMs,
     flashboot: params.flashboot,
   });

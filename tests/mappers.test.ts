@@ -14,6 +14,11 @@ import {
   podBodyFromTemplate,
 } from '../src/_shared/mappers.js';
 import { parseLogSse } from '../src/tools/logs.js';
+import {
+  hasGpuExclusions,
+  SNAPSHOT_QUERY,
+  buildSaveEndpointInput,
+} from '../src/_shared/endpoint-gpu-ids.js';
 
 const fixture = JSON.parse(
   readFileSync(
@@ -529,5 +534,276 @@ describe('parseLogSse', () => {
 
   it('empty stream → no items', () => {
     assert.deepEqual(parseLogSse(''), []);
+  });
+});
+
+// ---- hasGpuExclusions: the sole gate on a compensating write ----
+// If this returns false for a gpuIds string that DOES carry exclusions, they are
+// silently lost (issue #63); if it returns true spuriously, every update pays an
+// extra read+write and rolls the endpoint's workers. It had no direct tests.
+describe('hasGpuExclusions', () => {
+  it('is false for pool-only gpuIds, and for absent values', () => {
+    assert.equal(hasGpuExclusions('AMPERE_16'), false);
+    assert.equal(hasGpuExclusions('AMPERE_16,ADA_24'), false);
+    assert.equal(hasGpuExclusions(''), false);
+    assert.equal(hasGpuExclusions(null), false);
+    assert.equal(hasGpuExclusions(undefined), false);
+  });
+
+  it('is true when any entry is an exclusion, wherever it sits', () => {
+    assert.equal(hasGpuExclusions('AMPERE_16,-NVIDIA RTX A4500'), true);
+    assert.equal(hasGpuExclusions('-NVIDIA RTX A4500,AMPERE_16'), true);
+    assert.equal(
+      hasGpuExclusions('AMPERE_16,-NVIDIA RTX A4500,-NVIDIA L40'),
+      true
+    );
+  });
+
+  it('trims entries the way the server does', () => {
+    // The server splits on ',' then trims each token, so a spaced list is the same
+    // list. Missing this would drop exclusions on a hand-written gpuIds string.
+    assert.equal(hasGpuExclusions('AMPERE_16, -NVIDIA RTX A4500'), true);
+    assert.equal(hasGpuExclusions('AMPERE_16 , ADA_24'), false);
+  });
+
+  it('ignores empty entries from stray commas', () => {
+    assert.equal(hasGpuExclusions('AMPERE_16,,ADA_24'), false);
+    assert.equal(hasGpuExclusions('AMPERE_16,'), false);
+    assert.equal(hasGpuExclusions(','), false);
+  });
+
+  it('does not treat a lone "-" as an exclusion', () => {
+    // It excludes nothing server-side, so triggering the restore for it would be a
+    // pure cost — hence the length > 1 check.
+    assert.equal(hasGpuExclusions('AMPERE_16,-'), false);
+    assert.equal(hasGpuExclusions('-'), false);
+  });
+
+  it('is not confused by a hyphen inside a pool or SKU name', () => {
+    // Only a LEADING '-' marks an exclusion. Interior hyphens are ordinary.
+    assert.equal(hasGpuExclusions('AMPERE_16,NVIDIA-RTX-A4500'), false);
+    assert.equal(hasGpuExclusions('US-TX-3'), false);
+    assert.equal(hasGpuExclusions('-NVIDIA-RTX-A4500'), true);
+  });
+});
+
+// ---- the snapshot query must select every field the restore echoes ----
+// A field in EndpointSnapshot but not in SNAPSHOT_QUERY reads as `undefined`.
+// JSON.stringify then drops it from the GraphQL variables, so an echo silently
+// becomes an omission — and for a field the resolver writes unconditionally, that is
+// data loss. Fixture-based tests cannot catch this: the fake response returns what it
+// likes regardless of the selection set, which is how the instanceIds bug got in.
+describe('SNAPSHOT_QUERY covers EndpointSnapshot', () => {
+  // The fields the restore reads off a snapshot. Kept as a literal list rather than
+  // derived from a type, because the interface does not exist at runtime — so this is
+  // the one place the two shapes are compared, and adding a field to either without
+  // the other fails here.
+  const SNAPSHOT_FIELDS = [
+    'id',
+    'name',
+    'gpuIds',
+    'gpuCount',
+    'workersMin',
+    'workersMax',
+    'idleTimeout',
+    'scalerType',
+    'scalerValue',
+    'executionTimeoutMs',
+    'requestTTL',
+    'flashBootType',
+    'locations',
+    'allowedCudaVersions',
+    'minCudaVersion',
+    'instanceIds',
+  ];
+
+  const bodyLines = SNAPSHOT_QUERY.split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const selected = bodyLines.filter((line) => /^[a-zA-Z]+$/.test(line));
+  // Any bare field the scalar filter would not have matched — `__typename`, an alias,
+  // two fields on one line — is a drift vector the checks below would miss silently.
+  const unrecognised = bodyLines.filter(
+    (line) =>
+      !/^[a-zA-Z]+$/.test(line) &&
+      !/^\}$/.test(line) &&
+      !/^(query|myself|endpoint\(id:)/.test(line)
+  );
+
+  it('contains no line the field checks cannot classify', () => {
+    // Belt and braces on the two assertions below: they iterate bare identifiers, so
+    // anything that is neither a bare identifier nor structural (`__typename`, an alias,
+    // a directive, two fields packed on one line) would slip past both.
+    assert.deepEqual(unrecognised, []);
+  });
+
+  it('selects no object-typed subtree', () => {
+    // The extra-field check below only sees bare identifiers, so a sub-selection
+    // (`networkVolumeIds { networkVolumeId }`) would slip past it — and those are
+    // exactly the fields with their own field-level authorisation, where one rejection
+    // fails the WHOLE read and silently downgrades every update to a skipped GPU check.
+    const subSelections = bodyLines.filter(
+      (line) =>
+        /^[a-zA-Z]+[^{]*\{$/.test(line) && !/^(query|myself)\b/.test(line)
+    );
+    assert.deepEqual(
+      subSelections.filter((l) => !l.startsWith('endpoint(id:')),
+      [],
+      'SNAPSHOT_QUERY must select only scalars'
+    );
+  });
+
+  it('selects every field the snapshot interface declares', () => {
+    for (const field of SNAPSHOT_FIELDS) {
+      assert.ok(
+        selected.includes(field),
+        `SNAPSHOT_QUERY does not select "${field}" — it would read as undefined and be dropped from the mutation`
+      );
+    }
+  });
+
+  it('selects nothing the restore does not use', () => {
+    // Every extra field is a liability: several Endpoint fields carry their own
+    // field-level authorisation, and one rejected field fails the whole read — which
+    // downgrades to a skipped GPU check on an endpoint that needed it.
+    for (const field of selected) {
+      assert.ok(
+        SNAPSHOT_FIELDS.includes(field),
+        `SNAPSHOT_QUERY selects "${field}", which the snapshot does not use`
+      );
+    }
+  });
+
+  it('queries one endpoint by id, not the capped endpoints list', () => {
+    // `myself { endpoints }` is capped at 400 rows with no pagination, so on a large
+    // account the endpoint being updated can simply be absent — and the exclusion
+    // protection would silently no-op.
+    assert.match(SNAPSHOT_QUERY, /myself[\s\S]*endpoint\(id:/);
+    assert.equal(/endpoints\s*[({]/.test(SNAPSHOT_QUERY), false);
+  });
+});
+
+// ---- buildSaveEndpointInput, directly ----
+// The builder had no unit test at all: everything went through handler fixtures, where
+// `preservedKeys` is derived from the fixture rather than from the builder. So the one
+// direction that caused the instanceIds data loss — a field the builder reads but the
+// query never selects — was unasserted, and the round-2 fix could be deleted with the
+// whole suite still green.
+describe('buildSaveEndpointInput', () => {
+  // Every field EndpointSnapshot declares, with values distinguishable from defaults.
+  const full = {
+    id: 'ep_1',
+    name: 'ep',
+    gpuIds: 'AMPERE_16,-NVIDIA RTX A4500',
+    gpuCount: 3,
+    workersMin: 1,
+    workersMax: 7,
+    idleTimeout: 42,
+    scalerType: 'REQUEST_COUNT',
+    scalerValue: 9,
+    executionTimeoutMs: 123000,
+    requestTTL: 600,
+    flashBootType: 'PRIORITY_FLASHBOOT',
+    locations: 'US-TX-3',
+    allowedCudaVersions: '12.4,12.8',
+    minCudaVersion: '12.4',
+    instanceIds: ['cpu3c-2-4'],
+  };
+
+  it('echoes a non-empty instanceIds', () => {
+    // The resolver writes `input?.instanceIds ? join(',') : null`, so omitting this
+    // NULLS a CPU endpoint's instance selection. Note both current callers can only
+    // reach this with a GPU endpoint, where instanceIds is always empty — so the echo is
+    // defensive, and a handler-level test cannot cover it. Hence this one.
+    assert.deepEqual(buildSaveEndpointInput(full).instanceIds, ['cpu3c-2-4']);
+  });
+
+  it('omits an empty instanceIds rather than sending []', () => {
+    // `[]` is truthy server-side, so it would be written as '' where the column is NULL.
+    const input = buildSaveEndpointInput({ ...full, instanceIds: [] });
+    assert.equal('instanceIds' in input, false);
+  });
+
+  it('tolerates a snapshot missing instanceIds entirely', () => {
+    // This runs inside the restore's try/catch, so a TypeError here would surface to the
+    // user as "re-asserting the exclusions failed" and cost them their SKU pins.
+    const partial = { ...full } as Record<string, unknown>;
+    delete partial.instanceIds;
+    assert.doesNotThrow(() =>
+      buildSaveEndpointInput(
+        partial as unknown as Parameters<typeof buildSaveEndpointInput>[0]
+      )
+    );
+  });
+
+  it('applies overrides and echoes everything else verbatim', () => {
+    const input = buildSaveEndpointInput(full, {
+      gpuIds: 'ADA_24',
+      gpuCount: 1,
+      minCudaVersion: '12.0',
+    });
+    assert.equal(input.gpuIds, 'ADA_24');
+    assert.equal(input.gpuCount, 1);
+    assert.equal(input.minCudaVersion, '12.0');
+    // Untouched by the override, and not reset to a default.
+    assert.equal(input.workersMax, 7);
+    assert.equal(input.idleTimeout, 42);
+    assert.equal(input.scalerValue, 9);
+    assert.equal(input.requestTTL, 600);
+    assert.equal(input.allowedCudaVersions, '12.4,12.8');
+  });
+
+  it('never emits a field whose write is gated on the input carrying it', () => {
+    const input = buildSaveEndpointInput(full);
+    for (const gated of [
+      'modelReferences',
+      'compliance',
+      'templateId',
+      'networkVolumeIds',
+      'type',
+    ]) {
+      assert.equal(gated in input, false, `${gated} must not be echoed`);
+    }
+  });
+
+  it('sends nothing the snapshot query does not select', () => {
+    // THE direction that caused the instanceIds loss: a field the builder reads but the
+    // query omits arrives as `undefined`, JSON.stringify drops it from the variables,
+    // and the echo silently becomes an omission. Comparing the builder's own output to
+    // the query closes it without a hand-copied list in the middle.
+    const selected = new Set(
+      SNAPSHOT_QUERY.split('\n')
+        .map((line) => line.trim())
+        .filter((line) => /^[a-zA-Z]+$/.test(line))
+    );
+    for (const key of Object.keys(buildSaveEndpointInput(full))) {
+      assert.ok(
+        selected.has(key),
+        `buildSaveEndpointInput emits "${key}", which SNAPSHOT_QUERY does not select — it would read as undefined and be dropped`
+      );
+    }
+  });
+});
+
+describe('update-endpoint networkVolumes', () => {
+  // `[]` means "detach every volume" and the v2 spec permits it (networkVolumes is an
+  // array with no minItems), but the mapper used to drop it — a 200 that changed
+  // nothing. Untested until now, so reverting the fix passed the whole suite.
+  it('sends an explicit empty list rather than dropping it', () => {
+    const body = mapEndpointUpdateToV2({ networkVolumeIds: [] });
+    assert.equal('networkVolumes' in body, true);
+    assert.deepEqual(body.networkVolumes, []);
+  });
+
+  it('still omits the key entirely when the caller says nothing', () => {
+    assert.equal('networkVolumes' in mapEndpointUpdateToV2({}), false);
+  });
+
+  it('passes a non-empty list through', () => {
+    assert.deepEqual(
+      mapEndpointUpdateToV2({ networkVolumeIds: ['nv_1', 'nv_2'] })
+        .networkVolumes,
+      ['nv_1', 'nv_2']
+    );
   });
 });
