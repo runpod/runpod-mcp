@@ -2002,37 +2002,226 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
   // EndpointGpuConfig is {pools, count}, so a PATCH round-trips the endpoint
   // through a shape with nowhere to keep '-<GPU type id>' entries. Neither a
   // pre-read nor a repair write can make two APIs atomic. update-endpoint therefore
-  // refuses every unrelated v2 PATCH; a non-empty pool list is explicit replacement
-  // intent and travels in the same request as the other changes.
+  // refuses every unrelated v2 PATCH of a GPU endpoint; a non-empty pool list is
+  // explicit replacement intent and travels in the same request as the other
+  // changes. The one pre-read it does perform — a same-host REST GET to exempt CPU
+  // endpoints — checks a fact fixed at creation (compute type), so unlike an
+  // exclusion read it cannot go stale between the read and the PATCH.
 
-  it('update-endpoint refuses an unrelated v2 PATCH before any request', async () => {
+  it('update-endpoint refuses an unrelated v2 PATCH of a GPU endpoint', async () => {
     await withV2(async () => {
-      const { handlers, outbound } = harness();
+      const { handlers, outbound } = harness({
+        steps: [
+          {
+            status: 200,
+            jsonBody: { id: 'ep_1', gpu: { pools: ['AMPERE_16'], count: 2 } },
+          },
+        ],
+      });
       const out = await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
         imageName: 'img:9',
       });
-      assert.equal(outbound.length, 0);
+      // Exactly one outbound call — the read-only CPU check. No PATCH.
+      assert.equal(outbound.length, 1);
+      assert.equal(outbound[0].method, 'GET');
       assert.equal((out as { isError?: boolean }).isError, true);
       const reply = parseText(out);
       assert.equal(reply.status, 409);
       assert.match(reply.error as string, /Update not applied/);
       assert.match(reply.error as string, /every v2 PATCH/);
       assert.match(reply.error as string, /gpuPoolIds/);
+      // The refusal hands back the current selection so the caller can build the
+      // required replacement — flagged as unable to show exclusions.
+      assert.deepEqual(reply.currentGpuSelection, {
+        pools: ['AMPERE_16'],
+        count: 2,
+      });
+      assert.match(reply.error as string, /CANNOT show/);
+      assert.match(reply.error as string, /includeGpuIds/);
     });
   });
 
-  it('update-endpoint cannot be green-lit by a stale pool-only pre-read', async () => {
+  it('update-endpoint cannot be green-lit by an exclusion-free pre-read', async () => {
     await withV2(async () => {
-      const { handlers, outbound } = harness();
+      // The REST read shows pools only — it CANNOT show exclusions, and a
+      // concurrent writer can add one between read and PATCH. So even a clean
+      // pool-only result must not authorize an unrelated PATCH of a GPU endpoint.
+      const { handlers, outbound } = harness({
+        steps: [
+          {
+            status: 200,
+            jsonBody: { id: 'ep_1', gpu: { pools: ['AMPERE_16'], count: 1 } },
+          },
+        ],
+      });
       const out = await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
         imageName: 'img:9',
       });
-      // No GraphQL read means there is no check-then-PATCH window in which a
-      // concurrent writer can add an exclusion after a pool-only result.
-      assert.equal(outbound.length, 0);
+      assert.equal(outbound.filter((o) => o.method === 'PATCH').length, 0);
       assert.equal((out as { isError?: boolean }).isError, true);
+    });
+  });
+
+  it('update-endpoint lets a CPU endpoint through without a GPU replacement', async () => {
+    await withV2(async () => {
+      // A CPU endpoint has no gpuIds, so the lossy GPU rebuild has nothing to
+      // lose — requiring gpuPoolIds here demanded a GPU selection the endpoint
+      // cannot hold and made every CPU update a dead end.
+      const { handlers, outbound } = harness({
+        steps: [
+          {
+            status: 200,
+            jsonBody: {
+              id: 'ep_cpu',
+              cpu: { id: 'cpu5c', vcpuCount: 4, memory: 16 },
+              gpu: null,
+            },
+          },
+          { status: 200, jsonBody: { id: 'ep_cpu' } },
+        ],
+      });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_cpu',
+        imageName: 'img:9',
+      });
+      assert.equal(outbound.length, 2);
+      assert.equal(outbound[0].method, 'GET');
+      assert.equal(outbound[1].method, 'PATCH');
+      const body = JSON.parse(outbound[1].body!) as Record<string, unknown>;
+      assert.equal(body.image, 'img:9');
+      // No gpu object is fabricated for an endpoint that cannot hold one.
+      assert.equal('gpu' in body, false);
+      assert.notEqual((out as { isError?: boolean }).isError, true);
+      assert.equal(parseText(out).id, 'ep_cpu');
+    });
+  });
+
+  it('update-endpoint reuses the CPU-check read for the scaler lookup', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        steps: [
+          {
+            status: 200,
+            jsonBody: {
+              id: 'ep_cpu',
+              cpu: { id: 'cpu5c', vcpuCount: 4, memory: 16 },
+              scaling: { type: 'REQUEST_COUNT', requestCount: 2 },
+            },
+          },
+          { status: 200, jsonBody: { id: 'ep_cpu' } },
+        ],
+      });
+      await handlers.get('update-endpoint')!({
+        endpointId: 'ep_cpu',
+        scalerValue: 4,
+      });
+      // One GET serves both the CPU check and the scaler resolution.
+      assert.equal(outbound.length, 2);
+      assert.equal(outbound[1].method, 'PATCH');
+      const body = JSON.parse(outbound[1].body!) as {
+        scaling?: { type?: string };
+      };
+      assert.equal(body.scaling?.type, 'REQUEST_COUNT');
+    });
+  });
+
+  it('update-endpoint explains a facade rejection of a CPU-endpoint PATCH', async () => {
+    await withV2(async () => {
+      // Observed live on the dev facade (2026-07-30): the PATCH pipeline rebuilds
+      // a GPU-shaped config even for a CPU endpoint and rejects it with
+      // "gpuId(s) is required for a gpu endpoint" — a message that misidentifies
+      // the endpoint's compute type. The endpoint was just read and is known CPU,
+      // so the tool adds that context and the v1 escape hatch.
+      const { handlers, outbound } = harness({
+        steps: [
+          {
+            status: 200,
+            jsonBody: {
+              id: 'ep_cpu',
+              cpu: { id: 'cpu3c', vcpuCount: 2, memory: 4 },
+            },
+          },
+          {
+            status: 400,
+            text: '{"detail":"gpuId(s) is required for a gpu endpoint","status":400,"title":"Bad Request"}',
+          },
+        ],
+      });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_cpu',
+        env: { A: 'b' },
+      });
+      assert.equal(outbound.length, 2);
+      assert.equal(outbound[1].method, 'PATCH');
+      assert.equal((out as { isError?: boolean }).isError, true);
+      const reply = parseText(out);
+      assert.match(reply.error as string, /is a CPU endpoint/);
+      assert.match(reply.error as string, /RUNPOD_REST_VERSION=v1/);
+      // The server's own words stay visible — context is added, not substituted.
+      assert.match(reply.error as string, /gpuId\(s\) is required/);
+    });
+  });
+
+  it('update-endpoint propagates a non-400 CPU-endpoint PATCH failure unchanged', async () => {
+    await withV2(async () => {
+      // The CPU wrapper narrates one known 400; a 500 or 401 is not that story
+      // and must not be dressed up as "CPU update unsupported".
+      const { handlers } = harness({
+        steps: [
+          {
+            status: 200,
+            jsonBody: {
+              id: 'ep_cpu',
+              cpu: { id: 'cpu3c', vcpuCount: 2, memory: 4 },
+            },
+          },
+          { status: 500, text: 'internal error' },
+        ],
+      });
+      await assert.rejects(
+        handlers.get('update-endpoint')!({
+          endpointId: 'ep_cpu',
+          env: { A: 'b' },
+        }),
+        /500/
+      );
+    });
+  });
+
+  it('update-endpoint fails closed when the CPU-check read fails', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        steps: [{ status: 404, jsonBody: { error: 'endpoint not found' } }],
+      });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_gone',
+        imageName: 'img:9',
+      });
+      assert.equal(outbound.filter((o) => o.method === 'PATCH').length, 0);
+      assert.equal((out as { isError?: boolean }).isError, true);
+      const reply = parseText(out);
+      assert.equal(reply.status, 409);
+      assert.match(reply.error as string, /could not be read/);
+    });
+  });
+
+  it('update-endpoint fails closed on a reply that names neither cpu nor gpu', async () => {
+    await withV2(async () => {
+      // An older facade, a proxy, or a wrong host could omit both fields. That is
+      // not evidence of a CPU endpoint — only an unambiguous `cpu` with no `gpu`
+      // skips the gate.
+      const { handlers, outbound } = harness({
+        steps: [{ status: 200, jsonBody: { id: 'ep_1' } }],
+      });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        imageName: 'img:9',
+      });
+      assert.equal(outbound.filter((o) => o.method === 'PATCH').length, 0);
+      assert.equal((out as { isError?: boolean }).isError, true);
+      assert.equal(parseText(out).status, 409);
     });
   });
 

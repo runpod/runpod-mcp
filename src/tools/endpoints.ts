@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { capListResult, listPaginationParams } from '../pagination.js';
+import { HttpError } from '../_shared/http.js';
 import {
   READ_ONLY,
   WRITE,
@@ -456,7 +457,7 @@ export function registerEndpointTools(
   // /v2/serverless body; v1 passes the flat fields through.
   server.tool(
     'update-endpoint',
-    "Update a Serverless endpoint's config. On v2 you can change image/disk/env/ports/registry/workers/scaling/networkVolumes/timeout/flashboot; on v1, scaling fields (worker min/max, idle timeout, scaler type/value, name). Only provided fields change on v1. Safety requirement on v2: the current REST facade rebuilds gpuIds during every PATCH, so every call must include a non-empty gpuPoolIds, a positive integer gpuCount, and replaceGpuSelection:true; together they intentionally replace the endpoint's complete GPU selection. Do not use this tool for a v2 endpoint with SKU exclusions that must be preserved; no safe unrelated PATCH is available until the REST facade is fixed. An endpoint's request routing (queue vs load balancer) is fixed at creation and cannot be changed here — recreate the endpoint instead.",
+    "Update a Serverless endpoint's config. On v2 you can change image/disk/env/ports/registry/workers/scaling/networkVolumes/timeout/flashboot; on v1, scaling fields (worker min/max, idle timeout, scaler type/value, name). Only provided fields change on v1. Safety requirement on v2 (GPU endpoints): the current REST facade rebuilds gpuIds during every PATCH, so every call must include a non-empty gpuPoolIds, a positive integer gpuCount, and replaceGpuSelection:true; together they intentionally replace the endpoint's complete GPU selection. Do not use this tool for a v2 GPU endpoint with SKU exclusions that must be preserved; no safe unrelated PATCH is available until the REST facade is fixed. CPU serverless endpoints are exempt — they carry no GPU selection to lose, which the tool verifies with a read before patching. An endpoint's request routing (queue vs load balancer) is fixed at creation and cannot be changed here — recreate the endpoint instead.",
     {
       endpointId: z.string().describe('ID of the endpoint to update'),
       name: z.string().optional().describe('New name for the endpoint'),
@@ -496,7 +497,7 @@ export function registerEndpointTools(
         .array(z.string())
         .optional()
         .describe(
-          'Required with gpuCount for every v2 update while the REST facade is lossy. New GPU pool names, e.g. ["AMPERE_80"]; explicitly replaces the complete GPU selection and cannot carry existing "-<GPU type id>" SKU exclusions forward.'
+          'Required with gpuCount for every v2 update of a GPU endpoint while the REST facade is lossy (CPU endpoints are exempt). New GPU pool names, e.g. ["AMPERE_80"]; explicitly replaces the complete GPU selection and cannot carry existing "-<GPU type id>" SKU exclusions forward.'
         ),
       replaceGpuSelection: z
         .literal(true)
@@ -510,7 +511,7 @@ export function registerEndpointTools(
         .positive()
         .optional()
         .describe(
-          'Required positive integer for every v2 update, together with gpuPoolIds — the PATCH replaces the complete GPU object, so omitting count could reset a multi-GPU endpoint. To change only the count while preserving the current GPU selection, use set-endpoint-gpus.'
+          'Required positive integer for every v2 update of a GPU endpoint, together with gpuPoolIds — the PATCH replaces the complete GPU object, so omitting count could reset a multi-GPU endpoint. To change only the count while preserving the current GPU selection, use set-endpoint-gpus.'
         ),
       args: z.string().optional().describe('New container args (v2)'),
       containerDiskInGb: z
@@ -554,9 +555,36 @@ export function registerEndpointTools(
       // representation during every PATCH, including requests that omit `gpu`.
       // A GraphQL pre-read cannot make a later REST PATCH atomic: another writer
       // can add an exclusion between those calls. Therefore an unrelated v2 PATCH
-      // is never issued. Requiring pools makes the GPU replacement explicit and
-      // puts it in the same request as the other changes.
-      if (!updateParams.gpuPoolIds?.length) {
+      // is never issued for a GPU endpoint. Requiring pools makes the GPU
+      // replacement explicit and puts it in the same request as the other changes.
+      //
+      // CPU endpoints are the exception, decided by a REST read below: they have
+      // no gpuIds, so the lossy rebuild has nothing to lose. That read is safe
+      // where the exclusion pre-read is not, because the two facts differ in kind:
+      // an exclusion is a routine mutable setting a concurrent writer can add
+      // between read and PATCH, while an endpoint's compute type is fixed at
+      // creation — the v2 spec marks `cpu` read-only ("CPU create/update is not
+      // yet supported") and the GraphQL resolver derives computeType from
+      // instanceIds and discards gpuIds for CPU endpoints, so there is no
+      // operation whose interleaving could invalidate the answer.
+      let current: unknown;
+      let cpuEndpointConfirmed = false;
+      if (updateParams.gpuPoolIds?.length) {
+        if (replaceGpuSelection !== true) {
+          return jsonErrorReply({
+            error:
+              'Update not applied: set replaceGpuSelection:true together with gpuPoolIds and gpuCount to acknowledge that this v2 PATCH replaces the complete GPU selection and cannot preserve existing SKU exclusions.',
+            status: 409,
+          });
+        }
+        if (updateParams.gpuCount === undefined) {
+          return jsonErrorReply({
+            error:
+              'Update not applied: gpuCount is required with gpuPoolIds on every v2 update. The PATCH replaces the complete GPU object, and omitting count could reset a multi-GPU endpoint to the API default. Send the current positive integer count together with the complete pool list.',
+            status: 400,
+          });
+        }
+      } else {
         if (updateParams.gpuCount !== undefined) {
           return jsonErrorReply({
             error:
@@ -571,25 +599,38 @@ export function registerEndpointTools(
             status: 400,
           });
         }
-        return jsonErrorReply({
-          error:
-            'Update not applied: every v2 PATCH currently rebuilds the endpoint GPU selection from a representation that cannot carry SKU exclusions. To proceed, pass a non-empty gpuPoolIds and intentionally replace the complete GPU selection. If this endpoint has "-<GPU type id>" exclusions that must be preserved, no safe v2 update is available through this tool until the REST facade is fixed.',
-          status: 409,
-        });
-      }
-      if (replaceGpuSelection !== true) {
-        return jsonErrorReply({
-          error:
-            'Update not applied: set replaceGpuSelection:true together with gpuPoolIds and gpuCount to acknowledge that this v2 PATCH replaces the complete GPU selection and cannot preserve existing SKU exclusions.',
-          status: 409,
-        });
-      }
-      if (updateParams.gpuCount === undefined) {
-        return jsonErrorReply({
-          error:
-            'Update not applied: gpuCount is required with gpuPoolIds on every v2 update. The PATCH replaces the complete GPU object, and omitting count could reset a multi-GPU endpoint to the API default. Send the current positive integer count together with the complete pool list.',
-          status: 400,
-        });
+        // Same host, same credential as the PATCH — none of the cross-environment
+        // concerns of the GraphQL enrichment apply.
+        try {
+          current = await callRestUrl(url);
+        } catch (error) {
+          return jsonErrorReply({
+            error: `Update not applied: this v2 update names no GPU replacement, and the endpoint could not be read to check whether it is a CPU endpoint (the one case where that is safe). Cause: ${error instanceof Error ? error.message : String(error)}`,
+            status: 409,
+          });
+        }
+        // Fail closed: only an unambiguous CPU endpoint (`cpu` set, `gpu` absent)
+        // skips the gate. Anything else — a GPU config, both fields, neither, or
+        // a shape this code does not recognize — keeps the refusal.
+        const shape = (current ?? {}) as { cpu?: unknown; gpu?: unknown };
+        const isCpuEndpoint =
+          typeof current === 'object' &&
+          current !== null &&
+          !Array.isArray(current) &&
+          shape.cpu !== null &&
+          shape.cpu !== undefined &&
+          (shape.gpu === null || shape.gpu === undefined);
+        if (!isCpuEndpoint) {
+          return jsonErrorReply({
+            error:
+              'Update not applied: every v2 PATCH currently rebuilds the endpoint GPU selection from a representation that cannot carry SKU exclusions. To proceed, pass a non-empty gpuPoolIds, a positive integer gpuCount, and replaceGpuSelection:true, intentionally replacing the complete GPU selection. The endpoint\'s current pools and count are in currentGpuSelection — note that view CANNOT show "-<GPU type id>" SKU exclusions; read the authoritative value with get-endpoint includeGpuIds:true. If this endpoint has exclusions that must be preserved, no safe v2 update is available through this tool until the REST facade is fixed.',
+            currentGpuSelection: shape.gpu ?? null,
+            status: 409,
+          });
+        }
+        // CPU endpoint confirmed: there is no GPU selection to lose, so the
+        // update proceeds without a gpu object in the body.
+        cpuEndpointConfirmed = true;
       }
 
       // `scaling` is a union keyed on the scaler type, so a bare "change the target
@@ -598,11 +639,12 @@ export function registerEndpointTools(
       // it — which is what such a request has always meant.
       let scalerType = updateParams.scalerType;
       if (scalerType === undefined && updateParams.scalerValue !== undefined) {
-        const current = (await callRestUrl(url)) as
+        // Reuses the CPU-check read when it happened, so that path costs one GET.
+        const forScaler = (current ?? (await callRestUrl(url))) as
           | { scaling?: { type?: string } }
           | undefined;
         scalerType =
-          current?.scaling?.type === 'REQUEST_COUNT'
+          forScaler?.scaling?.type === 'REQUEST_COUNT'
             ? 'REQUEST_COUNT'
             : 'QUEUE_DELAY';
       }
@@ -621,7 +663,29 @@ export function registerEndpointTools(
         ...updateParams,
         scalerType,
       }) as Record<string, unknown>;
-      return jsonReply(await callRestUrl(url, 'PATCH', body));
+      if (!cpuEndpointConfirmed) {
+        return jsonReply(await callRestUrl(url, 'PATCH', body));
+      }
+      try {
+        return jsonReply(await callRestUrl(url, 'PATCH', body));
+      } catch (error) {
+        // Observed live on the dev facade (2026-07-30): a PATCH of a CPU endpoint
+        // that changed only `env` came back
+        //   400 {"detail":"gpuId(s) is required for a gpu endpoint"}
+        // — the PATCH pipeline rebuilds a GPU-shaped config even for a CPU
+        // endpoint, so the server's own message misidentifies the endpoint's
+        // compute type. The endpoint was just read and is known CPU, so add that
+        // context rather than handing the caller an error about a "gpu endpoint"
+        // they don't have. Named as the likely cause, not the cause: a 400 can
+        // also be a genuinely bad parameter.
+        if (error instanceof HttpError && error.status === 400) {
+          return jsonErrorReply({
+            error: `The v2 REST API rejected this update of "${endpointId}", which is a CPU endpoint. The current v2 facade cannot update CPU endpoints (the spec marks CPU create/update as not yet supported, and its PATCH pipeline rebuilds a GPU-shaped config), so that is the likely cause — set RUNPOD_REST_VERSION=v1 to update this endpoint through the v1 API, which handles CPU endpoints. Server error: ${error.message}`,
+            status: 400,
+          });
+        }
+        throw error;
+      }
     }
   );
 
