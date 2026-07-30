@@ -78,26 +78,42 @@ was left unchanged and gives the full-path command to replace it. An API key tak
 environment is also trimmed, matching the pasted path — a trailing newline used to be
 written verbatim into every client config.
 
-Every environment-provided directory now goes through one check that treats unset,
-empty AND relative values as unset. Three variables produced the same defect in turn —
-`CLAUDE_CONFIG_DIR`, `XDG_CONFIG_HOME`, `APPDATA` — because `??` does not catch an empty
-string and nothing rejected a relative one. The consequences were not cosmetic: an empty
+Environment-provided directories are handled by variable, not by one blanket rule, because
+the right answer differs. `XDG_CONFIG_HOME` and `APPDATA` name paths this wizard invents,
+so an empty or relative value is refused outright — `??` did not catch an empty string and
+nothing rejected a relative one. The consequences were not cosmetic: an empty
 `APPDATA` yielded the relative candidate `npm\claude.cmd`, which is probed before the
 PATH lookup and resolved against the current directory, so a file planted there would
 have been spawned with the live API key; and a relative config directory meant a
 plaintext key written into a `Claude/` folder wherever the wizard was launched, reported
-as configured. As a backstop, writing or deleting through a non-absolute config path is
-refused outright, whatever computed it. `vsCodeConfigPath` also honours
+as configured. `CLAUDE_CONFIG_DIR` is different: it names a file the Claude Code CLI owns, and that CLI
+resolves a relative value against its own cwd (verified — `CLAUDE_CONFIG_DIR=relcfg claude
+mcp add … --scope user` writes `relcfg/.claude.json`). Treating it as unset would point
+this code at `$HOME/.claude.json`, a file the CLI never touched, and then report a definite
+verdict about it — so it is resolved the same way the CLI resolves it. As a backstop,
+writing or deleting through a non-absolute config path is refused outright, whatever
+computed it. `vsCodeConfigPath` also honours
 `XDG_CONFIG_HOME` now — it hardcoded `~/.config`, so an XDG user was told VS Code was
 configured for a file VS Code does not read.
 
 Two smaller leaks in the same area: a client config created by this wizard is written `0600`
 rather than `0644`, since it holds a plaintext API key (a freshly created Claude Code config is `0600`);
 and any message built from the CLI's output has the key stripped by value, not just by argv
-shape — that CLI does echo `-e` tokens back on some errors. A malformed existing config is
-also no longer reported as configured: jsonc will best-effort insert an entry into a file
-with an unbalanced brace and hand back something still unparseable, which the client then
-silently never loads.
+shape — that CLI does echo `-e` tokens back on some errors. A config the owning client cannot parse is
+also no longer reported as configured, and validity is now decided by the parser that
+client actually uses: only VS Code reads its `mcp.json` as JSONC, while Cursor, Windsurf and
+Claude Desktop are Node/Electron apps using `JSON.parse`, which rejects comments and
+trailing commas. Validating everything leniently meant reporting success for files those
+clients silently never load — the same defect a leading BOM had, and far more reachable,
+since a commented-out server in a hand-edited config is routine. The message also
+distinguishes "this change would break it" from "it was already broken", because the advice
+differs.
+
+An `add` that lands in user scope while a **local**-scope entry exists now says so. Local
+scope takes precedence, so in those directories the new entry is inert and Claude Code keeps
+using the old key — the exact rotation failure the "already exists" caveat was added to
+prevent, which that caveat cannot catch because `mcp add --scope user` exits 0 when the
+collision is in another scope.
 
 CI gains a `windows-latest` runner, and the suite now runs a real `.cmd` shim out of a
 directory whose name contains a space, asserting the arguments arrive intact. A Windows-only

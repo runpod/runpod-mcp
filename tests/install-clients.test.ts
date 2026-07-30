@@ -91,8 +91,13 @@ describe('claudeCandidatePaths', () => {
     );
   });
 
-  it('keeps the original POSIX candidates unchanged', () => {
+  it('probes the POSIX native-installer location first, then the historic ones', () => {
+    // ~/.local/bin/claude is where the current native installer puts it (verified on a
+    // real install). Without it, POSIX detection relied entirely on PATH — and the same
+    // "covers an install whose PATH entry is missing" reasoning already justified the
+    // Windows .local\bin entry.
     assert.deepEqual(claudeCandidatePaths('darwin', '/Users/dev'), [
+      '/Users/dev/.local/bin/claude',
       '/Users/dev/.claude/local/claude',
       '/usr/local/bin/claude',
       '/opt/homebrew/bin/claude',
@@ -323,9 +328,17 @@ describe('interpretRemoveResult', () => {
       );
       assert.equal(out.success, false, JSON.stringify(run));
       assert.match(out.message ?? '', /still on disk/);
-      // Actionable: names the file and the likely cause.
       assert.match(out.message ?? '', /user config/);
-      assert.match(out.message ?? '', /not writable/);
+      // The diagnosis must match what actually happened: "the CLI reports success
+      // anyway" is only true when the run DID report success. With a failed run it used
+      // to print that sentence anyway and swallow the real error — an ENOENT on the
+      // binary was reported as an unwritable config.
+      if (run.success) {
+        assert.match(out.message ?? '', /not writable/);
+      } else {
+        assert.match(out.message ?? '', /removal command itself failed/);
+        assert.match(out.message ?? '', new RegExp(run.message ?? ''));
+      }
     }
   });
 
@@ -428,6 +441,28 @@ describe('interpretAddResult', () => {
     assert.equal(out.success, false);
     assert.match(out.message ?? '', /not writable/);
     assert.match(out.message ?? '', /Nothing was configured/);
+  });
+
+  it('names a local-scope entry that will shadow the write', () => {
+    // THE round-8 blocker. Local scope takes precedence over user scope, so in those
+    // directories the entry just written is INERT and Claude Code keeps using the local
+    // one — with its own, possibly revoked, key. The reader collects localScopeDirs
+    // precisely because of that shadowing, and the add path ignored it while the remove
+    // path reported it. The `already exists` caveat cannot cover this: `mcp add --scope
+    // user` exits 0 when a local entry is present, because the collision is per-scope.
+    const out = interpretAddResult(
+      { success: true },
+      {
+        configPath: TEST_CONFIG_PATH,
+        userScope: true,
+        localScopeDirs: ['/home/dev/projA'],
+      }
+    );
+    // Still a success — the user-scope write did land.
+    assert.equal(out.success, true);
+    assert.match(out.message ?? '', /takes precedence/);
+    assert.match(out.message ?? '', /projA/);
+    assert.match(out.message ?? '', /--scope local/);
   });
 
   it('does not fail an add just because a local-scope entry also exists', () => {
@@ -1032,14 +1067,47 @@ describe('upsertJsonServer validity guard', () => {
     const file = configIn('{"mcpServers": {"other": {},\n');
     const result = upsertJsonServer(file, 'mcpServers', entry);
     assert.equal(result.success, false);
-    assert.match(result.message ?? '', /not valid JSON/);
+    assert.match(result.message ?? '', /could not be parsed/);
+    // Says it was already broken, because that changes the advice.
+    assert.match(result.message ?? '', /before this change either/);
     // The broken file is left exactly as it was — the key is not written into it.
     assert.equal(fs.readFileSync(file, 'utf8').includes('rpa_'), false);
   });
 
-  it('accepts comments and trailing commas, which these configs legitimately carry', () => {
-    const file = configIn('{\n  // mine\n  "mcpServers": {},\n}\n');
-    assert.equal(upsertJsonServer(file, 'mcpServers', entry).success, true);
+  it('refuses comments and trailing commas for a JSON.parse client', () => {
+    // Cursor, Windsurf and Claude Desktop are Node/Electron apps using JSON.parse, which
+    // rejects both. Validating everything as JSONC reported "✓ configured" for files
+    // those clients silently never load — the same defect the BOM had, in this same
+    // function, and far more reachable (a commented-out server in a hand-edited
+    // ~/.cursor/mcp.json is routine).
+    for (const contents of [
+      '{\n  // mine\n  "mcpServers": {}\n}\n',
+      '{\n  "mcpServers": {},\n}\n',
+      '{\n  /* block */\n  "mcpServers": {}\n}\n',
+    ]) {
+      const file = configIn(contents);
+      const result = upsertJsonServer(file, 'mcpServers', entry, 'json');
+      assert.equal(result.success, false, contents);
+      assert.equal(fs.readFileSync(file, 'utf8').includes('rpa_'), false);
+    }
+  });
+
+  it('accepts comments and trailing commas for the one client that reads JSONC', () => {
+    // VS Code's mcp.json genuinely is JSONC, and refusing there would be a new hard
+    // failure for a config it loads fine.
+    const file = configIn('{\n  // mine\n  "servers": {},\n}\n');
+    const result = upsertJsonServer(file, 'servers', entry, 'jsonc');
+    assert.equal(result.success, true, result.message);
+    assert.match(fs.readFileSync(file, 'utf8'), /rpa_GUARDKEY123456/);
+  });
+
+  it('writes a config every client can parse when it started clean', () => {
+    const file = configIn('{ "mcpServers": {} }');
+    assert.equal(
+      upsertJsonServer(file, 'mcpServers', entry, 'json').success,
+      true
+    );
+    assert.doesNotThrow(() => JSON.parse(fs.readFileSync(file, 'utf8')));
   });
 
   it('creates a new config, 0600 where the platform has POSIX modes', () => {

@@ -72,10 +72,41 @@ function hostedServerConfig(
 // formatting and comments (jsonc). Creates the file and parent dirs if missing.
 // Exported for tests: the client wrappers hardcode real config paths under $HOME, and
 // a test must never write there.
+/**
+ * How the client that owns a config parses it. This decides what "valid" means.
+ *
+ * Only VS Code reads its `mcp.json` as JSONC. Cursor, Windsurf and Claude Desktop are
+ * Node/Electron apps using `JSON.parse`, which rejects comments AND trailing commas — so
+ * validating everything with jsonc reported "configured" for files those clients silently
+ * never load. That is the same defect a leading BOM had, in the same function, and far
+ * more reachable: a commented-out server in a hand-edited ~/.cursor/mcp.json is routine.
+ */
+export type ConfigDialect = 'json' | 'jsonc';
+
+function parseFailure(
+  content: string,
+  dialect: ConfigDialect
+): string | undefined {
+  if (dialect === 'json') {
+    try {
+      JSON.parse(content);
+      return undefined;
+    } catch (error) {
+      return errMessage(error);
+    }
+  }
+  const errors: jsonc.ParseError[] = [];
+  jsonc.parse(content, errors, { allowTrailingComma: true });
+  return errors.length > 0
+    ? `JSONC parse error at offset ${errors[0].offset}`
+    : undefined;
+}
+
 export function upsertJsonServer(
   configPath: string,
   serverProperty: string,
-  value: unknown
+  value: unknown,
+  dialect: ConfigDialect = 'jsonc'
 ): AddResult {
   // Refuse a relative target outright rather than trusting every caller to have
   // resolved one. This function creates directories and writes a plaintext API key, so
@@ -106,16 +137,20 @@ export function upsertJsonServer(
     // entry into a config with an unbalanced brace and hand back something still
     // unparseable, which the client then silently never loads. Refuse instead of
     // reporting success over a file we just confirmed is broken.
-    const parseErrors: jsonc.ParseError[] = [];
-    // PowerShell's Set-Content and Notepad both write BOMs by default, on the platform
-    // this wizard targets, so refusing a BOM outright would be a new hard failure. It is
-    // removed above instead of tolerated, so the file this writes parses under both
-    // JSON.parse and jsonc. Double or trailing BOMs still fail this check, correctly.
-    jsonc.parse(updated, parseErrors, { allowTrailingComma: true });
-    if (parseErrors.length > 0) {
+    // Checked with the parser the OWNING CLIENT uses, not a lenient one. PowerShell's
+    // Set-Content and Notepad write BOMs by default on the platform this targets, so the
+    // BOM is stripped above rather than refused; double or trailing BOMs still fail here.
+    const failure = parseFailure(updated, dialect);
+    if (failure) {
+      // Distinguish "we would break it" from "it was already broken", because the second
+      // is the user's pre-existing problem and the advice differs.
+      const wasAlreadyBroken =
+        content.trim() !== '' && parseFailure(content, dialect) !== undefined;
       return {
         success: false,
-        message: `${configPath} is not valid JSON, so it was left untouched — the entry would not have loaded. Fix the file (or move it aside) and re-run.`,
+        message: wasAlreadyBroken
+          ? `${configPath} could not be parsed as ${dialect === 'json' ? 'JSON' : 'JSONC'} before this change either (${failure}), so it was left untouched — this client would not load the entry. Fix the file (or move it aside) and re-run.`
+          : `writing to ${configPath} would leave it unparseable (${failure}), so it was left untouched.`,
       };
     }
     // mode is honoured only when the file is created; an existing config keeps its
@@ -190,6 +225,10 @@ function jsonClient(opts: {
   id: string;
   name: string;
   serverProperty?: string;
+  // How the owning client parses its config. Defaults to strict JSON, because only
+  // VS Code reads JSONC — getting this wrong means reporting success for a file the
+  // client cannot load.
+  dialect?: ConfigDialect;
   // Native HTTP support, or the `mcp-remote` bridge for stdio-only clients.
   hostedStrategy?: 'http' | 'mcp-remote';
   configPath: () => string;
@@ -210,7 +249,12 @@ function jsonClient(opts: {
           ? localServerConfig(mode.apiKey, serverProperty)
           : hostedServerConfig(hostedStrategy, serverProperty, mode.url);
       return Promise.resolve(
-        upsertJsonServer(opts.configPath(), serverProperty, value)
+        upsertJsonServer(
+          opts.configPath(),
+          serverProperty,
+          value,
+          opts.dialect ?? 'json'
+        )
       );
     },
     remove: () =>
@@ -263,6 +307,12 @@ export function claudeCandidatePaths(
     ];
   }
   return [
+    // Where the current native installer puts it (verified on a real install:
+    // ~/.local/bin/claude -> versions/2.1.220). Same reasoning as the Windows
+    // .local\bin\claude.exe entry — it also covers an install whose PATH entry is
+    // missing, which the lookup can never find. Without it, POSIX detection depended
+    // entirely on PATH.
+    path.posix.join(homedir, '.local', 'bin', 'claude'),
     path.posix.join(homedir, '.claude', 'local', 'claude'),
     '/usr/local/bin/claude',
     '/opt/homebrew/bin/claude',
@@ -572,9 +622,13 @@ export interface ClaudeConfigState {
  *
  * Unusable means unset, empty, or relative. The XDG spec says exactly this for its own
  * variables ("must be treated as unset", "relative paths should be considered invalid
- * and ignored"), and the same reasoning applies to APPDATA and CLAUDE_CONFIG_DIR: a
- * relative directory resolves against the process's cwd, and everything built on these
- * paths either stores a plaintext API key or gets executed.
+ * and ignored"), and the same reasoning applies to APPDATA: a relative directory resolves
+ * against the process's cwd, and every path built from these either stores a plaintext
+ * API key or gets executed.
+ *
+ * NOT for CLAUDE_CONFIG_DIR — see claudeUserConfigPath. That names a file the Claude Code
+ * CLI owns and resolves relatively itself, so ignoring a relative value there would point
+ * this code at a file the CLI never touched.
  */
 export function absoluteEnvDir(
   value: string | undefined,
@@ -589,9 +643,19 @@ export function absoluteEnvDir(
 }
 
 export function claudeUserConfigPath(): string {
-  // CLAUDE_CONFIG_DIR is the documented override and is what the CLI itself honours.
+  const configured = process.env.CLAUDE_CONFIG_DIR;
+  // Deliberately NOT absoluteEnvDir, unlike XDG_CONFIG_HOME and APPDATA. Those name
+  // paths this wizard invents, where a relative value can only mean writing a credential
+  // into the current directory — so refusing it is right. This one names a file another
+  // program owns, and that program resolves a relative value against its own cwd:
+  // verified with claude 2.1.220, `CLAUDE_CONFIG_DIR=relcfg claude mcp add … --scope
+  // user` prints `File modified: relcfg/.claude.json` and creates ./relcfg. Treating it
+  // as unset would point this at $HOME/.claude.json — a file the CLI never touched — and
+  // then report a DEFINITE verdict about it, which is precisely how a false success gets
+  // built. So resolve it the way the CLI does. Only a truly empty value is unset, which
+  // the CLI also falls back to $HOME for (verified).
   return path.join(
-    process.env.CLAUDE_CONFIG_DIR || os.homedir(),
+    configured ? path.resolve(configured) : os.homedir(),
     '.claude.json'
   );
 }
@@ -682,6 +746,12 @@ export function readClaudeConfigState(configPath: string): ClaudeConfigState {
  * and local-scope entries are enumerable across every directory rather than only the
  * current one.
  */
+// Lists directories without dumping twenty paths into one line.
+function describeDirs(dirs: string[]): string {
+  if (dirs.length === 1) return dirs[0];
+  return `${dirs.length} project directories (${dirs.slice(0, 3).join(', ')}${dirs.length > 3 ? ', …' : ''})`;
+}
+
 export function interpretRemoveResult(
   result: RunResult,
   state: ClaudeConfigState,
@@ -699,7 +769,11 @@ export function interpretRemoveResult(
     // Cause (1): the CLI reported whatever it reported, and the entry is still there.
     return {
       success: false,
-      message: `the ${SERVER_NAME} entry is STILL in Claude Code's user config (${state.configPath}), so your API key is still on disk. Most likely that file is not writable — the CLI reports success anyway.${alsoElsewhere}`,
+      message: `the ${SERVER_NAME} entry is STILL in Claude Code's user config (${state.configPath}), so your API key is still on disk. ${
+        result.success
+          ? 'Most likely that file is not writable — the CLI reports success anyway.'
+          : `The removal command itself failed: ${result.message ?? 'no output'}`
+      }${alsoElsewhere}`,
     };
   }
 
@@ -742,6 +816,19 @@ export function interpretAddResult(
     return {
       success: false,
       message: `Claude Code reported success but no ${SERVER_NAME} entry is in its user config afterwards (${state.configPath}) — that file is most likely not writable. Nothing was configured.`,
+    };
+  }
+
+  if (state.userScope === true && state.localScopeDirs.length > 0) {
+    // Local scope SHADOWS user scope, so in these directories the entry just written is
+    // inert and Claude Code keeps using the local one, with its own possibly stale key.
+    // That shadowing is the entire reason this reader exists, and the add path was
+    // dropping the fact while the remove path reported it. The "already exists" caveat
+    // cannot cover it: `mcp add --scope user` exits 0 when a local entry is present,
+    // because the collision is per-scope.
+    return {
+      success: true,
+      message: `${result.message ? `${result.message}; ` : ''}note a local-scope ${SERVER_NAME} entry also exists in ${describeDirs(state.localScopeDirs)} and takes precedence over the user config there, so Claude Code will keep using it in those projects — remove it with \`claude mcp remove ${SERVER_NAME} --scope local\` run from each`,
     };
   }
 
@@ -880,14 +967,19 @@ const home = os.homedir();
 // writing the key into whatever directory the wizard was launched from, or executing a
 // file out of it. This is the same defect three env vars have now produced
 // (CLAUDE_CONFIG_DIR, XDG_CONFIG_HOME, APPDATA), so it is resolved in one place.
-const appData = absoluteEnvDir(process.env.APPDATA, () =>
-  path.join(home, 'AppData', 'Roaming')
-);
+// A function, not a module-level const: read at call time so a test can exercise the
+// guard at all. As an import-time const, a test mutating process.env.APPDATA proved
+// nothing — reverting the guard to `??` left the entire suite green.
+function appDataDir(): string {
+  return absoluteEnvDir(process.env.APPDATA, () =>
+    path.join(home, 'AppData', 'Roaming')
+  );
+}
 
 // Claude Desktop stores its config in an OS-specific location.
 export function claudeDesktopConfigPath(): string {
   if (process.platform === 'win32') {
-    return path.join(appData, 'Claude', 'claude_desktop_config.json');
+    return path.join(appDataDir(), 'Claude', 'claude_desktop_config.json');
   }
   if (process.platform === 'darwin') {
     return path.join(
@@ -913,7 +1005,7 @@ export function claudeDesktopConfigPath(): string {
 // VS Code uses a `servers` property (not `mcpServers`) in a per-user mcp.json.
 export function vsCodeConfigPath(): string {
   if (process.platform === 'win32') {
-    return path.join(appData, 'Code', 'User', 'mcp.json');
+    return path.join(appDataDir(), 'Code', 'User', 'mcp.json');
   }
   if (process.platform === 'darwin') {
     return path.join(
@@ -966,6 +1058,9 @@ export const CLIENTS: McpClient[] = [
     id: 'vscode',
     name: 'Visual Studio Code',
     serverProperty: 'servers',
+    // The one client that genuinely reads JSONC — comments and trailing commas in
+    // mcp.json are supported and common.
+    dialect: 'jsonc',
     configPath: vsCodeConfigPath,
     detectPaths: () => [path.dirname(vsCodeConfigPath())],
   }),
