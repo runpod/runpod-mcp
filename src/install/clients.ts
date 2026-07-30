@@ -1,8 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
-import crossSpawn from 'cross-spawn';
+import { execSync, spawnSync } from 'child_process';
 import * as jsonc from 'jsonc-parser';
 
 // The npm package and the name the server is registered under in client config.
@@ -284,6 +283,16 @@ export function removeJsonServer(
       return { success: true, message: 'nothing to remove' };
     }
     const content = fs.readFileSync(configPath, 'utf8');
+    if (content.trim() === '') {
+      return { success: true, message: 'nothing to remove' };
+    }
+    const existingFailure = parseFailure(content, dialect);
+    if (existingFailure !== undefined) {
+      return {
+        success: false,
+        message: `could not safely remove the Runpod entry from ${configPath}: the existing config is not valid ${describeDialect(dialect)} (${existingFailure}). The original file was left unchanged; repair it or delete the entry by hand.`,
+      };
+    }
     let edits;
     try {
       edits = jsonc.modify(content, [serverProperty, SERVER_NAME], undefined, {
@@ -324,9 +333,7 @@ export function removeJsonServer(
     // parseable, but it would also erase comments and formatting from unrelated user
     // configuration without asking. The edit has not been written yet, so failing
     // closed leaves the original recoverable and gives the user a manual path.
-    const brokeIt =
-      parseFailure(updated, dialect) !== undefined &&
-      parseFailure(content, dialect) === undefined;
+    const brokeIt = parseFailure(updated, dialect) !== undefined;
     const stillThere =
       readBackEntry(updated, serverProperty, dialect) !== undefined;
     if (brokeIt || stillThere) {
@@ -414,8 +421,8 @@ function jsonClient(opts: {
  * path semantics regardless of the host so the branch is testable anywhere.
  *
  * `.local\bin\claude.exe` is the documented native-installer location and comes
- * first deliberately: it is a real executable, so cross-spawn launches it with no
- * shell at all. It also covers installs where the native installer failed to add
+ * first deliberately: it is a real executable and launches with no shell at all.
+ * It also covers installs where the native installer failed to add
  * itself to PATH, which the lookup below could never find.
  */
 export function claudeCandidatePaths(
@@ -427,8 +434,8 @@ export function claudeCandidatePaths(
     const win = path.win32;
     return [
       win.join(homedir, '.local', 'bin', 'claude.exe'),
-      // npm -g installs a .cmd shim. cross-spawn can run one, but only by going
-      // through cmd.exe, so it stays last — see runClaude.
+      // npm -g installs a .cmd shim. runClaude bypasses the shim and invokes the
+      // package's installed cli.js with the current Node process.
       //
       // absoluteEnvDir, not `?? `: an empty or relative APPDATA yielded the relative
       // `npm\claude.cmd`. Candidates are probed before any lookup, so a relative
@@ -552,14 +559,21 @@ function projectBoundary(cwd: string): string | null {
 function trustedClaudeBinary(
   binary: string,
   cwd: string,
+  requiredRoot: string | undefined,
   requireProjectBoundary: boolean
 ): string | null {
   try {
     const canonicalBinary = fs.realpathSync.native(binary);
     const canonicalCwd = fs.realpathSync.native(cwd);
     const projectRoot = projectBoundary(canonicalCwd);
+    const canonicalRequiredRoot =
+      requiredRoot === undefined
+        ? undefined
+        : fs.realpathSync.native(requiredRoot);
     if (
       isNodeModulesBin(canonicalBinary) ||
+      (canonicalRequiredRoot !== undefined &&
+        !pathIsInside(canonicalBinary, canonicalRequiredRoot, path)) ||
       (projectRoot !== null &&
         pathIsInside(canonicalBinary, projectRoot, path)) ||
       (requireProjectBoundary && projectRoot === null)
@@ -574,53 +588,8 @@ function trustedClaudeBinary(
   }
 }
 
-/**
- * True when running this path means going through cmd.exe. Approximates
- * cross-spawn's rule (lib/parse.js): on Windows it spawns directly only when the
- * resolved file ends in `.com`/`.exe`, and wraps everything else in
- * `cmd.exe /d /s /c`. Always false off Windows.
- *
- * "Approximates", not "mirrors": cross-spawn tests the file it resolved via PATHEXT
- * and shebang substitution, this tests the string as given. They can disagree — an
- * extensionless path whose `.exe` sibling resolves would be spawned shell-free by
- * cross-spawn while this says otherwise. The disagreement is deliberately biased
- * toward over-reporting, since the only consequence is a refusal the guard below
- * did not strictly need; under-reporting would let an unescaped argument through.
- */
-export function needsCmdShell(binary: string, platform: string): boolean {
-  if (platform !== 'win32') return false;
-  return !/\.(com|exe)$/i.test(binary);
-}
-
-// cmd.exe metacharacters: the set cross-spawn escapes (lib/util/escape.js) plus every
-// whitespace character that can act as a separator. npm's own escaper quotes on
-// /[ \t\n\v"]/ (@npmcli/promise-spawn/lib/escape.js), so tab and vertical tab belong
-// here too; CR is added on the same principle. A key from a shell profile or .env can
-// carry any of them, and their behaviour on a re-parsed command line is not something
-// to establish with a live credential.
+// cmd.exe metacharacters used only when rendering a manual command for display.
 const CMD_META = /[()\][%!^"`<>&|;, *?\t\n\v\r]/;
-
-/**
- * Whether it is safe to hand these args to a `.cmd` shim.
- *
- * cross-spawn escapes arguments properly for a single cmd.exe parse, but a shim
- * re-expands them: npm's generated `claude.cmd` ends in `node "…cli.js" %*`, so
- * the arguments are parsed a second time. cross-spawn compensates by escaping
- * twice, but only for shims it recognises — its check is
- * `/node_modules[\\/].bin[\\/][^\\/]+\.cmd$/i`, which a global npm shim in
- * `%APPDATA%\npm` does not match. Rather than reimplement its escaping, refuse the
- * narrow case: an argument carrying a metacharacter, bound for a shim. Runpod API
- * keys are `rpa_` + alphanumerics, so in practice this never triggers.
- *
- * Broader than strictly necessary: tracing a single-escaped argument through both
- * parses, the quotes survive and only `"` actually breaks quote state. The rest of
- * the set is refused anyway rather than relying on that reasoning — getting exactly
- * this analysis wrong is what shipped a quoting bug on the first attempt. The known
- * cost is a false refusal for a `RUNPOD_MCP_URL` override carrying a query string.
- */
-export function argsSafeForCmdShell(args: string[]): boolean {
-  return !args.some((arg) => CMD_META.test(arg));
-}
 
 export interface FindClaudeBinaryOptions {
   platform?: string;
@@ -633,18 +602,58 @@ export function findClaudeBinary(
   options: FindClaudeBinaryOptions = {}
 ): string | null {
   const platform = options.platform ?? process.platform;
-  const homedir = options.homedir ?? os.homedir();
+  let homedir = options.homedir;
+  if (homedir === undefined) {
+    try {
+      // os.homedir() honors HOME/USERPROFILE environment overrides. userInfo()
+      // asks the OS for the account profile instead, so a launching project cannot
+      // redirect an automatic credential-bearing candidate through those variables.
+      homedir = os.userInfo().homedir;
+    } catch {
+      return null;
+    }
+  }
   const appdata = options.appdata ?? process.env.APPDATA;
   const cwd = options.cwd ?? process.cwd();
 
-  for (const candidate of claudeCandidatePaths(platform, homedir, appdata)) {
+  const candidates = claudeCandidatePaths(platform, homedir, appdata);
+  for (const [index, candidate] of candidates.entries()) {
     // Absolute only. `exists()` resolves a relative candidate against the CURRENT
     // DIRECTORY, and candidates are probed before the POSIX PATH lookup — so a
     // relative one would win outright and receive the live API key.
     if (!path.isAbsolute(candidate) && !path.win32.isAbsolute(candidate))
       continue;
     if (exists(candidate)) {
-      const trusted = trustedClaudeBinary(candidate, cwd, false);
+      let trustedRoot: string;
+      if (platform === 'win32') {
+        if (index === 0) {
+          trustedRoot = homedir;
+        } else {
+          // Automatic credential-bearing execution is limited to the standard
+          // per-user roaming root. An arbitrary redirected APPDATA has no
+          // trustworthy provenance merely because it is absolute.
+          const defaultAppdata = path.win32.join(homedir, 'AppData', 'Roaming');
+          const candidateAppdata = path.win32.dirname(
+            path.win32.dirname(candidate)
+          );
+          try {
+            if (
+              fs.realpathSync.native(candidateAppdata) !==
+              fs.realpathSync.native(defaultAppdata)
+            ) {
+              continue;
+            }
+          } catch {
+            continue;
+          }
+          trustedRoot = defaultAppdata;
+        }
+      } else if (index < 2) {
+        trustedRoot = homedir;
+      } else {
+        trustedRoot = index === 2 ? '/usr/local' : '/opt/homebrew';
+      }
+      const trusted = trustedClaudeBinary(candidate, cwd, trustedRoot, false);
       if (trusted !== null) return trusted;
     }
   }
@@ -660,53 +669,12 @@ export function findClaudeBinary(
       encoding: 'utf8',
     });
     const binary = pickClaudeBinary(out, platform, cwd);
-    return binary === null ? null : trustedClaudeBinary(binary, cwd, true);
+    return binary === null
+      ? null
+      : trustedClaudeBinary(binary, cwd, undefined, true);
   } catch {
     return null;
   }
-}
-
-interface WindowsShimRuntime {
-  shell: string;
-  env: NodeJS.ProcessEnv;
-}
-
-/**
- * Builds the interpreter environment for a trusted Windows npm `.cmd` shim.
- *
- * cross-spawn otherwise selects `process.env.comspec`, and npm's real shim falls
- * back to bare `node` when the global prefix has no node.exe. Both values are
- * commonly inherited from the project-launching shell. Resolve cmd.exe and this
- * process's Node canonically, reject project-local aliases, and give the child a
- * minimal PATH that can resolve only those interpreters. NODE_OPTIONS/NODE_PATH are
- * removed because they can execute project code inside the node process before
- * Claude sees its arguments.
- */
-function trustedWindowsShimRuntime(cwd: string): WindowsShimRuntime | null {
-  const systemRoot = process.env.SystemRoot;
-  if (!systemRoot || !path.win32.isAbsolute(systemRoot)) return null;
-  const shell = trustedClaudeBinary(
-    path.win32.join(systemRoot, 'System32', 'cmd.exe'),
-    cwd,
-    false
-  );
-  const node = trustedClaudeBinary(process.execPath, cwd, false);
-  if (!shell || !node) return null;
-
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  for (const key of Object.keys(env)) {
-    if (
-      ['path', 'comspec', 'pathext', 'node_options', 'node_path'].includes(
-        key.toLowerCase()
-      )
-    ) {
-      delete env[key];
-    }
-  }
-  env.ComSpec = shell;
-  env.Path = [path.dirname(node), path.dirname(shell)].join(path.delimiter);
-  env.PATHEXT = '.COM;.EXE;.BAT;.CMD';
-  return { shell, env };
 }
 
 /**
@@ -729,7 +697,7 @@ export function describeCommand(binary: string, args: string[]): string {
 // Placeholder substituted for the key when a command is printed for the user.
 // No cmd.exe metacharacters: this string is printed for a user to paste into
 // cmd.exe, and `<`/`>` would be parsed as redirection — turning the wizard's own
-// remediation command into an error. It satisfies argsSafeForCmdShell by design.
+// remediation command into an error.
 export const KEY_PLACEHOLDER = 'YOUR_RUNPOD_API_KEY';
 
 /**
@@ -755,20 +723,11 @@ export function describeCommandRedacted(
 /**
  * Runs the Claude Code CLI.
  *
- * Via cross-spawn rather than `child_process` directly. Node's own docs are blunt
- * about why: "`.bat` and `.cmd` files are not executable on their own without a
- * terminal, and therefore cannot be launched using `child_process.execFile()`
- * […] if the script filename contains spaces it needs to be quoted." An npm-global
- * install of Claude Code is exactly a `.cmd`, frequently under a path with a space.
- *
- * cross-spawn handles it: `.com`/`.exe` spawn directly with argv preserved, and
- * anything else is wrapped in `cmd.exe /d /s /c` with each argument quoted,
- * backslash-doubled, `^`-escaped, and `windowsVerbatimArguments` set so libuv does
- * not re-quote on top. Hand-rolling that is how the first attempt at this shipped a
- * quoting bug, which is the whole reason for taking a dependency here. (npm itself
- * does NOT use cross-spawn for this — it has its own escaper in
- * @npmcli/promise-spawn. cross-spawn's claim to trust is ubiquity as a transitive
- * dependency, not adoption by npm's own spawn path.)
+ * A Windows npm-global `claude.cmd` is never executed. The standard shim ultimately
+ * runs the installed `node_modules/@anthropic-ai/claude-code/cli.js`; invoking that
+ * entrypoint with this already-running Node process avoids cmd.exe, COMSPEC,
+ * SystemRoot, PATH lookup, `%*` re-parsing, and command-line escaping entirely.
+ * Native `.exe` and POSIX candidates are spawned directly.
  */
 // `refused` marks "we declined to run this", as opposed to "we ran it and it
 // failed" — `remove` treats those differently.
@@ -794,51 +753,79 @@ export function redactSecret(text: string, secret?: string): string {
   return text.split(secret).join(KEY_PLACEHOLDER);
 }
 
+function sanitizedClaudeEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (
+      ['path', 'comspec', 'pathext', 'node_options', 'node_path'].includes(
+        key.toLowerCase()
+      )
+    ) {
+      delete env[key];
+    }
+  }
+  if (process.platform === 'win32') {
+    env.Path = path.dirname(process.execPath);
+  } else {
+    env.PATH = [
+      path.dirname(process.execPath),
+      '/usr/local/bin',
+      '/opt/homebrew/bin',
+      '/usr/bin',
+      '/bin',
+    ].join(path.delimiter);
+  }
+  return env;
+}
+
+function windowsNpmClaudeEntrypoint(binary: string): string | null {
+  if (process.platform !== 'win32' || !binary.toLowerCase().endsWith('.cmd')) {
+    return null;
+  }
+  try {
+    const npmRoot = fs.realpathSync.native(path.dirname(binary));
+    const entrypoint = fs.realpathSync.native(
+      path.join(
+        npmRoot,
+        'node_modules',
+        '@anthropic-ai',
+        'claude-code',
+        'cli.js'
+      )
+    );
+    return pathIsInside(entrypoint, npmRoot, path) ? entrypoint : null;
+  } catch {
+    return null;
+  }
+}
+
 export function runClaude(
   binary: string,
   args: string[],
   secret?: string
 ): RunResult {
-  if (needsCmdShell(binary, process.platform) && !argsSafeForCmdShell(args)) {
+  const isWindowsCmd =
+    process.platform === 'win32' && binary.toLowerCase().endsWith('.cmd');
+  const npmEntrypoint = windowsNpmClaudeEntrypoint(binary);
+  if (isWindowsCmd && npmEntrypoint === null) {
     return {
       success: false,
       refused: true,
-      message: `running ${binary} means going through cmd.exe, and an argument contains a character this wizard will not risk escaping around a credential. Run it yourself, substituting your key:\n    ${describeCommandRedacted(binary, args)}`,
+      message: `could not locate a trusted Claude Code npm entrypoint beside ${binary}. Run the shim yourself, substituting your key:\n    ${describeCommandRedacted(binary, args)}`,
     };
   }
-  let result;
-  if (needsCmdShell(binary, process.platform)) {
-    const runtime = trustedWindowsShimRuntime(process.cwd());
-    if (!runtime) {
-      return {
-        success: false,
-        refused: true,
-        message: `could not establish trusted Windows cmd.exe and node interpreters for ${binary}. Run it yourself, substituting your key:\n    ${describeCommandRedacted(binary, args)}`,
-      };
-    }
-    // cross-spawn 7 chooses the shell from process.env rather than options.env.
-    // The call is synchronous, so the override is scoped to parsing+spawning and
-    // restored before this function returns.
-    const previousComspec = process.env.comspec;
-    process.env.comspec = runtime.shell;
-    try {
-      result = crossSpawn.sync(binary, args, {
-        stdio: 'pipe',
-        encoding: 'utf8',
-        env: runtime.env,
-      });
-    } finally {
-      if (previousComspec === undefined) delete process.env.comspec;
-      else process.env.comspec = previousComspec;
-    }
-  } else {
-    result = crossSpawn.sync(binary, args, {
-      stdio: 'pipe',
-      encoding: 'utf8',
-    });
-  }
-  // cross-spawn also synthesises an ENOENT here that raw spawnSync misses on
-  // Windows, where a missing shell command exits 1 instead of failing to spawn.
+  const result =
+    npmEntrypoint === null
+      ? spawnSync(binary, args, {
+          stdio: 'pipe',
+          encoding: 'utf8',
+          env: sanitizedClaudeEnv(),
+        })
+      : spawnSync(process.execPath, [npmEntrypoint, ...args], {
+          stdio: 'pipe',
+          encoding: 'utf8',
+          env: sanitizedClaudeEnv(),
+        });
   if (result.error)
     return {
       success: false,

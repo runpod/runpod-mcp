@@ -28,32 +28,23 @@ being executed with a credential. Direct installer candidates are canonicalized 
 the same boundary check, so a standard-looking path that is really a symlink or junction
 back into the project is not trusted.
 
-Registration now spawns through `cross-spawn` instead of `child_process` directly. Node's
-docs are explicit that `.bat`/`.cmd` files "cannot be launched using
-`child_process.execFile()`" and that "if the script filename contains spaces it needs to be
-quoted" — an npm-global Claude Code install is exactly a `.cmd`, often under a path with a
-space, so `execFileSync` could never register it. `cross-spawn` handles it: a `.com`/`.exe`
-spawns directly with argv preserved, and anything else is wrapped in `cmd.exe /d /s /c`
-with each argument quoted, backslash-doubled, `^`-escaped, and `windowsVerbatimArguments`
-set so libuv does not re-quote on top. Hand-rolling that escaping is what went wrong on the
-first attempt, which is the reason for the dependency.
+Registration never executes the Windows npm `.cmd` shim. Node cannot launch one directly,
+while launching it through `cmd.exe` would make `COMSPEC`, `SystemRoot`, PATH resolution,
+and `%*` re-parsing part of the credential-bearing path. A standard global npm install
+places the real entrypoint beside the shim at
+`node_modules/@anthropic-ai/claude-code/cli.js`; the wizard canonicalizes that entrypoint
+inside the npm root and invokes it with the already-running Node process. The child gets a
+minimal interpreter PATH with `COMSPEC`, `PATHEXT`, `NODE_OPTIONS`, and `NODE_PATH`
+removed. Arguments therefore remain an argv array even when a value contains a shell
+metacharacter, and the PR adds no runtime dependency.
 
-The npm shim's interpreters are not inherited from the launching project. `cross-spawn`
-normally honors `COMSPEC`, and a real npm global shim falls back to bare `node` when its
-prefix has no `node.exe`; either could resolve to a repository-supplied executable while
-the live key is in argv. The wizard now canonicalizes the system `cmd.exe` and its own
-Node executable, rejects project-local aliases, temporarily pins cross-spawn to that
-shell, and launches the shim with a minimal interpreter-only PATH. `NODE_OPTIONS` and
-`NODE_PATH` are removed from the child for the same reason.
-
-One case is still refused rather than escaped: an argument containing a `cmd.exe`
-metacharacter, bound for a shim. npm's generated `claude.cmd` re-expands its arguments
-through `%*`, so they are parsed twice; `cross-spawn` compensates by escaping twice, but
-only for shims matching `node_modules/.bin/*.cmd`, which a global shim in `%APPDATA%\npm`
-does not. Runpod API keys are `rpa_` plus alphanumerics so this never fires in practice,
-but when it does the wizard prints the `claude mcp add …` command instead of guessing at
-escaping around a credential — with the key replaced by a placeholder, since anything
-printed lands in terminal scrollback and in whatever log someone pastes it into.
+Direct candidates are confined to their canonical install roots: home for the native
+locations, `/usr/local` or `/opt/homebrew` for their POSIX candidates, and the default
+`%USERPROFILE%\AppData\Roaming` root for Windows npm. A redirected `APPDATA` and a
+standard-path junction escaping that root are not executed automatically. This is
+deliberately narrower than accepting every custom prefix: the issue's standard global
+npm install works, while an arbitrary environment-provided directory is not treated as
+trusted merely because it is absolute.
 
 `add` and `remove` are now verified against the config instead of trusting the CLI's exit
 code, because on Claude Code 2.1.220 that exit code does not answer the only question that
@@ -140,7 +131,8 @@ parser instead of trusting that an edit applied. And removing the sole entry of 
 `servers` block followed by a trailing comma left `{ , }` behind, turning a clean config
 into one with a parse error while printing a tick; that removal now fails closed and
 leaves the original file untouched rather than structurally rewriting away unrelated
-comments and formatting. The message also
+comments and formatting. An already malformed config is also left untouched rather than
+editing the malformed document and reporting success. The message also
 distinguishes "this change would break it" from "it was already broken", because the advice
 differs.
 
