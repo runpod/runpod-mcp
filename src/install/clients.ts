@@ -105,8 +105,10 @@ export function upsertJsonServer(
       };
     }
     // mode is honoured only when the file is created; an existing config keeps its
-    // own. 0600 because this file holds a plaintext API key, and Claude Code's own
-    // config is 0600 — a fresh config should not be the loosest thing in the chain.
+    // own. 0600 because this file holds a plaintext API key, and a freshly created
+    // Claude Code config is 0600 — a config this wizard creates should not be looser.
+    // No effect on Windows, which has no POSIX mode bits (only the read-only flag is
+    // real); there the ACL on the user profile directory is what governs access.
     fs.writeFileSync(configPath, updated, { encoding: 'utf8', mode: 0o600 });
     return { success: true };
   } catch (error) {

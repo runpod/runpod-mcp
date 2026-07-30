@@ -892,11 +892,20 @@ describe('upsertJsonServer validity guard', () => {
     assert.equal(upsertJsonServer(file, 'mcpServers', entry).success, true);
   });
 
-  it('creates a new config 0600, since it holds a plaintext key', () => {
+  it('creates a new config, 0600 where the platform has POSIX modes', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rp-json-new-'));
     dirs.push(dir);
     const file = path.join(dir, 'nested', 'mcp.json');
+    // Also covers creating missing parent directories.
     assert.equal(upsertJsonServer(file, 'mcpServers', entry).success, true);
+    assert.match(fs.readFileSync(file, 'utf8'), /rpa_GUARDKEY123456/);
+    if (process.platform === 'win32') {
+      // Windows has no POSIX mode bits — node reports 0666 and only the read-only
+      // flag is real, so the mode argument cannot protect the file there. Access is
+      // governed by the ACL on the user profile directory instead. Asserting 0600
+      // here would be asserting something the platform does not implement.
+      return;
+    }
     assert.equal(fs.statSync(file).mode & 0o777, 0o600);
   });
 });
