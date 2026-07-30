@@ -3287,6 +3287,11 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
     'modelReferences',
     'networkVolumeIds',
     'instanceIds',
+    // Written only `...(input.type ? {type} : {})` and validated only
+    // `if (input.type && …)`, so omission preserves it — and echoing a future
+    // AiApiType the validator rejects (RT is already in the enum) would fail every
+    // restore for no benefit.
+    'type',
   ];
   // Everything else must survive the echo unchanged, because the resolver writes it
   // unconditionally. gpuIds is the one field the tool replaces. Derived from the
@@ -3515,7 +3520,11 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
     });
     assert.equal(rejected.outbound.length, 1, 'must not reach the mutation');
     const rejectedError = parseText(rejectedOut).error as string;
-    assert.match(rejectedError, /No Serverless endpoint readable/);
+    // Phrased without asserting a diagnosis — the same catch sees a 401 on an expired
+    // key and a GraphQL 500, and "your id is wrong" would send those users the wrong
+    // way. It still names list-endpoints as the next step for the common case.
+    assert.match(rejectedError, /Could not read endpoint/);
+    assert.match(rejectedError, /nothing was changed/);
     assert.match(rejectedError, /list-endpoints/);
     // The underlying cause is kept, not swallowed.
     assert.match(rejectedError, /No AiApi found/);

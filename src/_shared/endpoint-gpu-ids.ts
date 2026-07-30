@@ -26,11 +26,23 @@
 
 import type { ToolRuntime } from '../tools/runtime.js';
 
-// Exactly the fields the update resolver writes UNCONDITIONALLY, so that omitting
-// one would reset it. Fields whose write is gated on `input.<field> !== undefined`
-// (compliance, modelReferences) or on a truthy derived value (templateId,
-// networkVolumeIds) are deliberately absent: for those, omission is already a no-op,
-// and echoing them does harm. See buildSaveEndpointInput.
+// The fields the update resolver writes without gating on their presence in the
+// input. Two mechanisms make omission unsafe for them, and only the first actually
+// resets anything: a GraphQL input DEFAULT materialises a value the resolver then
+// writes (idleTimeout=10, scalerValue=4, workersMax=3, workersMin=0, gpuCount=1,
+// scalerType=QUEUE_DELAY — exactly the fields measured resetting), or the resolver
+// derives an explicit null (`instanceIds ? join : null`, `locations || null`). The
+// remaining echoed fields (the CUDA pair, executionTimeoutMs, requestTTL) reach
+// Prisma as `undefined` and would NOT be reset — requestTTL is echoed anyway because
+// its absence is read as a change and triggers a rolling worker restart, and the
+// others for symmetry.
+//
+// Fields whose write is gated on the input carrying them are deliberately absent:
+// compliance, modelReferences, templateId, networkVolumeIds, and `type` (written only
+// `...(input.type ? {type} : {})`, and validated only `if (input.type && …)`, so
+// echoing a future AiApiType the validator rejects — RT exists in the enum — would
+// fail every restore for no benefit). For those, omission is already a no-op and
+// echoing does harm. See buildSaveEndpointInput.
 export interface EndpointSnapshot {
   id: string;
   name: string;
@@ -49,7 +61,6 @@ export interface EndpointSnapshot {
   // reports a change — a rolling worker restart for a write that changed nothing.
   requestTTL: number | null;
   flashBootType: string;
-  type: string;
   locations: string | null;
   // A comma-separated String on read AND write, not a list.
   allowedCudaVersions: string | null;
@@ -78,7 +89,12 @@ interface EndpointSnapshotResponse {
 // Endpoint fields carry their own field-level authorisation, and one rejected field
 // fails the entire read even when the rest came back — which turns into a skipped
 // GPU check on an endpoint that needed it.
-const SNAPSHOT_QUERY = `
+// Exported for tests: a field present in EndpointSnapshot but missing from the
+// selection set reads as `undefined`, which JSON.stringify drops from the GraphQL
+// variables — silently turning an echo into an omission. That is exactly how the
+// instanceIds data-loss bug got in, and no fixture-based test can catch it, because a
+// fake response returns whatever it likes regardless of what was asked for.
+export const SNAPSHOT_QUERY = `
   query EndpointSnapshot($id: String!) {
     myself {
       endpoint(id: $id) {
@@ -94,7 +110,6 @@ const SNAPSHOT_QUERY = `
         executionTimeoutMs
         requestTTL
         flashBootType
-        type
         locations
         allowedCudaVersions
         minCudaVersion
@@ -159,7 +174,6 @@ export function buildSaveEndpointInput(
     executionTimeoutMs: snapshot.executionTimeoutMs,
     requestTTL: snapshot.requestTTL,
     flashBootType: snapshot.flashBootType,
-    type: snapshot.type,
     locations: snapshot.locations,
     allowedCudaVersions:
       overrides.allowedCudaVersions ?? snapshot.allowedCudaVersions,

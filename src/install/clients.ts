@@ -115,12 +115,25 @@ function removeJsonServer(
       return { success: true, message: 'nothing to remove' };
     }
     const content = fs.readFileSync(configPath, 'utf8');
-    const edits = jsonc.modify(
-      content,
-      [serverProperty, SERVER_NAME],
-      undefined,
-      { formattingOptions: { tabSize: 2, insertSpaces: true } }
-    );
+    let edits;
+    try {
+      edits = jsonc.modify(content, [serverProperty, SERVER_NAME], undefined, {
+        formattingOptions: { tabSize: 2, insertSpaces: true },
+      });
+    } catch (error) {
+      // jsonc throws `Can not delete in empty document` for `{}`, an empty file,
+      // whitespace, or an array-rooted config — i.e. exactly the cases where there is
+      // nothing to remove. Reporting those as failures is the same class of bug as
+      // reporting a failure as a success, just pointed the other way: the user is told
+      // cleanup broke when the desired end state already held.
+      if (/empty document/i.test(errMessage(error))) {
+        return { success: true, message: 'nothing to remove' };
+      }
+      throw error;
+    }
+    if (edits.length === 0) {
+      return { success: true, message: 'nothing to remove' };
+    }
     fs.writeFileSync(configPath, jsonc.applyEdits(content, edits), 'utf8');
     return { success: true };
   } catch (error) {
@@ -462,7 +475,10 @@ export function runClaude(
   if (output.includes('already exists')) {
     return {
       success: true,
-      message: `already configured, entry left unchanged (to replace the API key, run \`${describeCommand(binary, ['mcp', 'remove', SERVER_NAME, '--scope', 'user'])}\` first, then re-run this wizard)`,
+      // Deliberately not "to replace the API key": this branch is also reached in
+      // hosted mode, where there is no key — and the pre-existing entry may be of the
+      // other kind entirely, which is exactly what the user needs to know.
+      message: `already configured, existing entry left unchanged — it was NOT updated to what you just chose (to replace it, run \`${describeCommand(binary, ['mcp', 'remove', SERVER_NAME, '--scope', 'user'])}\` first, then re-run this wizard)`,
     };
   }
   return {
@@ -658,10 +674,20 @@ function claudeDesktopConfigPath(): string {
   if (process.platform === 'win32') {
     return path.join(appData, 'Claude', 'claude_desktop_config.json');
   }
+  if (process.platform === 'darwin') {
+    return path.join(
+      home,
+      'Library',
+      'Application Support',
+      'Claude',
+      'claude_desktop_config.json'
+    );
+  }
+  // Linux followed the XDG location. Previously this returned the macOS path on
+  // Linux, so a Linux user was told `✓ Claude Desktop configured` for a file under
+  // ~/Library that nothing reads.
   return path.join(
-    home,
-    'Library',
-    'Application Support',
+    process.env.XDG_CONFIG_HOME ?? path.join(home, '.config'),
     'Claude',
     'claude_desktop_config.json'
   );

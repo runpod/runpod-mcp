@@ -110,10 +110,13 @@ back does damage: `modelReferences` reads as `[]` when empty, and `[]` means *cl
 model references*, which strips `MODEL_NAME` from the endpoint's env and rolls its workers;
 a non-empty value re-validates every reference without a HuggingFace token, so a gated model
 fails the write outright. `compliance` reads as `[]` and is re-sorted server-side;
-`templateId` re-runs template validation and throws if that template is gone;
-`networkVolumeIds` creates volume rows on a legacy single-volume endpoint. `requestTTL` is
-now read and echoed, because it *is* written unconditionally and is compared for the
-version bump — omitting it registered as a change and rolled the workers for nothing.
+`templateId` is read only on the create path, so echoing it on an update is at best a
+no-op; `networkVolumeIds` creates volume rows on a legacy single-volume endpoint; and
+`type` is both written and validated only when present, so echoing a future `AiApiType`
+the validator rejects (`RT` is already in the enum) would fail every restore for no
+benefit. `requestTTL` is now read and echoed, because it *is* written unconditionally and
+is compared for the version bump — omitting it registered as a change and rolled the
+workers for nothing.
 
 `get-endpoint` gains `includeGpuIds`, which adds the real `gpuIds` string and a
 `gpuIdsHasExclusions` flag, so an endpoint's true GPU selection can be read back. Before

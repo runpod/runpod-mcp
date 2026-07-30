@@ -14,7 +14,10 @@ import {
   podBodyFromTemplate,
 } from '../src/_shared/mappers.js';
 import { parseLogSse } from '../src/tools/logs.js';
-import { hasGpuExclusions } from '../src/_shared/endpoint-gpu-ids.js';
+import {
+  hasGpuExclusions,
+  SNAPSHOT_QUERY,
+} from '../src/_shared/endpoint-gpu-ids.js';
 
 const fixture = JSON.parse(
   readFileSync(
@@ -580,5 +583,69 @@ describe('hasGpuExclusions', () => {
     assert.equal(hasGpuExclusions('AMPERE_16,NVIDIA-RTX-A4500'), false);
     assert.equal(hasGpuExclusions('US-TX-3'), false);
     assert.equal(hasGpuExclusions('-NVIDIA-RTX-A4500'), true);
+  });
+});
+
+// ---- the snapshot query must select every field the restore echoes ----
+// A field in EndpointSnapshot but not in SNAPSHOT_QUERY reads as `undefined`.
+// JSON.stringify then drops it from the GraphQL variables, so an echo silently
+// becomes an omission — and for a field the resolver writes unconditionally, that is
+// data loss. Fixture-based tests cannot catch this: the fake response returns what it
+// likes regardless of the selection set, which is how the instanceIds bug got in.
+describe('SNAPSHOT_QUERY covers EndpointSnapshot', () => {
+  // The fields the restore reads off a snapshot. Kept as a literal list rather than
+  // derived from a type, because the interface does not exist at runtime — so this is
+  // the one place the two shapes are compared, and adding a field to either without
+  // the other fails here.
+  const SNAPSHOT_FIELDS = [
+    'id',
+    'name',
+    'gpuIds',
+    'gpuCount',
+    'workersMin',
+    'workersMax',
+    'idleTimeout',
+    'scalerType',
+    'scalerValue',
+    'executionTimeoutMs',
+    'requestTTL',
+    'flashBootType',
+    'locations',
+    'allowedCudaVersions',
+    'minCudaVersion',
+    'instanceIds',
+  ];
+
+  const selected = SNAPSHOT_QUERY.split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^[a-zA-Z]+$/.test(line));
+
+  it('selects every field the snapshot interface declares', () => {
+    for (const field of SNAPSHOT_FIELDS) {
+      assert.ok(
+        selected.includes(field),
+        `SNAPSHOT_QUERY does not select "${field}" — it would read as undefined and be dropped from the mutation`
+      );
+    }
+  });
+
+  it('selects nothing the restore does not use', () => {
+    // Every extra field is a liability: several Endpoint fields carry their own
+    // field-level authorisation, and one rejected field fails the whole read — which
+    // downgrades to a skipped GPU check on an endpoint that needed it.
+    for (const field of selected) {
+      assert.ok(
+        SNAPSHOT_FIELDS.includes(field),
+        `SNAPSHOT_QUERY selects "${field}", which the snapshot does not use`
+      );
+    }
+  });
+
+  it('queries one endpoint by id, not the capped endpoints list', () => {
+    // `myself { endpoints }` is capped at 400 rows with no pagination, so on a large
+    // account the endpoint being updated can simply be absent — and the exclusion
+    // protection would silently no-op.
+    assert.match(SNAPSHOT_QUERY, /myself[\s\S]*endpoint\(id:/);
+    assert.equal(/endpoints\s*[({]/.test(SNAPSHOT_QUERY), false);
   });
 });

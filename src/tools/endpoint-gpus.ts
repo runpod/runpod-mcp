@@ -109,8 +109,13 @@ export function registerEndpointGpuTools(
       try {
         current = await readEndpointSnapshot(graphqlAuthed, params.endpointId);
       } catch (error) {
+        // Phrased without asserting a diagnosis: this catch also sees a 401 on an
+        // expired key, a GraphQL 500 and a DNS failure, and telling someone their
+        // endpoint id is wrong when their credential expired sends them the wrong way.
+        // An unknown or foreign id is the common case, so it is named as a likely
+        // cause rather than the cause.
         return jsonReply({
-          error: `No Serverless endpoint readable with id "${params.endpointId}". Use list-endpoints to see your endpoints. Cause: ${error instanceof Error ? error.message : String(error)}`,
+          error: `Could not read endpoint "${params.endpointId}" over GraphQL, so nothing was changed. If the id is right, the credential or the API may be at fault; if it may be wrong, list-endpoints shows the endpoints this credential can see. Cause: ${error instanceof Error ? error.message : String(error)}`,
         });
       }
       if (!current) {

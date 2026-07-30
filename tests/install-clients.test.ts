@@ -16,6 +16,7 @@ import {
   interpretAddResult,
   redactSecret,
   runClaude,
+  CLIENTS,
 } from '../src/install/clients.js';
 
 // Regression coverage for issue #56 — the install wizard never detected Claude Code
@@ -600,6 +601,130 @@ describe(
       // redirection operators of its own — the earlier `<your-api-key>` placeholder
       // did, in the one message that only ever appears on the cmd.exe path.
       assert.equal(/[<>]/.test(result.message ?? ''), false, result.message);
+    });
+  }
+);
+
+// ---- the Claude Code client's own add/remove wiring ----
+// `interpretRemoveResult` is pinned above, but nothing exercised the CLIENT that calls
+// it — and `remove()` is the function that shipped a false success in three
+// consecutive revisions (a bare catch, then a discarded flag, then a scope-blind
+// "nothing to remove"). A revision that stops routing through the helper, or re-adds a
+// catch, would pass every other test in this file.
+//
+// So this drives the real code path against a fake `claude` on PATH: candidate paths
+// do not exist, `command -v claude` resolves to the fake, and both the operation and
+// the verification probe hit it. POSIX-only — Windows resolution goes through
+// where.exe and PATHEXT, which a shell script cannot stand in for.
+describe(
+  'claudeCodeClient wiring (fake claude on PATH)',
+  { skip: process.platform === 'win32' ? 'POSIX-only harness' : false },
+  () => {
+    const dirs: string[] = [];
+    const originalPath = process.env.PATH;
+    after(() => {
+      process.env.PATH = originalPath;
+      for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    // `behaviour` is a sh case body keyed on "$1 $2" (e.g. "mcp remove").
+    function fakeClaude(behaviour: string): void {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rp-fake-claude-'));
+      dirs.push(dir);
+      const bin = path.join(dir, 'claude');
+      fs.writeFileSync(bin, `#!/bin/sh\ncase "$1 $2" in\n${behaviour}\nesac\n`);
+      fs.chmodSync(bin, 0o755);
+      process.env.PATH = `${dir}:${originalPath ?? ''}`;
+    }
+
+    function claudeCode() {
+      const client = CLIENTS.find((c) => c.id === 'claude-code');
+      assert.ok(client, 'claude-code client must be registered');
+      return client;
+    }
+
+    it('reports a failure when the entry survives the removal', async () => {
+      // The read-only-config case: the CLI says it removed the entry and exits 0,
+      // and the probe then finds it still registered.
+      fakeClaude(
+        `'mcp remove') echo 'Removed MCP server runpod from user config'; exit 0;;\n` +
+          `'mcp get') echo 'runpod:'; exit 0;;\n` +
+          `*) exit 1;;`
+      );
+      const result = await claudeCode().remove();
+      assert.equal(result.success, false, JSON.stringify(result));
+      assert.match(result.message ?? '', /still on disk/);
+    });
+
+    it('reports a failure when the entry lives in another scope', async () => {
+      // `claude mcp add` defaults to LOCAL scope; this removes from USER scope. The
+      // CLI's "not in user scope" is true and useless — the key is still there.
+      fakeClaude(
+        `'mcp remove') echo 'No MCP server named \\"runpod\\" in user scope' 1>&2; exit 1;;\n` +
+          `'mcp get') echo 'runpod:'; exit 0;;\n` +
+          `*) exit 1;;`
+      );
+      const result = await claudeCode().remove();
+      assert.equal(result.success, false, JSON.stringify(result));
+      assert.match(result.message ?? '', /scope/);
+    });
+
+    it('succeeds when the entry is verifiably gone', async () => {
+      fakeClaude(
+        `'mcp remove') echo 'Removed MCP server runpod from user config'; exit 0;;\n` +
+          `'mcp get') echo 'No MCP server named \\"runpod\\"' 1>&2; exit 1;;\n` +
+          `*) exit 1;;`
+      );
+      const result = await claudeCode().remove();
+      assert.equal(result.success, true, JSON.stringify(result));
+    });
+
+    it('treats nothing-to-remove as success only when nothing is registered', async () => {
+      fakeClaude(
+        `'mcp remove') echo 'No MCP server named \\"runpod\\" in user scope' 1>&2; exit 1;;\n` +
+          `'mcp get') echo 'No MCP server named \\"runpod\\"' 1>&2; exit 1;;\n` +
+          `*) exit 1;;`
+      );
+      const result = await claudeCode().remove();
+      assert.deepEqual(result, {
+        success: true,
+        message: 'nothing to remove',
+      });
+    });
+
+    it('fails an add whose entry is absent afterwards', async () => {
+      // The unwritable-config case for add: exit 0, nothing written.
+      fakeClaude(
+        `'mcp add') echo 'Added stdio MCP server runpod'; exit 0;;\n` +
+          `'mcp get') echo 'No MCP server named \\"runpod\\"' 1>&2; exit 1;;\n` +
+          `*) exit 1;;`
+      );
+      const result = await claudeCode().add({
+        kind: 'local',
+        apiKey: 'rpa_TESTKEY123456',
+      });
+      assert.equal(result.success, false, JSON.stringify(result));
+      assert.match(result.message ?? '', /not writable/);
+    });
+
+    it('never echoes the API key in a failure message', async () => {
+      // The CLI does echo -e tokens back on some errors; the message a user sees must
+      // not carry the key regardless of what the child printed.
+      fakeClaude(
+        `'mcp add') echo "Invalid environment variable format: RUNPOD_API_KEY=rpa_TESTKEY123456" 1>&2; exit 1;;\n` +
+          `*) exit 1;;`
+      );
+      const result = await claudeCode().add({
+        kind: 'local',
+        apiKey: 'rpa_TESTKEY123456',
+      });
+      assert.equal(result.success, false);
+      assert.equal(
+        result.message?.includes('rpa_TESTKEY123456'),
+        false,
+        result.message
+      );
+      assert.match(result.message ?? '', /YOUR_RUNPOD_API_KEY/);
     });
   }
 );
