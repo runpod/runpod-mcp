@@ -434,8 +434,8 @@ export function claudeCandidatePaths(
     const win = path.win32;
     return [
       win.join(homedir, '.local', 'bin', 'claude.exe'),
-      // npm -g installs a .cmd shim. runClaude bypasses the shim and invokes the
-      // package's installed cli.js with the current Node process.
+      // npm -g installs a .cmd shim. runClaude bypasses it and resolves the real
+      // native or JavaScript target from the installed package manifest.
       //
       // absoluteEnvDir, not `?? `: an empty or relative APPDATA yielded the relative
       // `npm\claude.cmd`. Candidates are probed before any lookup, so a relative
