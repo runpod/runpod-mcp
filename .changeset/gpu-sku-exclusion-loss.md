@@ -15,36 +15,23 @@ Confirmed live on 2026-07-29: an endpoint with `gpuIds` of
 `{"image": "..."}`, came back as plain `AMPERE_16`. Both exclusions were gone; every other
 field survived.
 
-`update-endpoint` now reads `gpuIds` before patching, then re-reads the endpoint after the
-patch and re-applies that `gpuIds` on top, reporting it under `_gpuIdsPreserved`. The
-re-read matters: `saveEndpoint` is not sparse, so echoing the pre-patch snapshot would put
-back whatever the caller had just changed. Endpoints without exclusions (the common case)
-are untouched and pay no extra write, and the restore is skipped entirely when the patch
-left `gpuIds` alone — so the compensation disappears on its own once the v2 facade stops
-rebuilding `gpuIds` from `gpu.pools`. An explicit `gpuPoolIds` still wins — the caller is
-deliberately rewriting the pool list — but the reply now names the exclusions that were
-lost. If the restore itself fails, the reply says so and quotes the expected `gpuIds`
-rather than reporting a clean success.
+`update-endpoint` now reads the authoritative `gpuIds` **before** an unrelated v2 PATCH.
+If the endpoint has SKU exclusions, the update is refused before mutation with a 409 that
+names the protected value. If the GraphQL check fails or the credential has no GraphQL
+user, the update is refused with a 503 instead of guessing that there is nothing to lose.
+No fields are changed in either case.
 
-If the `gpuIds` read fails, the update still applies — a GPU safety net must not block an
-unrelated change — but the reply now carries `_gpuIdsCheckSkipped` saying so. Silence there
-was indistinguishable from "this endpoint has no exclusions to lose", which is issue #63
-recurring behind a claim that it is fixed. It is reachable with a credential that can PATCH
-over REST but cannot read the endpoint through GraphQL `myself`.
+This deliberately fails closed rather than attempting a compensating GraphQL write after
+the PATCH. Such a write cannot make the update atomic: `saveEndpoint` is not sparse,
+unconditionally resets `workersStandby` to `workersMax`, can trigger a second release and
+worker restart, and can overwrite a concurrent update between the read and restore. It can
+also fail after the REST PATCH has already removed the exclusions. Refusing before the
+known-destructive operation is the only safe MCP-side behavior until the v2 REST facade
+preserves `gpuIds` when `gpu` is omitted.
 
-The restore echoes only the fields `saveEndpoint` writes unconditionally. Fields it writes
-solely when the input carries them are deliberately omitted, because echoing a read value
-back does damage: `modelReferences` reads as `[]` when empty, and `[]` means *clear all
-model references*, which strips `MODEL_NAME` from the endpoint's env and rolls its workers;
-a non-empty value re-validates every reference without a HuggingFace token, so a gated model
-fails the write outright. `compliance` reads as `[]`, which resolves to NULL server-side and CLEARS the endpoint's compliance requirements;
-`templateId` is read only on the create path, so echoing it on an update is at best a
-no-op; `networkVolumeIds` creates volume rows on a legacy single-volume endpoint; and
-`type` is both written and validated only when present, so echoing a future `AiApiType`
-the validator rejects (`RT` is already in the enum) would fail every restore for no
-benefit. `requestTTL` is now read and echoed, because it *is* written unconditionally and
-is compared for the version bump — omitting it registered as a change and rolled the
-workers for nothing.
+An explicit non-empty `gpuPoolIds` bypasses the preservation guard because it is an
+intentional replacement of the endpoint's GPU selection. The tool description now says
+that v2 cannot carry existing `-<GPU type id>` exclusions forward in that request.
 
 `get-endpoint` gains `includeGpuIds`, which adds the real `gpuIds` string and a
 `gpuIdsHasExclusions` flag, so an endpoint's true GPU selection can be read back. Before
@@ -53,27 +40,15 @@ i.e. you had to write to read.
 
 Cost, stated fully:
 
-- One GraphQL read per v2 `update-endpoint` call — including endpoints with no exclusions,
-  which pay the read but no write.
-- A second GraphQL read for every endpoint that carries exclusions — it happens before
-  the "did anything change?" check, so it is paid whether or not anything was lost.
-- One `saveEndpoint` write only for endpoints that carry exclusions AND actually lost
-  them to the patch.
-- The caller's API key now goes to the authenticated GraphQL host on every v2
-  `update-endpoint`. If you override `RUNPOD_AUTHED_GRAPHQL_URL`, point it only at a host
-  you trust with that.
-- `saveEndpoint` writes `workersStandby := workersMax` unconditionally, and `workersStandby`
-  is not a field of `EndpointInput` — so the restore cannot preserve a value that differs
-  from `workersMax`. The echo-everything-written rule cannot cover this one.
-- The restore re-validates the stored config against today's rules (account worker limits,
-  the GPU pool catalogue, pool access). An endpoint whose stored config has since drifted out
-  of validity fails the restore and reports `_warning` — honest, but it then sits without its
-  exclusions until `set-endpoint-gpus` is run.
-
-The `workersStandby` limitation above is now stated in the `set-endpoint-gpus` and
-`update-endpoint` tool descriptions too. They previously said all other settings were
-"preserved" and "only provided fields change" — which contradicted this changeset, in the
-text an agent reads at call time to decide whether a call is safe.
+- One GraphQL read per v2 `update-endpoint` call that does not explicitly replace
+  `gpuPoolIds`.
+- No post-PATCH read, compensating write, second release, or restore race.
+- During a GraphQL outage, unrelated v2 endpoint updates fail closed. Availability is
+  traded for the guarantee that this tool will not silently erase SKU pins.
+- Endpoints with exclusions cannot receive unrelated v2 updates through this tool until
+  the REST facade is fixed; callers must use a path that preserves the complete `gpuIds`.
+- The caller's API key goes to the authenticated GraphQL host for the safety check. If
+  `RUNPOD_AUTHED_GRAPHQL_URL` is overridden, it must point only at a trusted host.
 
 `set-endpoint-gpus` refuses requests it cannot express, rather than accepting them and
 echoing the stored value back as though they had applied. Round 9 found one still missing,
@@ -111,9 +86,9 @@ The refusals in full:
   `gpuIds: null`. A write happened, the pin was never stored, and the reply claimed
   success.
 
-`update-endpoint`'s `gpuPoolIds` warning is now established by re-reading rather than
-asserted from the fact that pools were sent — so it disappears on its own if the facade
-stops dropping exclusions, instead of telling callers to repair something that is fine.
+`update-endpoint` treats a non-empty `gpuPoolIds` as explicit replacement intent and sends
+that PATCH directly. Omitted pools take the fail-closed preservation path; an explicitly
+empty list is still rejected rather than silently dropped by the mapper.
 
 `create-pod` / `update-pod` reject `volumeInGb` without `volumeMountPath` (or the
 reverse). The persistent volume is one object, so a lone field was dropped and the pod

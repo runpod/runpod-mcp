@@ -6,9 +6,6 @@ import { logStreamParams, streamLogsReply } from './logs.js';
 import {
   readEndpointSnapshot,
   hasGpuExclusions,
-  buildSaveEndpointInput,
-  saveEndpoint,
-  type EndpointSnapshot,
 } from '../_shared/endpoint-gpu-ids.js';
 
 // ============== ENDPOINT MANAGEMENT TOOLS ==============
@@ -421,7 +418,7 @@ export function registerEndpointTools(
   // /v2/serverless body; v1 passes the flat fields through.
   server.tool(
     'update-endpoint',
-    "Update a Serverless endpoint's config. On v2 you can change image/disk/env/ports/registry/workers/scaling/networkVolumes/timeout/flashboot; on v1, scaling fields (worker min/max, idle timeout, scaler type/value, name). Only provided fields change, with one exception: on an endpoint that has GPU SKU exclusions, a compensating write is issued to preserve them and that write always resets workersStandby to workersMax. An endpoint's request routing (queue vs load balancer) is fixed at creation and cannot be changed here — recreate the endpoint instead.",
+    "Update a Serverless endpoint's config. On v2 you can change image/disk/env/ports/registry/workers/scaling/networkVolumes/timeout/flashboot; on v1, scaling fields (worker min/max, idle timeout, scaler type/value, name). Only provided fields change. Safety guard: the current v2 REST API drops GPU SKU exclusions during unrelated updates, so update-endpoint refuses before writing when the endpoint has exclusions or its authoritative gpuIds cannot be checked. An explicit gpuPoolIds replaces the GPU selection and bypasses that preservation guard. An endpoint's request routing (queue vs load balancer) is fixed at creation and cannot be changed here — recreate the endpoint instead.",
     {
       endpointId: z.string().describe('ID of the endpoint to update'),
       name: z.string().optional().describe('New name for the endpoint'),
@@ -460,7 +457,9 @@ export function registerEndpointTools(
       gpuPoolIds: z
         .array(z.string())
         .optional()
-        .describe('New GPU pool names (v2), e.g. ["AMPERE_80"]'),
+        .describe(
+          'New GPU pool names (v2), e.g. ["AMPERE_80"]. This explicitly replaces the GPU selection; v2 cannot carry existing "-<GPU type id>" SKU exclusions forward.'
+        ),
       gpuCount: z
         .number()
         .optional()
@@ -555,115 +554,47 @@ export function registerEndpointTools(
         }
       }
 
-      // v2's EndpointGpuConfig is `{pools, count}` — it has nowhere to keep the
-      // '-<GPU type id>' exclusion entries that pin a SKU, so a PATCH can lose them
-      // even when it never mentions GPUs (issue #63). Read the authoritative
-      // gpuIds first; if it carries exclusions, re-assert it afterwards. Skipped
-      // entirely for endpoints without exclusions, which is the common case, so the
-      // extra round trips are only paid by the endpoints that need them.
-      let gpuSnapshot: EndpointSnapshot | null = null;
-      let gpuReadFailure: string | undefined;
-      try {
-        gpuSnapshot = await readEndpointSnapshot(graphqlAuthed, endpointId);
-        if (gpuSnapshot === null) {
-          gpuReadFailure =
-            'the GraphQL API returned no user for this credential, so the endpoint was not visible there';
+      // An explicit pool list is a deliberate GPU replacement. The caller's value
+      // wins and there is no existing exclusion set to preserve on top of it.
+      //
+      // Every other v2 update is guarded by an authoritative GraphQL read. The REST
+      // facade currently rebuilds gpuIds from its lossy `{pools, count}` shape even
+      // when the PATCH omits `gpu`, so a compensating write after the PATCH is too
+      // late to be safe: it races concurrent writers, resets workersStandby through
+      // saveEndpoint, and can itself fail after the exclusions are already gone.
+      // Refuse before mutation instead. Once the facade preserves an omitted gpu
+      // field, this guard can be removed and the PATCH below remains a true partial
+      // update.
+      if (!updateParams.gpuPoolIds?.length) {
+        let gpuSnapshot;
+        try {
+          gpuSnapshot = await readEndpointSnapshot(graphqlAuthed, endpointId);
+        } catch (error) {
+          return jsonReply({
+            error: `Update not applied: this endpoint's authoritative gpuIds could not be checked, and the current v2 REST API can erase SKU exclusions during an unrelated PATCH. Retry when the GraphQL read succeeds. Cause: ${error instanceof Error ? error.message : String(error)}`,
+            status: 503,
+          });
         }
-      } catch (error) {
-        gpuReadFailure = error instanceof Error ? error.message : String(error);
+        if (gpuSnapshot === null) {
+          return jsonReply({
+            error:
+              "Update not applied: the GraphQL API returned no user for this credential, so this endpoint's gpuIds could not be checked safely.",
+            status: 503,
+          });
+        }
+        if (hasGpuExclusions(gpuSnapshot.gpuIds)) {
+          return jsonReply({
+            error: `Update not applied: endpoint "${endpointId}" pins GPU SKUs with gpuIds exclusions ("${gpuSnapshot.gpuIds}"). The current v2 REST API would drop those exclusions even though this update does not mention GPUs. No fields were changed. Use an API path that preserves gpuIds, or explicitly pass gpuPoolIds only if replacing the GPU selection is intended.`,
+            status: 409,
+          });
+        }
       }
 
       const body = backend.mapUpdate({
         ...updateParams,
         scalerType,
       }) as Record<string, unknown>;
-      const result = await callRestUrl(url, 'PATCH', body);
-
-      // Failing open — still patching — is deliberate: a GPU-config safety net must
-      // not block an unrelated update. Failing open SILENTLY is not. Without this
-      // the caller cannot tell "this endpoint has no exclusions to lose" from "the
-      // check never ran", and the second case is issue #63 happening again behind a
-      // claim that it is fixed. Reachable whenever the credential can PATCH over
-      // REST but cannot read the endpoint through GraphQL `myself` (a team-owned
-      // endpoint, a field-level auth rejection, or any transient GraphQL error).
-      if (gpuSnapshot === null) {
-        return jsonReply({
-          ...(result as Record<string, unknown>),
-          _gpuIdsCheckSkipped: `The update applied, but this endpoint's gpuIds could not be read, so GPU SKU exclusions (which a v2 update drops) were neither checked nor restored. If this endpoint pins specific SKUs, verify with get-endpoint includeGpuIds:true and restore with set-endpoint-gpus. Cause: ${gpuReadFailure}`,
-        });
-      }
-
-      // Narrowed by the type predicate: true implies a non-null gpuIds string.
-      const gpuIdsBeforePatch = gpuSnapshot.gpuIds;
-      // The `!gpuIdsBeforePatch` half is what narrows it to a string for the code
-      // below — hasGpuExclusions is intentionally not a type predicate, since a
-      // pool-only value is still a perfectly good string.
-      if (!gpuIdsBeforePatch || !hasGpuExclusions(gpuIdsBeforePatch)) {
-        return jsonReply(result);
-      }
-
-      // An explicit gpuPoolIds means the caller is deliberately rewriting the pool list,
-      // so their value wins and nothing is restored on top of it. Whether the exclusions
-      // actually went is still established by reading, not asserted: if the v2 facade
-      // stops rebuilding gpuIds from gpu.pools, a hardcoded warning here would start
-      // telling callers to repair something that is fine. Handled below, after the
-      // re-read, so both paths share one source of truth.
-      const callerRewrotePools = Boolean(updateParams.gpuPoolIds?.length);
-
-      try {
-        // Re-read AFTER the patch. saveEndpoint is not sparse, so the restore has
-        // to echo every endpoint field — and echoing the PRE-patch snapshot would
-        // revert whatever the caller just changed. Verified live: patching
-        // workersMax 1→3 and idleTimeout 5→42, then echoing the stale snapshot,
-        // silently put both back while the PATCH reply still showed 3 and 42. Only
-        // gpuIds is carried over from before, because it is the one field the patch
-        // destroys and the post-patch read cannot recover.
-        const afterPatch = await readEndpointSnapshot(
-          graphqlAuthed,
-          endpointId
-        );
-        if (afterPatch === null) {
-          return jsonReply({
-            ...(result as Record<string, unknown>),
-            _warning: `The update applied, but this endpoint could not be re-read to ${callerRewrotePools ? 'check whether its GPU SKU exclusions survived' : 'restore its GPU SKU exclusions, which the patch drops'}. Expected gpuIds "${gpuIdsBeforePatch}" — verify with get-endpoint includeGpuIds:true and restore with set-endpoint-gpus if needed.`,
-          });
-        }
-        // Nothing was lost — skip the write entirely. saveEndpoint is never free:
-        // it re-runs validation and can bump the SLS version, which rolls the
-        // endpoint's workers. Paying that to re-assert a value the patch already
-        // left alone is worse than doing nothing. This also makes the restore a
-        // genuine no-op once the v2 facade stops rebuilding gpuIds from gpu.pools.
-        if (afterPatch.gpuIds === gpuIdsBeforePatch) {
-          // Nothing was lost, so there is nothing to warn about even when the caller
-          // rewrote the pool list.
-          return jsonReply(result);
-        }
-
-        // Lost, and the caller asked for the pools to change — their value stands, but
-        // the exclusions really are gone and nothing in the v2 reply reveals it.
-        if (callerRewrotePools) {
-          return jsonReply({
-            ...(result as Record<string, unknown>),
-            _warning: `gpuPoolIds replaced this endpoint's GPU config, dropping its SKU exclusions (was "${gpuIdsBeforePatch}", now "${afterPatch.gpuIds}"). v2 cannot express exclusions — restore them with set-endpoint-gpus.`,
-          });
-        }
-        const restored = await saveEndpoint(
-          graphqlAuthed,
-          buildSaveEndpointInput(afterPatch, { gpuIds: gpuIdsBeforePatch })
-        );
-        return jsonReply({
-          ...(result as Record<string, unknown>),
-          _gpuIdsPreserved: {
-            gpuIds: restored.saveEndpoint.gpuIds,
-            note: 'This endpoint pins GPU SKUs via gpuIds exclusions, which a v2 update drops. The pre-update value was re-applied on top of the patched config. Note this is a read-modify-write, so a concurrent change to this endpoint made between the patch and the restore is overwritten. Read the result back with get-endpoint includeGpuIds:true.',
-          },
-        });
-      } catch (error) {
-        return jsonReply({
-          ...(result as Record<string, unknown>),
-          _warning: `The update applied, but re-asserting this endpoint's GPU SKU exclusions failed, so they may have been dropped. Expected gpuIds "${gpuIdsBeforePatch}" — verify with get-endpoint includeGpuIds:true and restore with set-endpoint-gpus if needed. Cause: ${error instanceof Error ? error.message : String(error)}`,
-        });
-      }
+      return jsonReply(await callRestUrl(url, 'PATCH', body));
     }
   );
 

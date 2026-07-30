@@ -537,10 +537,10 @@ describe('parseLogSse', () => {
   });
 });
 
-// ---- hasGpuExclusions: the sole gate on a compensating write ----
+// ---- hasGpuExclusions: the update-endpoint safety gate ----
 // If this returns false for a gpuIds string that DOES carry exclusions, they are
-// silently lost (issue #63); if it returns true spuriously, every update pays an
-// extra read+write and rolls the endpoint's workers. It had no direct tests.
+// exposed to the destructive v2 PATCH (issue #63); if it returns true spuriously,
+// a safe update is refused. It had no direct tests.
 describe('hasGpuExclusions', () => {
   it('is false for pool-only gpuIds, and for absent values', () => {
     assert.equal(hasGpuExclusions('AMPERE_16'), false);
@@ -573,8 +573,8 @@ describe('hasGpuExclusions', () => {
   });
 
   it('does not treat a lone "-" as an exclusion', () => {
-    // It excludes nothing server-side, so triggering the restore for it would be a
-    // pure cost — hence the length > 1 check.
+    // It excludes nothing server-side, so refusing the update for it would be a
+    // false positive — hence the length > 1 check.
     assert.equal(hasGpuExclusions('AMPERE_16,-'), false);
     assert.equal(hasGpuExclusions('-'), false);
   });
@@ -587,14 +587,14 @@ describe('hasGpuExclusions', () => {
   });
 });
 
-// ---- the snapshot query must select every field the restore echoes ----
+// ---- the snapshot query must select every field the GraphQL mutation echoes ----
 // A field in EndpointSnapshot but not in SNAPSHOT_QUERY reads as `undefined`.
 // JSON.stringify then drops it from the GraphQL variables, so an echo silently
 // becomes an omission — and for a field the resolver writes unconditionally, that is
 // data loss. Fixture-based tests cannot catch this: the fake response returns what it
 // likes regardless of the selection set, which is how the instanceIds bug got in.
 describe('SNAPSHOT_QUERY covers EndpointSnapshot', () => {
-  // The fields the restore reads off a snapshot. Kept as a literal list rather than
+  // The fields the input builder reads off a snapshot. Kept as a literal list rather than
   // derived from a type, because the interface does not exist at runtime — so this is
   // the one place the two shapes are compared, and adding a field to either without
   // the other fails here.
@@ -662,10 +662,10 @@ describe('SNAPSHOT_QUERY covers EndpointSnapshot', () => {
     }
   });
 
-  it('selects nothing the restore does not use', () => {
+  it('selects nothing the snapshot consumers do not use', () => {
     // Every extra field is a liability: several Endpoint fields carry their own
     // field-level authorisation, and one rejected field fails the whole read — which
-    // downgrades to a skipped GPU check on an endpoint that needed it.
+    // blocks the fail-closed GPU safety check on an endpoint that needed it.
     for (const field of selected) {
       assert.ok(
         SNAPSHOT_FIELDS.includes(field),
@@ -725,8 +725,8 @@ describe('buildSaveEndpointInput', () => {
   });
 
   it('tolerates a snapshot missing instanceIds entirely', () => {
-    // This runs inside the restore's try/catch, so a TypeError here would surface to the
-    // user as "re-asserting the exclusions failed" and cost them their SKU pins.
+    // A malformed/older GraphQL response must produce a controlled tool outcome,
+    // not a TypeError while set-endpoint-gpus is building its mutation.
     const partial = { ...full } as Record<string, unknown>;
     delete partial.instanceIds;
     assert.doesNotThrow(() =>

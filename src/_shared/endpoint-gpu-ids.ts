@@ -11,10 +11,9 @@
 //      read-verify the live GPU config before or after a write (issue #63).
 //   2. A v2 PATCH round-trips the endpoint through a representation with nowhere
 //      to keep exclusions, so they can be lost even by an update that never
-//      mentions GPUs. Re-asserting the pre-update gpuIds afterwards restores them.
-//      Callers skip the write entirely when the patch left gpuIds alone, because the
-//      write itself is not free: it re-runs validation and can bump the SLS version,
-//      rolling the endpoint's workers.
+//      mentions GPUs. `update-endpoint` reads this value before patching and refuses
+//      when exclusions exist; repairing afterwards with saveEndpoint is not safe
+//      because that mutation is non-sparse and cannot make the sequence atomic.
 //
 // saveEndpoint is NOT a sparse update: an id+name+gpuIds-only call was measured
 // resetting workersMax 7→3, idleTimeout 42→10 and scalerValue 9→4 to server
@@ -184,9 +183,8 @@ export function buildSaveEndpointInput(
   // and `[]` is truthy — echoing an empty list would store an empty string where
   // the column held NULL. Omitting it when there are none writes null, which is what
   // "none" already means.
-  // Guarded rather than `snapshot.instanceIds.length`: this builder runs inside the
-  // restore's try/catch, so a TypeError here would surface as "re-asserting the
-  // exclusions failed" and silently cost the caller their SKU pins.
+  // Guarded rather than `snapshot.instanceIds.length`: tolerate an older or malformed
+  // GraphQL response instead of throwing while a caller builds the mutation.
   if (snapshot.instanceIds && snapshot.instanceIds.length > 0) {
     input.instanceIds = snapshot.instanceIds;
   }
