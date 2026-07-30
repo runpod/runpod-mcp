@@ -552,15 +552,14 @@ function projectBoundary(cwd: string): string | null {
  *
  * Direct user-level candidates are not automatically trusted: the path can be a
  * symlink/junction into the repository, and APPDATA/HOME can be redirected. PATH
- * results are stricter still and require an identifiable source/workspace boundary;
- * without one there is no safe way to distinguish a sibling project tool from a
- * custom global install.
+ * results are rejected when they resolve inside an identifiable source/workspace
+ * boundary. An unmarked cwd cannot be treated as a project root: doing so rejects
+ * ordinary nvm/asdf/Volta installs when the wizard is launched from $HOME.
  */
 function trustedClaudeBinary(
   binary: string,
   cwd: string,
-  requiredRoot: string | undefined,
-  requireProjectBoundary: boolean
+  requiredRoot?: string
 ): string | null {
   try {
     const canonicalBinary = fs.realpathSync.native(binary);
@@ -574,9 +573,7 @@ function trustedClaudeBinary(
       isNodeModulesBin(canonicalBinary) ||
       (canonicalRequiredRoot !== undefined &&
         !pathIsInside(canonicalBinary, canonicalRequiredRoot, path)) ||
-      (projectRoot !== null &&
-        pathIsInside(canonicalBinary, projectRoot, path)) ||
-      (requireProjectBoundary && projectRoot === null)
+      (projectRoot !== null && pathIsInside(canonicalBinary, projectRoot, path))
     ) {
       return null;
     }
@@ -653,7 +650,7 @@ export function findClaudeBinary(
       } else {
         trustedRoot = index === 2 ? '/usr/local' : '/opt/homebrew';
       }
-      const trusted = trustedClaudeBinary(candidate, cwd, trustedRoot, false);
+      const trusted = trustedClaudeBinary(candidate, cwd, trustedRoot);
       if (trusted !== null) return trusted;
     }
   }
@@ -668,10 +665,12 @@ export function findClaudeBinary(
       stdio: ['ignore', 'pipe', 'ignore'],
       encoding: 'utf8',
     });
-    const binary = pickClaudeBinary(out, platform, cwd);
-    return binary === null
-      ? null
-      : trustedClaudeBinary(binary, cwd, undefined, true);
+    // `pickClaudeBinary` still rejects relative and node_modules/.bin results. Do
+    // not pass cwd here: an unmarked cwd might be $HOME, with a legitimate
+    // nvm/asdf/Volta executable beneath it. The canonical check below rejects a
+    // result inside cwd whenever cwd is actually part of a marked project.
+    const binary = pickClaudeBinary(out, platform);
+    return binary === null ? null : trustedClaudeBinary(binary, cwd);
   } catch {
     return null;
   }
@@ -723,11 +722,12 @@ export function describeCommandRedacted(
 /**
  * Runs the Claude Code CLI.
  *
- * A Windows npm-global `claude.cmd` is never executed. The standard shim ultimately
- * runs the installed `node_modules/@anthropic-ai/claude-code/cli.js`; invoking that
- * entrypoint with this already-running Node process avoids cmd.exe, COMSPEC,
- * SystemRoot, PATH lookup, `%*` re-parsing, and command-line escaping entirely.
- * Native `.exe` and POSIX candidates are spawned directly.
+ * A Windows npm-global `claude.cmd` is never executed. Its package manifest names
+ * the real entrypoint. Current releases point at a native `bin/claude.exe`; older
+ * releases may point at a JavaScript entrypoint. The target is canonicalized inside
+ * the installed package, then spawned directly (native) or through this
+ * already-running Node process (JavaScript). This avoids cmd.exe, COMSPEC, PATH
+ * lookup, `%*` re-parsing, and command-line escaping entirely.
  */
 // `refused` marks "we declined to run this", as opposed to "we ran it and it
 // failed" — `remove` treats those differently.
@@ -778,22 +778,50 @@ function sanitizedClaudeEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-function windowsNpmClaudeEntrypoint(binary: string): string | null {
+interface WindowsNpmClaudeTarget {
+  command: string;
+  argsPrefix: string[];
+}
+
+function windowsNpmClaudeTarget(binary: string): WindowsNpmClaudeTarget | null {
   if (process.platform !== 'win32' || !binary.toLowerCase().endsWith('.cmd')) {
     return null;
   }
   try {
     const npmRoot = fs.realpathSync.native(path.dirname(binary));
-    const entrypoint = fs.realpathSync.native(
-      path.join(
-        npmRoot,
-        'node_modules',
-        '@anthropic-ai',
-        'claude-code',
-        'cli.js'
-      )
+    const packageRoot = fs.realpathSync.native(
+      path.join(npmRoot, 'node_modules', '@anthropic-ai', 'claude-code')
     );
-    return pathIsInside(entrypoint, npmRoot, path) ? entrypoint : null;
+    if (!pathIsInside(packageRoot, npmRoot, path)) return null;
+
+    const manifestPath = fs.realpathSync.native(
+      path.join(packageRoot, 'package.json')
+    );
+    if (!pathIsInside(manifestPath, packageRoot, path)) return null;
+    const manifest = JSON.parse(
+      fs.readFileSync(manifestPath, 'utf8')
+    ) as unknown;
+    if (manifest === null || typeof manifest !== 'object') return null;
+    const bin = (manifest as { bin?: unknown }).bin;
+    const target =
+      typeof bin === 'string'
+        ? bin
+        : bin !== null && typeof bin === 'object'
+          ? (bin as Record<string, unknown>).claude
+          : undefined;
+    if (typeof target !== 'string' || target.trim() === '') return null;
+
+    const entrypoint = fs.realpathSync.native(
+      path.resolve(packageRoot, target)
+    );
+    if (!pathIsInside(entrypoint, packageRoot, path)) return null;
+    if (/\.(?:exe|com)$/i.test(entrypoint)) {
+      return { command: entrypoint, argsPrefix: [] };
+    }
+    if (/\.(?:c?js|mjs)$/i.test(entrypoint)) {
+      return { command: process.execPath, argsPrefix: [entrypoint] };
+    }
+    return null;
   } catch {
     return null;
   }
@@ -806,26 +834,21 @@ export function runClaude(
 ): RunResult {
   const isWindowsCmd =
     process.platform === 'win32' && binary.toLowerCase().endsWith('.cmd');
-  const npmEntrypoint = windowsNpmClaudeEntrypoint(binary);
-  if (isWindowsCmd && npmEntrypoint === null) {
+  const npmTarget = windowsNpmClaudeTarget(binary);
+  if (isWindowsCmd && npmTarget === null) {
     return {
       success: false,
       refused: true,
       message: `could not locate a trusted Claude Code npm entrypoint beside ${binary}. Run the shim yourself, substituting your key:\n    ${describeCommandRedacted(binary, args)}`,
     };
   }
-  const result =
-    npmEntrypoint === null
-      ? spawnSync(binary, args, {
-          stdio: 'pipe',
-          encoding: 'utf8',
-          env: sanitizedClaudeEnv(),
-        })
-      : spawnSync(process.execPath, [npmEntrypoint, ...args], {
-          stdio: 'pipe',
-          encoding: 'utf8',
-          env: sanitizedClaudeEnv(),
-        });
+  const command = npmTarget?.command ?? binary;
+  const commandArgs = [...(npmTarget?.argsPrefix ?? []), ...args];
+  const result = spawnSync(command, commandArgs, {
+    stdio: 'pipe',
+    encoding: 'utf8',
+    env: sanitizedClaudeEnv(),
+  });
   if (result.error)
     return {
       success: false,

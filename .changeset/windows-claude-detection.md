@@ -21,22 +21,25 @@ Directly probing the two documented user-level locations fixes the standard nati
 global-npm installs without extending that trust boundary.
 
 The POSIX `command -v` fallback remains for custom/package-manager installs, but accepts
-only canonical paths outside an identifiable source/workspace boundary and rejects
-`node_modules/.bin` results. Relative, project-local, symlinked-back-into-project,
-uncanonicalizable, or no-project-boundary hits are treated as not detected rather than
-being executed with a credential. Direct installer candidates are canonicalized through
-the same boundary check, so a standard-looking path that is really a symlink or junction
-back into the project is not trusted.
+only canonical absolute paths and rejects `node_modules/.bin` results. When the cwd is
+inside an identifiable source/workspace boundary, anything resolving back into that
+boundary is rejected. An unmarked cwd is not treated as a project root, so launching the
+wizard from `$HOME` or another ordinary directory continues to support nvm, asdf, Volta,
+and custom global installs. Direct installer candidates are canonicalized through the
+same boundary check, so a standard-looking path that is really a symlink or junction back
+into a marked project is not trusted.
 
 Registration never executes the Windows npm `.cmd` shim. Node cannot launch one directly,
-while launching it through `cmd.exe` would make `COMSPEC`, `SystemRoot`, PATH resolution,
-and `%*` re-parsing part of the credential-bearing path. A standard global npm install
-places the real entrypoint beside the shim at
-`node_modules/@anthropic-ai/claude-code/cli.js`; the wizard canonicalizes that entrypoint
-inside the npm root and invokes it with the already-running Node process. The child gets a
-minimal interpreter PATH with `COMSPEC`, `PATHEXT`, `NODE_OPTIONS`, and `NODE_PATH`
-removed. Arguments therefore remain an argv array even when a value contains a shell
-metacharacter, and the PR adds no runtime dependency.
+while launching it through `cmd.exe` would make `COMSPEC`, PATH resolution, and `%*`
+re-parsing part of the credential-bearing path. The wizard reads the installed package's
+`bin.claude` manifest entry, canonicalizes the target inside
+`node_modules/@anthropic-ai/claude-code`, and invokes it without a shell. Claude Code
+2.1.212 (the version in #56) and 2.1.220 both publish `bin/claude.exe`, which postinstall
+replaces with the platform-native binary; a legacy JavaScript manifest target is invoked
+with the already-running Node process. The child gets a minimal interpreter PATH with
+`COMSPEC`, `PATHEXT`, `NODE_OPTIONS`, and `NODE_PATH` removed. Arguments therefore remain
+an argv array even when a value contains a shell metacharacter, and the PR adds no runtime
+dependency.
 
 Direct candidates are confined to their canonical install roots: home for the native
 locations, `/usr/local` or `/opt/homebrew` for their POSIX candidates, and the default
@@ -136,8 +139,8 @@ editing the malformed document and reporting success. The message also
 distinguishes "this change would break it" from "it was already broken", because the advice
 differs.
 
-The POSIX PATH lookup now accepts only a canonical path outside an identifiable
-source/workspace boundary and never returns a relative or `node_modules/.bin` result.
+The POSIX PATH lookup now accepts only a canonical absolute path, never returns a relative
+or `node_modules/.bin` result, and rejects hits inside a marked source/workspace boundary.
 Whatever it returns is spawned with the live API key, and with `.` on `PATH`
 `command -v claude` prints `./claude` under dash — which is `/bin/sh` on Linux, the shell
 this uses — so the key could otherwise go to whatever file sat in the working directory.
@@ -149,6 +152,7 @@ using the old key — the exact rotation failure the "already exists" caveat was
 prevent, which that caveat cannot catch because `mcp add --scope user` exits 0 when the
 collision is in another scope.
 
-CI gains a `windows-latest` runner, and the suite now runs a real `.cmd` shim out of a
-directory whose name contains a space, asserting the arguments arrive intact. A Windows-only
-fix with no Windows CI is how this class of bug ships.
+CI gains a `windows-latest` runner. The suite models the published 2.1.212 npm manifest and
+native `bin/claude.exe` layout in a space-containing global prefix, asserts the shim is
+never executed, and verifies that arguments arrive intact at the native target. A
+Windows-only fix with no Windows CI is how this class of bug ships.

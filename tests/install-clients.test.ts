@@ -450,9 +450,11 @@ describe('describeCommandRedacted', () => {
   });
 });
 
-// Windows npm registration bypasses claude.cmd and invokes the installed package
-// entrypoint with the already-running Node process. This suite proves that behavior on
-// windows-latest, including a space-containing npm root and poisoned shell variables.
+// Windows npm registration bypasses claude.cmd and invokes the entrypoint declared by
+// the installed package. Current Claude Code releases declare bin/claude.exe, which
+// postinstall replaces with the platform-native binary. This suite models that exact
+// manifest/layout on windows-latest, including a space-containing npm root and
+// poisoned shell variables.
 describe(
   'runClaude against a Windows npm-global install',
   { skip: process.platform === 'win32' ? false : 'Windows-only behaviour' },
@@ -469,18 +471,33 @@ describe(
     }
 
     function writeInstall(dir: string, source?: string): string {
-      const cliDir = path.join(
+      const packageDir = path.join(
         dir,
         'node_modules',
         '@anthropic-ai',
         'claude-code'
       );
-      fs.mkdirSync(cliDir, { recursive: true });
+      const binDir = path.join(packageDir, 'bin');
+      fs.mkdirSync(binDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(packageDir, 'package.json'),
+        JSON.stringify({
+          name: '@anthropic-ai/claude-code',
+          version: '2.1.212',
+          bin: { claude: 'bin/claude.exe' },
+        })
+      );
+      const nativeBinary = path.join(binDir, 'claude.exe');
+      try {
+        fs.linkSync(process.execPath, nativeBinary);
+      } catch {
+        fs.copyFileSync(process.execPath, nativeBinary);
+      }
       const argvFile = path.join(dir, 'argv.json');
       fs.writeFileSync(
-        path.join(cliDir, 'cli.js'),
+        path.join(dir, 'mcp'),
         source ??
-          `require("fs").writeFileSync(${JSON.stringify(argvFile)}, JSON.stringify(process.argv.slice(2)));\n`
+          `const fs = require("fs"); const path = require("path"); fs.writeFileSync(${JSON.stringify(argvFile)}, JSON.stringify([path.basename(process.argv[1]), ...process.argv.slice(2)]));\n`
       );
       const shim = path.join(dir, 'claude.cmd');
       fs.writeFileSync(
@@ -488,6 +505,19 @@ describe(
         `@ECHO off\r\nECHO shim-ran>"${path.join(dir, 'shim-ran')}"\r\n`
       );
       return shim;
+    }
+
+    async function inInstallDir<T>(
+      dir: string,
+      action: () => T | Promise<T>
+    ): Promise<T> {
+      const previous = process.cwd();
+      process.chdir(dir);
+      try {
+        return await action();
+      } finally {
+        process.chdir(previous);
+      }
     }
 
     function recordedArgv(dir: string): string[] | null {
@@ -518,10 +548,12 @@ describe(
           localScopeDirs: [],
         })
       );
-      const result = await client.add({
-        kind: 'local',
-        apiKey: 'rpa_ABC123def456',
-      });
+      const result = await inInstallDir(npmDir, () =>
+        client.add({
+          kind: 'local',
+          apiKey: 'rpa_ABC123def456',
+        })
+      );
       assert.equal(result.success, true, result.message);
       assert.deepEqual(recordedArgv(npmDir), [
         'mcp',
@@ -539,7 +571,7 @@ describe(
       assert.equal(fs.existsSync(path.join(npmDir, 'shim-ran')), false);
     });
 
-    it('ignores project PATH, COMSPEC, SystemRoot, and Node injection variables', () => {
+    it('ignores project PATH, COMSPEC, and Node injection variables', async () => {
       const npmDir = installDir();
       const shim = writeInstall(npmDir);
       const poisonDir = installDir();
@@ -552,18 +584,16 @@ describe(
       const saved = {
         PATH: process.env.PATH,
         comspec: process.env.comspec,
-        SystemRoot: process.env.SystemRoot,
         NODE_OPTIONS: process.env.NODE_OPTIONS,
         NODE_PATH: process.env.NODE_PATH,
       };
       process.env.PATH = poisonDir;
       process.env.comspec = path.join(poisonDir, 'fake-comspec.exe');
-      process.env.SystemRoot = poisonDir;
       process.env.NODE_OPTIONS = `--require=${hook}`;
       process.env.NODE_PATH = poisonDir;
       try {
         const args = ['mcp', 'add', 'runpod', '-e', 'RUNPOD_API_KEY=rpa_x&y'];
-        const result = runClaude(shim, args);
+        const result = await inInstallDir(npmDir, () => runClaude(shim, args));
         assert.equal(result.success, true, result.message);
         assert.deepEqual(recordedArgv(npmDir), args);
         assert.equal(fs.existsSync(path.join(npmDir, 'shim-ran')), false);
@@ -641,13 +671,15 @@ describe(
       assert.match(result.message ?? '', /trusted Claude Code npm entrypoint/);
     });
 
-    it('keeps the existing-entry caveat and real failures', () => {
+    it('keeps the existing-entry caveat and real failures', async () => {
       const existingDir = installDir();
       const existing = writeInstall(
         existingDir,
         'console.error("MCP server runpod already exists in user config"); process.exit(1);\n'
       );
-      const existingResult = runClaude(existing, ['mcp', 'add', 'runpod']);
+      const existingResult = await inInstallDir(existingDir, () =>
+        runClaude(existing, ['mcp', 'add', 'runpod'])
+      );
       assert.equal(existingResult.success, true);
       assert.match(existingResult.message ?? '', /entry left unchanged/);
 
@@ -656,7 +688,9 @@ describe(
         failingDir,
         'console.error("boom"); process.exit(3);\n'
       );
-      const failingResult = runClaude(failing, ['mcp', 'remove', 'runpod']);
+      const failingResult = await inInstallDir(failingDir, () =>
+        runClaude(failing, ['mcp', 'remove', 'runpod'])
+      );
       assert.equal(failingResult.success, false);
       assert.match(failingResult.message ?? '', /boom/);
     });
@@ -1213,17 +1247,21 @@ describe(
       }
     });
 
-    it('fails closed on a PATH hit when no project boundary exists', () => {
+    it('accepts a canonical global PATH hit when no project boundary exists', () => {
       const workspace = fs.mkdtempSync(
         path.join(os.tmpdir(), 'runpod-unmarked-')
       );
       const emptyHome = fs.mkdtempSync(path.join(os.tmpdir(), 'runpod-home-'));
+      const globalRoot = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'runpod-global-')
+      );
       const app = path.join(workspace, 'packages', 'app');
-      const bin = path.join(workspace, 'bin');
-      dirs.push(workspace, emptyHome);
+      const bin = path.join(globalRoot, 'bin');
+      dirs.push(workspace, emptyHome, globalRoot);
       fs.mkdirSync(app, { recursive: true });
-      fs.mkdirSync(bin);
-      fs.writeFileSync(path.join(bin, 'claude'), '#!/bin/sh\nexit 0\n', {
+      fs.mkdirSync(bin, { recursive: true });
+      const globalClaude = path.join(bin, 'claude');
+      fs.writeFileSync(globalClaude, '#!/bin/sh\nexit 0\n', {
         mode: 0o755,
       });
 
@@ -1236,7 +1274,7 @@ describe(
             homedir: emptyHome,
             cwd: app,
           }),
-          null
+          fs.realpathSync.native(globalClaude)
         );
       } finally {
         if (originalPath === undefined) delete process.env.PATH;

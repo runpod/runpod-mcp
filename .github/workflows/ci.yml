@@ -17,10 +17,10 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         node-version: [18, 20, 22]
-        # The install wizard has Windows-specific code paths (Claude Code
-        # detection, and spawning a .cmd shim through cross-spawn). The suite runs a
-        # real .cmd out of a space-containing directory, which only means anything
-        # here. Without a Windows runner a POSIX-only regression ships unnoticed —
+        # The install wizard has Windows-specific Claude Code detection and npm
+        # package-launch paths. The suite models the published native-bin package in
+        # a space-containing global prefix and proves its .cmd shim is bypassed.
+        # Without a Windows runner a POSIX-only regression ships unnoticed —
         # which is how issue #56 happened. One combination is enough: the rest of
         # the suite is platform-agnostic.
         include:
@@ -40,7 +40,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-          cache: "pnpm"
+          cache: 'pnpm'
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -65,4 +65,3 @@ jobs:
       - name: Build
         if: runner.os != 'Windows'
         run: pnpm run build
-
