@@ -8,8 +8,37 @@ import {
   resolveBackend,
   wantsAutoProbe,
   restVersionSummary,
+  v2AuthedGraphqlEnvironmentSkew,
   type Resource,
 } from '../src/_shared/backend.js';
+
+describe('v2AuthedGraphqlEnvironmentSkew', () => {
+  it('accepts both production defaults or an explicitly moved pair', () => {
+    assert.equal(v2AuthedGraphqlEnvironmentSkew({}), false);
+    assert.equal(
+      v2AuthedGraphqlEnvironmentSkew({
+        RUNPOD_REST_V2_API_URL: 'https://v2.dev.example/v2/',
+        RUNPOD_AUTHED_GRAPHQL_URL: 'https://api.dev.example/graphql/',
+      }),
+      false
+    );
+  });
+
+  it('rejects moving only one side of a cross-API read', () => {
+    assert.equal(
+      v2AuthedGraphqlEnvironmentSkew({
+        RUNPOD_REST_V2_API_URL: 'https://v2.dev.example/v2',
+      }),
+      true
+    );
+    assert.equal(
+      v2AuthedGraphqlEnvironmentSkew({
+        RUNPOD_AUTHED_GRAPHQL_URL: 'https://api.dev.example/graphql',
+      }),
+      true
+    );
+  });
+});
 
 describe('restVersionSummary', () => {
   it('echoes the global setting when set (lowercased)', () => {

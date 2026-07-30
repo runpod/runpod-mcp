@@ -97,6 +97,33 @@ export function authedGraphqlBase(env: Env): string {
   return env.RUNPOD_AUTHED_GRAPHQL_URL ?? 'https://api.runpod.io/graphql';
 }
 
+function normalizedApiBase(raw: string): string {
+  try {
+    const url = new URL(raw);
+    return `${url.protocol}//${url.host.toLowerCase()}${url.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return raw.trim().toLowerCase().replace(/\/+$/, '');
+  }
+}
+
+/**
+ * True when only one side of a v2 REST + authenticated GraphQL read has moved
+ * away from its production default. In that state the two calls are known not to
+ * describe the same environment, so merging their endpoint data is unsafe.
+ *
+ * When both are overridden the operator is responsible for configuring a matched
+ * pair; the APIs intentionally use different domains, so host equality cannot
+ * prove correspondence.
+ */
+export function v2AuthedGraphqlEnvironmentSkew(env: Env): boolean {
+  const restMoved =
+    normalizedApiBase(restV2Base(env)) !== normalizedApiBase(restV2Base({}));
+  const graphqlMoved =
+    normalizedApiBase(authedGraphqlBase(env)) !==
+    normalizedApiBase(authedGraphqlBase({}));
+  return restMoved !== graphqlMoved;
+}
+
 // ---- A0: unwrap a list response into a plain array ----
 // v1 returns a bare array; v2 wraps it in a per-resource envelope. Either way
 // we hand `capListResult` a plain array. Anything unexpected → [] (never throws

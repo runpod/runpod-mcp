@@ -1,4 +1,4 @@
-// ============== GraphQL gpuIds: read, inspect, re-assert ==============
+// ============== GraphQL gpuIds: read, inspect, update ==============
 // The v2 REST endpoint model cannot represent a GPU SKU exclusion. Its
 // EndpointGpuConfig is `{pools: string[], count?: number}` — a bare pool list with
 // no room for the '-<GPU type id>' entries that pin an individual SKU. The
@@ -9,11 +9,8 @@
 //
 //   1. `get-endpoint` on v2 cannot show exclusions, so a caller has no way to
 //      read-verify the live GPU config before or after a write (issue #63).
-//   2. A v2 PATCH round-trips the endpoint through a representation with nowhere
-//      to keep exclusions, so they can be lost even by an update that never
-//      mentions GPUs. `update-endpoint` reads this value before patching and refuses
-//      when exclusions exist; repairing afterwards with saveEndpoint is not safe
-//      because that mutation is non-sparse and cannot make the sequence atomic.
+//   2. `set-endpoint-gpus` is the explicit GraphQL path for changing the complete
+//      gpuIds value, including exclusions the v2 REST model cannot express.
 //
 // saveEndpoint is NOT a sparse update: an id+name+gpuIds-only call was measured
 // resetting workersMax 7→3, idleTimeout 42→10 and scalerValue 9→4 to server
@@ -40,7 +37,7 @@ import type { ToolRuntime } from '../tools/runtime.js';
 // compliance, modelReferences, templateId, networkVolumeIds, and `type` (written only
 // `...(input.type ? {type} : {})`, and validated only `if (input.type && …)`, so
 // echoing a future AiApiType the validator rejects — RT exists in the enum — would
-// fail every restore for no benefit). For those, omission is already a no-op and
+// fail every saveEndpoint update for no benefit). For those, omission is already a no-op and
 // echoing does harm. See buildSaveEndpointInput.
 export interface EndpointSnapshot {
   id: string;
@@ -78,16 +75,45 @@ interface EndpointSnapshotResponse {
   myself: { endpoint: EndpointSnapshot | null } | null;
 }
 
+export interface EndpointGpuIds {
+  gpuIds: string | null;
+}
+
+interface EndpointGpuIdsResponse {
+  myself: { endpoint: EndpointGpuIds | null } | null;
+}
+
+// Read-only consumers need exactly one field. Keeping this separate from the
+// mutation snapshot avoids making get-endpoint enrichment depend on unrelated
+// field authorization and schema details.
+export const GPU_IDS_QUERY = `
+  query EndpointGpuIds($id: String!) {
+    myself {
+      endpoint(id: $id) {
+        gpuIds
+      }
+    }
+  }
+`;
+
+export async function readEndpointGpuIds(
+  graphqlAuthed: ToolRuntime['graphqlAuthed'],
+  endpointId: string
+): Promise<EndpointGpuIds | null> {
+  const data = await graphqlAuthed<EndpointGpuIdsResponse>(GPU_IDS_QUERY, {
+    id: endpointId,
+  });
+  return data?.myself?.endpoint ?? null;
+}
+
 // Queries ONE endpoint by id. `myself { endpoints }` is capped at 400 rows,
 // oldest-first, with no pagination — so on a large account the endpoint being
-// updated could simply be absent from the list, and the exclusion protection would
-// silently no-op. `endpoint(id:)` has no cap, returns one row instead of 400, and
-// throws for an id it cannot see rather than reporting a false "no exclusions".
+// updated could simply be absent from the list. `endpoint(id:)` has no cap, returns
+// one row instead of 400, and throws for an id it cannot see.
 //
 // Selects only what the write needs. Every extra field is a liability: several
 // Endpoint fields carry their own field-level authorisation, and one rejected field
-// fails the entire read even when the rest came back — which turns into a skipped
-// GPU check on an endpoint that needed it.
+// fails the entire read even when the rest came back.
 // Exported for tests: a field present in EndpointSnapshot but missing from the
 // selection set reads as `undefined`, which JSON.stringify drops from the GraphQL
 // variables — silently turning an echo into an omission. That is exactly how the
@@ -195,7 +221,7 @@ export function buildSaveEndpointInput(
   //   modelReferences: gated on `!== undefined`. Reads as `[]` when there are none,
   //     and `[]` means "clear all model references" — which strips MODEL_NAME /
   //     MODEL_NAMES from the endpoint's env and rolls its workers. When non-empty it
-  //     re-validates every reference, and the restore carries no HuggingFace token,
+  //     re-validates every reference, and this mutation carries no HuggingFace token,
   //     so a gated model fails the write outright.
   //   compliance: gated on `!== undefined`. Reads as `[]`, never null — and `[]`
   //     resolves to NULL server-side, which CLEARS the endpoint's compliance

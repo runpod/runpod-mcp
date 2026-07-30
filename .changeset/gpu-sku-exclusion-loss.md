@@ -15,23 +15,26 @@ Confirmed live on 2026-07-29: an endpoint with `gpuIds` of
 `{"image": "..."}`, came back as plain `AMPERE_16`. Both exclusions were gone; every other
 field survived.
 
-`update-endpoint` now reads the authoritative `gpuIds` **before** an unrelated v2 PATCH.
-If the endpoint has SKU exclusions, the update is refused before mutation with a 409 that
-names the protected value. If the GraphQL check fails or the credential has no GraphQL
-user, the update is refused with a 503 instead of guessing that there is nothing to lose.
-No fields are changed in either case.
+`update-endpoint` now refuses **every** v2 update that omits `gpuPoolIds`. The refusal happens
+before any API request, is marked as an MCP tool error, and explains that no fields changed.
+To proceed, the caller must supply a non-empty pool list plus
+`replaceGpuSelection: true`, explicitly acknowledging replacement of the complete GPU
+selection in the same PATCH as the other changes. A v2 endpoint with
+`-<GPU type id>` exclusions that must survive cannot be updated through this tool until the
+REST facade is fixed.
 
-This deliberately fails closed rather than attempting a compensating GraphQL write after
-the PATCH. Such a write cannot make the update atomic: `saveEndpoint` is not sparse,
-unconditionally resets `workersStandby` to `workersMax`, can trigger a second release and
-worker restart, and can overwrite a concurrent update between the read and restore. It can
-also fail after the REST PATCH has already removed the exclusions. Refusing before the
-known-destructive operation is the only safe MCP-side behavior until the v2 REST facade
-preserves `gpuIds` when `gpu` is omitted.
+This stronger gate is required because a GraphQL pre-read does not make the later REST
+PATCH atomic. Even if the read shows no exclusions, a dashboard or API writer can add one
+before the PATCH; the lossy facade would then erase it. There is no ETag, endpoint version
+precondition, or transaction exposed to this client. A compensating GraphQL write after
+the PATCH is unsafe too: `saveEndpoint` is not sparse, unconditionally resets
+`workersStandby` to `workersMax`, can trigger a second release and worker restart, can
+overwrite concurrent changes, and can fail after the exclusions are already gone.
 
-An explicit non-empty `gpuPoolIds` bypasses the preservation guard because it is an
-intentional replacement of the endpoint's GPU selection. The tool description now says
-that v2 cannot carry existing `-<GPU type id>` exclusions forward in that request.
+Explicit non-empty `gpuPoolIds` plus `replaceGpuSelection: true` is different:
+replacement is the stated intent, not an attempt to preserve hidden exclusions. The
+separate acknowledgement prevents an agent from adding pools merely to satisfy a required
+field without recognizing that exclusions will be lost.
 
 `get-endpoint` gains `includeGpuIds`, which adds the real `gpuIds` string and a
 `gpuIdsHasExclusions` flag, so an endpoint's true GPU selection can be read back. Before
@@ -40,15 +43,17 @@ i.e. you had to write to read.
 
 Cost, stated fully:
 
-- One GraphQL read per v2 `update-endpoint` call that does not explicitly replace
-  `gpuPoolIds`.
-- No post-PATCH read, compensating write, second release, or restore race.
-- During a GraphQL outage, unrelated v2 endpoint updates fail closed. Availability is
-  traded for the guarantee that this tool will not silently erase SKU pins.
-- Endpoints with exclusions cannot receive unrelated v2 updates through this tool until
-  the REST facade is fixed; callers must use a path that preserves the complete `gpuIds`.
-- The caller's API key goes to the authenticated GraphQL host for the safety check. If
-  `RUNPOD_AUTHED_GRAPHQL_URL` is overridden, it must point only at a trusted host.
+- Every v2 update must explicitly resend `gpuPoolIds` and acknowledge replacement, even
+  when changing an unrelated field. Call `get-endpoint` first if the current pool list is
+  needed.
+- No GraphQL pre-read, post-PATCH read, compensating write, second release, environment
+  cross-check, or read/write race occurs on `update-endpoint`.
+- Endpoints with SKU exclusions cannot receive unrelated v2 updates through this tool
+  until the REST facade preserves `gpuIds` when `gpu` is omitted.
+- `get-endpoint includeGpuIds` still uses authenticated GraphQL for read-only enrichment,
+  but now requests only `gpuIds` rather than the full mutation snapshot. If exactly one
+  of the v2 REST or authenticated GraphQL hosts is overridden, enrichment is refused
+  rather than merging endpoints from known-different environments.
 
 `set-endpoint-gpus` refuses requests it cannot express, rather than accepting them and
 echoing the stored value back as though they had applied. Round 9 found one still missing,
@@ -56,6 +61,9 @@ and the reason it was missed is worth recording: this list previously claimed to
 exhaustive, and it was not. `pools` passed together with `gpuIds` was dropped by the same
 `??` precedence, one parameter over from the exclusion case that did have a guard. The
 completeness claim is gone; a new parameter feeding the gpuIds string needs its own guard.
+Its tool description also states the unavoidable full-read/full-save concurrency risk and
+the `workersStandby` reset; callers must not treat it as a sparse or atomic alternative for
+unrelated endpoint updates.
 
 Exclusions are also checked against the pools' real SKUs before anything is written. The
 API validates less than it appears to: it rejects an exclusion that is itself a pool id,
@@ -86,9 +94,9 @@ The refusals in full:
   `gpuIds: null`. A write happened, the pin was never stored, and the reply claimed
   success.
 
-`update-endpoint` treats a non-empty `gpuPoolIds` as explicit replacement intent and sends
-that PATCH directly. Omitted pools take the fail-closed preservation path; an explicitly
-empty list is still rejected rather than silently dropped by the mapper.
+`update-endpoint` treats a non-empty `gpuPoolIds` with `replaceGpuSelection: true` as
+explicit replacement intent and sends that PATCH directly. Omitted pools, omitted
+acknowledgement, and explicitly empty lists are refused before any API request.
 
 `create-pod` / `update-pod` reject `volumeInGb` without `volumeMountPath` (or the
 reverse). The persistent volume is one object, so a lone field was dropped and the pod

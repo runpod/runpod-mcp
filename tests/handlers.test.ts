@@ -1,6 +1,9 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { SNAPSHOT_QUERY } from '../src/_shared/endpoint-gpu-ids.js';
+import {
+  GPU_IDS_QUERY,
+  SNAPSHOT_QUERY,
+} from '../src/_shared/endpoint-gpu-ids.js';
 
 // Defense-in-depth: the v1 goldens assume the version env vars are unset. Clear
 // them before every test so a leak (from another test or the CI env) can't
@@ -1838,23 +1841,18 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       const { handlers, outbound } = harness({
         steps: [
           { status: 200, jsonBody: { scaling: { type: 'REQUEST_COUNT' } } },
-          {
-            status: 200,
-            jsonBody: {
-              data: {
-                myself: { endpoint: { gpuIds: 'AMPERE_48' } },
-              },
-            },
-          },
           { status: 200, jsonBody: { id: 'ep_1' } },
         ],
       });
       await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
         scalerValue: 7,
+        gpuPoolIds: ['AMPERE_48'],
+        replaceGpuSelection: true,
       });
-      // GET (scaler) → GraphQL (gpuIds preservation check) → PATCH.
-      assert.equal(outbound.length, 3);
+      // GET (scaler) → PATCH. Pools are explicit replacement intent, so there is
+      // no separate GraphQL check.
+      assert.equal(outbound.length, 2);
       assert.equal(outbound[0].method, 'GET');
       assert.equal(
         outbound[0].url,
@@ -1881,6 +1879,8 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       const out = await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
         scalerValue: 7.5,
+        gpuPoolIds: ['AMPERE_48'],
+        replaceGpuSelection: true,
       });
       assert.equal(outbound.length, 1, 'expected the GET only, no PATCH');
       assert.equal(outbound[0].method, 'GET');
@@ -1894,20 +1894,14 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       const { handlers, outbound } = harness({
         steps: [
           { status: 200, jsonBody: { scaling: {} } },
-          {
-            status: 200,
-            jsonBody: {
-              data: {
-                myself: { endpoint: { gpuIds: 'AMPERE_48' } },
-              },
-            },
-          },
           { status: 200, jsonBody: { id: 'ep_1' } },
         ],
       });
       await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
         scalerValue: 3,
+        gpuPoolIds: ['AMPERE_48'],
+        replaceGpuSelection: true,
       });
       assert.deepEqual(JSON.parse(outbound.at(-1)!.body!).scaling, {
         type: 'QUEUE_DELAY',
@@ -1919,25 +1913,17 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
   it('update-endpoint skips the scaler read when the caller names the scaler', async () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({
-        steps: [
-          {
-            status: 200,
-            jsonBody: {
-              data: {
-                myself: { endpoint: { gpuIds: 'AMPERE_48' } },
-              },
-            },
-          },
-          { status: 200, jsonBody: { id: 'ep_1' } },
-        ],
+        steps: [{ status: 200, jsonBody: { id: 'ep_1' } }],
       });
       await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
         scalerType: 'QUEUE_DELAY',
         scalerValue: 3,
+        gpuPoolIds: ['AMPERE_48'],
+        replaceGpuSelection: true,
       });
-      // No REST GET for the scaler — only the gpuIds check, then the PATCH.
-      assert.equal(outbound.length, 2);
+      // No REST GET for the scaler and no GraphQL pre-read.
+      assert.equal(outbound.length, 1);
       assert.equal(outbound.filter((o) => o.method === 'GET').length, 0);
       assert.equal(outbound.at(-1)!.method, 'PATCH');
     });
@@ -1946,22 +1932,14 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
   it('update-endpoint → PATCH <v2>/v2/serverless/{id} with mapped body, id not in body', async () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({
-        steps: [
-          {
-            status: 200,
-            jsonBody: {
-              data: {
-                myself: { endpoint: { gpuIds: 'AMPERE_48' } },
-              },
-            },
-          },
-          { status: 200, jsonBody: { id: 'ep_1' } },
-        ],
+        steps: [{ status: 200, jsonBody: { id: 'ep_1' } }],
       });
       await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
         workersMax: 5,
         imageName: 'img:3',
+        gpuPoolIds: ['AMPERE_48'],
+        replaceGpuSelection: true,
       });
       const sent = outbound.at(-1)!;
       assert.equal(sent.url, 'https://v2-rest.runpod.io/v2/serverless/ep_1');
@@ -1969,6 +1947,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       const body = JSON.parse(sent.body!);
       assert.deepEqual(body.workers, { max: 5 });
       assert.equal(body.image, 'img:3');
+      assert.deepEqual(body.gpu, { pools: ['AMPERE_48'] });
       assert.equal('endpointId' in body, false);
     });
   });
@@ -2000,69 +1979,39 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
 
   // ---- issue #63: v2 cannot represent GPU SKU exclusions ----
   // EndpointGpuConfig is {pools, count}, so a PATCH round-trips the endpoint
-  // through a shape with nowhere to keep '-<GPU type id>' entries. A repair write
-  // after the PATCH is unsafe: saveEndpoint resets workersStandby, races concurrent
-  // writers, and can fail after the exclusions are already gone. update-endpoint
-  // therefore checks first and refuses before mutation.
+  // through a shape with nowhere to keep '-<GPU type id>' entries. Neither a
+  // pre-read nor a repair write can make two APIs atomic. update-endpoint therefore
+  // refuses every unrelated v2 PATCH; a non-empty pool list is explicit replacement
+  // intent and travels in the same request as the other changes.
 
-  it('update-endpoint refuses before PATCH when the endpoint pins GPU SKUs', async () => {
+  it('update-endpoint refuses an unrelated v2 PATCH before any request', async () => {
     await withV2(async () => {
-      const { handlers, outbound } = harness({
-        steps: [
-          {
-            status: 200,
-            jsonBody: { data: { myself: { endpoint: gpuSnapshotFixture } } },
-          },
-        ],
-      });
+      const { handlers, outbound } = harness();
       const out = await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
         imageName: 'img:9',
       });
-      assert.equal(outbound.length, 1);
-      assert.equal(
-        outbound.some((request) => request.method === 'PATCH'),
-        false
-      );
+      assert.equal(outbound.length, 0);
+      assert.equal((out as { isError?: boolean }).isError, true);
       const reply = parseText(out);
       assert.equal(reply.status, 409);
       assert.match(reply.error as string, /Update not applied/);
-      assert.match(reply.error as string, /pins GPU SKUs/);
-      assert.match(
-        reply.error as string,
-        /AMPERE_48,ADA_48_PRO,-NVIDIA RTX A6000/
-      );
-      assert.match(reply.error as string, /No fields were changed/);
+      assert.match(reply.error as string, /every v2 PATCH/);
+      assert.match(reply.error as string, /gpuPoolIds/);
     });
   });
 
-  it('update-endpoint patches normally when the endpoint has no exclusions', async () => {
+  it('update-endpoint cannot be green-lit by a stale pool-only pre-read', async () => {
     await withV2(async () => {
-      const { handlers, outbound } = harness({
-        steps: [
-          {
-            status: 200,
-            jsonBody: {
-              data: {
-                myself: {
-                  endpoint: {
-                    ...gpuSnapshotFixture,
-                    gpuIds: 'AMPERE_48,ADA_48_PRO',
-                  },
-                },
-              },
-            },
-          },
-          { status: 200, jsonBody: { id: 'ep_1', image: 'img:9' } },
-        ],
-      });
+      const { handlers, outbound } = harness();
       const out = await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
         imageName: 'img:9',
       });
-      assert.equal(outbound.length, 2);
-      assert.equal(outbound[1].method, 'PATCH');
-      assert.equal(parseText(out).image, 'img:9');
+      // No GraphQL read means there is no check-then-PATCH window in which a
+      // concurrent writer can add an exclusion after a pool-only result.
+      assert.equal(outbound.length, 0);
+      assert.equal((out as { isError?: boolean }).isError, true);
     });
   });
 
@@ -2074,6 +2023,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       const out = await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
         gpuPoolIds: ['ADA_24'],
+        replaceGpuSelection: true,
       });
       // No GraphQL read and no compensation: explicitly supplying pools means
       // replacement, not preservation.
@@ -2086,44 +2036,32 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
     });
   });
 
-  it('update-endpoint fails closed when the gpuIds pre-read fails', async () => {
+  it('update-endpoint requires explicit replacement acknowledgement', async () => {
     await withV2(async () => {
-      const { handlers, outbound } = harness({
-        steps: [{ status: 500, jsonBody: {} }],
-      });
+      const { handlers, outbound } = harness();
       const out = await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
-        imageName: 'img:9',
+        gpuPoolIds: ['ADA_24'],
       });
-      assert.equal(outbound.length, 1);
-      assert.equal(
-        outbound.some((request) => request.method === 'PATCH'),
-        false
-      );
-      const reply = parseText(out);
-      assert.equal(reply.status, 503);
-      assert.match(reply.error as string, /Update not applied/);
-      assert.match(reply.error as string, /could not be checked/);
+      assert.equal(outbound.length, 0);
+      assert.equal((out as { isError?: boolean }).isError, true);
+      assert.equal(parseText(out).status, 409);
+      assert.match(parseText(out).error as string, /replaceGpuSelection:true/);
     });
   });
 
-  it('update-endpoint fails closed when GraphQL returns no user', async () => {
+  it('update-endpoint reports an empty pool replacement as an MCP error', async () => {
     await withV2(async () => {
-      const { handlers, outbound } = harness({
-        steps: [{ status: 200, jsonBody: { data: { myself: null } } }],
-      });
+      const { handlers, outbound } = harness();
       const out = await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
-        imageName: 'img:9',
+        gpuPoolIds: [],
       });
-      assert.equal(outbound.length, 1);
-      assert.equal(
-        outbound.some((request) => request.method === 'PATCH'),
-        false
-      );
+      assert.equal(outbound.length, 0);
+      assert.equal((out as { isError?: boolean }).isError, true);
       const reply = parseText(out);
-      assert.equal(reply.status, 503);
-      assert.match(reply.error as string, /no user for this credential/);
+      assert.equal(reply.status, 400);
+      assert.match(reply.error as string, /cannot be empty/);
     });
   });
 
@@ -2154,6 +2092,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       assert.equal(reply.gpuIdsHasExclusions, true);
       // The REST payload is preserved alongside it.
       assert.deepEqual(reply.gpu, { pools: ['AMPERE_48'], count: 1 });
+      assert.equal(JSON.parse(outbound[1].body!).query, GPU_IDS_QUERY);
     });
   });
 
@@ -2223,6 +2162,30 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
     });
   });
 
+  it('get-endpoint includeGpuIds does not merge mismatched API environments', async () => {
+    await withV2(async () => {
+      const previous = process.env.RUNPOD_REST_V2_API_URL;
+      process.env.RUNPOD_REST_V2_API_URL = 'https://v2.dev.example/v2';
+      try {
+        const { handlers, outbound } = harness({
+          steps: [{ status: 200, jsonBody: { id: 'ep_1' } }],
+        });
+        const out = await handlers.get('get-endpoint')!({
+          endpointId: 'ep_1',
+          includeGpuIds: true,
+        });
+        assert.equal(outbound.length, 1);
+        assert.match(
+          parseText(out)._gpuIdsError as string,
+          /do not form a matched pair/
+        );
+      } finally {
+        if (previous === undefined) delete process.env.RUNPOD_REST_V2_API_URL;
+        else process.env.RUNPOD_REST_V2_API_URL = previous;
+      }
+    });
+  });
+
   it('update-endpoint rejects a lone gpuCount on v2 instead of dropping it', async () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({ jsonBody: { id: 'ep_1' } });
@@ -2257,15 +2220,13 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
   it('update-endpoint allows gpuCount when sent with gpuPoolIds', async () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({
-        steps: [
-          { status: 200, jsonBody: { data: { myself: { endpoint: null } } } },
-          { status: 200, jsonBody: { id: 'ep_1' } },
-        ],
+        steps: [{ status: 200, jsonBody: { id: 'ep_1' } }],
       });
       await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
         gpuCount: 4,
         gpuPoolIds: ['AMPERE_80'],
+        replaceGpuSelection: true,
       });
       const body = JSON.parse(outbound.at(-1)!.body!);
       assert.deepEqual(body.gpu, { pools: ['AMPERE_80'], count: 4 });
@@ -3340,8 +3301,8 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
     'instanceIds',
     // Written only `...(input.type ? {type} : {})` and validated only
     // `if (input.type && …)`, so omission preserves it — and echoing a future
-    // AiApiType the validator rejects (RT is already in the enum) would fail every
-    // restore for no benefit.
+    // AiApiType the validator rejects (RT is already in the enum) would fail the
+    // saveEndpoint mutation for no benefit.
     'type',
   ];
   // Everything else must survive the echo unchanged, because the resolver writes it

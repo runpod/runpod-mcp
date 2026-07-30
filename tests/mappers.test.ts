@@ -15,6 +15,7 @@ import {
 } from '../src/_shared/mappers.js';
 import { parseLogSse } from '../src/tools/logs.js';
 import {
+  GPU_IDS_QUERY,
   hasGpuExclusions,
   SNAPSHOT_QUERY,
   buildSaveEndpointInput,
@@ -537,10 +538,9 @@ describe('parseLogSse', () => {
   });
 });
 
-// ---- hasGpuExclusions: the update-endpoint safety gate ----
-// If this returns false for a gpuIds string that DOES carry exclusions, they are
-// exposed to the destructive v2 PATCH (issue #63); if it returns true spuriously,
-// a safe update is refused. It had no direct tests.
+// ---- hasGpuExclusions: authoritative gpuIds reporting ----
+// get-endpoint includeGpuIds uses this to tell callers whether the GraphQL value
+// contains SKU exclusions the v2 REST payload cannot represent.
 describe('hasGpuExclusions', () => {
   it('is false for pool-only gpuIds, and for absent values', () => {
     assert.equal(hasGpuExclusions('AMPERE_16'), false);
@@ -584,6 +584,27 @@ describe('hasGpuExclusions', () => {
     assert.equal(hasGpuExclusions('AMPERE_16,NVIDIA-RTX-A4500'), false);
     assert.equal(hasGpuExclusions('US-TX-3'), false);
     assert.equal(hasGpuExclusions('-NVIDIA-RTX-A4500'), true);
+  });
+});
+
+describe('GPU_IDS_QUERY is minimal', () => {
+  it('selects gpuIds and no mutation-snapshot fields', () => {
+    assert.match(GPU_IDS_QUERY, /endpoint\(id: \$id\)[\s\S]*gpuIds/);
+    for (const unrelated of [
+      'name',
+      'gpuCount',
+      'workersMin',
+      'workersMax',
+      'idleTimeout',
+      'scalerType',
+      'instanceIds',
+    ]) {
+      assert.equal(
+        new RegExp(`\\b${unrelated}\\b`).test(GPU_IDS_QUERY),
+        false,
+        unrelated
+      );
+    }
   });
 });
 
@@ -641,7 +662,7 @@ describe('SNAPSHOT_QUERY covers EndpointSnapshot', () => {
     // The extra-field check below only sees bare identifiers, so a sub-selection
     // (`networkVolumeIds { networkVolumeId }`) would slip past it — and those are
     // exactly the fields with their own field-level authorisation, where one rejection
-    // fails the WHOLE read and silently downgrades every update to a skipped GPU check.
+    // fails the whole set-endpoint-gpus snapshot read.
     const subSelections = bodyLines.filter(
       (line) =>
         /^[a-zA-Z]+[^{]*\{$/.test(line) && !/^(query|myself)\b/.test(line)
