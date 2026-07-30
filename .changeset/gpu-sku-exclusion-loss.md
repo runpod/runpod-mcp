@@ -95,13 +95,16 @@ exposes CPU config as read-only), and `gpuTypeIds` widened an SKU pin to the ent
 Both now return a 400 naming `RUNPOD_REST_VERSION=v1`, matching what `update-endpoint`
 already did for a lone `gpuCount`.
 
-The refusals in full:
+Input refusals include:
 
 - `excludeGpuTypeIds` without `pools` (exclusions are built onto a pool list, so alone
-  they have nowhere to go), and `excludeGpuTypeIds` alongside a raw `gpuIds` (which takes
-  precedence, so they would be dropped).
+  they have nowhere to go), and either `excludeGpuTypeIds` or `pools` alongside a raw
+  `gpuIds` (the raw and structured forms are mutually exclusive).
 - An explicitly empty `pools`, and an empty `gpuIds` string — the latter previously fell
   through to a message claiming the endpoint was a CPU one.
+- A bare `-` token in raw `gpuIds`. The backend accepts it as an empty exclusion, excludes
+  nothing, and leaves the endpoint eligible for every SKU in the pool while reporting
+  success.
 - A GPU selection aimed at a **CPU endpoint**. The server discards it silently:
   `computeType` is derived from `cpu*` instance ids, the GPU validator returns undefined
   for anything not GPU without reading `gpuIds` at all, and the update then writes
@@ -119,10 +122,11 @@ sets `allowUnvalidatedExclusions: true` remains a success and carries
 Omitted pools, omitted count, omitted acknowledgement, and explicitly empty lists are
 refused before any API request.
 
-`create-pod` / `update-pod` reject `volumeInGb` without `volumeMountPath` (or the
-reverse). The persistent volume is one object, so a lone field was dropped and the pod
-was created with no volume while the call reported success. A test had pinned that drop
-as correct behaviour.
+On the v2 GPU pod API, `create-pod` / `update-pod` reject `volumeInGb` without
+`volumeMountPath` (or the reverse). The v2 persistent volume is one object, so a lone field
+was dropped and the pod was created with no volume while the call reported success. v1
+keeps its longstanding independent-field behavior and default mount path, including the
+default-v2 CPU-pod fallback that routes to v1.
 
 Separately, `update-endpoint` now rejects a `gpuCount` sent without `gpuPoolIds` on v2. The
 v2 `gpu` object requires `pools`, so the mapper dropped `gpu` entirely and the PATCH said

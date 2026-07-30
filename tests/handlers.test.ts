@@ -172,7 +172,7 @@ describe('outbound-request golden (v1 unchanged)', () => {
     assert.equal(outbound[0].method, 'GET');
   });
 
-  it('create-pod → POST <rest>/v1/pods with body BYTE-IDENTICAL to params (v1 passthrough)', async () => {
+  it('create-pod → POST <rest>/v1/pods with body BYTE-IDENTICAL to params, including a size-only volume', async () => {
     const { handlers, outbound } = harness({ jsonBody: {} });
     const params = {
       name: 'p',
@@ -180,6 +180,8 @@ describe('outbound-request golden (v1 unchanged)', () => {
       gpuTypeIds: ['NVIDIA A100'],
       gpuCount: 2,
       containerDiskInGb: 20,
+      // Valid on v1: its API supplies the default mount path independently.
+      volumeInGb: 40,
       env: { K: 'V' },
     };
     await handlers.get('create-pod')!({ ...params });
@@ -269,18 +271,23 @@ describe('outbound-request golden (v1 unchanged)', () => {
     assert.equal(outbound[0].method, 'POST');
   });
 
-  it('update-pod → PATCH <rest>/v1/pods/{id}, body EXCLUDES podId (id-strip)', async () => {
+  it('update-pod → PATCH <rest>/v1/pods/{id}, preserves a size-only volume and strips podId', async () => {
     const { handlers, outbound } = harness({ jsonBody: {} });
     await handlers.get('update-pod')!({
       podId: 'pod_1',
       name: 'renamed',
+      volumeInGb: 200,
       env: { K: 'V' },
     });
     assert.equal(outbound[0].url, 'https://rest.runpod.io/v1/pods/pod_1');
     assert.equal(outbound[0].method, 'PATCH');
     const body = JSON.parse(outbound[0].body!);
     assert.equal('podId' in body, false, 'podId must be stripped from body');
-    assert.deepEqual(body, { name: 'renamed', env: { K: 'V' } });
+    assert.deepEqual(body, {
+      name: 'renamed',
+      volumeInGb: 200,
+      env: { K: 'V' },
+    });
   });
 
   it('update-network-volume → PATCH <rest>/v1/networkvolumes/{id}, body excludes id', async () => {
@@ -550,6 +557,7 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
         volumeInGb: 40,
       });
       assert.equal(outbound.length, 0, 'nothing may be sent');
+      assert.equal((out as { isError?: boolean }).isError, true);
       assert.equal(parseText(out).status, 400);
       assert.match(parseText(out).error as string, /must be sent together/);
     });
@@ -579,6 +587,7 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
         volumeMountPath: '/workspace',
       });
       assert.equal(outbound.length, 0);
+      assert.equal((out as { isError?: boolean }).isError, true);
       assert.match(parseText(out).error as string, /must be sent together/);
     });
   });
@@ -590,10 +599,15 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
         imageName: 'i',
         computeType: 'CPU',
         containerDiskInGb: 10,
+        // The default-v2 CPU route is actually a v1 call, where size-only is valid.
+        volumeInGb: 40,
       })) as { content: Array<{ text: string }> };
       // routed to v1 (v1 passthrough body), NOT v2
       assert.equal(outbound[0].url, 'https://rest.runpod.io/v1/pods');
-      assert.equal(JSON.parse(outbound[0].body!).imageName, 'i');
+      const body = JSON.parse(outbound[0].body!);
+      assert.equal(body.imageName, 'i');
+      assert.equal(body.volumeInGb, 40);
+      assert.equal(body.volumeMountPath, undefined);
       const payload = JSON.parse(out.content[0].text);
       assert.equal(payload._servedBy, 'v1');
       assert.match(payload._note, /v2 REST API does not support CPU pods/);
@@ -3865,6 +3879,7 @@ describe('create-endpoint v1-only fields on v2', () => {
         gpuPoolIds: ['AMPERE_16'],
         ...params,
       });
+      assert.equal((out as { isError?: boolean }).isError, true);
       const reply = parseText(out);
       assert.equal(reply.status, 400);
       assert.match(reply.error as string, pattern);
@@ -4321,6 +4336,19 @@ describe('set-endpoint-gpus input guards', () => {
     // '' survives `??`, so it used to reach the fallback branch and be reported as a CPU
     // endpoint — on an endpoint holding AMPERE_16,-NVIDIA RTX A4500.
     return reject({ gpuIds: '   ' }, /gpuIds cannot be empty/);
+  });
+
+  it('rejects a bare raw exclusion before any API request', async () => {
+    const { handlers, outbound } = harness({
+      jsonBodies: [snapshot(gpuEndpoint)],
+    });
+    const out = await handlers.get('set-endpoint-gpus')!({
+      endpointId: 'ep_1',
+      gpuIds: 'AMPERE_16,-',
+    });
+    assert.equal((out as { isError?: boolean }).isError, true);
+    assert.match(parseText(out).error as string, /bare "-"/);
+    assert.equal(outbound.length, 0, 'no read or mutation may be sent');
   });
 
   it('rejects a GPU selection on a CPU endpoint instead of letting the server drop it', async () => {

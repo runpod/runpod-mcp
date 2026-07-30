@@ -81,7 +81,7 @@ export function registerEndpointGpuTools(
         .string()
         .optional()
         .describe(
-          "Raw gpuIds string, e.g. 'ADA_24' or 'AMPERE_16,-NVIDIA RTX A4500'. Takes precedence over pools/excludeGpuTypeIds."
+          "Complete raw gpuIds string, e.g. 'ADA_24' or 'AMPERE_16,-NVIDIA RTX A4500'. Mutually exclusive with pools and excludeGpuTypeIds."
         ),
       pools: z
         .array(z.string())
@@ -160,6 +160,16 @@ export function registerEndpointGpuTools(
       // any NEW parameter feeding requestedGpuIds needs its own guard, and the claim
       // stays out.
 
+      // The backend accepts a bare "-" as an empty exclusion token. It excludes
+      // nothing, leaves the endpoint eligible for the whole pool, and still reports
+      // success. Reject the malformed raw token before any catalog/read/write call.
+      if (params.gpuIds !== undefined && rawGpuTokens.includes('-')) {
+        return jsonErrorReply({
+          error:
+            'gpuIds contains a bare "-" exclusion with no GPU type id. It would exclude nothing and leave the endpoint eligible for every SKU in the pool. Remove it or append the exact GPU type id. Nothing was changed.',
+        });
+      }
+
       // gpuIds is built as `pools + '-'-prefixed exclusions`, so exclusions with no
       // pools have nowhere to go.
       if (
@@ -173,9 +183,9 @@ export function registerEndpointGpuTools(
         });
       }
 
-      // A raw gpuIds takes precedence, so exclusions passed with it would be dropped.
-      // Appending them is not safe either — gpuIds may already carry exclusions, and
-      // merging two sources silently is how this class of bug started.
+      // A raw gpuIds is mutually exclusive with the structured sources. Appending
+      // exclusions is not safe — gpuIds may already carry them, and merging two
+      // sources silently is how this class of bug started.
       if (
         params.excludeGpuTypeIds !== undefined &&
         params.gpuIds !== undefined

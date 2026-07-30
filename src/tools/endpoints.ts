@@ -396,7 +396,7 @@ export function registerEndpointTools(
           (k) => params[k] !== undefined
         );
         if (v1OnlyFields.length > 0) {
-          return jsonReply({
+          return jsonErrorReply({
             error: `create-endpoint cannot apply ${v1OnlyFields.join(' or ')} on the v2 REST API — the field does not exist there, so it would be silently ignored and the endpoint created without it.${
               params.computeType === 'CPU'
                 ? ' v2 cannot create CPU endpoints at all (the API exposes CPU config as read-only), so this would have created a GPU endpoint.'

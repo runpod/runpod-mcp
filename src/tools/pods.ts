@@ -4,7 +4,13 @@ import { capListResult, listPaginationParams } from '../pagination.js';
 import { HttpError } from '../_shared/http.js';
 import { restV1Base, restV2Base } from '../_shared/backend.js';
 import { podBodyFromTemplate } from '../_shared/mappers.js';
-import { READ_ONLY, WRITE, DESTRUCTIVE, type ToolRuntime } from './runtime.js';
+import {
+  READ_ONLY,
+  WRITE,
+  DESTRUCTIVE,
+  jsonErrorReply,
+  type ToolRuntime,
+} from './runtime.js';
 import { logStreamParams, streamLogsReply } from './logs.js';
 
 // ============== POD MANAGEMENT TOOLS ==============
@@ -192,21 +198,6 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
     },
     { title: 'Create pod', ...WRITE },
     async (params) => {
-      // volumeInGb and volumeMountPath only mean anything together: the v2 mapper builds
-      // one `mounts.persistent: {size, path}` object and returns undefined unless both
-      // are present, so a lone one is dropped and the request becomes a no-op that
-      // reports success. Same class as update-endpoint's gpuCount guard.
-      if (
-        (params.volumeInGb === undefined) !==
-        (params.volumeMountPath === undefined)
-      ) {
-        return jsonReply({
-          error:
-            'volumeInGb and volumeMountPath must be sent together: the persistent volume is one object (size + path), so one without the other is dropped and nothing changes. Pass both, or neither.',
-          status: 400,
-        });
-      }
-
       const backend = backendFor('pods');
 
       // Template deploy is v2-only: v2 CreatePodRequest has no templateId, so we
@@ -300,6 +291,21 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
             throw error;
           }
         }
+
+        // Only the actual v2 GPU path maps the two fields into one
+        // `mounts.persistent: {size, path}` object. v1 accepts them independently
+        // (and supplies its own default mount path), including the CPU→v1 fallback
+        // above, so applying this guard before routing regresses valid v1 calls.
+        if (
+          (params.volumeInGb === undefined) !==
+          (params.volumeMountPath === undefined)
+        ) {
+          return jsonErrorReply({
+            error:
+              'volumeInGb and volumeMountPath must be sent together on the v2 GPU pod API: the persistent volume is one object (size + path), so one without the other would be dropped. Pass both, or neither. Nothing was created.',
+            status: 400,
+          });
+        }
       }
 
       let body = backend.mapCreate(params) as Record<string, unknown>;
@@ -390,22 +396,21 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
     { title: 'Update pod', ...WRITE, idempotentHint: true },
     async (params) => {
       const { podId, ...updateParams } = params;
-      // volumeInGb and volumeMountPath only mean anything together: the v2 mapper builds
-      // one `mounts.persistent: {size, path}` object and returns undefined unless both
-      // are present, so a lone one is dropped and the request becomes a no-op that
-      // reports success. Same class as update-endpoint's gpuCount guard.
+      const backend = backendFor('pods');
+      // v2 maps the two fields into one persistent-mount object. v1 updates them
+      // independently, so keep its longstanding passthrough behavior.
       if (
+        backend.version === 'v2' &&
         (updateParams.volumeInGb === undefined) !==
-        (updateParams.volumeMountPath === undefined)
+          (updateParams.volumeMountPath === undefined)
       ) {
-        return jsonReply({
+        return jsonErrorReply({
           error:
-            'volumeInGb and volumeMountPath must be sent together: the persistent volume is one object (size + path), so one without the other is dropped and nothing changes. Pass both, or neither.',
+            'volumeInGb and volumeMountPath must be sent together on the v2 pod API: the persistent volume is one object (size + path), so one without the other would be dropped. Pass both, or neither. Nothing was changed.',
           status: 400,
         });
       }
 
-      const backend = backendFor('pods');
       const body = backend.mapUpdate(updateParams) as Record<string, unknown>;
       const result = await callRestUrl(
         `${backend.base}${backend.get!(podId)}`,
