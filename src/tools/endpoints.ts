@@ -13,7 +13,7 @@ import {
   readEndpointGpuIds,
   hasGpuExclusions,
 } from '../_shared/endpoint-gpu-ids.js';
-import { v2AuthedGraphqlEnvironmentSkew } from '../_shared/backend.js';
+import { v2AuthedGraphqlEnvironmentPairStatus } from '../_shared/backend.js';
 
 // ============== ENDPOINT MANAGEMENT TOOLS ==============
 // Serverless endpoint CRUD, version-aware via the backend adapter.
@@ -106,7 +106,7 @@ export function registerEndpointTools(
   // Get Endpoint Details
   server.tool(
     'get-endpoint',
-    "Get one Serverless endpoint by id, optionally expanding template and worker details (v1 only). On v2 the reply carries `type` (queue-based vs load-balancing routing) and `requestUrls` — the run/runsync/status/... URLs for a queue endpoint, or the base + health URLs for a load-balancing one. Read those rather than constructing endpoint URLs by hand. NOTE: the `gpu.pools` list does NOT show GPU SKU exclusions; pass includeGpuIds to see an endpoint's true GPU selection.",
+    "Get one Serverless endpoint by id, optionally expanding template and worker details (v1 only). On v2 the reply carries `type` (queue-based vs load-balancing routing) and `requestUrls` — the run/runsync/status/... URLs for a queue endpoint, or the base + health URLs for a load-balancing one. Read those rather than constructing endpoint URLs by hand. NOTE: the `gpu.pools` list does NOT show GPU SKU exclusions; pass includeGpuIds to see an endpoint's true GPU selection. That enrichment combines REST and GraphQL only for the verified production pair, unless two custom hosts are explicitly acknowledged with allowUnverifiedEnvironmentPair:true.",
     {
       endpointId: z.string().describe('ID of the endpoint to retrieve'),
       includeTemplate: z
@@ -121,7 +121,13 @@ export function registerEndpointTools(
         .boolean()
         .optional()
         .describe(
-          "Add the authoritative `gpuIds` string (pools plus any '-<GPU type id>' SKU exclusions) via GraphQL (v2 only). The REST `gpu.pools` field cannot represent exclusions, so this is the only way to read an endpoint's real GPU selection without writing to it. Costs one extra request."
+          "Add the authoritative `gpuIds` string (pools plus any '-<GPU type id>' SKU exclusions) via GraphQL (v2 only). The REST `gpu.pools` field cannot represent exclusions, so this is the only way to read an endpoint's real GPU selection without writing to it. Costs one extra request and fails closed for unverified custom REST/GraphQL host pairs unless explicitly acknowledged."
+        ),
+      allowUnverifiedEnvironmentPair: z
+        .literal(true)
+        .optional()
+        .describe(
+          'Unsafe acknowledgement for includeGpuIds when both v2 REST and authenticated GraphQL use custom hosts. Their relationship cannot be verified from their different URLs. Omit to fail closed rather than merge potentially different environments.'
         ),
     },
     { title: 'Get endpoint', ...READ_ONLY },
@@ -165,11 +171,22 @@ export function registerEndpointTools(
         });
       }
 
-      if (v2AuthedGraphqlEnvironmentSkew(process.env)) {
+      const environmentPair = v2AuthedGraphqlEnvironmentPairStatus(process.env);
+      if (environmentPair === 'mismatch') {
         return jsonReply({
           ...(result as Record<string, unknown>),
           _gpuIdsError:
-            'gpuIds enrichment was not attempted because the v2 REST and authenticated GraphQL environment overrides do not form a matched pair. Override both RUNPOD_REST_V2_API_URL and RUNPOD_AUTHED_GRAPHQL_URL for the same environment, or leave both at their production defaults.',
+            'gpuIds enrichment was not attempted because exactly one of the v2 REST and authenticated GraphQL hosts was moved from its production default, so they are known to describe different environments. Override both RUNPOD_REST_V2_API_URL and RUNPOD_AUTHED_GRAPHQL_URL for the intended environment, or leave both at their production defaults.',
+        });
+      }
+      if (
+        environmentPair === 'unverified' &&
+        params.allowUnverifiedEnvironmentPair !== true
+      ) {
+        return jsonReply({
+          ...(result as Record<string, unknown>),
+          _gpuIdsError:
+            'gpuIds enrichment was not attempted because both v2 REST and authenticated GraphQL use custom hosts, and this client cannot verify that their different URLs describe the same environment. If they are an intentionally paired environment, retry with allowUnverifiedEnvironmentPair:true; otherwise correct the overrides.',
         });
       }
 
@@ -202,6 +219,12 @@ export function registerEndpointTools(
         ...(result as Record<string, unknown>),
         gpuIds: endpointGpuIds.gpuIds,
         gpuIdsHasExclusions: hasGpuExclusions(endpointGpuIds.gpuIds),
+        ...(environmentPair === 'unverified'
+          ? {
+              _environmentPairUnverified:
+                'Merged v2 REST and authenticated GraphQL data after allowUnverifiedEnvironmentPair:true. Both hosts are custom and their relationship could not be verified.',
+            }
+          : {}),
       });
     }
   );

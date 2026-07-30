@@ -1970,6 +1970,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
     gpuCount: 1,
     workersMin: 0,
     workersMax: 3,
+    workersStandby: 3,
     idleTimeout: 5,
     scalerType: 'QUEUE_DELAY',
     scalerValue: 4,
@@ -2201,11 +2202,78 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
         assert.equal(outbound.length, 1);
         assert.match(
           parseText(out)._gpuIdsError as string,
-          /do not form a matched pair/
+          /known to describe different environments/
         );
       } finally {
         if (previous === undefined) delete process.env.RUNPOD_REST_V2_API_URL;
         else process.env.RUNPOD_REST_V2_API_URL = previous;
+      }
+    });
+  });
+
+  it('get-endpoint requires an unsafe acknowledgement before merging two custom API hosts', async () => {
+    await withV2(async () => {
+      const previousRest = process.env.RUNPOD_REST_V2_API_URL;
+      const previousGraphql = process.env.RUNPOD_AUTHED_GRAPHQL_URL;
+      process.env.RUNPOD_REST_V2_API_URL = 'https://v2.dev.example/v2';
+      process.env.RUNPOD_AUTHED_GRAPHQL_URL =
+        'https://graphql.dev.example/graphql';
+      try {
+        const refused = harness({
+          steps: [{ status: 200, jsonBody: { id: 'ep_1' } }],
+        });
+        const refusedOut = await refused.handlers.get('get-endpoint')!({
+          endpointId: 'ep_1',
+          includeGpuIds: true,
+        });
+        assert.equal(refused.outbound.length, 1, 'REST read only');
+        assert.match(
+          parseText(refusedOut)._gpuIdsError as string,
+          /cannot verify/
+        );
+        assert.match(
+          parseText(refusedOut)._gpuIdsError as string,
+          /allowUnverifiedEnvironmentPair:true/
+        );
+
+        const acknowledged = harness({
+          steps: [
+            { status: 200, jsonBody: { id: 'ep_1' } },
+            {
+              status: 200,
+              jsonBody: {
+                data: {
+                  myself: {
+                    endpoint: {
+                      gpuIds: 'AMPERE_16,-NVIDIA RTX A4500',
+                    },
+                  },
+                },
+              },
+            },
+          ],
+        });
+        const acknowledgedOut = await acknowledged.handlers.get(
+          'get-endpoint'
+        )!({
+          endpointId: 'ep_1',
+          includeGpuIds: true,
+          allowUnverifiedEnvironmentPair: true,
+        });
+        assert.equal(acknowledged.outbound.length, 2);
+        const reply = parseText(acknowledgedOut);
+        assert.equal(reply.gpuIds, 'AMPERE_16,-NVIDIA RTX A4500');
+        assert.match(
+          reply._environmentPairUnverified as string,
+          /allowUnverifiedEnvironmentPair:true/
+        );
+      } finally {
+        if (previousRest === undefined)
+          delete process.env.RUNPOD_REST_V2_API_URL;
+        else process.env.RUNPOD_REST_V2_API_URL = previousRest;
+        if (previousGraphql === undefined)
+          delete process.env.RUNPOD_AUTHED_GRAPHQL_URL;
+        else process.env.RUNPOD_AUTHED_GRAPHQL_URL = previousGraphql;
       }
     });
   });
@@ -3266,6 +3334,7 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
       gpuCount: 1,
       workersMin: 2,
       workersMax: 7,
+      workersStandby: 7,
       idleTimeout: 42,
       scalerType: 'REQUEST_COUNT',
       scalerValue: 9,
@@ -3289,6 +3358,7 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
       gpuCount: 1,
       workersMin: 0,
       workersMax: 1,
+      workersStandby: 1,
       idleTimeout: 5,
       scalerType: 'QUEUE_DELAY',
       scalerValue: 4,
@@ -3329,12 +3399,15 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
     // saveEndpoint mutation for no benefit.
     'type',
   ];
+  // Read only for the collateral-reset guard. EndpointInput has no
+  // workersStandby field; the backend always derives it from workersMax.
+  const readOnlyKeys = ['workersStandby'];
   // Everything else must survive the echo unchanged, because the resolver writes it
   // unconditionally. gpuIds is the one field the tool replaces. Derived from the
   // fixture on purpose: add a field to the fixture and the test demands it be
   // handled one way or the other.
   const preservedKeys = Object.keys(endpoints[0]).filter(
-    (k) => k !== 'gpuIds' && !gatedKeys.includes(k)
+    (k) => k !== 'gpuIds' && !gatedKeys.includes(k) && !readOnlyKeys.includes(k)
   );
   // The snapshot query fetches ONE endpoint by id (myself.endpoints is capped at
   // 400 rows with no pagination, so it can't be relied on).
@@ -3359,6 +3432,7 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
     const out = await handlers.get('set-endpoint-gpus')!({
       endpointId: 'ep_pinme',
       gpuIds: 'AMPERE_16,-NVIDIA RTX A4500',
+      allowUnvalidatedExclusions: true,
     });
 
     assert.equal(outbound.length, 2);
@@ -3387,6 +3461,9 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
     // compliance tag and a model reference, so an echo would be visible here.
     for (const key of gatedKeys) {
       assert.equal(key in input, false, `${key} must NOT be echoed`);
+    }
+    for (const key of readOnlyKeys) {
+      assert.equal(key in input, false, `${key} is read-only`);
     }
     // No stray fields beyond the echo + the GPU change.
     assert.deepEqual(
@@ -3428,6 +3505,7 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
       pools: ['AMPERE_16', 'AMPERE_24'],
       excludeGpuTypeIds: ['NVIDIA RTX A4500', 'NVIDIA L4'],
       gpuCount: 2,
+      allowUnvalidatedExclusions: true,
     });
     const input = (
       JSON.parse(outbound[1].body!) as {
@@ -3479,6 +3557,57 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
     // The endpoint's own selection is carried over untouched.
     assert.equal(input.gpuIds, 'AMPERE_16');
     assert.equal(parseText(out).previousGpuIds, 'AMPERE_16');
+  });
+
+  it('refuses a collateral workersStandby reset before mutation, then reports old/new values when acknowledged', async () => {
+    const resetSnapshot = {
+      ...endpoints[0],
+      workersStandby: 2,
+      workersMax: 7,
+    };
+    const refused = harness({
+      jsonBodies: [{ data: { myself: { endpoint: resetSnapshot } } }],
+    });
+    const refusedOut = await refused.handlers.get('set-endpoint-gpus')!({
+      endpointId: 'ep_pinme',
+      gpuIds: 'ADA_24',
+    });
+    assert.equal((refusedOut as { isError?: boolean }).isError, true);
+    assert.equal(
+      refused.outbound.filter((o) => (o.body ?? '').includes('saveEndpoint'))
+        .length,
+      0
+    );
+    assert.deepEqual(parseText(refusedOut).workersStandbyReset, {
+      from: 2,
+      to: 7,
+    });
+    assert.match(
+      parseText(refusedOut).error as string,
+      /acknowledgeStandbyReset:true/
+    );
+
+    const acknowledged = harness({
+      jsonBodies: [{ data: { myself: { endpoint: resetSnapshot } } }, saveBody],
+    });
+    const acknowledgedOut = await acknowledged.handlers.get(
+      'set-endpoint-gpus'
+    )!({
+      endpointId: 'ep_pinme',
+      gpuIds: 'ADA_24',
+      acknowledgeStandbyReset: true,
+    });
+    assert.equal((acknowledgedOut as { isError?: boolean }).isError, undefined);
+    assert.equal(
+      acknowledged.outbound.filter((o) =>
+        (o.body ?? '').includes('saveEndpoint')
+      ).length,
+      1
+    );
+    assert.deepEqual(parseText(acknowledgedOut).workersStandbyReset, {
+      from: 2,
+      to: 7,
+    });
   });
 
   it('still refuses a call that changes nothing', () => {
@@ -3794,6 +3923,7 @@ describe('set-endpoint-gpus input guards', () => {
     gpuCount: 1,
     workersMin: 0,
     workersMax: 2,
+    workersStandby: 2,
     idleTimeout: 5,
     scalerType: 'QUEUE_DELAY',
     scalerValue: 4,
@@ -3854,6 +3984,9 @@ describe('set-endpoint-gpus input guards', () => {
         endpointId: 'ep_1',
         pools: ['AMPERE_16'],
         excludeGpuTypeIds: ['NVIDIA RTX 4000 Ada'],
+        // This acknowledgement applies only when validation cannot run; it must
+        // never override a validation result that proves the exclusion is wrong.
+        allowUnvalidatedExclusions: true,
       });
       assert.equal((out as { isError?: boolean }).isError, true);
       const reply = parseText(out);
@@ -3904,60 +4037,132 @@ describe('set-endpoint-gpus input guards', () => {
     });
   });
 
-  it('discloses when the catalog could not be read, instead of implying it checked', async () => {
+  it('validates exclusions embedded in a raw gpuIds string too', async () => {
     await withV2(async () => {
-      // Best-effort by design — this is a GraphQL tool and must keep working when the REST
-      // catalog is down. But an unchecked exclusion can silently widen the selection to the
-      // whole pool, so "not checked" has to be visible rather than absent.
-      const { handlers } = harness({
+      const { handlers, outbound } = harness({
+        jsonBodies: [catalog],
+      });
+      const out = await handlers.get('set-endpoint-gpus')!({
+        endpointId: 'ep_1',
+        gpuIds: 'AMPERE_16,-NVIDIA RTX 4000 Ada',
+      });
+      assert.equal((out as { isError?: boolean }).isError, true);
+      assert.match(
+        parseText(out).error as string,
+        /does not match any GPU type/
+      );
+      assert.equal(
+        outbound.some((o) => (o.body ?? '').includes('saveEndpoint')),
+        false
+      );
+    });
+  });
+
+  it('rejects a raw exclusion string with no pool before any request', async () => {
+    const { handlers, outbound } = harness();
+    const out = await handlers.get('set-endpoint-gpus')!({
+      endpointId: 'ep_1',
+      gpuIds: '-NVIDIA L4',
+    });
+    assert.equal((out as { isError?: boolean }).isError, true);
+    assert.match(parseText(out).error as string, /require at least one pool/);
+    assert.equal(outbound.length, 0);
+  });
+
+  it('fails closed when the catalog cannot be read, then allows an explicit unvalidated write', async () => {
+    await withV2(async () => {
+      const refused = harness({
+        steps: [{ status: 500, jsonBody: { error: 'catalog down' } }],
+      });
+      const refusedOut = await refused.handlers.get('set-endpoint-gpus')!({
+        endpointId: 'ep_1',
+        pools: ['AMPERE_16'],
+        excludeGpuTypeIds: ['NVIDIA RTX 4000 Ada Generation'],
+      });
+      assert.equal((refusedOut as { isError?: boolean }).isError, true);
+      assert.match(
+        parseText(refusedOut).error as string,
+        /allowUnvalidatedExclusions:true/
+      );
+      assert.equal(
+        refused.outbound.some((o) => (o.body ?? '').includes('saveEndpoint')),
+        false
+      );
+
+      const acknowledged = harness({
         steps: [
           { status: 500, jsonBody: { error: 'catalog down' } },
           { jsonBody: snapshot(gpuEndpoint) },
           { jsonBody: { data: { saveEndpoint: { id: 'ep_1', gpuIds: 'x' } } } },
         ],
       });
-      const out = await handlers.get('set-endpoint-gpus')!({
+      const acknowledgedOut = await acknowledged.handlers.get(
+        'set-endpoint-gpus'
+      )!({
         endpointId: 'ep_1',
         pools: ['AMPERE_16'],
         excludeGpuTypeIds: ['NVIDIA RTX 4000 Ada Generation'],
+        allowUnvalidatedExclusions: true,
       });
-      const reply = parseText(out);
+      const reply = parseText(acknowledgedOut);
       assert.equal(reply.error, undefined);
       assert.match(reply._exclusionsUnvalidated as string, /could not be read/);
+      assert.equal(
+        acknowledged.outbound.some((o) =>
+          (o.body ?? '').includes('saveEndpoint')
+        ),
+        true
+      );
     });
   });
 
-  it('does not validate exclusions against a known-mismatched REST environment', async () => {
+  it('fails closed for a known environment mismatch unless explicitly acknowledged', async () => {
     await withV2(async () => {
       const previous = process.env.RUNPOD_REST_V2_API_URL;
       process.env.RUNPOD_REST_V2_API_URL = 'https://v2.dev.example/v2';
       try {
-        const { handlers, outbound } = harness({
+        const refused = harness();
+        const refusedOut = await refused.handlers.get('set-endpoint-gpus')!({
+          endpointId: 'ep_1',
+          pools: ['AMPERE_16'],
+          excludeGpuTypeIds: ['NVIDIA RTX 4000 Ada Generation'],
+        });
+        assert.equal((refusedOut as { isError?: boolean }).isError, true);
+        assert.match(
+          parseText(refusedOut).error as string,
+          /known to describe different environments/
+        );
+        assert.equal(refused.outbound.length, 0);
+
+        const acknowledged = harness({
           jsonBodies: [
             snapshot(gpuEndpoint),
             { data: { saveEndpoint: { id: 'ep_1', gpuIds: 'x' } } },
           ],
         });
-        const out = await handlers.get('set-endpoint-gpus')!({
+        const acknowledgedOut = await acknowledged.handlers.get(
+          'set-endpoint-gpus'
+        )!({
           endpointId: 'ep_1',
           pools: ['AMPERE_16'],
           excludeGpuTypeIds: ['NVIDIA RTX 4000 Ada Generation'],
+          allowUnvalidatedExclusions: true,
         });
-        const reply = parseText(out);
+        const reply = parseText(acknowledgedOut);
         assert.equal(reply.error, undefined);
         assert.match(
           reply._exclusionsUnvalidated as string,
-          /do not form a matched environment pair/
+          /known to describe different environments/
         );
         assert.equal(
-          outbound.some((call) =>
+          acknowledged.outbound.some((call) =>
             call.url.startsWith('https://v2.dev.example/')
           ),
           false,
           'the mismatched REST catalog must not be consulted'
         );
         assert.equal(
-          outbound.length,
+          acknowledged.outbound.length,
           2,
           'GraphQL read + GraphQL mutation only'
         );
@@ -3968,30 +4173,99 @@ describe('set-endpoint-gpus input guards', () => {
     });
   });
 
-  it('discloses rather than refuses when the catalog carries no pool data', async () => {
+  it('treats two custom API hosts as unverified for exclusion validation', async () => {
+    await withV2(async () => {
+      const previousRest = process.env.RUNPOD_REST_V2_API_URL;
+      const previousGraphql = process.env.RUNPOD_AUTHED_GRAPHQL_URL;
+      process.env.RUNPOD_REST_V2_API_URL = 'https://v2.dev.example/v2';
+      process.env.RUNPOD_AUTHED_GRAPHQL_URL =
+        'https://graphql.dev.example/graphql';
+      try {
+        const refused = harness();
+        const refusedOut = await refused.handlers.get('set-endpoint-gpus')!({
+          endpointId: 'ep_1',
+          pools: ['AMPERE_16'],
+          excludeGpuTypeIds: ['NVIDIA RTX A4500'],
+        });
+        assert.equal((refusedOut as { isError?: boolean }).isError, true);
+        assert.match(parseText(refusedOut).error as string, /cannot verify/);
+        assert.equal(refused.outbound.length, 0);
+
+        const acknowledged = harness({
+          jsonBodies: [
+            snapshot(gpuEndpoint),
+            { data: { saveEndpoint: { id: 'ep_1', gpuIds: 'x' } } },
+          ],
+        });
+        const acknowledgedOut = await acknowledged.handlers.get(
+          'set-endpoint-gpus'
+        )!({
+          endpointId: 'ep_1',
+          pools: ['AMPERE_16'],
+          excludeGpuTypeIds: ['NVIDIA RTX A4500'],
+          allowUnvalidatedExclusions: true,
+        });
+        assert.equal(acknowledged.outbound.length, 2);
+        assert.match(
+          parseText(acknowledgedOut)._exclusionsUnvalidated as string,
+          /cannot verify/
+        );
+      } finally {
+        if (previousRest === undefined)
+          delete process.env.RUNPOD_REST_V2_API_URL;
+        else process.env.RUNPOD_REST_V2_API_URL = previousRest;
+        if (previousGraphql === undefined)
+          delete process.env.RUNPOD_AUTHED_GRAPHQL_URL;
+        else process.env.RUNPOD_AUTHED_GRAPHQL_URL = previousGraphql;
+      }
+    });
+  });
+
+  it('fails closed when the catalog carries no pool data unless explicitly acknowledged', async () => {
     // A catalog without a `pool` field cannot answer the membership question. Treating
     // "no data" as "no SKUs" makes every exclusion look unmatched and refuses a valid
     // request — the same false-refusal defect as misclassifying a client's parser, in
     // the fix for a false success. Mutating this check to always-build left the suite
     // green, so it gets its own test.
     await withV2(async () => {
-      const { handlers, outbound } = harness({
+      const refused = harness({
+        jsonBodies: [
+          { gpus: [{ id: 'NVIDIA RTX A4000' }, { id: 'NVIDIA RTX A4500' }] },
+        ],
+      });
+      const refusedOut = await refused.handlers.get('set-endpoint-gpus')!({
+        endpointId: 'ep_1',
+        pools: ['AMPERE_16'],
+        excludeGpuTypeIds: ['NVIDIA RTX A4500'],
+      });
+      assert.equal((refusedOut as { isError?: boolean }).isError, true);
+      assert.equal(
+        refused.outbound.some((o) => (o.body ?? '').includes('saveEndpoint')),
+        false
+      );
+
+      const acknowledged = harness({
         jsonBodies: [
           { gpus: [{ id: 'NVIDIA RTX A4000' }, { id: 'NVIDIA RTX A4500' }] },
           snapshot(gpuEndpoint),
           { data: { saveEndpoint: { id: 'ep_1', gpuIds: 'x' } } },
         ],
       });
-      const out = await handlers.get('set-endpoint-gpus')!({
+      const acknowledgedOut = await acknowledged.handlers.get(
+        'set-endpoint-gpus'
+      )!({
         endpointId: 'ep_1',
         pools: ['AMPERE_16'],
         excludeGpuTypeIds: ['NVIDIA RTX A4500'],
+        allowUnvalidatedExclusions: true,
       });
-      const reply = parseText(out);
+      const reply = parseText(acknowledgedOut);
       assert.equal(reply.error, undefined, reply.error as string);
       assert.match(reply._exclusionsUnvalidated as string, /could not be read/);
       assert.ok(
-        outbound.some((o) => (o.body ?? '').includes('saveEndpoint')),
+        acknowledged.outbound.some((o) =>
+          (o.body ?? '').includes('saveEndpoint')
+        ),
         'the write must still happen'
       );
     });
@@ -4027,6 +4301,16 @@ describe('set-endpoint-gpus input guards', () => {
     );
   });
 
+  it('rejects even an empty excludeGpuTypeIds source combined with raw gpuIds', () => {
+    return reject(
+      {
+        gpuIds: 'AMPERE_16,-NVIDIA RTX A4500',
+        excludeGpuTypeIds: [],
+      },
+      /cannot be combined/
+    );
+  });
+
   it('rejects an explicitly empty pools list', () => {
     // update-endpoint 400s the identical input on v2; this used to ignore it and apply
     // only the other fields.
@@ -4057,7 +4341,6 @@ describe('set-endpoint-gpus input guards', () => {
     const out = await handlers.get('set-endpoint-gpus')!({
       endpointId: 'ep_cpu',
       pools: ['ADA_24'],
-      excludeGpuTypeIds: ['NVIDIA L4'],
     });
     assert.equal((out as { isError?: boolean }).isError, true);
     const error = parseText(out).error as string;
@@ -4070,10 +4353,36 @@ describe('set-endpoint-gpus input guards', () => {
     );
   });
 
+  it('accepts GPU-prefixed instance flavors as GPU endpoints', async () => {
+    const { handlers, outbound } = harness({
+      jsonBodies: [
+        snapshot({
+          ...gpuEndpoint,
+          id: 'ep_gpu_flavor',
+          instanceIds: ['gpu1-4-16'],
+        }),
+        { data: { saveEndpoint: { id: 'ep_gpu_flavor', gpuIds: 'ADA_24' } } },
+      ],
+    });
+    const out = await handlers.get('set-endpoint-gpus')!({
+      endpointId: 'ep_gpu_flavor',
+      pools: ['ADA_24'],
+    });
+    assert.equal((out as { isError?: boolean }).isError, undefined);
+    assert.equal(
+      outbound.some((o) => (o.body ?? '').includes('saveEndpoint')),
+      true
+    );
+  });
+
   it('still accepts pools with exclusions, and a count-only change', async () => {
     // The guards must not reject anything expressible.
     for (const params of [
-      { pools: ['AMPERE_16'], excludeGpuTypeIds: ['NVIDIA RTX A4500'] },
+      {
+        pools: ['AMPERE_16'],
+        excludeGpuTypeIds: ['NVIDIA RTX A4500'],
+        allowUnvalidatedExclusions: true,
+      },
       { gpuCount: 2 },
       { minCudaVersion: '12.4' },
     ]) {

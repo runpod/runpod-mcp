@@ -14,9 +14,11 @@
 //
 // saveEndpoint is NOT a sparse update: an id+name+gpuIds-only call was measured
 // resetting workersMax 7→3, idleTimeout 42→10 and scalerValue 9→4 to server
-// defaults. So every field the resolver writes unconditionally has to be echoed back
-// — but ONLY those. Echoing a field whose write is gated does damage rather than
-// preventing it (see buildSaveEndpointInput). That balance is why the snapshot query
+// defaults. So every writable field the resolver writes unconditionally has to be
+// echoed back — but ONLY those. Echoing a field whose write is gated does damage
+// rather than preventing it (see buildSaveEndpointInput). workersStandby is the one
+// read-only exception: EndpointInput cannot preserve it, so the snapshot feeds a
+// fail-closed acknowledgement guard instead. That balance is why the snapshot query
 // and the input builder live together here rather than being reimplemented per call
 // site.
 
@@ -47,6 +49,10 @@ export interface EndpointSnapshot {
   gpuCount: number;
   workersMin: number;
   workersMax: number;
+  // Read-only. EndpointInput has no workersStandby field and saveEndpoint
+  // unconditionally rewrites it to workersMax, so set-endpoint-gpus uses this to
+  // refuse a collateral reset unless the caller explicitly acknowledges it.
+  workersStandby: number | null;
   idleTimeout: number;
   scalerType: string;
   scalerValue: number;
@@ -111,9 +117,9 @@ export async function readEndpointGpuIds(
 // updated could simply be absent from the list. `endpoint(id:)` has no cap, returns
 // one row instead of 400, and throws for an id it cannot see.
 //
-// Selects only what the write needs. Every extra field is a liability: several
-// Endpoint fields carry their own field-level authorisation, and one rejected field
-// fails the entire read even when the rest came back.
+// Selects only what the write or its collateral-reset guard needs. Every extra field
+// is a liability: several Endpoint fields carry their own field-level authorisation,
+// and one rejected field fails the entire read even when the rest came back.
 // Exported for tests: a field present in EndpointSnapshot but missing from the
 // selection set reads as `undefined`, which JSON.stringify drops from the GraphQL
 // variables — silently turning an echo into an omission. That is exactly how the
@@ -129,6 +135,7 @@ export const SNAPSHOT_QUERY = `
         gpuCount
         workersMin
         workersMax
+        workersStandby
         idleTimeout
         scalerType
         scalerValue
@@ -174,11 +181,13 @@ export function hasGpuExclusions(gpuIds: string | null | undefined): boolean {
 }
 
 /**
- * Builds a saveEndpoint input that echoes the snapshot back, with `overrides`
- * applied on top. Echoes every field the resolver writes unconditionally, because
- * omitting one of those resets it server-side — and deliberately omits the ones it
- * writes only when the input carries them, because echoing a read value back is what
- * does the damage there. The list of omissions and why is below.
+ * Builds a saveEndpoint input that echoes the writable snapshot fields back, with
+ * `overrides` applied on top. Echoes every input field the resolver writes
+ * unconditionally, because omitting one of those resets it server-side — and
+ * deliberately omits the ones it writes only when the input carries them, because
+ * echoing a read value back is what does the damage there. workersStandby has no
+ * input field and is handled by the caller's acknowledgement guard instead. The list
+ * of omissions and why is below.
  */
 export function buildSaveEndpointInput(
   snapshot: EndpointSnapshot,

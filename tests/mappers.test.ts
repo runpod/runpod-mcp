@@ -615,10 +615,10 @@ describe('GPU_IDS_QUERY is minimal', () => {
 // data loss. Fixture-based tests cannot catch this: the fake response returns what it
 // likes regardless of the selection set, which is how the instanceIds bug got in.
 describe('SNAPSHOT_QUERY covers EndpointSnapshot', () => {
-  // The fields the input builder reads off a snapshot. Kept as a literal list rather than
-  // derived from a type, because the interface does not exist at runtime — so this is
-  // the one place the two shapes are compared, and adding a field to either without
-  // the other fails here.
+  // The fields the input builder or collateral-reset guard reads off a snapshot. Kept
+  // as a literal list rather than derived from a type, because the interface does not
+  // exist at runtime — so this is the one place the two shapes are compared, and
+  // adding a field to either without the other fails here.
   const SNAPSHOT_FIELDS = [
     'id',
     'name',
@@ -626,6 +626,7 @@ describe('SNAPSHOT_QUERY covers EndpointSnapshot', () => {
     'gpuCount',
     'workersMin',
     'workersMax',
+    'workersStandby',
     'idleTimeout',
     'scalerType',
     'scalerValue',
@@ -719,6 +720,7 @@ describe('buildSaveEndpointInput', () => {
     gpuCount: 3,
     workersMin: 1,
     workersMax: 7,
+    workersStandby: 2,
     idleTimeout: 42,
     scalerType: 'REQUEST_COUNT',
     scalerValue: 9,

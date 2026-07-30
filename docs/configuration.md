@@ -6,13 +6,14 @@ Environment variables and behavior notes for the Runpod MCP server. See the [REA
 
 The server targets either the v1 REST API (`rest.runpod.io/v1`) or the newer v2 REST API (`v2-rest.runpod.io/v2`). It **defaults to v2**. These variables are read once at startup:
 
-| Variable                         | Values                 | Default                        | Effect                                                      |
-| -------------------------------- | ---------------------- | ------------------------------ | ----------------------------------------------------------- |
-| `RUNPOD_REST_VERSION`            | `v1` \| `v2` \| `auto` | `v2`                           | Version used for all resources.                             |
-| `RUNPOD_REST_VERSION_<RESOURCE>` | `v1` \| `v2` \| `auto` | —                              | Per-resource override (e.g. `RUNPOD_REST_VERSION_PODS=v2`). |
-| `RUNPOD_REST_V2_API_URL`         | URL                    | `https://v2-rest.runpod.io/v2` | v2 base URL.                                                |
-| `RUNPOD_REST_API_URL`            | URL                    | `https://rest.runpod.io/v1`    | v1 base URL.                                                |
-| `RUNPOD_SERVERLESS_API_URL`      | URL                    | `https://api.runpod.ai/v2`     | Serverless runtime base URL.                                |
+| Variable                         | Values                 | Default                         | Effect                                                      |
+| -------------------------------- | ---------------------- | ------------------------------- | ----------------------------------------------------------- |
+| `RUNPOD_REST_VERSION`            | `v1` \| `v2` \| `auto` | `v2`                            | Version used for all resources.                             |
+| `RUNPOD_REST_VERSION_<RESOURCE>` | `v1` \| `v2` \| `auto` | —                               | Per-resource override (e.g. `RUNPOD_REST_VERSION_PODS=v2`). |
+| `RUNPOD_REST_V2_API_URL`         | URL                    | `https://v2-rest.runpod.io/v2`  | v2 base URL.                                                |
+| `RUNPOD_REST_API_URL`            | URL                    | `https://rest.runpod.io/v1`     | v1 base URL.                                                |
+| `RUNPOD_SERVERLESS_API_URL`      | URL                    | `https://api.runpod.ai/v2`      | Serverless runtime base URL.                                |
+| `RUNPOD_AUTHED_GRAPHQL_URL`      | URL                    | `https://api.runpod.io/graphql` | Authenticated GraphQL operations unavailable through REST.  |
 
 Notes:
 
@@ -24,6 +25,28 @@ Notes:
 - `create-pod` for a **CPU pod** (`computeType: "CPU"`) on v2 is served by the v1 API (v2 has no CPU pods yet); the reply is flagged `_servedBy: "v1"`. Since that fallback hits the v1 base, set `RUNPOD_REST_API_URL` to match your environment when targeting a non-prod host. A v2 create with neither `gpuTypeIds` nor `computeType` is rejected — absence is never turned into a CPU pod.
 
 > **Migration note — `create-endpoint` / `update-endpoint` changed in v2.** Serverless endpoints now use an **inline config** instead of a `templateId`: `create-endpoint` requires `imageName` + `gpuPoolIds` (GPU **pool** names from `list-gpu-types`, e.g. `AMPERE_80`), plus optional `workersMin`/`workersMax`, scaler settings, `containerDiskInGb`, `env`, `flashboot`, etc. A pre-existing `{ templateId }` call now returns a clean `400`. Because the current v2 REST facade rebuilds a lossy GPU object on every PATCH, `update-endpoint` additionally requires the complete replacement selection on every call: non-empty `gpuPoolIds`, a positive integer `gpuCount`, and `replaceGpuSelection: true`. This cannot preserve `-<GPU type id>` SKU exclusions. Switch to the inline fields, or set `RUNPOD_REST_VERSION=v1` to keep the template-based model.
+
+### Cross-API endpoint safety
+
+`get-endpoint includeGpuIds:true` combines a v2 REST endpoint read with the authoritative
+GraphQL `gpuIds`. The production defaults are the only environment pair the client can
+verify. If one host is overridden, enrichment is refused. If both hosts are custom, their
+different URLs cannot prove they belong to the same dev/staging environment, so enrichment
+also fails closed unless the caller explicitly passes
+`allowUnverifiedEnvironmentPair:true`; the reply then includes
+`_environmentPairUnverified`.
+
+`set-endpoint-gpus` uses authenticated GraphQL for its read/write and the v2 REST GPU
+catalog only to validate SKU exclusions. If the catalog is unavailable or its environment
+cannot be verified, exclusions fail closed before mutation. Use
+`allowUnvalidatedExclusions:true` only when you deliberately accept that a misspelled or
+wrong-environment exclusion may exclude nothing and widen placement to the whole pool.
+
+GraphQL `saveEndpoint` also always derives `workersStandby` from `workersMax`. When those
+values currently differ, `set-endpoint-gpus` refuses the write unless
+`acknowledgeStandbyReset:true` is supplied; an acknowledged success reports both the old
+and new standby values. The full read/save is not atomic, so avoid concurrent endpoint
+edits.
 
 ## Serverless endpoint types and autoscaling
 

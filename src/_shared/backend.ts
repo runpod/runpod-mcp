@@ -106,22 +106,32 @@ function normalizedApiBase(raw: string): string {
   }
 }
 
+export type V2AuthedGraphqlEnvironmentPairStatus =
+  | 'production'
+  | 'mismatch'
+  | 'unverified';
+
 /**
- * True when only one side of a v2 REST + authenticated GraphQL read has moved
- * away from its production default. In that state the two calls are known not to
- * describe the same environment, so merging their endpoint data is unsafe.
+ * Classify whether v2 REST and authenticated GraphQL can safely be treated as
+ * one environment.
  *
- * When both are overridden the operator is responsible for configuring a matched
- * pair; the APIs intentionally use different domains, so host equality cannot
- * prove correspondence.
+ * The production defaults are the only pair this client can verify. Moving just
+ * one side is a known mismatch. Moving both sides may be a legitimate dev/staging
+ * pair, but the APIs intentionally use different domains, so URL comparison
+ * cannot prove that relationship; callers must fail closed or require an
+ * explicit unsafe acknowledgement before combining their data.
  */
-export function v2AuthedGraphqlEnvironmentSkew(env: Env): boolean {
+export function v2AuthedGraphqlEnvironmentPairStatus(
+  env: Env
+): V2AuthedGraphqlEnvironmentPairStatus {
   const restMoved =
     normalizedApiBase(restV2Base(env)) !== normalizedApiBase(restV2Base({}));
   const graphqlMoved =
     normalizedApiBase(authedGraphqlBase(env)) !==
     normalizedApiBase(authedGraphqlBase({}));
-  return restMoved !== graphqlMoved;
+  if (!restMoved && !graphqlMoved) return 'production';
+  if (restMoved !== graphqlMoved) return 'mismatch';
+  return 'unverified';
 }
 
 // ---- A0: unwrap a list response into a plain array ----

@@ -6,7 +6,7 @@ import {
   buildSaveEndpointInput,
   saveEndpoint,
 } from '../_shared/endpoint-gpu-ids.js';
-import { v2AuthedGraphqlEnvironmentSkew } from '../_shared/backend.js';
+import { v2AuthedGraphqlEnvironmentPairStatus } from '../_shared/backend.js';
 
 // ============== ENDPOINT GPU PINNING ==============
 // Sets which GPUs a Serverless endpoint's workers run on, including pinning
@@ -40,9 +40,9 @@ export function registerEndpointGpuTools(
   // nothing. The caller asked to pin one SKU and got the whole pool, reported as success.
   // Verified in runpod-backend node/graphql/schema/aiApiHelpers.ts:126-166.
   //
-  // Best-effort by design: this is a GraphQL tool that must keep working when the REST
-  // catalog is unavailable, so a failure here downgrades to a disclosure rather than
-  // blocking the write.
+  // Fail closed by default: this is a placement-safety check, and an unmatched
+  // exclusion silently widens the endpoint to the whole pool. A caller can explicitly
+  // accept an unavailable/unverified catalog with allowUnvalidatedExclusions:true.
   async function poolMembership(
     pools: string[]
   ): Promise<Map<string, string[]> | null> {
@@ -72,7 +72,7 @@ export function registerEndpointGpuTools(
 
   server.tool(
     'set-endpoint-gpus',
-    "Set which GPUs a Serverless endpoint's workers run on — including pinning specific GPU SKUs, which create-endpoint/update-endpoint cannot express. Provide either a raw gpuIds string, or pools plus optional excludeGpuTypeIds (GPU type ids from list-gpu-types) and the exclusion string is built for you: a pool allows every SKU in it, and excluding all but one SKU pins that SKU exactly (e.g. pools:['AMPERE_16'], excludeGpuTypeIds:['NVIDIA RTX 2000 Ada Generation','NVIDIA RTX 4000 Ada Generation','NVIDIA RTX A4500'] pins RTX A4000). The GraphQL API requires a full read-then-save: other settings are re-applied, EXCEPT workersStandby, which always resets to workersMax. The sequence is not atomic, so do not edit the endpoint concurrently; a change made between the read and save can be overwritten. Works on any Serverless endpoint via the authenticated GraphQL API.",
+    "Set which GPUs a Serverless endpoint's workers run on — including pinning specific GPU SKUs, which create-endpoint/update-endpoint cannot express. Provide either a raw gpuIds string, or pools plus optional excludeGpuTypeIds (GPU type ids from list-gpu-types) and the exclusion string is built for you: a pool allows every SKU in it, and excluding all but one SKU pins that SKU exactly (e.g. pools:['AMPERE_16'], excludeGpuTypeIds:['NVIDIA RTX 2000 Ada Generation','NVIDIA RTX 4000 Ada Generation','NVIDIA RTX A4500'] pins RTX A4000). The GraphQL API requires a non-atomic full read-then-save. It always resets workersStandby to workersMax; when that would change the endpoint, acknowledgeStandbyReset:true is required and the reply reports the old/new values. Exclusions are fail-closed when the REST catalog cannot validate them; allowUnvalidatedExclusions:true explicitly accepts that placement risk. Do not edit the endpoint concurrently because a change between the read and save can be overwritten.",
     {
       endpointId: z
         .string()
@@ -113,6 +113,18 @@ export function registerEndpointGpuTools(
         .describe(
           "Comma-separated allowed host CUDA versions (e.g. '12.8,12.7,12.6'). Omit to keep the current value. CUDA compatibility is part of GPU selection — a narrow list can leave an endpoint unable to schedule workers."
         ),
+      acknowledgeStandbyReset: z
+        .literal(true)
+        .optional()
+        .describe(
+          'Required as true when saveEndpoint would reset workersStandby to workersMax. This explicitly acknowledges the collateral autoscaling change; the success reply reports both values.'
+        ),
+      allowUnvalidatedExclusions: z
+        .literal(true)
+        .optional()
+        .describe(
+          'Unsafe acknowledgement allowing requested GPU SKU exclusions to be written when the v2 REST catalog cannot validate them or its environment cannot be verified against authenticated GraphQL. Without this flag the tool fails closed before any mutation.'
+        ),
     },
     { title: 'Set endpoint GPUs', ...WRITE, idempotentHint: true },
     async (params) => {
@@ -124,6 +136,18 @@ export function registerEndpointGpuTools(
               ...(params.excludeGpuTypeIds ?? []).map((id) => `-${id}`),
             ].join(',')
           : undefined);
+      const rawGpuTokens = (params.gpuIds ?? '')
+        .split(',')
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+      const validationPools =
+        params.pools ?? rawGpuTokens.filter((entry) => !entry.startsWith('-'));
+      const requestedExclusions =
+        params.gpuIds !== undefined
+          ? rawGpuTokens
+              .filter((entry) => entry.startsWith('-') && entry.length > 1)
+              .map((entry) => entry.slice(1))
+          : (params.excludeGpuTypeIds ?? []);
       // Every combination below was, at some point, silently accepted — the request
       // vanished, the stored value was echoed back, and the reply looked like it had
       // been applied. That is issue #63's own failure mode occurring inside the tool
@@ -152,7 +176,10 @@ export function registerEndpointGpuTools(
       // A raw gpuIds takes precedence, so exclusions passed with it would be dropped.
       // Appending them is not safe either — gpuIds may already carry exclusions, and
       // merging two sources silently is how this class of bug started.
-      if (params.excludeGpuTypeIds?.length && params.gpuIds) {
+      if (
+        params.excludeGpuTypeIds !== undefined &&
+        params.gpuIds !== undefined
+      ) {
         return jsonErrorReply({
           error:
             'gpuIds and excludeGpuTypeIds cannot be combined: a raw gpuIds string is used as-is, so the exclusions would be silently dropped. Put the exclusions in the gpuIds string yourself (comma-separated, each prefixed with "-"), or pass pools + excludeGpuTypeIds instead.',
@@ -210,29 +237,49 @@ export function registerEndpointGpuTools(
       // than letting "pin this one SKU" quietly become "use the whole pool".
       let exclusionsUnvalidated = false;
       let exclusionsValidationReason: string | undefined;
-      if (params.excludeGpuTypeIds?.length && params.pools?.length) {
-        const environmentSkew = v2AuthedGraphqlEnvironmentSkew(env);
-        const membership = environmentSkew
-          ? null
-          : await poolMembership(params.pools);
-        if (environmentSkew) {
+      if (requestedExclusions.length > 0) {
+        if (validationPools.length === 0) {
+          return jsonErrorReply({
+            error:
+              'GPU SKU exclusions require at least one pool in the complete GPU selection. Nothing was changed.',
+          });
+        }
+
+        const environmentPair = v2AuthedGraphqlEnvironmentPairStatus(env);
+        const membership =
+          environmentPair === 'production'
+            ? await poolMembership(validationPools)
+            : null;
+        if (environmentPair === 'mismatch') {
           exclusionsUnvalidated = true;
           exclusionsValidationReason =
-            'The v2 REST GPU catalog and authenticated GraphQL API do not form a matched environment pair, so the catalog was not consulted.';
+            'Exactly one of the v2 REST GPU catalog and authenticated GraphQL hosts was moved from its production default, so they are known to describe different environments and the catalog was not consulted.';
+        } else if (environmentPair === 'unverified') {
+          exclusionsUnvalidated = true;
+          exclusionsValidationReason =
+            'Both the v2 REST GPU catalog and authenticated GraphQL use custom hosts, and this client cannot verify that their different URLs describe the same environment, so the catalog was not consulted.';
         } else if (!membership) {
           exclusionsUnvalidated = true;
           exclusionsValidationReason = 'The GPU catalog could not be read.';
         } else {
           const available = [...membership.values()].flat();
-          const unmatched = params.excludeGpuTypeIds.filter(
+          const unmatched = requestedExclusions.filter(
             (id) => !available.includes(id)
           );
           if (unmatched.length > 0) {
             return jsonErrorReply({
-              error: `excludeGpuTypeIds ${unmatched.map((id) => `"${id}"`).join(', ')} ${unmatched.length === 1 ? 'does' : 'do'} not match any GPU type in ${params.pools.length === 1 ? 'pool' : 'pools'} ${params.pools.join(', ')}, so ${unmatched.length === 1 ? 'it' : 'they'} would exclude nothing and the endpoint would be left able to run on every SKU in the pool. Exclusions are matched by exact id. Nothing was changed.`,
+              error: `GPU ${unmatched.length === 1 ? 'exclusion' : 'exclusions'} ${unmatched.map((id) => `"${id}"`).join(', ')} ${unmatched.length === 1 ? 'does' : 'do'} not match any GPU type in ${validationPools.length === 1 ? 'pool' : 'pools'} ${validationPools.join(', ')}, so ${unmatched.length === 1 ? 'it' : 'they'} would exclude nothing and the endpoint would be left able to run on every SKU in the pool. Exclusions are matched by exact id. Nothing was changed.`,
               availableGpuTypeIds: Object.fromEntries(membership),
             });
           }
+        }
+        if (
+          exclusionsUnvalidated &&
+          params.allowUnvalidatedExclusions !== true
+        ) {
+          return jsonErrorReply({
+            error: `${exclusionsValidationReason} The requested GPU exclusions therefore cannot be validated safely. Nothing was changed. Correct the environment/catalog access, or retry with allowUnvalidatedExclusions:true to explicitly accept that an unmatched exclusion may exclude nothing and widen the endpoint to the whole pool.`,
+          });
         }
       }
 
@@ -270,7 +317,10 @@ export function registerEndpointGpuTools(
       // (aiApiHelpers.ts validateAndNormalizeGpuConfig, aiApi.ts:2711). So a write DID
       // happen, re-validating the config and eligible to roll the workers, while the
       // requested pin was never stored and the reply claimed success.
-      if (requestedGpuIds !== undefined && current.instanceIds.length > 0) {
+      const isCpuEndpoint =
+        current.instanceIds.length > 0 &&
+        current.instanceIds.every((id) => id.startsWith('cpu'));
+      if (requestedGpuIds !== undefined && isCpuEndpoint) {
         return jsonErrorReply({
           error: `Endpoint "${params.endpointId}" is a CPU endpoint (instances: ${current.instanceIds.join(', ')}), and a GPU selection cannot be applied to one — the server would discard it silently. Nothing was changed. Use update-endpoint to change a CPU endpoint's instance types.`,
         });
@@ -282,6 +332,17 @@ export function registerEndpointGpuTools(
       if (!gpuIds) {
         return jsonErrorReply({
           error: `Endpoint "${params.endpointId}" has no stored GPU selection to keep, so gpuIds or pools must be provided.`,
+        });
+      }
+
+      const standbyWillReset = current.workersStandby !== current.workersMax;
+      if (standbyWillReset && params.acknowledgeStandbyReset !== true) {
+        return jsonErrorReply({
+          error: `Update not applied: GraphQL saveEndpoint would reset workersStandby from ${String(current.workersStandby)} to workersMax (${current.workersMax}). Retry with acknowledgeStandbyReset:true to explicitly accept this collateral autoscaling change. Nothing was changed.`,
+          workersStandbyReset: {
+            from: current.workersStandby,
+            to: current.workersMax,
+          },
         });
       }
 
@@ -298,11 +359,20 @@ export function registerEndpointGpuTools(
       return jsonReply({
         endpoint: result.saveEndpoint,
         previousGpuIds: current.gpuIds,
-        // Disclosed, not omitted: an unmatched exclusion silently widens the selection
-        // to the whole pool, so "we could not check" has to be visible in the reply.
+        ...(standbyWillReset
+          ? {
+              workersStandbyReset: {
+                from: current.workersStandby,
+                to: current.workersMax,
+              },
+            }
+          : {}),
+        // Retained after the caller's explicit unsafe acknowledgement: an unmatched
+        // exclusion silently widens the selection to the whole pool, so "we could not
+        // check" must remain visible in the successful reply.
         ...(exclusionsUnvalidated
           ? {
-              _exclusionsUnvalidated: `${exclusionsValidationReason} The excludeGpuTypeIds could not be checked against the pools. An id that matches no SKU exactly is accepted by the API and excludes nothing — verify against the GPU catalog for the same environment, and re-read this endpoint with get-endpoint includeGpuIds:true.`,
+              _exclusionsUnvalidated: `${exclusionsValidationReason} The requested GPU exclusions could not be checked against the pools. An id that matches no SKU exactly is accepted by the API and excludes nothing — verify against the GPU catalog for the same environment, and re-read this endpoint with get-endpoint includeGpuIds:true.`,
             }
           : {}),
       });
