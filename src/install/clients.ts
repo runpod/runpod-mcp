@@ -70,7 +70,9 @@ function hostedServerConfig(
 
 // Read, edit, and write a JSON config while preserving the user's existing
 // formatting and comments (jsonc). Creates the file and parent dirs if missing.
-function upsertJsonServer(
+// Exported for tests: the client wrappers hardcode real config paths under $HOME, and
+// a test must never write there.
+export function upsertJsonServer(
   configPath: string,
   serverProperty: string,
   value: unknown
@@ -89,7 +91,13 @@ function upsertJsonServer(
     // unparseable, which the client then silently never loads. Refuse instead of
     // reporting success over a file we just confirmed is broken.
     const parseErrors: jsonc.ParseError[] = [];
-    jsonc.parse(updated, parseErrors, { allowTrailingComma: true });
+    // A leading UTF-8 BOM is not a syntax error to the clients that read these files,
+    // but jsonc reports InvalidSymbol at offset 0 for it — and PowerShell's Set-Content
+    // and Notepad both write BOMs by default, on the platform this wizard targets. So
+    // strip it for the validity check rather than refusing a perfectly loadable config.
+    jsonc.parse(updated.replace(/^\uFEFF/, ''), parseErrors, {
+      allowTrailingComma: true,
+    });
     if (parseErrors.length > 0) {
       return {
         success: false,
@@ -420,6 +428,10 @@ export function describeCommandRedacted(
 // failed" — `remove` treats those differently.
 export interface RunResult extends AddResult {
   refused?: boolean;
+  // Raw combined stdout+stderr, for callers that must inspect what the CLI said.
+  // INTERNAL ONLY — never surface this to a user: `claude mcp get` prints
+  // `Environment: RUNPOD_API_KEY=<plaintext>`.
+  output?: string;
 }
 
 /**
@@ -459,7 +471,8 @@ export function runClaude(
       success: false,
       message: redactSecret(errMessage(result.error), secret),
     };
-  if (result.status === 0) return { success: true };
+  const stdio = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+  if (result.status === 0) return { success: true, output: stdio };
   if (result.status === null) {
     return { success: false, message: `killed by ${result.signal}` };
   }
@@ -491,63 +504,108 @@ export function runClaude(
   };
 }
 
-// Whether the runpod entry is registered with Claude Code, in ANY scope:
-// true/false, or undefined when the probe itself could not answer.
-//
-// `claude mcp get <name>` exits 0 when the server exists and 1 with
-// `No MCP server named "runpod"` when it does not, and — unlike `mcp remove` — it is
-// not scope-pinned (observed, claude 2.1.220). Nothing else here can answer the only
-// question that matters: is the API key on disk or not?
-export type EntryPresence = boolean | undefined;
+// Which scope an entry was found in. `claude mcp get` reports it, and the scope is
+// the whole point: this wizard writes USER scope, so a project-scope entry visible
+// from the current directory says nothing about whether our write landed.
+export type EntryScope = 'user' | 'local' | 'project' | 'unknown';
 
-function claudeEntryExists(binary: string): EntryPresence {
-  const probe = runClaude(binary, ['mcp', 'get', SERVER_NAME]);
-  if (probe.success) return true;
-  if (/No MCP server named/i.test(probe.message ?? '')) return false;
-  return undefined;
+export interface EntryProbe {
+  // undefined = the probe could not answer.
+  exists: boolean | undefined;
+  scope?: EntryScope;
 }
 
 /**
- * Turns a `claude mcp remove` run plus a presence probe into a removal outcome.
+ * Parses the scope out of `claude mcp get` output, e.g.
+ *   Scope: User config (available in all your projects)
+ *   Scope: Local config (private to you in this project)
+ *   Scope: Project config (shared via .mcp.json)
+ */
+export function parseEntryScope(output: string): EntryScope {
+  const line = /^\s*Scope:\s*(\w+)/im.exec(output);
+  const word = line?.[1]?.toLowerCase();
+  if (word === 'user' || word === 'local' || word === 'project') return word;
+  return 'unknown';
+}
+
+/**
+ * Asks Claude Code whether a runpod entry exists, and in which scope.
  *
- * The exit code alone CANNOT decide this, which is why the probe exists. Two
- * observations with claude 2.1.220, both of which made the previous version of this
- * function report a false success:
+ * `claude mcp get` exits 0 when it finds one and 1 with `No MCP server named
+ * "runpod"` when it does not. Crucially it is **cwd-pinned, not scope-agnostic**:
+ * local scope lives under `~/.claude.json → projects[<cwd>].mcpServers` and project
+ * scope in `<cwd>/.mcp.json`, so a local entry added in another directory is
+ * invisible here (observed, claude 2.1.220: added in projA, `mcp get` from projB
+ * exits 1 while the key is still in ~/.claude.json). An earlier revision of this file
+ * claimed the opposite and drew conclusions from it — hence every caller now treats
+ * "not found" as "not found in user scope or this directory", never as "gone".
+ */
+function claudeEntryProbe(binary: string): EntryProbe {
+  const probe = runClaude(binary, ['mcp', 'get', SERVER_NAME]);
+  // probe.output carries the plaintext key on success — parse, never propagate.
+  if (probe.success) {
+    return { exists: true, scope: parseEntryScope(probe.output ?? '') };
+  }
+  if (/No MCP server named/i.test(probe.message ?? ''))
+    return { exists: false };
+  return { exists: undefined };
+}
+
+/**
+ * Turns a `claude mcp remove` run plus a scope-aware probe into a removal outcome.
  *
- *   1. With an unwritable config the CLI prints `Removed MCP server runpod from user
- *      config / File modified: …` and exits **0** — while the entry, API key
- *      included, is still on disk.
- *   2. `claude mcp add` defaults to LOCAL scope, but the wizard removes with
- *      `--scope user`. An entry a user added by hand therefore yields
- *      `No MCP server named "runpod" in user scope`, exit 1 — which reads as
- *      "nothing to remove" while their key stays in `~/.claude.json`.
+ * The exit code cannot decide this, and neither can bare presence. Three facts, all
+ * observed with claude 2.1.220, each of which produced a false success in an earlier
+ * revision of this file:
  *
- * So the answer comes from what is observably on disk afterwards, and the exit code
- * is only a tiebreaker when the probe cannot answer. Getting this wrong is the
- * recurring bug in this file — three earlier revisions each reported a failed
- * removal as a green tick, by a different mechanism each time.
+ *   1. With an unwritable config, `mcp remove` prints `Removed MCP server runpod from
+ *      user config / File modified: …` and exits **0** having written nothing.
+ *   2. `claude mcp add` defaults to LOCAL scope while this removes from USER scope, so
+ *      a hand-added entry reports `No MCP server named "runpod" in user scope`, exit 1.
+ *   3. `mcp get` is cwd-pinned: a local-scope entry added in another directory is
+ *      invisible from here, so "not found" does NOT mean "the key is off disk".
+ *
+ * Because of (3) this function never claims the key is gone — only that nothing is
+ * registered in user scope or in this directory, and it says which was checked. That
+ * is the strongest true statement available without reading every project's config.
  */
 export function interpretRemoveResult(
   result: RunResult,
-  stillExists: EntryPresence,
+  probe: EntryProbe,
   binary = 'claude'
 ): AddResult {
   // A refusal ran nothing, so there is nothing to verify.
   if (result.refused) return result;
 
-  if (stillExists === true) {
+  const removeCmd = (scope: string) =>
+    describeCommand(binary, ['mcp', 'remove', SERVER_NAME, '--scope', scope]);
+
+  if (probe.exists === true) {
+    // Still in user scope: the removal did not take, whatever it reported. Cause (1).
+    if (probe.scope === 'user' || probe.scope === 'unknown') {
+      return {
+        success: false,
+        message: `the ${SERVER_NAME} entry is STILL registered in Claude Code's user config, so your API key is still on disk. Most likely the config is not writable — the CLI reports success anyway. Check with \`${describeCommand(binary, ['mcp', 'get', SERVER_NAME])}\`.`,
+      };
+    }
+    // Removed from user scope, but another scope still has an entry. The requested
+    // removal DID happen, so this is not a failure — but the key is not gone either,
+    // and only naming the scope makes that actionable. Cause (2).
     return {
-      success: false,
-      message: `the ${SERVER_NAME} entry is STILL registered with Claude Code, so your API key is still on disk. Two common causes: the config is not writable (the CLI reports success anyway), or the entry lives in a different scope — \`claude mcp add\` defaults to *local* scope while this removes from *user* scope. Check with \`${describeCommand(binary, ['mcp', 'get', SERVER_NAME])}\` and remove it with the matching \`--scope local\` or \`--scope project\`.`,
+      success: true,
+      message: `removed from user config, but a ${probe.scope}-scope ${SERVER_NAME} entry is also registered in this directory and still holds its own key — remove it with \`${removeCmd(probe.scope ?? 'local')}\``,
     };
   }
 
-  if (stillExists === false) {
-    // Verified gone. A non-zero exit here means there was nothing in user scope to
-    // begin with, which is the desired end state either way.
+  if (probe.exists === false) {
+    // Nothing visible from here. Deliberately not "nothing to remove" full stop: a
+    // local-scope entry added in a DIFFERENT directory is invisible to this probe.
+    // Cause (3).
     return {
       success: true,
-      message: result.success ? result.message : 'nothing to remove',
+      message: result.success
+        ? 'removed; no entry remains in your user config or this directory (a local-scope entry added in another directory would not be visible here)'
+        : 'nothing to remove in your user config or this directory (a local-scope entry added in another directory would not be visible here)',
     };
   }
 
@@ -563,108 +621,138 @@ export function interpretRemoveResult(
 }
 
 /**
- * Turns a `claude mcp add` run plus a presence probe into a registration outcome.
- * Same reason as above: with an unwritable config the CLI prints
- * `Added stdio MCP server runpod …` and exits 0 without writing anything, so a bare
- * exit code would report a configuration that does not exist.
+ * Turns a `claude mcp add` run plus a scope-aware probe into a registration outcome.
+ *
+ * Presence alone is not enough, which is what an earlier revision got wrong: with an
+ * unwritable config the CLI prints `Added stdio MCP server runpod …` and exits 0
+ * without writing, and if the current directory happens to carry a project- or
+ * local-scope runpod entry (a checked-in team `.mcp.json`, say) a bare presence check
+ * sees THAT and reports a verified success while the user's key was never written.
+ * This wizard writes USER scope, so only a user-scope entry confirms it.
  */
 export function interpretAddResult(
   result: RunResult,
-  exists: EntryPresence
+  probe: EntryProbe
 ): AddResult {
   if (result.refused || !result.success) return result;
-  if (exists === false) {
+
+  if (probe.exists === false) {
     return {
       success: false,
       message: `Claude Code reported success but no ${SERVER_NAME} entry is registered afterwards — its config is most likely not writable. Nothing was configured.`,
     };
   }
+
+  if (probe.exists === true && probe.scope && probe.scope !== 'user') {
+    return {
+      success: false,
+      message: `Claude Code reported success but the only ${SERVER_NAME} entry visible here is in ${probe.scope} scope, not the user config this wizard writes — so the write did not land (its config is most likely not writable). What you are seeing is a pre-existing ${probe.scope}-scope entry.`,
+    };
+  }
+
   return { success: true, message: result.message };
 }
 
 // Claude Code manages its own config, so we drive its CLI rather than writing
 // files directly. This mirrors the documented `claude mcp add` command.
-const claudeCodeClient: McpClient = {
-  id: 'claude-code',
-  name: 'Claude Code',
-  detect: () => Promise.resolve(findClaudeBinary() !== null),
-  add: (mode) => {
-    const binary = findClaudeBinary();
-    if (!binary) {
-      return Promise.resolve({
-        success: false,
-        message: 'claude CLI not found',
-      });
-    }
-    const args =
-      mode.kind === 'local'
-        ? [
-            'mcp',
-            'add',
-            SERVER_NAME,
-            '--scope',
-            'user',
-            '-e',
-            `RUNPOD_API_KEY=${mode.apiKey}`,
-            '--',
-            'npx',
-            '-y',
-            NPM_PACKAGE,
-          ]
-        : [
-            'mcp',
-            'add',
-            '--transport',
-            'http',
-            '--scope',
-            'user',
-            SERVER_NAME,
-            mode.url,
-          ];
-    // The key is passed in only so any message built from the CLI's output can have
-    // it stripped — see redactSecret.
-    const result = runClaude(
-      binary,
-      args,
-      mode.kind === 'local' ? mode.apiKey : undefined
-    );
-    // Verified against the config, not the exit code — see interpretAddResult.
-    return Promise.resolve(
-      interpretAddResult(
-        result,
-        result.success ? claudeEntryExists(binary) : undefined
-      )
-    );
-  },
-  remove: () => {
-    const binary = findClaudeBinary();
-    if (!binary) {
-      return Promise.resolve({
-        success: false,
-        message: 'claude CLI not found',
-      });
-    }
-    // Through runClaude so this shares the spawn handling: previously it called
-    // execFileSync directly, which cannot spawn a .cmd — and its catch reported
-    // success regardless, so a failed removal printed a tick while the entry
-    // stayed in the user's config.
-    const result = runClaude(binary, [
-      'mcp',
-      'remove',
-      '--scope',
-      'user',
-      SERVER_NAME,
-    ]);
-    return Promise.resolve(
-      interpretRemoveResult(
-        result,
-        result.refused ? undefined : claudeEntryExists(binary),
-        binary
-      )
-    );
-  },
-  describeTarget: () => 'Claude Code user config (via `claude mcp` CLI)',
-};
+/**
+ * Built around an injectable binary resolver.
+ *
+ * The injection is not decoration: tests that drive this client must NOT be able to
+ * reach a real `claude`. `findClaudeBinary` probes `~/.claude/local/claude`,
+ * `/usr/local/bin/claude` and `/opt/homebrew/bin/claude` BEFORE consulting PATH, so a
+ * harness that merely prepends a fake to PATH still runs the contributor's real CLI on
+ * any machine with a native-installer or Homebrew install — executing
+ * `claude mcp remove --scope user runpod` against their live config. CI cannot catch
+ * that, because clean runner images have none of those paths.
+ */
+export function createClaudeCodeClient(
+  resolveBinary: () => string | null
+): McpClient {
+  return {
+    id: 'claude-code',
+    name: 'Claude Code',
+    detect: () => Promise.resolve(resolveBinary() !== null),
+    add: (mode) => {
+      const binary = resolveBinary();
+      if (!binary) {
+        return Promise.resolve({
+          success: false,
+          message: 'claude CLI not found',
+        });
+      }
+      const args =
+        mode.kind === 'local'
+          ? [
+              'mcp',
+              'add',
+              SERVER_NAME,
+              '--scope',
+              'user',
+              '-e',
+              `RUNPOD_API_KEY=${mode.apiKey}`,
+              '--',
+              'npx',
+              '-y',
+              NPM_PACKAGE,
+            ]
+          : [
+              'mcp',
+              'add',
+              '--transport',
+              'http',
+              '--scope',
+              'user',
+              SERVER_NAME,
+              mode.url,
+            ];
+      // The key is passed in only so any message built from the CLI's output can have
+      // it stripped — see redactSecret.
+      const result = runClaude(
+        binary,
+        args,
+        mode.kind === 'local' ? mode.apiKey : undefined
+      );
+      // Verified against the config, not the exit code — see interpretAddResult.
+      return Promise.resolve(
+        interpretAddResult(
+          result,
+          result.success ? claudeEntryProbe(binary) : { exists: undefined }
+        )
+      );
+    },
+    remove: () => {
+      const binary = resolveBinary();
+      if (!binary) {
+        return Promise.resolve({
+          success: false,
+          message: 'claude CLI not found',
+        });
+      }
+      // Through runClaude so this shares the spawn handling: previously it called
+      // execFileSync directly, which cannot spawn a .cmd — and its catch reported
+      // success regardless, so a failed removal printed a tick while the entry
+      // stayed in the user's config.
+      const result = runClaude(binary, [
+        'mcp',
+        'remove',
+        '--scope',
+        'user',
+        SERVER_NAME,
+      ]);
+      return Promise.resolve(
+        interpretRemoveResult(
+          result,
+          result.refused ? { exists: undefined } : claudeEntryProbe(binary),
+          binary
+        )
+      );
+    },
+    describeTarget: () => 'Claude Code user config (via `claude mcp` CLI)',
+  };
+}
+
+const claudeCodeClient = createClaudeCodeClient(findClaudeBinary);
 
 const home = os.homedir();
 const appData = process.env.APPDATA ?? path.join(home, 'AppData', 'Roaming');

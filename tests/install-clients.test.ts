@@ -16,7 +16,9 @@ import {
   interpretAddResult,
   redactSecret,
   runClaude,
-  CLIENTS,
+  createClaudeCodeClient,
+  parseEntryScope,
+  upsertJsonServer,
 } from '../src/install/clients.js';
 
 // Regression coverage for issue #56 — the install wizard never detected Claude Code
@@ -306,31 +308,45 @@ describe('interpretRemoveResult', () => {
       { success: true },
       { success: false, message: 'No MCP server named "runpod" in user scope' },
     ]) {
-      const out = interpretRemoveResult(run, true, '/usr/bin/claude');
+      const out = interpretRemoveResult(
+        run,
+        { exists: true, scope: 'user' },
+        '/usr/bin/claude'
+      );
       assert.equal(out.success, false, JSON.stringify(run));
       assert.match(out.message ?? '', /still on disk/);
-      // Actionable: names both causes and how to check.
-      assert.match(out.message ?? '', /scope/);
+      // Actionable: names the likely cause and how to check.
+      assert.match(out.message ?? '', /not writable/);
       assert.match(out.message ?? '', /mcp get runpod/);
     }
   });
 
-  it('is a success only when the entry is verifiably gone', () => {
-    assert.deepEqual(interpretRemoveResult({ success: true }, false), {
-      success: true,
-      message: undefined,
-    });
-    // Nothing in user scope AND nothing anywhere else — the desired end state.
-    assert.deepEqual(
-      interpretRemoveResult(
-        {
-          success: false,
-          message: 'No MCP server named "runpod" in user scope',
-        },
-        false
-      ),
-      { success: true, message: 'nothing to remove' }
+  it('is a success when nothing is visible, but never claims the key is gone', () => {
+    // `mcp get` is cwd-pinned, so "not found" only rules out user scope and this
+    // directory — a local-scope entry added elsewhere is invisible. Saying "removed"
+    // flat out is what left a plaintext key behind.
+    for (const run of [
+      { success: true },
+      { success: false, message: 'No MCP server named "runpod" in user scope' },
+    ]) {
+      const out = interpretRemoveResult(run, { exists: false });
+      assert.equal(out.success, true, JSON.stringify(run));
+      assert.match(out.message ?? '', /user config or this directory/);
+      assert.match(out.message ?? '', /another directory/);
+    }
+  });
+
+  it('is a success that names the other scope when one remains there', () => {
+    // The user-scope removal did happen, so this is not a failure — but the key is not
+    // gone, and only naming the scope makes that actionable.
+    const out = interpretRemoveResult(
+      { success: true },
+      { exists: true, scope: 'local' },
+      '/usr/bin/claude'
     );
+    assert.equal(out.success, true);
+    assert.match(out.message ?? '', /local-scope/);
+    assert.match(out.message ?? '', /--scope local/);
   });
 
   it('reports a genuine failure as a failure', () => {
@@ -343,7 +359,10 @@ describe('interpretRemoveResult', () => {
       'spawnSync claude ENOENT',
     ]) {
       assert.deepEqual(
-        interpretRemoveResult({ success: false, message }, undefined),
+        interpretRemoveResult(
+          { success: false, message },
+          { exists: undefined }
+        ),
         { success: false, message },
         message
       );
@@ -351,7 +370,7 @@ describe('interpretRemoveResult', () => {
   });
 
   it('flags an unverifiable success rather than claiming a clean one', () => {
-    const out = interpretRemoveResult({ success: true }, undefined);
+    const out = interpretRemoveResult({ success: true }, { exists: undefined });
     assert.equal(out.success, true);
     assert.match(out.message ?? '', /could not be verified/);
   });
@@ -362,7 +381,10 @@ describe('interpretRemoveResult', () => {
       refused: true,
       message: 'running claude.cmd means going through cmd.exe …',
     };
-    assert.deepEqual(interpretRemoveResult(refusal, undefined), refusal);
+    assert.deepEqual(
+      interpretRemoveResult(refusal, { exists: undefined }),
+      refusal
+    );
   });
 });
 
@@ -371,10 +393,25 @@ describe('interpretAddResult', () => {
   // "Added stdio MCP server runpod …" and exits 0 having written nothing (observed,
   // claude 2.1.220). A bare exit code reports a configuration that does not exist.
   it('fails when nothing is registered afterwards, despite a zero exit', () => {
-    const out = interpretAddResult({ success: true }, false);
+    const out = interpretAddResult({ success: true }, { exists: false });
     assert.equal(out.success, false);
     assert.match(out.message ?? '', /not writable/);
     assert.match(out.message ?? '', /Nothing was configured/);
+  });
+
+  it('fails when the only visible entry is in a scope this wizard does not write', () => {
+    // An unwritable user config PLUS a checked-in team .mcp.json in cwd. A bare
+    // presence check sees the project entry and calls it a verified success while the
+    // user's key was never written anywhere.
+    for (const scope of ['project', 'local'] as const) {
+      const out = interpretAddResult(
+        { success: true },
+        { exists: true, scope }
+      );
+      assert.equal(out.success, false, scope);
+      assert.match(out.message ?? '', new RegExp(`${scope} scope`));
+      assert.match(out.message ?? '', /did not land/);
+    }
   });
 
   it('passes a verified success through, caveat and all', () => {
@@ -389,18 +426,27 @@ describe('interpretAddResult', () => {
 
   it('does not upgrade a failure or a refusal', () => {
     const failure = { success: false, message: 'boom' };
-    assert.deepEqual(interpretAddResult(failure, true), failure);
+    assert.deepEqual(
+      interpretAddResult(failure, { exists: true, scope: 'user' }),
+      failure
+    );
     const refusal = { success: false, refused: true, message: 'declined' };
-    assert.deepEqual(interpretAddResult(refusal, undefined), refusal);
+    assert.deepEqual(
+      interpretAddResult(refusal, { exists: undefined }),
+      refusal
+    );
   });
 
   it('accepts an unverifiable success rather than failing a working install', () => {
     // Failing closed here would break every user whose probe cannot answer, for a
     // problem that may not exist. Direction chosen deliberately.
-    assert.deepEqual(interpretAddResult({ success: true }, undefined), {
-      success: true,
-      message: undefined,
-    });
+    assert.deepEqual(
+      interpretAddResult({ success: true }, { exists: undefined }),
+      {
+        success: true,
+        message: undefined,
+      }
+    );
   });
 });
 
@@ -612,94 +658,90 @@ describe(
 // "nothing to remove"). A revision that stops routing through the helper, or re-adds a
 // catch, would pass every other test in this file.
 //
-// So this drives the real code path against a fake `claude` on PATH: candidate paths
-// do not exist, `command -v claude` resolves to the fake, and both the operation and
-// the verification probe hit it. POSIX-only — Windows resolution goes through
-// where.exe and PATHEXT, which a shell script cannot stand in for.
+// The binary is INJECTED, not planted on PATH. findClaudeBinary probes
+// ~/.claude/local/claude, /usr/local/bin/claude and /opt/homebrew/bin/claude before
+// consulting PATH, so a PATH-based harness would run the contributor's REAL claude —
+// executing `mcp remove --scope user runpod` against their live config — on any
+// machine with a native-installer or Homebrew install. CI could never catch that,
+// since clean runner images have none of those paths.
 describe(
-  'claudeCodeClient wiring (fake claude on PATH)',
+  'claudeCodeClient wiring (injected fake binary)',
   { skip: process.platform === 'win32' ? 'POSIX-only harness' : false },
   () => {
     const dirs: string[] = [];
-    const originalPath = process.env.PATH;
     after(() => {
-      process.env.PATH = originalPath;
       for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
     });
 
     // `behaviour` is a sh case body keyed on "$1 $2" (e.g. "mcp remove").
-    function fakeClaude(behaviour: string): void {
+    function fakeClaude(behaviour: string) {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rp-fake-claude-'));
       dirs.push(dir);
       const bin = path.join(dir, 'claude');
       fs.writeFileSync(bin, `#!/bin/sh\ncase "$1 $2" in\n${behaviour}\nesac\n`);
       fs.chmodSync(bin, 0o755);
-      process.env.PATH = `${dir}:${originalPath ?? ''}`;
+      return createClaudeCodeClient(() => bin);
     }
 
-    function claudeCode() {
-      const client = CLIENTS.find((c) => c.id === 'claude-code');
-      assert.ok(client, 'claude-code client must be registered');
-      return client;
-    }
+    // What `claude mcp get` prints for an entry in each scope, verbatim shape.
+    const getOutput = (scope: string) =>
+      `runpod:\n  Scope: ${scope} config (…)\n  Type: stdio\n`;
 
-    it('reports a failure when the entry survives the removal', async () => {
-      // The read-only-config case: the CLI says it removed the entry and exits 0,
-      // and the probe then finds it still registered.
-      fakeClaude(
+    it('fails a removal the entry survives in user scope', async () => {
+      // Unwritable config: the CLI says it removed the entry and exits 0, and the
+      // probe still finds it in USER scope.
+      const client = fakeClaude(
         `'mcp remove') echo 'Removed MCP server runpod from user config'; exit 0;;\n` +
-          `'mcp get') echo 'runpod:'; exit 0;;\n` +
+          `'mcp get') printf '%s' '${getOutput('User')}'; exit 0;;\n` +
           `*) exit 1;;`
       );
-      const result = await claudeCode().remove();
+      const result = await client.remove();
       assert.equal(result.success, false, JSON.stringify(result));
       assert.match(result.message ?? '', /still on disk/);
     });
 
-    it('reports a failure when the entry lives in another scope', async () => {
-      // `claude mcp add` defaults to LOCAL scope; this removes from USER scope. The
-      // CLI's "not in user scope" is true and useless — the key is still there.
-      fakeClaude(
-        `'mcp remove') echo 'No MCP server named \\"runpod\\" in user scope' 1>&2; exit 1;;\n` +
-          `'mcp get') echo 'runpod:'; exit 0;;\n` +
-          `*) exit 1;;`
-      );
-      const result = await claudeCode().remove();
-      assert.equal(result.success, false, JSON.stringify(result));
-      assert.match(result.message ?? '', /scope/);
-    });
-
-    it('succeeds when the entry is verifiably gone', async () => {
-      fakeClaude(
+    it('succeeds but names the other scope when one remains there', async () => {
+      // `claude mcp add` defaults to LOCAL scope; this removes USER scope. The
+      // user-scope removal genuinely happened, so this is NOT a failure — but the key
+      // is not gone either, and the reply has to say which scope still has one.
+      const client = fakeClaude(
         `'mcp remove') echo 'Removed MCP server runpod from user config'; exit 0;;\n` +
-          `'mcp get') echo 'No MCP server named \\"runpod\\"' 1>&2; exit 1;;\n` +
+          `'mcp get') printf '%s' '${getOutput('Local')}'; exit 0;;\n` +
           `*) exit 1;;`
       );
-      const result = await claudeCode().remove();
+      const result = await client.remove();
       assert.equal(result.success, true, JSON.stringify(result));
+      assert.match(result.message ?? '', /local-scope/);
+      assert.match(result.message ?? '', /--scope local/);
     });
 
-    it('treats nothing-to-remove as success only when nothing is registered', async () => {
-      fakeClaude(
-        `'mcp remove') echo 'No MCP server named \\"runpod\\" in user scope' 1>&2; exit 1;;\n` +
-          `'mcp get') echo 'No MCP server named \\"runpod\\"' 1>&2; exit 1;;\n` +
+    it('never claims the key is gone, only that nothing is visible from here', async () => {
+      // THE round-5 blocker. `mcp get` is cwd-pinned: a local-scope entry added in a
+      // DIFFERENT directory is invisible, so exit 1 does not mean the key is off disk.
+      // Claiming "nothing to remove" here is what left a plaintext key behind.
+      const client = fakeClaude(
+        `'mcp remove') echo 'No MCP server named "runpod" in user scope' 1>&2; exit 1;;\n` +
+          `'mcp get') echo 'No MCP server named "runpod".' 1>&2; exit 1;;\n` +
           `*) exit 1;;`
       );
-      const result = await claudeCode().remove();
-      assert.deepEqual(result, {
-        success: true,
-        message: 'nothing to remove',
-      });
+      const result = await client.remove();
+      assert.equal(result.success, true, JSON.stringify(result));
+      assert.match(result.message ?? '', /user config or this directory/);
+      // The claim it must NOT make.
+      assert.equal(
+        /^nothing to remove$/.test(result.message ?? ''),
+        false,
+        result.message
+      );
     });
 
     it('fails an add whose entry is absent afterwards', async () => {
-      // The unwritable-config case for add: exit 0, nothing written.
-      fakeClaude(
+      const client = fakeClaude(
         `'mcp add') echo 'Added stdio MCP server runpod'; exit 0;;\n` +
-          `'mcp get') echo 'No MCP server named \\"runpod\\"' 1>&2; exit 1;;\n` +
+          `'mcp get') echo 'No MCP server named "runpod".' 1>&2; exit 1;;\n` +
           `*) exit 1;;`
       );
-      const result = await claudeCode().add({
+      const result = await client.add({
         kind: 'local',
         apiKey: 'rpa_TESTKEY123456',
       });
@@ -707,14 +749,43 @@ describe(
       assert.match(result.message ?? '', /not writable/);
     });
 
+    it('fails an add when the only visible entry is a pre-existing project one', async () => {
+      // The other half of the round-5 blocker: an unwritable user config PLUS a
+      // checked-in team .mcp.json in cwd. A bare presence check sees the project entry
+      // and reports a verified success while the user's key was never written.
+      const client = fakeClaude(
+        `'mcp add') echo 'Added stdio MCP server runpod to user config'; exit 0;;\n` +
+          `'mcp get') printf '%s' '${getOutput('Project')}'; exit 0;;\n` +
+          `*) exit 1;;`
+      );
+      const result = await client.add({
+        kind: 'local',
+        apiKey: 'rpa_TESTKEY123456',
+      });
+      assert.equal(result.success, false, JSON.stringify(result));
+      assert.match(result.message ?? '', /project scope/);
+      assert.match(result.message ?? '', /did not land/);
+    });
+
+    it('accepts an add verified in user scope', async () => {
+      const client = fakeClaude(
+        `'mcp add') echo 'Added stdio MCP server runpod to user config'; exit 0;;\n` +
+          `'mcp get') printf '%s' '${getOutput('User')}'; exit 0;;\n` +
+          `*) exit 1;;`
+      );
+      const result = await client.add({
+        kind: 'local',
+        apiKey: 'rpa_TESTKEY123456',
+      });
+      assert.equal(result.success, true, JSON.stringify(result));
+    });
+
     it('never echoes the API key in a failure message', async () => {
-      // The CLI does echo -e tokens back on some errors; the message a user sees must
-      // not carry the key regardless of what the child printed.
-      fakeClaude(
+      const client = fakeClaude(
         `'mcp add') echo "Invalid environment variable format: RUNPOD_API_KEY=rpa_TESTKEY123456" 1>&2; exit 1;;\n` +
           `*) exit 1;;`
       );
-      const result = await claudeCode().add({
+      const result = await client.add({
         kind: 'local',
         apiKey: 'rpa_TESTKEY123456',
       });
@@ -726,5 +797,114 @@ describe(
       );
       assert.match(result.message ?? '', /YOUR_RUNPOD_API_KEY/);
     });
+
+    it('never surfaces the key that `mcp get` itself prints', async () => {
+      // `claude mcp get` prints `Environment: RUNPOD_API_KEY=<plaintext>`. The probe
+      // parses the scope out of that output and must not carry the rest anywhere.
+      const client = fakeClaude(
+        `'mcp remove') echo 'Removed MCP server runpod from user config'; exit 0;;\n` +
+          `'mcp get') printf 'runpod:\\n  Scope: User config\\n  Environment: RUNPOD_API_KEY=rpa_PROBELEAK99\\n'; exit 0;;\n` +
+          `*) exit 1;;`
+      );
+      const result = await client.remove();
+      assert.equal(
+        JSON.stringify(result).includes('rpa_PROBELEAK99'),
+        false,
+        JSON.stringify(result)
+      );
+    });
   }
 );
+
+describe('parseEntryScope', () => {
+  // The scope decides whether a visible entry says anything about OUR write, so a
+  // parse miss turns into a wrong verdict rather than a missing detail.
+  it('reads each scope claude reports', () => {
+    assert.equal(
+      parseEntryScope(
+        'runpod:\n  Scope: User config (available in all your projects)'
+      ),
+      'user'
+    );
+    assert.equal(
+      parseEntryScope('  Scope: Local config (private to you in this project)'),
+      'local'
+    );
+    assert.equal(
+      parseEntryScope('  Scope: Project config (shared via .mcp.json)'),
+      'project'
+    );
+  });
+
+  it('reports unknown rather than guessing', () => {
+    // An unknown scope is treated as "possibly ours", i.e. the conservative direction.
+    assert.equal(parseEntryScope('runpod:\n  Type: stdio'), 'unknown');
+    assert.equal(parseEntryScope(''), 'unknown');
+    assert.equal(parseEntryScope('  Scope: Enterprise config'), 'unknown');
+  });
+});
+
+describe('upsertJsonServer validity guard', () => {
+  const dirs: string[] = [];
+  after(() => {
+    for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function configIn(contents: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rp-json-cfg-'));
+    dirs.push(dir);
+    const file = path.join(dir, 'mcp.json');
+    fs.writeFileSync(file, contents);
+    return file;
+  }
+
+  const entry = {
+    command: 'npx',
+    args: ['-y', '@runpod/mcp-server@latest'],
+    env: { RUNPOD_API_KEY: 'rpa_GUARDKEY123456' },
+  };
+
+  it('accepts a config with a UTF-8 BOM', () => {
+    // PowerShell's Set-Content and Notepad both write BOMs by default, on the platform
+    // this wizard targets, and the clients strip them happily — but jsonc reports
+    // InvalidSymbol at offset 0. Refusing here would be a new hard failure where the
+    // previous revision succeeded.
+    const file = configIn('\uFEFF{\n  "mcpServers": {}\n}\n');
+    const result = upsertJsonServer(file, 'mcpServers', entry);
+    assert.equal(result.success, true, result.message);
+    assert.match(fs.readFileSync(file, 'utf8'), /rpa_GUARDKEY123456/);
+  });
+
+  it('refuses a config that would still not parse afterwards', () => {
+    // jsonc best-effort inserts into a broken file and hands back something still
+    // unparseable, which the client then silently never loads. Reporting that as
+    // configured is the same class of lie as a false success anywhere else here.
+    const file = configIn('{"mcpServers": {"other": {},\n');
+    const result = upsertJsonServer(file, 'mcpServers', entry);
+    assert.equal(result.success, false);
+    assert.match(result.message ?? '', /not valid JSON/);
+    // The broken file is left exactly as it was — the key is not written into it.
+    assert.equal(fs.readFileSync(file, 'utf8').includes('rpa_'), false);
+  });
+
+  it('accepts comments and trailing commas, which these configs legitimately carry', () => {
+    const file = configIn('{\n  // mine\n  "mcpServers": {},\n}\n');
+    assert.equal(upsertJsonServer(file, 'mcpServers', entry).success, true);
+  });
+
+  it('creates a new config 0600, since it holds a plaintext key', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rp-json-new-'));
+    dirs.push(dir);
+    const file = path.join(dir, 'nested', 'mcp.json');
+    assert.equal(upsertJsonServer(file, 'mcpServers', entry).success, true);
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  });
+});
+
+describe('argsSafeForCmdShell whitespace coverage', () => {
+  // CMD_META gained \t and \v alongside \r\n; npm's own escaper quotes on all four.
+  it('rejects tab and vertical tab', () => {
+    assert.equal(argsSafeForCmdShell(['-e', 'RUNPOD_API_KEY=rpa_a\tb']), false);
+    assert.equal(argsSafeForCmdShell(['-e', 'RUNPOD_API_KEY=rpa_a\vb']), false);
+  });
+});

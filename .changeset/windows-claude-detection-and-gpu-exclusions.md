@@ -48,12 +48,30 @@ matters — is the API key on disk or not?
   so an entry a user added by hand yields `No MCP server named "runpod" in user scope` and
   exit 1 — which reads as "nothing to remove" while their key stays in `~/.claude.json`.
 
-Both are settled by a `claude mcp get` probe, which is not scope-pinned. A removal that
-leaves the entry registered is reported as a failure naming both causes and how to check; an
-`add` whose entry is absent afterwards says the config is most likely not writable. An
-outcome that cannot be verified says so rather than claiming a clean result. (`remove` also
-previously called `execFileSync` directly — which cannot spawn a `.cmd` — and reported
-success from its `catch` regardless.)
+Both are settled by a `claude mcp get` probe, which reports the scope an entry lives in.
+The scope matters, and a third observation is why: **`mcp get` is cwd-pinned, not
+scope-agnostic.** Local scope lives at `~/.claude.json → projects[<cwd>].mcpServers` and
+project scope in `<cwd>/.mcp.json`, so an entry added in a different directory is invisible
+from here (verified: added in `projA`, `mcp get` from `projB` exits 1 while the key is still
+in `~/.claude.json`).
+
+So the wizard reports only what it can actually establish:
+
+- An entry still in **user** scope after a removal is a failure — the write did not take.
+- An entry in **local** or **project** scope is not: the requested user-scope removal did
+  happen. That is reported as a success which names the other scope and the command to
+  clear it, since the key is not gone.
+- Nothing visible is reported as "nothing remains in your user config or this directory",
+  explicitly noting that a local-scope entry added elsewhere would not be visible. It never
+  claims the key is off disk, because this probe cannot know that.
+- For `add`, only a **user**-scope entry confirms the write. A pre-existing project-scope
+  entry (a checked-in team `.mcp.json`) would otherwise make an unwritable user config look
+  like a verified success.
+- An outcome the probe cannot settle says it is unverified rather than claiming a clean
+  result.
+
+(`remove` also previously called `execFileSync` directly — which cannot spawn a `.cmd` — and
+reported success from its `catch` regardless.)
 
 Re-running the wizard over an existing entry no longer prints a bare success either. The
 CLI does not update an existing entry, so a user re-running the wizard after rotating their
