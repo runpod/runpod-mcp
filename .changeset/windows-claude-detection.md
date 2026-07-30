@@ -21,9 +21,12 @@ Directly probing the two documented user-level locations fixes the standard nati
 global-npm installs without extending that trust boundary.
 
 The POSIX `command -v` fallback remains for custom/package-manager installs, but accepts
-only canonical paths outside the current repository and rejects `node_modules/.bin`
-results. Relative, project-local, symlinked-back-into-project, or uncanonicalizable hits
-are treated as not detected rather than being executed with a credential.
+only canonical paths outside an identifiable source/workspace boundary and rejects
+`node_modules/.bin` results. Relative, project-local, symlinked-back-into-project,
+uncanonicalizable, or no-project-boundary hits are treated as not detected rather than
+being executed with a credential. Direct installer candidates are canonicalized through
+the same boundary check, so a standard-looking path that is really a symlink or junction
+back into the project is not trusted.
 
 Registration now spawns through `cross-spawn` instead of `child_process` directly. Node's
 docs are explicit that `.bat`/`.cmd` files "cannot be launched using
@@ -34,6 +37,14 @@ spawns directly with argv preserved, and anything else is wrapped in `cmd.exe /d
 with each argument quoted, backslash-doubled, `^`-escaped, and `windowsVerbatimArguments`
 set so libuv does not re-quote on top. Hand-rolling that escaping is what went wrong on the
 first attempt, which is the reason for the dependency.
+
+The npm shim's interpreters are not inherited from the launching project. `cross-spawn`
+normally honors `COMSPEC`, and a real npm global shim falls back to bare `node` when its
+prefix has no `node.exe`; either could resolve to a repository-supplied executable while
+the live key is in argv. The wizard now canonicalizes the system `cmd.exe` and its own
+Node executable, rejects project-local aliases, temporarily pins cross-spawn to that
+shell, and launches the shim with a minimal interpreter-only PATH. `NODE_OPTIONS` and
+`NODE_PATH` are removed from the child for the same reason.
 
 One case is still refused rather than escaped: an argument containing a `cmd.exe`
 metacharacter, bound for a shim. npm's generated `claude.cmd` re-expands its arguments
@@ -127,17 +138,18 @@ so the entry could land in a block nothing reads — a plaintext key on disk, re
 configured; both the add and the remove path now confirm the result with the client's own
 parser instead of trusting that an edit applied. And removing the sole entry of a
 `servers` block followed by a trailing comma left `{ , }` behind, turning a clean config
-into one with a parse error while printing a tick; that now falls back to a structural
-rewrite, which is disclosed because it costs the file's comments. The message also
+into one with a parse error while printing a tick; that removal now fails closed and
+leaves the original file untouched rather than structurally rewriting away unrelated
+comments and formatting. The message also
 distinguishes "this change would break it" from "it was already broken", because the advice
 differs.
 
-The POSIX PATH lookup now accepts only a canonical path outside the current repository and
-never returns a relative or `node_modules/.bin` result. Whatever it returns is spawned with
-the live API key, and with `.` on `PATH` `command -v claude` prints `./claude` under dash —
-which is `/bin/sh` on Linux, the shell this uses — so the key could otherwise go to whatever
-file sat in the working directory. A global-looking symlink back into the repository is
-rejected after canonicalization too.
+The POSIX PATH lookup now accepts only a canonical path outside an identifiable
+source/workspace boundary and never returns a relative or `node_modules/.bin` result.
+Whatever it returns is spawned with the live API key, and with `.` on `PATH`
+`command -v claude` prints `./claude` under dash — which is `/bin/sh` on Linux, the shell
+this uses — so the key could otherwise go to whatever file sat in the working directory.
+A global-looking symlink back into the repository is rejected after canonicalization too.
 
 An `add` that lands in user scope while a **local**-scope entry exists now says so. Local
 scope takes precedence, so in those directories the new entry is inert and Claude Code keeps

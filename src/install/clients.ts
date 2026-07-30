@@ -313,53 +313,30 @@ export function removeJsonServer(
             message: `the Runpod entry is still present in ${configPath} and could not be removed automatically — "${serverProperty}" appears more than once, so the edit targeted a block this client does not read. Delete the entry by hand.`,
           };
     }
-    let updated = jsonc.applyEdits(content, edits);
+    const updated = jsonc.applyEdits(content, edits);
     // A surgical delete can leave a hole the parser rejects: removing the sole member of
     // `servers` that is followed by a trailing comma yields `{ , }`. Verified turning a
     // clean VS Code mcp.json into one with a parse error while reporting success. Both
     // VS Code and Cursor happen to recover from that shape, but a strict client would
     // stop loading every other server in the file, so it cannot be left behind.
     //
-    // Fall back to a structural rewrite, which cannot produce a hole. It costs the
-    // file's comments and formatting, so it runs ONLY when the surgical edit actually
-    // broke a file that was previously fine — and the key must go either way, which is
-    // why this repairs rather than refusing like the add path does.
+    // Do not fall back to a structural rewrite. JSON.stringify would make the file
+    // parseable, but it would also erase comments and formatting from unrelated user
+    // configuration without asking. The edit has not been written yet, so failing
+    // closed leaves the original recoverable and gives the user a manual path.
     const brokeIt =
       parseFailure(updated, dialect) !== undefined &&
       parseFailure(content, dialect) === undefined;
     const stillThere =
       readBackEntry(updated, serverProperty, dialect) !== undefined;
-    let reformatted = false;
     if (brokeIt || stillThere) {
-      const parsed = parseAsClient(content, dialect);
-      if (typeof parsed !== 'object' || parsed === null) {
-        return {
-          success: false,
-          message: `could not remove the Runpod entry from ${configPath} without leaving it unparseable, and it could not be rewritten safely. Delete the entry by hand.`,
-        };
-      }
-      const root = parsed as Record<string, unknown>;
-      const servers = root[serverProperty];
-      if (typeof servers === 'object' && servers !== null) {
-        delete (servers as Record<string, unknown>)[SERVER_NAME];
-      }
-      updated = `${JSON.stringify(root, null, 2)}\n`;
-      reformatted = true;
-      if (readBackEntry(updated, serverProperty, dialect) !== undefined) {
-        return {
-          success: false,
-          message: `the Runpod entry could not be removed from ${configPath}. Delete it by hand.`,
-        };
-      }
+      return {
+        success: false,
+        message: `could not remove the Runpod entry from ${configPath} without ${brokeIt ? 'making the config unparseable' : 'leaving the entry present'}. The original file was left unchanged so its comments and formatting are preserved; delete the Runpod entry by hand.`,
+      };
     }
     fs.writeFileSync(configPath, updated, 'utf8');
-    return reformatted
-      ? {
-          success: true,
-          message:
-            'removed; the file had to be reformatted to stay valid, so any comments in it were lost',
-        }
-      : { success: true };
+    return { success: true };
   } catch (error) {
     return { success: false, message: errMessage(error) };
   }
@@ -528,30 +505,64 @@ export function pickClaudeBinary(
   );
 }
 
-function nearestRepositoryRoot(cwd: string): string {
+const PROJECT_BOUNDARY_MARKERS = [
+  '.git',
+  'package.json',
+  'pnpm-workspace.yaml',
+  'pnpm-lock.yaml',
+  'package-lock.json',
+  'yarn.lock',
+  'bun.lock',
+  'bun.lockb',
+] as const;
+
+/**
+ * The outermost source/workspace boundary containing cwd.
+ *
+ * `.git` alone is insufficient: release archives and copied workspaces routinely
+ * omit VCS metadata. A nested package can have its own package.json, so keep
+ * walking and retain the outermost ancestor carrying a project marker.
+ */
+function projectBoundary(cwd: string): string | null {
   let current = cwd;
+  let boundary: string | null = null;
   while (true) {
-    if (exists(path.join(current, '.git'))) return current;
+    if (
+      PROJECT_BOUNDARY_MARKERS.some((marker) =>
+        exists(path.join(current, marker))
+      )
+    ) {
+      boundary = current;
+    }
     const parent = path.dirname(current);
-    if (parent === current) return cwd;
+    if (parent === current) return boundary;
     current = parent;
   }
 }
 
 /**
- * Canonical trust check for a POSIX PATH result. `command -v` can print an
- * absolute symlink or an npm workspace bin above cwd, so lexical cwd containment
- * alone is insufficient. Known installer candidates do not use this path: they are
- * explicit user-level locations and are trusted separately.
+ * Canonical trust check for every Claude executable candidate.
+ *
+ * Direct user-level candidates are not automatically trusted: the path can be a
+ * symlink/junction into the repository, and APPDATA/HOME can be redirected. PATH
+ * results are stricter still and require an identifiable source/workspace boundary;
+ * without one there is no safe way to distinguish a sibling project tool from a
+ * custom global install.
  */
-function trustedPosixLookupBinary(binary: string, cwd: string): string | null {
+function trustedClaudeBinary(
+  binary: string,
+  cwd: string,
+  requireProjectBoundary: boolean
+): string | null {
   try {
     const canonicalBinary = fs.realpathSync.native(binary);
     const canonicalCwd = fs.realpathSync.native(cwd);
-    const projectRoot = nearestRepositoryRoot(canonicalCwd);
+    const projectRoot = projectBoundary(canonicalCwd);
     if (
       isNodeModulesBin(canonicalBinary) ||
-      pathIsInside(canonicalBinary, projectRoot, path)
+      (projectRoot !== null &&
+        pathIsInside(canonicalBinary, projectRoot, path)) ||
+      (requireProjectBoundary && projectRoot === null)
     ) {
       return null;
     }
@@ -632,7 +643,10 @@ export function findClaudeBinary(
     // relative one would win outright and receive the live API key.
     if (!path.isAbsolute(candidate) && !path.win32.isAbsolute(candidate))
       continue;
-    if (exists(candidate)) return candidate;
+    if (exists(candidate)) {
+      const trusted = trustedClaudeBinary(candidate, cwd, false);
+      if (trusted !== null) return trusted;
+    }
   }
 
   try {
@@ -646,10 +660,53 @@ export function findClaudeBinary(
       encoding: 'utf8',
     });
     const binary = pickClaudeBinary(out, platform, cwd);
-    return binary === null ? null : trustedPosixLookupBinary(binary, cwd);
+    return binary === null ? null : trustedClaudeBinary(binary, cwd, true);
   } catch {
     return null;
   }
+}
+
+interface WindowsShimRuntime {
+  shell: string;
+  env: NodeJS.ProcessEnv;
+}
+
+/**
+ * Builds the interpreter environment for a trusted Windows npm `.cmd` shim.
+ *
+ * cross-spawn otherwise selects `process.env.comspec`, and npm's real shim falls
+ * back to bare `node` when the global prefix has no node.exe. Both values are
+ * commonly inherited from the project-launching shell. Resolve cmd.exe and this
+ * process's Node canonically, reject project-local aliases, and give the child a
+ * minimal PATH that can resolve only those interpreters. NODE_OPTIONS/NODE_PATH are
+ * removed because they can execute project code inside the node process before
+ * Claude sees its arguments.
+ */
+function trustedWindowsShimRuntime(cwd: string): WindowsShimRuntime | null {
+  const systemRoot = process.env.SystemRoot;
+  if (!systemRoot || !path.win32.isAbsolute(systemRoot)) return null;
+  const shell = trustedClaudeBinary(
+    path.win32.join(systemRoot, 'System32', 'cmd.exe'),
+    cwd,
+    false
+  );
+  const node = trustedClaudeBinary(process.execPath, cwd, false);
+  if (!shell || !node) return null;
+
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (
+      ['path', 'comspec', 'pathext', 'node_options', 'node_path'].includes(
+        key.toLowerCase()
+      )
+    ) {
+      delete env[key];
+    }
+  }
+  env.ComSpec = shell;
+  env.Path = [path.dirname(node), path.dirname(shell)].join(path.delimiter);
+  env.PATHEXT = '.COM;.EXE;.BAT;.CMD';
+  return { shell, env };
 }
 
 /**
@@ -749,10 +806,37 @@ export function runClaude(
       message: `running ${binary} means going through cmd.exe, and an argument contains a character this wizard will not risk escaping around a credential. Run it yourself, substituting your key:\n    ${describeCommandRedacted(binary, args)}`,
     };
   }
-  const result = crossSpawn.sync(binary, args, {
-    stdio: 'pipe',
-    encoding: 'utf8',
-  });
+  let result;
+  if (needsCmdShell(binary, process.platform)) {
+    const runtime = trustedWindowsShimRuntime(process.cwd());
+    if (!runtime) {
+      return {
+        success: false,
+        refused: true,
+        message: `could not establish trusted Windows cmd.exe and node interpreters for ${binary}. Run it yourself, substituting your key:\n    ${describeCommandRedacted(binary, args)}`,
+      };
+    }
+    // cross-spawn 7 chooses the shell from process.env rather than options.env.
+    // The call is synchronous, so the override is scoped to parsing+spawning and
+    // restored before this function returns.
+    const previousComspec = process.env.comspec;
+    process.env.comspec = runtime.shell;
+    try {
+      result = crossSpawn.sync(binary, args, {
+        stdio: 'pipe',
+        encoding: 'utf8',
+        env: runtime.env,
+      });
+    } finally {
+      if (previousComspec === undefined) delete process.env.comspec;
+      else process.env.comspec = previousComspec;
+    }
+  } else {
+    result = crossSpawn.sync(binary, args, {
+      stdio: 'pipe',
+      encoding: 'utf8',
+    });
+  }
   // cross-spawn also synthesises an ENOENT here that raw spawnSync misses on
   // Windows, where a missing shell command exits 1 instead of failing to spawn.
   if (result.error)

@@ -605,6 +605,18 @@ describe(
       return writeShim(dir, `"${process.execPath}" "%~dp0record-argv.js" %*`);
     }
 
+    function npmStyleRecordingShim(dir: string): string {
+      return writeShim(
+        dir,
+        'IF EXIST "%~dp0\\node.exe" (\r\n' +
+          '  SET "_prog=%~dp0\\node.exe"\r\n' +
+          ') ELSE (\r\n' +
+          '  SET "_prog=node"\r\n' +
+          ')\r\n' +
+          '"%_prog%" "%~dp0record-argv.js" %*'
+      );
+    }
+
     function recordedArgv(dir: string): string[] | null {
       const file = path.join(dir, 'argv.json');
       return fs.existsSync(file)
@@ -711,6 +723,56 @@ describe(
       assert.equal(result.success, true, result.message);
       // What the child actually received, through runClaude and nothing else.
       assert.deepEqual(recordedArgv(dir), args);
+    });
+
+    it('pins trusted interpreters for a real npm-style shim', () => {
+      const dir = shimDir();
+      const shim = npmStyleRecordingShim(dir);
+      const projectBin = fs.mkdtempSync(path.join(os.tmpdir(), 'rp-poison-'));
+      const hookDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rp-hook-'));
+      dirs.push(projectBin, hookDir);
+      const fakeNodeMarker = path.join(projectBin, 'fake-node-ran');
+      const nodeOptionsMarker = path.join(hookDir, 'node-options-ran');
+      fs.writeFileSync(
+        path.join(projectBin, 'node.cmd'),
+        `@ECHO off\r\nECHO poisoned>"${fakeNodeMarker}"\r\n"${process.execPath}" %*\r\n`
+      );
+      const hook = path.join(hookDir, 'hook.cjs');
+      fs.writeFileSync(
+        hook,
+        `require("fs").writeFileSync(${JSON.stringify(nodeOptionsMarker)}, "poisoned");\n`
+      );
+
+      const originalPath = process.env.PATH;
+      const originalComspec = process.env.comspec;
+      const originalNodeOptions = process.env.NODE_OPTIONS;
+      const originalNodePath = process.env.NODE_PATH;
+      process.env.PATH = projectBin;
+      process.env.comspec = path.join(projectBin, 'fake-comspec.exe');
+      process.env.NODE_OPTIONS = `--require=${hook}`;
+      process.env.NODE_PATH = projectBin;
+      try {
+        const args = ['mcp', 'add', 'runpod'];
+        const result = runClaude(shim, args);
+        assert.equal(result.success, true, result.message);
+        assert.deepEqual(recordedArgv(dir), args);
+        assert.equal(fs.existsSync(fakeNodeMarker), false);
+        assert.equal(fs.existsSync(nodeOptionsMarker), false);
+        assert.equal(
+          process.env.comspec,
+          path.join(projectBin, 'fake-comspec.exe'),
+          'the caller environment must be restored'
+        );
+      } finally {
+        if (originalPath === undefined) delete process.env.PATH;
+        else process.env.PATH = originalPath;
+        if (originalComspec === undefined) delete process.env.comspec;
+        else process.env.comspec = originalComspec;
+        if (originalNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+        else process.env.NODE_OPTIONS = originalNodeOptions;
+        if (originalNodePath === undefined) delete process.env.NODE_PATH;
+        else process.env.NODE_PATH = originalNodePath;
+      }
     });
 
     it('treats "already exists" on a non-zero exit as success, with a caveat', () => {
@@ -1249,6 +1311,98 @@ describe(
         else process.env.PATH = originalPath;
       }
     });
+
+    it('rejects a direct user-level candidate symlinked into the project', () => {
+      const project = fs.mkdtempSync(path.join(os.tmpdir(), 'runpod-project-'));
+      const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'runpod-home-'));
+      dirs.push(project, fakeHome);
+      fs.writeFileSync(path.join(project, 'package.json'), '{}\n');
+      const app = path.join(project, 'packages', 'app');
+      const tools = path.join(project, 'tools');
+      const userBin = path.join(fakeHome, '.local', 'bin');
+      fs.mkdirSync(app, { recursive: true });
+      fs.mkdirSync(tools, { recursive: true });
+      fs.mkdirSync(userBin, { recursive: true });
+      const projectClaude = path.join(tools, 'claude');
+      fs.writeFileSync(projectClaude, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      fs.symlinkSync(projectClaude, path.join(userBin, 'claude'));
+
+      const originalPath = process.env.PATH;
+      process.env.PATH = ['/usr/bin', '/bin'].join(path.delimiter);
+      try {
+        assert.equal(
+          findClaudeBinary({
+            platform: process.platform,
+            homedir: fakeHome,
+            cwd: app,
+          }),
+          null
+        );
+      } finally {
+        if (originalPath === undefined) delete process.env.PATH;
+        else process.env.PATH = originalPath;
+      }
+    });
+
+    it('rejects a sibling PATH tool in a source archive without .git', () => {
+      const project = fs.mkdtempSync(path.join(os.tmpdir(), 'runpod-archive-'));
+      const emptyHome = fs.mkdtempSync(path.join(os.tmpdir(), 'runpod-home-'));
+      dirs.push(project, emptyHome);
+      fs.writeFileSync(path.join(project, 'package.json'), '{}\n');
+      const app = path.join(project, 'packages', 'app');
+      const bin = path.join(project, 'bin');
+      fs.mkdirSync(app, { recursive: true });
+      fs.mkdirSync(bin);
+      const projectClaude = path.join(bin, 'claude');
+      fs.writeFileSync(projectClaude, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+
+      const originalPath = process.env.PATH;
+      process.env.PATH = [bin, '/usr/bin', '/bin'].join(path.delimiter);
+      try {
+        assert.equal(
+          findClaudeBinary({
+            platform: process.platform,
+            homedir: emptyHome,
+            cwd: app,
+          }),
+          null
+        );
+      } finally {
+        if (originalPath === undefined) delete process.env.PATH;
+        else process.env.PATH = originalPath;
+      }
+    });
+
+    it('fails closed on a PATH hit when no project boundary exists', () => {
+      const workspace = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'runpod-unmarked-')
+      );
+      const emptyHome = fs.mkdtempSync(path.join(os.tmpdir(), 'runpod-home-'));
+      const app = path.join(workspace, 'packages', 'app');
+      const bin = path.join(workspace, 'bin');
+      dirs.push(workspace, emptyHome);
+      fs.mkdirSync(app, { recursive: true });
+      fs.mkdirSync(bin);
+      fs.writeFileSync(path.join(bin, 'claude'), '#!/bin/sh\nexit 0\n', {
+        mode: 0o755,
+      });
+
+      const originalPath = process.env.PATH;
+      process.env.PATH = [bin, '/usr/bin', '/bin'].join(path.delimiter);
+      try {
+        assert.equal(
+          findClaudeBinary({
+            platform: process.platform,
+            homedir: emptyHome,
+            cwd: app,
+          }),
+          null
+        );
+      } finally {
+        if (originalPath === undefined) delete process.env.PATH;
+        else process.env.PATH = originalPath;
+      }
+    });
   }
 );
 
@@ -1525,26 +1679,23 @@ describe('config edits land where the client actually reads', () => {
     assert.match(result.message ?? '', /by hand/);
   });
 
-  it('keeps a config valid when removing its sole entry after a trailing comma', () => {
+  it('leaves the original untouched when a surgical removal would corrupt it', () => {
     // A surgical delete leaves `{ , }` here. Verified taking a clean VS Code mcp.json to
     // one with a parse error while printing "✓ cleaned up". VS Code and Cursor both
     // happen to recover, but a strict client would stop loading every OTHER server in
     // the file — so it cannot be left behind.
     const file = configIn('{\n  "servers": {\n    "runpod": {},\n  }\n}\n');
+    const original = fs.readFileSync(file, 'utf8');
     const before = removeJsonServer(file, 'servers', 'jsonc');
-    assert.equal(before.success, true, before.message);
+    assert.equal(before.success, false, before.message);
     const after = fs.readFileSync(file, 'utf8');
-    // Valid under the STRICT parser too, which is the point: the repair must not depend
-    // on the reader being forgiving.
-    assert.doesNotThrow(() => JSON.parse(after), after);
-    assert.equal(JSON.parse(after).servers.runpod, undefined);
-    // The rewrite costs comments and formatting, so it is disclosed, not silent.
-    assert.match(before.message ?? '', /reformatted/);
+    assert.equal(after, original);
+    assert.match(before.message ?? '', /left unchanged/);
+    assert.match(before.message ?? '', /by hand/);
   });
 
   it('leaves a comment-bearing config untouched when no repair is needed', () => {
-    // The structural rewrite is a last resort and must not fire on the ordinary path,
-    // or every uninstall would silently strip a user's comments.
+    // The ordinary surgical edit must preserve unrelated comments.
     const file = configIn(
       '{\n  // keep me\n  "mcpServers": {\n    "runpod": {},\n    "other": {}\n  }\n}\n'
     );
