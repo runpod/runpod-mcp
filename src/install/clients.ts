@@ -77,6 +77,17 @@ export function upsertJsonServer(
   serverProperty: string,
   value: unknown
 ): AddResult {
+  // Refuse a relative target outright rather than trusting every caller to have
+  // resolved one. This function creates directories and writes a plaintext API key, so
+  // a relative path means creating a folder and leaking a credential into whatever
+  // directory the wizard happened to be launched from. Guarding here closes the class
+  // for every client at once, however the path was computed.
+  if (!path.isAbsolute(configPath)) {
+    return {
+      success: false,
+      message: `refusing to write "${configPath}": not an absolute path, so it would resolve against the current directory. This usually means an environment variable (APPDATA, XDG_CONFIG_HOME) is set to an empty or relative value.`,
+    };
+  }
   try {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     const content = fs.existsSync(configPath)
@@ -123,6 +134,12 @@ function removeJsonServer(
   configPath: string,
   serverProperty: string
 ): AddResult {
+  if (!path.isAbsolute(configPath)) {
+    return {
+      success: false,
+      message: `refusing to touch "${configPath}": not an absolute path. Check APPDATA / XDG_CONFIG_HOME.`,
+    };
+  }
   try {
     if (!fs.existsSync(configPath)) {
       return { success: true, message: 'nothing to remove' };
@@ -232,8 +249,14 @@ export function claudeCandidatePaths(
       win.join(homedir, '.local', 'bin', 'claude.exe'),
       // npm -g installs a .cmd shim. cross-spawn can run one, but only by going
       // through cmd.exe, so it stays last — see runClaude.
+      //
+      // absoluteEnvDir, not `?? `: an empty or relative APPDATA yielded the relative
+      // `npm\claude.cmd`. Candidates are probed BEFORE the PATH lookup and resolved
+      // against the current directory, so a file planted there would win outright and be
+      // spawned with `-e RUNPOD_API_KEY=<live key>` — the attack pickClaudeBinary's
+      // cwd-deprioritisation guards against, which only covers where.exe output.
       win.join(
-        appdata ?? win.join(homedir, 'AppData', 'Roaming'),
+        absoluteEnvDir(appdata, () => win.join(homedir, 'AppData', 'Roaming')),
         'npm',
         'claude.cmd'
       ),
@@ -358,6 +381,13 @@ function findClaudeBinary(): string | null {
     os.homedir(),
     process.env.APPDATA
   )) {
+    // Absolute only. `exists()` resolves a relative candidate against the CURRENT
+    // DIRECTORY, and candidates are probed before the PATH lookup — so a relative one
+    // wins outright and gets spawned with `-e RUNPOD_API_KEY=<live key>`. That is the
+    // attack pickClaudeBinary's cwd-deprioritisation exists to prevent, which only
+    // covers `where.exe` output, not candidates.
+    if (!path.isAbsolute(candidate) && !path.win32.isAbsolute(candidate))
+      continue;
     if (exists(candidate)) return candidate;
   }
 
@@ -522,6 +552,10 @@ export function runClaude(
 // `--scope user` writes exactly one place: the top-level `mcpServers` of
 // `.claude.json`. Reading it is exact, needs no spawn, and cannot be shadowed.
 export interface ClaudeConfigState {
+  // The file this state was read from. Carried so a message names the file actually
+  // consulted — the reader is injectable, so `claudeUserConfigPath()` is not
+  // necessarily it.
+  configPath: string;
   // Is there a runpod entry in USER scope — the only scope this wizard writes?
   // undefined when the file cannot be read or parsed, i.e. "unknown", never a guess.
   userScope: boolean | undefined;
@@ -531,6 +565,27 @@ export interface ClaudeConfigState {
   // directory and is NOT covered here — a checked-in team entry can still shadow the
   // one this writes. Every message therefore scopes its claim to the user config.
   localScopeDirs: string[];
+}
+
+/**
+ * An environment-provided directory, or the fallback when it is unusable.
+ *
+ * Unusable means unset, empty, or relative. The XDG spec says exactly this for its own
+ * variables ("must be treated as unset", "relative paths should be considered invalid
+ * and ignored"), and the same reasoning applies to APPDATA and CLAUDE_CONFIG_DIR: a
+ * relative directory resolves against the process's cwd, and everything built on these
+ * paths either stores a plaintext API key or gets executed.
+ */
+export function absoluteEnvDir(
+  value: string | undefined,
+  fallback: () => string
+): string {
+  if (!value || !value.trim()) return fallback();
+  // Check with both flavours: a Windows path is not absolute under path.posix and vice
+  // versa, and this module deliberately computes win32 paths on any host for testing.
+  if (!path.isAbsolute(value) && !path.win32.isAbsolute(value))
+    return fallback();
+  return value;
 }
 
 export function claudeUserConfigPath(): string {
@@ -543,6 +598,7 @@ export function claudeUserConfigPath(): string {
 
 export function readClaudeConfigState(configPath: string): ClaudeConfigState {
   const unknown: ClaudeConfigState = {
+    configPath,
     userScope: undefined,
     localScopeDirs: [],
   };
@@ -554,7 +610,7 @@ export function readClaudeConfigState(configPath: string): ClaudeConfigState {
   try {
     if (!fs.existsSync(configPath)) {
       // No config at all is a definite "no user-scope entry", not an unknown.
-      return { userScope: false, localScopeDirs: [] };
+      return { configPath, userScope: false, localScopeDirs: [] };
     }
     raw = fs.readFileSync(configPath, 'utf8');
   } catch {
@@ -587,14 +643,25 @@ export function readClaudeConfigState(configPath: string): ClaudeConfigState {
     servers !== null &&
     Object.prototype.hasOwnProperty.call(servers, SERVER_NAME);
 
+  // Own-property, so a config with a `__proto__` key cannot conjure an mcpServers map.
+  const own = (key: string): unknown =>
+    Object.prototype.hasOwnProperty.call(parsed, key)
+      ? (parsed as Record<string, unknown>)[key]
+      : undefined;
+
+  const projects = own('projects');
+  // A plain object only: an array would yield index keys ("0", "1") that then get
+  // printed to the user as directories to cd into.
   const localScopeDirs =
-    typeof parsed.projects === 'object' && parsed.projects !== null
-      ? Object.entries(parsed.projects)
+    typeof projects === 'object' &&
+    projects !== null &&
+    !Array.isArray(projects)
+      ? Object.entries(projects as Record<string, { mcpServers?: unknown }>)
           .filter(([, project]) => has(project?.mcpServers))
           .map(([dir]) => dir)
       : [];
 
-  return { userScope: has(parsed.mcpServers), localScopeDirs };
+  return { configPath, userScope: has(own('mcpServers')), localScopeDirs };
 }
 /**
  * Turns a `claude mcp remove` run plus the config's own state into an outcome.
@@ -632,7 +699,7 @@ export function interpretRemoveResult(
     // Cause (1): the CLI reported whatever it reported, and the entry is still there.
     return {
       success: false,
-      message: `the ${SERVER_NAME} entry is STILL in Claude Code's user config (${claudeUserConfigPath()}), so your API key is still on disk. Most likely that file is not writable — the CLI reports success anyway.${alsoElsewhere}`,
+      message: `the ${SERVER_NAME} entry is STILL in Claude Code's user config (${state.configPath}), so your API key is still on disk. Most likely that file is not writable — the CLI reports success anyway.${alsoElsewhere}`,
     };
   }
 
@@ -651,7 +718,7 @@ export function interpretRemoveResult(
   if (result.success) {
     return {
       success: true,
-      message: `removal reported success, but ${claudeUserConfigPath()} could not be read to confirm it`,
+      message: `removal reported success, but ${state.configPath} could not be read to confirm it`,
     };
   }
   return { success: false, message: result.message };
@@ -674,7 +741,7 @@ export function interpretAddResult(
   if (state.userScope === false) {
     return {
       success: false,
-      message: `Claude Code reported success but no ${SERVER_NAME} entry is in its user config afterwards (${claudeUserConfigPath()}) — that file is most likely not writable. Nothing was configured.`,
+      message: `Claude Code reported success but no ${SERVER_NAME} entry is in its user config afterwards (${state.configPath}) — that file is most likely not writable. Nothing was configured.`,
     };
   }
 
@@ -684,7 +751,7 @@ export function interpretAddResult(
     // user has no way to know the write went unconfirmed.
     return {
       success: true,
-      message: `${result.message ? `${result.message}; ` : ''}could not read ${claudeUserConfigPath()} to confirm the entry landed`,
+      message: `${result.message ? `${result.message}; ` : ''}could not read ${state.configPath} to confirm the entry landed`,
     };
   }
 
@@ -759,7 +826,11 @@ export function createClaudeCodeClient(
           result,
           result.success
             ? readState()
-            : { userScope: undefined, localScopeDirs: [] }
+            : {
+                configPath: claudeUserConfigPath(),
+                userScope: undefined,
+                localScopeDirs: [],
+              }
         )
       );
     },
@@ -786,7 +857,11 @@ export function createClaudeCodeClient(
         interpretRemoveResult(
           result,
           result.refused
-            ? { userScope: undefined, localScopeDirs: [] }
+            ? {
+                configPath: claudeUserConfigPath(),
+                userScope: undefined,
+                localScopeDirs: [],
+              }
             : readState(),
           binary
         )
@@ -799,10 +874,18 @@ export function createClaudeCodeClient(
 const claudeCodeClient = createClaudeCodeClient(findClaudeBinary);
 
 const home = os.homedir();
-const appData = process.env.APPDATA ?? path.join(home, 'AppData', 'Roaming');
+// `absoluteEnvDir` rather than `??`: an empty OR relative value must be treated as
+// unset. `path.join('', 'Claude', …)` yields a RELATIVE path, and every consumer here
+// either writes a plaintext API key to it or spawns it — so a relative value means
+// writing the key into whatever directory the wizard was launched from, or executing a
+// file out of it. This is the same defect three env vars have now produced
+// (CLAUDE_CONFIG_DIR, XDG_CONFIG_HOME, APPDATA), so it is resolved in one place.
+const appData = absoluteEnvDir(process.env.APPDATA, () =>
+  path.join(home, 'AppData', 'Roaming')
+);
 
 // Claude Desktop stores its config in an OS-specific location.
-function claudeDesktopConfigPath(): string {
+export function claudeDesktopConfigPath(): string {
   if (process.platform === 'win32') {
     return path.join(appData, 'Claude', 'claude_desktop_config.json');
   }
@@ -818,18 +901,17 @@ function claudeDesktopConfigPath(): string {
   // Linux followed the XDG location. Previously this returned the macOS path on
   // Linux, so a Linux user was told `✓ Claude Desktop configured` for a file under
   // ~/Library that nothing reads.
-  // `||`, not `??`: the XDG spec says an empty value must be treated as unset, and
-  // path.join('', 'Claude', …) yields a RELATIVE path — which would write a plaintext
-  // API key into a Claude/ folder in whatever directory the wizard was launched from.
   return path.join(
-    process.env.XDG_CONFIG_HOME || path.join(home, '.config'),
+    absoluteEnvDir(process.env.XDG_CONFIG_HOME, () =>
+      path.join(home, '.config')
+    ),
     'Claude',
     'claude_desktop_config.json'
   );
 }
 
 // VS Code uses a `servers` property (not `mcpServers`) in a per-user mcp.json.
-function vsCodeConfigPath(): string {
+export function vsCodeConfigPath(): string {
   if (process.platform === 'win32') {
     return path.join(appData, 'Code', 'User', 'mcp.json');
   }
@@ -843,7 +925,17 @@ function vsCodeConfigPath(): string {
       'mcp.json'
     );
   }
-  return path.join(home, '.config', 'Code', 'User', 'mcp.json');
+  // Honours XDG_CONFIG_HOME like the Claude Desktop path does. Hardcoding ~/.config
+  // meant an XDG user got `✓ Visual Studio Code configured` for a file VS Code does not
+  // read — the same defect this PR fixed for Claude Desktop on Linux.
+  return path.join(
+    absoluteEnvDir(process.env.XDG_CONFIG_HOME, () =>
+      path.join(home, '.config')
+    ),
+    'Code',
+    'User',
+    'mcp.json'
+  );
 }
 
 export const CLIENTS: McpClient[] = [

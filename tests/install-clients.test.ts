@@ -19,8 +19,15 @@ import {
   createClaudeCodeClient,
   readClaudeConfigState,
   claudeUserConfigPath,
+  absoluteEnvDir,
+  claudeDesktopConfigPath,
+  vsCodeConfigPath,
   upsertJsonServer,
 } from '../src/install/clients.js';
+
+// A stand-in for the user config path in state literals. Never read: these suites
+// exercise the interpretation, and the reader has its own suite.
+const TEST_CONFIG_PATH = '/home/dev/.claude.json';
 
 // Regression coverage for issue #56 — the install wizard never detected Claude Code
 // on Windows. The platform-dependent decisions are pure functions, so both branches
@@ -311,7 +318,7 @@ describe('interpretRemoveResult', () => {
     ]) {
       const out = interpretRemoveResult(
         run,
-        { userScope: true, localScopeDirs: [] },
+        { configPath: TEST_CONFIG_PATH, userScope: true, localScopeDirs: [] },
         '/usr/bin/claude'
       );
       assert.equal(out.success, false, JSON.stringify(run));
@@ -331,6 +338,7 @@ describe('interpretRemoveResult', () => {
       { success: false, message: 'No MCP server named "runpod" in user scope' },
     ]) {
       const out = interpretRemoveResult(run, {
+        configPath: TEST_CONFIG_PATH,
         userScope: false,
         localScopeDirs: [],
       });
@@ -346,7 +354,11 @@ describe('interpretRemoveResult', () => {
     // gone, and only naming the scope makes that actionable.
     const out = interpretRemoveResult(
       { success: true },
-      { userScope: false, localScopeDirs: ['/home/dev/projA'] },
+      {
+        configPath: TEST_CONFIG_PATH,
+        userScope: false,
+        localScopeDirs: ['/home/dev/projA'],
+      },
       '/usr/bin/claude'
     );
     assert.equal(out.success, true);
@@ -366,7 +378,11 @@ describe('interpretRemoveResult', () => {
       assert.deepEqual(
         interpretRemoveResult(
           { success: false, message },
-          { userScope: undefined, localScopeDirs: [] }
+          {
+            configPath: TEST_CONFIG_PATH,
+            userScope: undefined,
+            localScopeDirs: [],
+          }
         ),
         { success: false, message },
         message
@@ -377,7 +393,7 @@ describe('interpretRemoveResult', () => {
   it('flags an unverifiable success rather than claiming a clean one', () => {
     const out = interpretRemoveResult(
       { success: true },
-      { userScope: undefined, localScopeDirs: [] }
+      { configPath: TEST_CONFIG_PATH, userScope: undefined, localScopeDirs: [] }
     );
     assert.equal(out.success, true);
     assert.match(out.message ?? '', /could not be read to confirm it/);
@@ -391,6 +407,7 @@ describe('interpretRemoveResult', () => {
     };
     assert.deepEqual(
       interpretRemoveResult(refusal, {
+        configPath: TEST_CONFIG_PATH,
         userScope: undefined,
         localScopeDirs: [],
       }),
@@ -406,7 +423,7 @@ describe('interpretAddResult', () => {
   it('fails when nothing is registered afterwards, despite a zero exit', () => {
     const out = interpretAddResult(
       { success: true },
-      { userScope: false, localScopeDirs: [] }
+      { configPath: TEST_CONFIG_PATH, userScope: false, localScopeDirs: [] }
     );
     assert.equal(out.success, false);
     assert.match(out.message ?? '', /not writable/);
@@ -421,7 +438,11 @@ describe('interpretAddResult', () => {
     // answers whether OUR write landed.
     const out = interpretAddResult(
       { success: true },
-      { userScope: true, localScopeDirs: ['/home/dev/projA'] }
+      {
+        configPath: TEST_CONFIG_PATH,
+        userScope: true,
+        localScopeDirs: ['/home/dev/projA'],
+      }
     );
     assert.equal(out.success, true, out.message);
   });
@@ -430,7 +451,7 @@ describe('interpretAddResult', () => {
     assert.deepEqual(
       interpretAddResult(
         { success: true, message: 'already configured' },
-        { userScope: true, localScopeDirs: [] }
+        { configPath: TEST_CONFIG_PATH, userScope: true, localScopeDirs: [] }
       ),
       { success: true, message: 'already configured' }
     );
@@ -439,12 +460,17 @@ describe('interpretAddResult', () => {
   it('does not upgrade a failure or a refusal', () => {
     const failure = { success: false, message: 'boom' };
     assert.deepEqual(
-      interpretAddResult(failure, { userScope: true, localScopeDirs: [] }),
+      interpretAddResult(failure, {
+        configPath: TEST_CONFIG_PATH,
+        userScope: true,
+        localScopeDirs: [],
+      }),
       failure
     );
     const refusal = { success: false, refused: true, message: 'declined' };
     assert.deepEqual(
       interpretAddResult(refusal, {
+        configPath: TEST_CONFIG_PATH,
         userScope: undefined,
         localScopeDirs: [],
       }),
@@ -459,7 +485,7 @@ describe('interpretAddResult', () => {
     // paths do, so both must.
     const out = interpretAddResult(
       { success: true },
-      { userScope: undefined, localScopeDirs: [] }
+      { configPath: TEST_CONFIG_PATH, userScope: undefined, localScopeDirs: [] }
     );
     assert.equal(out.success, true);
     assert.match(out.message ?? '', /could not read/);
@@ -696,9 +722,14 @@ describe(
     function fakeClaude(
       behaviour: string,
       state: {
+        configPath: string;
         userScope: boolean | undefined;
         localScopeDirs: string[];
-      } = { userScope: false, localScopeDirs: [] }
+      } = {
+        configPath: TEST_CONFIG_PATH,
+        userScope: false,
+        localScopeDirs: [],
+      }
     ) {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rp-fake-claude-'));
       dirs.push(dir);
@@ -717,7 +748,7 @@ describe(
       const client = fakeClaude(
         `'mcp remove') echo 'Removed MCP server runpod from user config'; exit 0;;\n` +
           `*) exit 1;;`,
-        { userScope: true, localScopeDirs: [] }
+        { configPath: TEST_CONFIG_PATH, userScope: true, localScopeDirs: [] }
       );
       const result = await client.remove();
       assert.equal(result.success, false, JSON.stringify(result));
@@ -732,7 +763,11 @@ describe(
       const client = fakeClaude(
         `'mcp remove') echo 'Removed MCP server runpod from user config'; exit 0;;\n` +
           `*) exit 1;;`,
-        { userScope: false, localScopeDirs: ['/home/dev/projA'] }
+        {
+          configPath: TEST_CONFIG_PATH,
+          userScope: false,
+          localScopeDirs: ['/home/dev/projA'],
+        }
       );
       const result = await client.remove();
       assert.equal(result.success, true, JSON.stringify(result));
@@ -749,7 +784,11 @@ describe(
       const client = fakeClaude(
         `'mcp remove') echo 'Removed MCP server runpod from user config'; exit 0;;\n` +
           `*) exit 1;;`,
-        { userScope: true, localScopeDirs: ['/home/dev/projA'] }
+        {
+          configPath: TEST_CONFIG_PATH,
+          userScope: true,
+          localScopeDirs: ['/home/dev/projA'],
+        }
       );
       const result = await client.remove();
       assert.equal(result.success, false, JSON.stringify(result));
@@ -763,7 +802,7 @@ describe(
       const client = fakeClaude(
         `'mcp remove') echo 'No MCP server named "runpod" in user scope' 1>&2; exit 1;;\n` +
           `*) exit 1;;`,
-        { userScope: false, localScopeDirs: [] }
+        { configPath: TEST_CONFIG_PATH, userScope: false, localScopeDirs: [] }
       );
       const result = await client.remove();
       assert.equal(result.success, true, JSON.stringify(result));
@@ -777,7 +816,7 @@ describe(
       const client = fakeClaude(
         `'mcp add') echo 'Added stdio MCP server runpod'; exit 0;;\n` +
           `*) exit 1;;`,
-        { userScope: false, localScopeDirs: [] }
+        { configPath: TEST_CONFIG_PATH, userScope: false, localScopeDirs: [] }
       );
       const result = await client.add({
         kind: 'local',
@@ -794,7 +833,11 @@ describe(
       const client = fakeClaude(
         `'mcp add') echo 'Added stdio MCP server runpod to user config'; exit 0;;\n` +
           `*) exit 1;;`,
-        { userScope: true, localScopeDirs: ['/home/dev/projA'] }
+        {
+          configPath: TEST_CONFIG_PATH,
+          userScope: true,
+          localScopeDirs: ['/home/dev/projA'],
+        }
       );
       const result = await client.add({
         kind: 'local',
@@ -807,7 +850,7 @@ describe(
       const client = fakeClaude(
         `'mcp add') echo 'Added stdio MCP server runpod to user config'; exit 0;;\n` +
           `*) exit 1;;`,
-        { userScope: true, localScopeDirs: [] }
+        { configPath: TEST_CONFIG_PATH, userScope: true, localScopeDirs: [] }
       );
       const result = await client.add({
         kind: 'local',
@@ -820,7 +863,7 @@ describe(
       const client = fakeClaude(
         `'mcp add') echo "Invalid environment variable format: RUNPOD_API_KEY=rpa_TESTKEY123456" 1>&2; exit 1;;\n` +
           `*) exit 1;;`,
-        { userScope: false, localScopeDirs: [] }
+        { configPath: TEST_CONFIG_PATH, userScope: false, localScopeDirs: [] }
       );
       const result = await client.add({
         kind: 'local',
@@ -852,16 +895,18 @@ describe('readClaudeConfigState', () => {
 
   it('reads the user scope from top-level mcpServers', () => {
     // `--scope user` writes exactly one place, verified against claude 2.1.220.
-    assert.deepEqual(
-      readClaudeConfigState(
-        configWith('{"mcpServers":{"runpod":{"command":"npx"}}}')
-      ),
-      { userScope: true, localScopeDirs: [] }
-    );
-    assert.deepEqual(
-      readClaudeConfigState(configWith('{"mcpServers":{"other":{}}}')),
-      { userScope: false, localScopeDirs: [] }
-    );
+    const present = configWith('{"mcpServers":{"runpod":{"command":"npx"}}}');
+    assert.deepEqual(readClaudeConfigState(present), {
+      configPath: present,
+      userScope: true,
+      localScopeDirs: [],
+    });
+    const absent = configWith('{"mcpServers":{"other":{}}}');
+    assert.deepEqual(readClaudeConfigState(absent), {
+      configPath: absent,
+      userScope: false,
+      localScopeDirs: [],
+    });
   });
 
   it('sees a user entry even when a local one shadows it', () => {
@@ -877,10 +922,8 @@ describe('readClaudeConfigState', () => {
         })
       )
     );
-    assert.deepEqual(state, {
-      userScope: true,
-      localScopeDirs: ['/home/dev/projA'],
-    });
+    assert.equal(state.userScope, true);
+    assert.deepEqual(state.localScopeDirs, ['/home/dev/projA']);
   });
 
   it('enumerates local-scope entries across every directory, not just cwd', () => {
@@ -904,7 +947,9 @@ describe('readClaudeConfigState', () => {
   });
 
   it('treats a missing config as definitely no user entry', () => {
-    assert.deepEqual(readClaudeConfigState(configWith(null)), {
+    const missing = configWith(null);
+    assert.deepEqual(readClaudeConfigState(missing), {
+      configPath: missing,
       userScope: false,
       localScopeDirs: [],
     });
@@ -1058,5 +1103,110 @@ describe('claudeUserConfigPath env handling', () => {
       readClaudeConfigState('relative/dir/.claude.json').userScope,
       undefined
     );
+  });
+});
+
+describe('absoluteEnvDir', () => {
+  // Three environment variables have now produced the same defect: an empty or relative
+  // value yielding a path that resolves against the CURRENT DIRECTORY. Every consumer
+  // here either writes a plaintext API key to that path or spawns it, so the rule lives
+  // in one function with its own tests rather than being re-derived per variable.
+  const fallback = () => '/fallback';
+
+  it('treats unset, empty and whitespace as unset', () => {
+    for (const value of [undefined, '', '   ', '\t']) {
+      assert.equal(absoluteEnvDir(value, fallback), '/fallback', String(value));
+    }
+  });
+
+  it('treats a RELATIVE value as unset', () => {
+    // The XDG spec says relative values "should be considered invalid and ignored", and
+    // the reason generalises: `.config` would put the key under ./config/… wherever the
+    // wizard was launched.
+    for (const value of ['.', './cfg', 'cfg', 'relative/dir', '..']) {
+      assert.equal(absoluteEnvDir(value, fallback), '/fallback', value);
+    }
+  });
+
+  it('accepts an absolute value in either path flavour', () => {
+    assert.equal(absoluteEnvDir('/abs/dir', fallback), '/abs/dir');
+    // win32-absolute must be accepted even when running on POSIX, since this module
+    // computes Windows paths on any host.
+    assert.equal(
+      absoluteEnvDir('C:\\Users\\dev\\AppData\\Roaming', fallback),
+      'C:\\Users\\dev\\AppData\\Roaming'
+    );
+    assert.equal(
+      absoluteEnvDir('\\\\server\\share', fallback),
+      '\\\\server\\share'
+    );
+  });
+});
+
+describe('config paths never resolve against the current directory', () => {
+  const saved = {
+    APPDATA: process.env.APPDATA,
+    XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+  };
+  after(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it('APPDATA="" does not produce a relative Claude Code candidate', () => {
+    // `npm\\claude.cmd` is probed BEFORE the PATH lookup and resolved against cwd, so a
+    // planted file there would have been spawned with `-e RUNPOD_API_KEY=<live key>`.
+    // pickClaudeBinary's cwd-deprioritisation does not cover candidates.
+    for (const appdata of ['', '   ', 'npm-relative']) {
+      for (const candidate of claudeCandidatePaths(
+        'win32',
+        'C:\\Users\\dev',
+        appdata
+      )) {
+        assert.equal(
+          path.win32.isAbsolute(candidate),
+          true,
+          `${JSON.stringify(appdata)} -> ${candidate}`
+        );
+      }
+    }
+  });
+
+  it('APPDATA="" does not produce a relative Claude Desktop config path', () => {
+    // Harm here is a plaintext API key written into ./Claude/ and reported as ✓.
+    process.env.APPDATA = '';
+    const p = claudeDesktopConfigPath();
+    assert.equal(path.isAbsolute(p) || path.win32.isAbsolute(p), true, p);
+  });
+
+  it('a relative XDG_CONFIG_HOME does not leak the key into the cwd', () => {
+    // `||` fixed empty; a relative value still yielded ./Claude/... until absoluteEnvDir.
+    for (const value of ['', '.config', './cfg']) {
+      process.env.XDG_CONFIG_HOME = value;
+      for (const p of [claudeDesktopConfigPath(), vsCodeConfigPath()]) {
+        assert.equal(
+          path.isAbsolute(p) || path.win32.isAbsolute(p),
+          true,
+          `${JSON.stringify(value)} -> ${p}`
+        );
+      }
+    }
+  });
+
+  it('refuses to write or delete through a relative config path', () => {
+    // The backstop: whatever computed the path, writing a credential to a relative
+    // target is never right. This closes the class for every client at once.
+    const write = upsertJsonServer(
+      'Claude/claude_desktop_config.json',
+      'mcpServers',
+      {
+        env: { RUNPOD_API_KEY: 'rpa_MUSTNOTLAND' },
+      }
+    );
+    assert.equal(write.success, false);
+    assert.match(write.message ?? '', /absolute path/);
+    assert.equal(fs.existsSync('Claude/claude_desktop_config.json'), false);
   });
 });

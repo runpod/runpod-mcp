@@ -78,6 +78,19 @@ was left unchanged and gives the full-path command to replace it. An API key tak
 environment is also trimmed, matching the pasted path — a trailing newline used to be
 written verbatim into every client config.
 
+Every environment-provided directory now goes through one check that treats unset,
+empty AND relative values as unset. Three variables produced the same defect in turn —
+`CLAUDE_CONFIG_DIR`, `XDG_CONFIG_HOME`, `APPDATA` — because `??` does not catch an empty
+string and nothing rejected a relative one. The consequences were not cosmetic: an empty
+`APPDATA` yielded the relative candidate `npm\claude.cmd`, which is probed before the
+PATH lookup and resolved against the current directory, so a file planted there would
+have been spawned with the live API key; and a relative config directory meant a
+plaintext key written into a `Claude/` folder wherever the wizard was launched, reported
+as configured. As a backstop, writing or deleting through a non-absolute config path is
+refused outright, whatever computed it. `vsCodeConfigPath` also honours
+`XDG_CONFIG_HOME` now — it hardcoded `~/.config`, so an XDG user was told VS Code was
+configured for a file VS Code does not read.
+
 Two smaller leaks in the same area: a client config created by this wizard is written `0600`
 rather than `0644`, since it holds a plaintext API key (a freshly created Claude Code config is `0600`);
 and any message built from the CLI's output has the key stripped by value, not just by argv
