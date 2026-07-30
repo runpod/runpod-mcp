@@ -433,7 +433,7 @@ export function registerEndpointTools(
   // /v2/serverless body; v1 passes the flat fields through.
   server.tool(
     'update-endpoint',
-    "Update a Serverless endpoint's config. On v2 you can change image/disk/env/ports/registry/workers/scaling/networkVolumes/timeout/flashboot; on v1, scaling fields (worker min/max, idle timeout, scaler type/value, name). Only provided fields change on v1. Safety requirement on v2: the current REST facade rebuilds gpuIds during every PATCH, so every call must include a non-empty gpuPoolIds plus replaceGpuSelection:true and intentionally replaces the endpoint's complete GPU selection. Do not use this tool for a v2 endpoint with SKU exclusions that must be preserved; no safe unrelated PATCH is available until the REST facade is fixed. An endpoint's request routing (queue vs load balancer) is fixed at creation and cannot be changed here — recreate the endpoint instead.",
+    "Update a Serverless endpoint's config. On v2 you can change image/disk/env/ports/registry/workers/scaling/networkVolumes/timeout/flashboot; on v1, scaling fields (worker min/max, idle timeout, scaler type/value, name). Only provided fields change on v1. Safety requirement on v2: the current REST facade rebuilds gpuIds during every PATCH, so every call must include a non-empty gpuPoolIds, a positive integer gpuCount, and replaceGpuSelection:true; together they intentionally replace the endpoint's complete GPU selection. Do not use this tool for a v2 endpoint with SKU exclusions that must be preserved; no safe unrelated PATCH is available until the REST facade is fixed. An endpoint's request routing (queue vs load balancer) is fixed at creation and cannot be changed here — recreate the endpoint instead.",
     {
       endpointId: z.string().describe('ID of the endpoint to update'),
       name: z.string().optional().describe('New name for the endpoint'),
@@ -473,19 +473,21 @@ export function registerEndpointTools(
         .array(z.string())
         .optional()
         .describe(
-          'Required for every v2 update while the REST facade is lossy. New GPU pool names, e.g. ["AMPERE_80"]; explicitly replaces the complete GPU selection and cannot carry existing "-<GPU type id>" SKU exclusions forward.'
+          'Required with gpuCount for every v2 update while the REST facade is lossy. New GPU pool names, e.g. ["AMPERE_80"]; explicitly replaces the complete GPU selection and cannot carry existing "-<GPU type id>" SKU exclusions forward.'
         ),
       replaceGpuSelection: z
         .literal(true)
         .optional()
         .describe(
-          'Required as true with gpuPoolIds on v2. Explicit acknowledgement that this call replaces the complete GPU selection and drops any existing SKU exclusions.'
+          'Required as true with gpuPoolIds and gpuCount on v2. Explicit acknowledgement that this call replaces the complete GPU selection and drops any existing SKU exclusions.'
         ),
       gpuCount: z
         .number()
+        .int()
+        .positive()
         .optional()
         .describe(
-          'New GPUs per worker (v2). Must be sent together with gpuPoolIds — the v2 gpu object requires pools, so a count on its own cannot be expressed. To change only the count, use set-endpoint-gpus.'
+          'Required positive integer for every v2 update, together with gpuPoolIds — the PATCH replaces the complete GPU object, so omitting count could reset a multi-GPU endpoint. To change only the count while preserving the current GPU selection, use set-endpoint-gpus.'
         ),
       args: z.string().optional().describe('New container args (v2)'),
       containerDiskInGb: z
@@ -555,8 +557,15 @@ export function registerEndpointTools(
       if (replaceGpuSelection !== true) {
         return jsonErrorReply({
           error:
-            'Update not applied: set replaceGpuSelection:true to acknowledge that this v2 PATCH replaces the complete GPU selection and cannot preserve existing SKU exclusions.',
+            'Update not applied: set replaceGpuSelection:true together with gpuPoolIds and gpuCount to acknowledge that this v2 PATCH replaces the complete GPU selection and cannot preserve existing SKU exclusions.',
           status: 409,
+        });
+      }
+      if (updateParams.gpuCount === undefined) {
+        return jsonErrorReply({
+          error:
+            'Update not applied: gpuCount is required with gpuPoolIds on every v2 update. The PATCH replaces the complete GPU object, and omitting count could reset a multi-GPU endpoint to the API default. Send the current positive integer count together with the complete pool list.',
+          status: 400,
         });
       }
 
@@ -582,7 +591,7 @@ export function registerEndpointTools(
         updateParams.scalerValue
       );
       if (scalerError) {
-        return jsonReply({ error: scalerError, status: 400 });
+        return jsonErrorReply({ error: scalerError, status: 400 });
       }
 
       const body = backend.mapUpdate({

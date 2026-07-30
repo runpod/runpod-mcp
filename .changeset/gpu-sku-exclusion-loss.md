@@ -17,9 +17,10 @@ field survived.
 
 `update-endpoint` now refuses **every** v2 update that omits `gpuPoolIds`. The refusal happens
 before any API request, is marked as an MCP tool error, and explains that no fields changed.
-To proceed, the caller must supply a non-empty pool list plus
-`replaceGpuSelection: true`, explicitly acknowledging replacement of the complete GPU
-selection in the same PATCH as the other changes. A v2 endpoint with
+To proceed, the caller must supply a non-empty pool list, a positive integer `gpuCount`,
+and `replaceGpuSelection: true`, explicitly acknowledging replacement of the complete GPU
+selection in the same PATCH as the other changes. Requiring the count prevents the
+replacement from falling back to the API's default count of one. A v2 endpoint with
 `-<GPU type id>` exclusions that must survive cannot be updated through this tool until the
 REST facade is fixed.
 
@@ -31,7 +32,7 @@ the PATCH is unsafe too: `saveEndpoint` is not sparse, unconditionally resets
 `workersStandby` to `workersMax`, can trigger a second release and worker restart, can
 overwrite concurrent changes, and can fail after the exclusions are already gone.
 
-Explicit non-empty `gpuPoolIds` plus `replaceGpuSelection: true` is different:
+Explicit non-empty `gpuPoolIds` plus `gpuCount` and `replaceGpuSelection: true` is different:
 replacement is the stated intent, not an attempt to preserve hidden exclusions. The
 separate acknowledgement prevents an agent from adding pools merely to satisfy a required
 field without recognizing that exclusions will be lost.
@@ -43,9 +44,9 @@ i.e. you had to write to read.
 
 Cost, stated fully:
 
-- Every v2 update must explicitly resend `gpuPoolIds` and acknowledge replacement, even
-  when changing an unrelated field. Call `get-endpoint` first if the current pool list is
-  needed.
+- Every v2 update must explicitly resend `gpuPoolIds` and `gpuCount` and acknowledge
+  replacement, even when changing an unrelated field. Call `get-endpoint` first if the
+  current pool list or count is needed.
 - No GraphQL pre-read, post-PATCH read, compensating write, second release, environment
   cross-check, or read/write race occurs on `update-endpoint`.
 - Endpoints with SKU exclusions cannot receive unrelated v2 updates through this tool
@@ -94,9 +95,10 @@ The refusals in full:
   `gpuIds: null`. A write happened, the pin was never stored, and the reply claimed
   success.
 
-`update-endpoint` treats a non-empty `gpuPoolIds` with `replaceGpuSelection: true` as
-explicit replacement intent and sends that PATCH directly. Omitted pools, omitted
-acknowledgement, and explicitly empty lists are refused before any API request.
+`update-endpoint` treats non-empty `gpuPoolIds` plus a positive integer `gpuCount` with
+`replaceGpuSelection: true` as explicit replacement intent and sends that PATCH directly.
+Omitted pools, omitted count, omitted acknowledgement, and explicitly empty lists are
+refused before any API request.
 
 `create-pod` / `update-pod` reject `volumeInGb` without `volumeMountPath` (or the
 reverse). The persistent volume is one object, so a lone field was dropped and the pod
@@ -105,7 +107,8 @@ as correct behaviour.
 
 Separately, `update-endpoint` now rejects a `gpuCount` sent without `gpuPoolIds` on v2. The
 v2 `gpu` object requires `pools`, so the mapper dropped `gpu` entirely and the PATCH said
-nothing about GPUs: HTTP 200, count unchanged, no indication anything was ignored. Send both,
-or use `set-endpoint-gpus` to change the count alone. `set-endpoint-gpus` also keeps its
+nothing about GPUs: HTTP 200, count unchanged, no indication anything was ignored. Every
+v2 update now requires both values, or use `set-endpoint-gpus` to change the count alone.
+`set-endpoint-gpus` also keeps its
 actionable "use list-endpoints" error for an unknown id, which now arrives as a rejection
 rather than a null because `endpoint(id:)` throws for an id it cannot see.

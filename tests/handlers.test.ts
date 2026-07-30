@@ -1848,6 +1848,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
         endpointId: 'ep_1',
         scalerValue: 7,
         gpuPoolIds: ['AMPERE_48'],
+        gpuCount: 1,
         replaceGpuSelection: true,
       });
       // GET (scaler) → PATCH. Pools are explicit replacement intent, so there is
@@ -1880,10 +1881,12 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
         endpointId: 'ep_1',
         scalerValue: 7.5,
         gpuPoolIds: ['AMPERE_48'],
+        gpuCount: 1,
         replaceGpuSelection: true,
       });
       assert.equal(outbound.length, 1, 'expected the GET only, no PATCH');
       assert.equal(outbound[0].method, 'GET');
+      assert.equal((out as { isError?: boolean }).isError, true);
       assert.equal(parseText(out).status, 400);
       assert.match(parseText(out).error as string, /integer >= 1/);
     });
@@ -1901,6 +1904,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
         endpointId: 'ep_1',
         scalerValue: 3,
         gpuPoolIds: ['AMPERE_48'],
+        gpuCount: 1,
         replaceGpuSelection: true,
       });
       assert.deepEqual(JSON.parse(outbound.at(-1)!.body!).scaling, {
@@ -1920,6 +1924,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
         scalerType: 'QUEUE_DELAY',
         scalerValue: 3,
         gpuPoolIds: ['AMPERE_48'],
+        gpuCount: 1,
         replaceGpuSelection: true,
       });
       // No REST GET for the scaler and no GraphQL pre-read.
@@ -1939,6 +1944,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
         workersMax: 5,
         imageName: 'img:3',
         gpuPoolIds: ['AMPERE_48'],
+        gpuCount: 1,
         replaceGpuSelection: true,
       });
       const sent = outbound.at(-1)!;
@@ -1947,7 +1953,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       const body = JSON.parse(sent.body!);
       assert.deepEqual(body.workers, { max: 5 });
       assert.equal(body.image, 'img:3');
-      assert.deepEqual(body.gpu, { pools: ['AMPERE_48'] });
+      assert.deepEqual(body.gpu, { pools: ['AMPERE_48'], count: 1 });
       assert.equal('endpointId' in body, false);
     });
   });
@@ -2023,6 +2029,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       const out = await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
         gpuPoolIds: ['ADA_24'],
+        gpuCount: 2,
         replaceGpuSelection: true,
       });
       // No GraphQL read and no compensation: explicitly supplying pools means
@@ -2031,6 +2038,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       assert.equal(outbound[0].method, 'PATCH');
       assert.deepEqual(JSON.parse(outbound[0].body!).gpu, {
         pools: ['ADA_24'],
+        count: 2,
       });
       assert.equal(parseText(out).id, 'ep_1');
     });
@@ -2042,11 +2050,27 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       const out = await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
         gpuPoolIds: ['ADA_24'],
+        gpuCount: 1,
       });
       assert.equal(outbound.length, 0);
       assert.equal((out as { isError?: boolean }).isError, true);
       assert.equal(parseText(out).status, 409);
       assert.match(parseText(out).error as string, /replaceGpuSelection:true/);
+    });
+  });
+
+  it('update-endpoint requires gpuCount for a complete acknowledged replacement', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness();
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        gpuPoolIds: ['ADA_24'],
+        replaceGpuSelection: true,
+      });
+      assert.equal(outbound.length, 0);
+      assert.equal((out as { isError?: boolean }).isError, true);
+      assert.equal(parseText(out).status, 400);
+      assert.match(parseText(out).error as string, /gpuCount is required/);
     });
   });
 
@@ -3894,6 +3918,47 @@ describe('set-endpoint-gpus input guards', () => {
       const reply = parseText(out);
       assert.equal(reply.error, undefined);
       assert.match(reply._exclusionsUnvalidated as string, /could not be read/);
+    });
+  });
+
+  it('does not validate exclusions against a known-mismatched REST environment', async () => {
+    await withV2(async () => {
+      const previous = process.env.RUNPOD_REST_V2_API_URL;
+      process.env.RUNPOD_REST_V2_API_URL = 'https://v2.dev.example/v2';
+      try {
+        const { handlers, outbound } = harness({
+          jsonBodies: [
+            snapshot(gpuEndpoint),
+            { data: { saveEndpoint: { id: 'ep_1', gpuIds: 'x' } } },
+          ],
+        });
+        const out = await handlers.get('set-endpoint-gpus')!({
+          endpointId: 'ep_1',
+          pools: ['AMPERE_16'],
+          excludeGpuTypeIds: ['NVIDIA RTX 4000 Ada Generation'],
+        });
+        const reply = parseText(out);
+        assert.equal(reply.error, undefined);
+        assert.match(
+          reply._exclusionsUnvalidated as string,
+          /do not form a matched environment pair/
+        );
+        assert.equal(
+          outbound.some((call) =>
+            call.url.startsWith('https://v2.dev.example/')
+          ),
+          false,
+          'the mismatched REST catalog must not be consulted'
+        );
+        assert.equal(
+          outbound.length,
+          2,
+          'GraphQL read + GraphQL mutation only'
+        );
+      } finally {
+        if (previous === undefined) delete process.env.RUNPOD_REST_V2_API_URL;
+        else process.env.RUNPOD_REST_V2_API_URL = previous;
+      }
     });
   });
 

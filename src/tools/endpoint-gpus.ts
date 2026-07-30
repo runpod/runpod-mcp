@@ -6,6 +6,7 @@ import {
   buildSaveEndpointInput,
   saveEndpoint,
 } from '../_shared/endpoint-gpu-ids.js';
+import { v2AuthedGraphqlEnvironmentSkew } from '../_shared/backend.js';
 
 // ============== ENDPOINT GPU PINNING ==============
 // Sets which GPUs a Serverless endpoint's workers run on, including pinning
@@ -26,7 +27,7 @@ export function registerEndpointGpuTools(
   server: McpServer,
   rt: ToolRuntime
 ): void {
-  const { graphqlAuthed, jsonReply, callRestUrl, backendFor } = rt;
+  const { graphqlAuthed, jsonReply, callRestUrl, backendFor, env } = rt;
 
   // Which SKUs each requested pool contains, from the GPU catalog — or null when that
   // cannot be established (v1 catalog has no pool field, or the call failed).
@@ -208,10 +209,19 @@ export function registerEndpointGpuTools(
       // the server accepts, so it is checked here — before anything is written — rather
       // than letting "pin this one SKU" quietly become "use the whole pool".
       let exclusionsUnvalidated = false;
+      let exclusionsValidationReason: string | undefined;
       if (params.excludeGpuTypeIds?.length && params.pools?.length) {
-        const membership = await poolMembership(params.pools);
-        if (!membership) {
+        const environmentSkew = v2AuthedGraphqlEnvironmentSkew(env);
+        const membership = environmentSkew
+          ? null
+          : await poolMembership(params.pools);
+        if (environmentSkew) {
           exclusionsUnvalidated = true;
+          exclusionsValidationReason =
+            'The v2 REST GPU catalog and authenticated GraphQL API do not form a matched environment pair, so the catalog was not consulted.';
+        } else if (!membership) {
+          exclusionsUnvalidated = true;
+          exclusionsValidationReason = 'The GPU catalog could not be read.';
         } else {
           const available = [...membership.values()].flat();
           const unmatched = params.excludeGpuTypeIds.filter(
@@ -292,8 +302,7 @@ export function registerEndpointGpuTools(
         // to the whole pool, so "we could not check" has to be visible in the reply.
         ...(exclusionsUnvalidated
           ? {
-              _exclusionsUnvalidated:
-                'The GPU catalog could not be read, so the excludeGpuTypeIds could not be checked against the pools. An id that matches no SKU exactly is accepted by the API and excludes nothing — verify with list-gpu-types, and re-read this endpoint with get-endpoint includeGpuIds:true.',
+              _exclusionsUnvalidated: `${exclusionsValidationReason} The excludeGpuTypeIds could not be checked against the pools. An id that matches no SKU exactly is accepted by the API and excludes nothing — verify against the GPU catalog for the same environment, and re-read this endpoint with get-endpoint includeGpuIds:true.`,
             }
           : {}),
       });
