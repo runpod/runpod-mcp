@@ -16,6 +16,7 @@ import {
   interpretAddResult,
   redactSecret,
   runClaude,
+  findClaudeBinary,
   createClaudeCodeClient,
   readClaudeConfigState,
   claudeUserConfigPath,
@@ -48,7 +49,7 @@ describe('claudeLookupCommand', () => {
     // `command -v` is a shell builtin; execSync on Windows goes through cmd.exe,
     // which has no such builtin, so it exited non-zero whether or not Claude Code
     // was installed. That is the whole bug.
-    assert.equal(claudeLookupCommand('win32'), 'where.exe claude');
+    assert.equal(claudeLookupCommand('win32'), 'where.exe $PATH:claude');
   });
 
   it('keeps command -v on POSIX platforms', () => {
@@ -144,10 +145,9 @@ describe('pickClaudeBinary', () => {
     );
   });
 
-  it('deprioritises a hit in the current directory', () => {
-    // `where.exe` searches the current directory BEFORE PATH. Running the wizard
-    // from a folder containing a file named claude.cmd would otherwise hand that
-    // file the user's API key.
+  it('rejects a hit in the current directory', () => {
+    // Even a PATH-scoped lookup can return cwd when PATH explicitly contains `.`
+    // or the current directory. Never hand the API key to a project-supplied shim.
     assert.equal(
       pickClaudeBinary(
         'C:\\work\\project\\claude.cmd\r\nC:\\bin\\claude.cmd\r\n',
@@ -158,13 +158,15 @@ describe('pickClaudeBinary', () => {
     );
   });
 
-  it('still uses a cwd hit when it is the only one', () => {
-    // Deprioritised, not excluded: someone may legitimately be running the wizard
-    // from the directory their claude install lives in.
+  it('returns null rather than trusting a cwd-only hit', () => {
     assert.equal(
       pickClaudeBinary('C:\\work\\claude.cmd\r\n', 'win32', 'C:\\work'),
-      'C:\\work\\claude.cmd'
+      null
     );
+  });
+
+  it('rejects relative Windows hits rather than resolving them through cwd', () => {
+    assert.equal(pickClaudeBinary('.\\claude.cmd\r\n', 'win32'), null);
   });
 
   it('handles CRLF line endings', () => {
@@ -686,6 +688,84 @@ describe(
         ? (JSON.parse(fs.readFileSync(file, 'utf8')) as string[])
         : null;
     }
+
+    function windowsSystemPath(): string {
+      return path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32');
+    }
+
+    it('discovers a trusted PATH shim through the real detector and registers with it', async () => {
+      const dir = shimDir();
+      const shim = recordingShim(dir);
+      const safeCwd = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'runpod safe cwd ')
+      );
+      dirs.push(safeCwd);
+      const originalPath = process.env.PATH;
+      process.env.PATH = [dir, windowsSystemPath()].join(path.delimiter);
+      try {
+        const binary = findClaudeBinary({
+          homedir: path.join(dir, 'empty-home'),
+          appdata: path.join(dir, 'empty-appdata'),
+          cwd: safeCwd,
+        });
+        assert.equal(
+          path.win32.normalize(binary ?? ''),
+          path.win32.normalize(shim)
+        );
+
+        const client = createClaudeCodeClient(
+          () => binary,
+          () => ({
+            configPath: 'C:\\Users\\dev\\.claude.json',
+            userScope: true,
+            localScopeDirs: [],
+          })
+        );
+        const result = await client.add({
+          kind: 'local',
+          apiKey: 'rpa_ABC123def456',
+        });
+        assert.equal(result.success, true, result.message);
+        assert.deepEqual(recordedArgv(dir), [
+          'mcp',
+          'add',
+          'runpod',
+          '--scope',
+          'user',
+          '-e',
+          'RUNPOD_API_KEY=rpa_ABC123def456',
+          '--',
+          'npx',
+          '-y',
+          '@runpod/mcp-server@latest',
+        ]);
+      } finally {
+        if (originalPath === undefined) delete process.env.PATH;
+        else process.env.PATH = originalPath;
+      }
+    });
+
+    it('does not detect or execute a cwd-only shim', () => {
+      const dir = shimDir();
+      recordingShim(dir);
+      const originalPath = process.env.PATH;
+      const originalCwd = process.cwd();
+      process.env.PATH = windowsSystemPath();
+      process.chdir(dir);
+      try {
+        const binary = findClaudeBinary({
+          homedir: path.join(dir, 'empty-home'),
+          appdata: path.join(dir, 'empty-appdata'),
+          cwd: dir,
+        });
+        assert.equal(binary, null);
+        assert.equal(recordedArgv(dir), null);
+      } finally {
+        process.chdir(originalCwd);
+        if (originalPath === undefined) delete process.env.PATH;
+        else process.env.PATH = originalPath;
+      }
+    });
 
     it('launches a .cmd from a path with a space and round-trips argv', () => {
       const dir = shimDir();

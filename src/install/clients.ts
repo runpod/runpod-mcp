@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import crossSpawn from 'cross-spawn';
 import * as jsonc from 'jsonc-parser';
 
@@ -482,9 +482,13 @@ export function claudeCandidatePaths(
  * Windows runs through cmd.exe, which has no such builtin — so on Windows it exited
  * non-zero whether or not claude was installed (issue #56). `where.exe` is cmd.exe's
  * native equivalent.
+ *
+ * `$PATH:claude` deliberately scopes `where.exe` to PATH. Bare `where.exe claude`
+ * also searches the current directory, even when it is not on PATH; accepting that
+ * result would let a repository-supplied `claude.cmd` receive the user's API key.
  */
 export function claudeLookupCommand(platform: string): string {
-  return platform === 'win32' ? 'where.exe claude' : 'command -v claude';
+  return platform === 'win32' ? 'where.exe $PATH:claude' : 'command -v claude';
 }
 
 /**
@@ -498,12 +502,12 @@ export function claudeLookupCommand(platform: string): string {
  *   1. `.com`/`.exe`  — cross-spawn spawns these with no shell.
  *   2. `.cmd`/`.bat`  — need cmd.exe, but cmd.exe genuinely runs them.
  *   3. anything else  — extensionless, `.ps1`; may not be runnable.
- * A hit inside `cwd` is ranked below every hit elsewhere — not merely below an
- * equivalent one: the cwd penalty exceeds the whole extension scale, so a cwd `.exe`
- * loses to an extensionless hit on PATH. Deliberately biased that way, because
- * `where.exe` searches the current directory before PATH, so running the wizard from a
- * folder containing a file named `claude.cmd` would otherwise hand it the API key.
- * Returns null when nothing came back.
+ * A hit inside `cwd` is rejected rather than merely ranked lower. The PATH-only
+ * lookup normally excludes it, but PATH may explicitly contain `.` or the current
+ * directory. In either case, auto-detection must not hand a credential to a file
+ * supplied by the project the wizard happens to be running from.
+ *
+ * Returns null when nothing trustworthy came back.
  */
 export function pickClaudeBinary(
   stdout: string,
@@ -532,22 +536,34 @@ export function pickClaudeBinary(
     return hits.find((hit) => path.isAbsolute(hit)) ?? null;
   }
 
-  const rank = (hit: string): number => {
-    const base = /\.(com|exe)$/i.test(hit)
-      ? 0
-      : /\.(cmd|bat)$/i.test(hit)
-        ? 1
-        : 2;
-    // Case-insensitive: Windows paths are, and where.exe's casing need not match
-    // what process.cwd() reports.
-    const inCwd =
-      cwd !== undefined &&
-      path.win32.dirname(hit).toLowerCase() === cwd.toLowerCase();
-    return inCwd ? base + 10 : base;
-  };
+  const normalizedCwd =
+    cwd === undefined
+      ? undefined
+      : path.win32
+          .resolve(cwd)
+          .replace(/[\\/]+$/, '')
+          .toLowerCase();
+  const trustedHits = hits.filter((hit) => {
+    // `where.exe` normally returns absolute paths. Treat anything else as
+    // untrusted rather than resolving it against the directory that may contain
+    // attacker-controlled project files.
+    if (!path.win32.isAbsolute(hit)) return false;
+    if (normalizedCwd === undefined) return true;
+    const parent = path.win32
+      .resolve(path.win32.dirname(hit))
+      .replace(/[\\/]+$/, '')
+      .toLowerCase();
+    return parent !== normalizedCwd;
+  });
+  if (trustedHits.length === 0) return null;
+
+  const rank = (hit: string): number =>
+    /\.(com|exe)$/i.test(hit) ? 0 : /\.(cmd|bat)$/i.test(hit) ? 1 : 2;
 
   // Stable: equal ranks keep the lookup's own order.
-  return hits.reduce((best, hit) => (rank(hit) < rank(best) ? hit : best));
+  return trustedHits.reduce((best, hit) =>
+    rank(hit) < rank(best) ? hit : best
+  );
 }
 
 /**
@@ -598,14 +614,22 @@ export function argsSafeForCmdShell(args: string[]): boolean {
   return !args.some((arg) => CMD_META.test(arg));
 }
 
-function findClaudeBinary(): string | null {
-  const platform = process.platform;
+export interface FindClaudeBinaryOptions {
+  platform?: string;
+  homedir?: string;
+  appdata?: string;
+  cwd?: string;
+}
 
-  for (const candidate of claudeCandidatePaths(
-    platform,
-    os.homedir(),
-    process.env.APPDATA
-  )) {
+export function findClaudeBinary(
+  options: FindClaudeBinaryOptions = {}
+): string | null {
+  const platform = options.platform ?? process.platform;
+  const homedir = options.homedir ?? os.homedir();
+  const appdata = options.appdata ?? process.env.APPDATA;
+  const cwd = options.cwd ?? process.cwd();
+
+  for (const candidate of claudeCandidatePaths(platform, homedir, appdata)) {
     // Absolute only. `exists()` resolves a relative candidate against the CURRENT
     // DIRECTORY, and candidates are probed before the PATH lookup — so a relative one
     // wins outright and gets spawned with `-e RUNPOD_API_KEY=<live key>`. That is the
@@ -620,11 +644,21 @@ function findClaudeBinary(): string | null {
     // Resolve to a real path rather than returning the bare name, so the choice
     // among the several files an npm install leaves behind is made here (see
     // pickClaudeBinary) instead of by PATHEXT order inside cmd.exe.
-    const out = execSync(claudeLookupCommand(platform), {
-      stdio: ['ignore', 'pipe', 'ignore'],
-      encoding: 'utf8',
-    });
-    return pickClaudeBinary(out, platform, process.cwd());
+    //
+    // Windows invokes the executable directly rather than through cmd.exe. The
+    // `$PATH:claude` argument is syntax understood by where.exe itself; keeping it
+    // as a separate argv element prevents a shell from interpreting or rewriting it.
+    const out =
+      platform === 'win32'
+        ? execFileSync('where.exe', ['$PATH:claude'], {
+            stdio: ['ignore', 'pipe', 'ignore'],
+            encoding: 'utf8',
+          })
+        : execSync(claudeLookupCommand(platform), {
+            stdio: ['ignore', 'pipe', 'ignore'],
+            encoding: 'utf8',
+          });
+    return pickClaudeBinary(out, platform, cwd);
   } catch {
     return null;
   }
