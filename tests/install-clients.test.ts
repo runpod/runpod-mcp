@@ -535,10 +535,9 @@ describe(
       const shim = writeInstall(npmDir);
       const safeCwd = installDir();
       const binary = findClaudeBinary({ homedir: home, appdata, cwd: safeCwd });
-      assert.equal(
-        path.win32.normalize(binary ?? ''),
-        path.win32.normalize(shim)
-      );
+      // Windows temp paths may arrive in 8.3 short form (`RUNNER~1`) while the
+      // production trust check intentionally returns the canonical long path.
+      assert.equal(binary, fs.realpathSync.native(shim));
 
       const client = createClaudeCodeClient(
         () => binary,
