@@ -8,8 +8,47 @@ import {
   resolveBackend,
   wantsAutoProbe,
   restVersionSummary,
+  v2AuthedGraphqlEnvironmentPairStatus,
   type Resource,
 } from '../src/_shared/backend.js';
+
+describe('v2AuthedGraphqlEnvironmentPairStatus', () => {
+  it('verifies only the production defaults', () => {
+    assert.equal(v2AuthedGraphqlEnvironmentPairStatus({}), 'production');
+    assert.equal(
+      v2AuthedGraphqlEnvironmentPairStatus({
+        RUNPOD_REST_V2_API_URL: 'https://v2-rest.runpod.io/v2/',
+        RUNPOD_AUTHED_GRAPHQL_URL: 'https://api.runpod.io/graphql/',
+      }),
+      'production'
+    );
+  });
+
+  it('treats two custom hosts as unverified rather than assuming they match', () => {
+    assert.equal(
+      v2AuthedGraphqlEnvironmentPairStatus({
+        RUNPOD_REST_V2_API_URL: 'https://v2.dev.example/v2/',
+        RUNPOD_AUTHED_GRAPHQL_URL: 'https://api.dev.example/graphql/',
+      }),
+      'unverified'
+    );
+  });
+
+  it('marks moving only one side as a known mismatch', () => {
+    assert.equal(
+      v2AuthedGraphqlEnvironmentPairStatus({
+        RUNPOD_REST_V2_API_URL: 'https://v2.dev.example/v2',
+      }),
+      'mismatch'
+    );
+    assert.equal(
+      v2AuthedGraphqlEnvironmentPairStatus({
+        RUNPOD_AUTHED_GRAPHQL_URL: 'https://api.dev.example/graphql',
+      }),
+      'mismatch'
+    );
+  });
+});
 
 describe('restVersionSummary', () => {
   it('echoes the global setting when set (lowercased)', () => {

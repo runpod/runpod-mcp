@@ -121,6 +121,16 @@ export function jsonReply(result: unknown) {
   };
 }
 
+// A JSON reply that is also an MCP tool error. Use this when the requested
+// operation did not happen: clients and agents should not have to inspect a
+// status field inside otherwise-successful content to notice a refused write.
+export function jsonErrorReply(result: unknown) {
+  return {
+    ...jsonReply(result),
+    isError: true,
+  };
+}
+
 // Shared MCP tool-annotation presets (advisory hints clients use to label tools
 // and gate confirmations). `openWorldHint` is true on all of these — every tool
 // talks to the external Runpod API. READ_ONLY = pure reads; WRITE = creates/

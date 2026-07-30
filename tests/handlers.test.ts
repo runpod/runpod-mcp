@@ -1,5 +1,9 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import {
+  GPU_IDS_QUERY,
+  SNAPSHOT_QUERY,
+} from '../src/_shared/endpoint-gpu-ids.js';
 
 // Defense-in-depth: the v1 goldens assume the version env vars are unset. Clear
 // them before every test so a leak (from another test or the CI env) can't
@@ -118,7 +122,9 @@ function harness(opts?: {
       ...(opts?.onUnauthorized ? { onUnauthorized: opts.onUnauthorized } : {}),
     },
     {
-      fetch: fakeFetch as Parameters<typeof registerTools>[2]['fetch'],
+      fetch: fakeFetch as NonNullable<
+        Parameters<typeof registerTools>[2]
+      >['fetch'],
       ...(opts?.streamSse ? { streamSse: opts.streamSse } : {}),
       ...(opts?.sseStatus
         ? {
@@ -167,7 +173,7 @@ describe('outbound-request golden (v1 unchanged)', () => {
     assert.equal(outbound[0].method, 'GET');
   });
 
-  it('create-pod → POST <rest>/v1/pods with body BYTE-IDENTICAL to params (v1 passthrough)', async () => {
+  it('create-pod → POST <rest>/v1/pods with body BYTE-IDENTICAL to params, including a size-only volume', async () => {
     const { handlers, outbound } = harness({ jsonBody: {} });
     const params = {
       name: 'p',
@@ -175,6 +181,8 @@ describe('outbound-request golden (v1 unchanged)', () => {
       gpuTypeIds: ['NVIDIA A100'],
       gpuCount: 2,
       containerDiskInGb: 20,
+      // Valid on v1: its API supplies the default mount path independently.
+      volumeInGb: 40,
       env: { K: 'V' },
     };
     await handlers.get('create-pod')!({ ...params });
@@ -264,18 +272,23 @@ describe('outbound-request golden (v1 unchanged)', () => {
     assert.equal(outbound[0].method, 'POST');
   });
 
-  it('update-pod → PATCH <rest>/v1/pods/{id}, body EXCLUDES podId (id-strip)', async () => {
+  it('update-pod → PATCH <rest>/v1/pods/{id}, preserves a size-only volume and strips podId', async () => {
     const { handlers, outbound } = harness({ jsonBody: {} });
     await handlers.get('update-pod')!({
       podId: 'pod_1',
       name: 'renamed',
+      volumeInGb: 200,
       env: { K: 'V' },
     });
     assert.equal(outbound[0].url, 'https://rest.runpod.io/v1/pods/pod_1');
     assert.equal(outbound[0].method, 'PATCH');
     const body = JSON.parse(outbound[0].body!);
     assert.equal('podId' in body, false, 'podId must be stripped from body');
-    assert.deepEqual(body, { name: 'renamed', env: { K: 'V' } });
+    assert.deepEqual(body, {
+      name: 'renamed',
+      volumeInGb: 200,
+      env: { K: 'V' },
+    });
   });
 
   it('update-network-volume → PATCH <rest>/v1/networkvolumes/{id}, body excludes id', async () => {
@@ -530,18 +543,53 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
     });
   });
 
-  it('create-pod v2 with a partial volume drops mounts (no size-only mount)', async () => {
+  it('create-pod rejects a partial volume instead of silently dropping it', async () => {
     await withV2(async () => {
+      // This test used to assert the DROP as correct: a size without a path produced a
+      // body with no `mounts`, the pod was created with no volume at all, and the reply
+      // said nothing. The v2 mapper builds one `mounts.persistent: {size, path}` object
+      // and returns undefined unless both are present, and its own comment admitted the
+      // gap ("Tool-schema validation should require both together") — never done. Same
+      // class as update-endpoint's gpuCount guard, so it is refused now.
       const { handlers, outbound } = harness({ jsonBody: {} });
-      // gpuTypeIds present so it stays on v2 (a GPU-less create routes to v1).
-      await handlers.get('create-pod')!({
+      const out = await handlers.get('create-pod')!({
         imageName: 'i',
         gpuTypeIds: ['A100'],
         volumeInGb: 40,
       });
-      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/pods');
+      assert.equal(outbound.length, 0, 'nothing may be sent');
+      assert.equal((out as { isError?: boolean }).isError, true);
+      assert.equal(parseText(out).status, 400);
+      assert.match(parseText(out).error as string, /must be sent together/);
+    });
+  });
+
+  it('create-pod accepts a volume when both size and path are given', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('create-pod')!({
+        imageName: 'i',
+        gpuTypeIds: ['A100'],
+        volumeInGb: 40,
+        volumeMountPath: '/workspace',
+      });
       const body = JSON.parse(outbound[0].body!);
-      assert.equal('mounts' in body, false);
+      assert.deepEqual(body.mounts, {
+        persistent: { size: 40, path: '/workspace' },
+      });
+    });
+  });
+
+  it('update-pod rejects a partial volume too', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      const out = await handlers.get('update-pod')!({
+        podId: 'pod_1',
+        volumeMountPath: '/workspace',
+      });
+      assert.equal(outbound.length, 0);
+      assert.equal((out as { isError?: boolean }).isError, true);
+      assert.match(parseText(out).error as string, /must be sent together/);
     });
   });
 
@@ -552,10 +600,15 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
         imageName: 'i',
         computeType: 'CPU',
         containerDiskInGb: 10,
+        // The default-v2 CPU route is actually a v1 call, where size-only is valid.
+        volumeInGb: 40,
       })) as { content: Array<{ text: string }> };
       // routed to v1 (v1 passthrough body), NOT v2
       assert.equal(outbound[0].url, 'https://rest.runpod.io/v1/pods');
-      assert.equal(JSON.parse(outbound[0].body!).imageName, 'i');
+      const body = JSON.parse(outbound[0].body!);
+      assert.equal(body.imageName, 'i');
+      assert.equal(body.volumeInGb, 40);
+      assert.equal(body.volumeMountPath, undefined);
       const payload = JSON.parse(out.content[0].text);
       assert.equal(payload._servedBy, 'v1');
       assert.match(payload._note, /v2 REST API does not support CPU pods/);
@@ -1809,15 +1862,21 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
         scalerValue: 7,
+        gpuPoolIds: ['AMPERE_48'],
+        gpuCount: 1,
+        replaceGpuSelection: true,
       });
+      // GET (scaler) → PATCH. Pools are explicit replacement intent, so there is
+      // no separate GraphQL check.
       assert.equal(outbound.length, 2);
       assert.equal(outbound[0].method, 'GET');
       assert.equal(
         outbound[0].url,
         'https://v2-rest.runpod.io/v2/serverless/ep_1'
       );
-      assert.equal(outbound[1].method, 'PATCH');
-      assert.deepEqual(JSON.parse(outbound[1].body!).scaling, {
+      const patch = outbound.at(-1)!;
+      assert.equal(patch.method, 'PATCH');
+      assert.deepEqual(JSON.parse(patch.body!).scaling, {
         type: 'REQUEST_COUNT',
         requestCount: 7,
       });
@@ -1836,9 +1895,13 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       const out = await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
         scalerValue: 7.5,
+        gpuPoolIds: ['AMPERE_48'],
+        gpuCount: 1,
+        replaceGpuSelection: true,
       });
       assert.equal(outbound.length, 1, 'expected the GET only, no PATCH');
       assert.equal(outbound[0].method, 'GET');
+      assert.equal((out as { isError?: boolean }).isError, true);
       assert.equal(parseText(out).status, 400);
       assert.match(parseText(out).error as string, /integer >= 1/);
     });
@@ -1855,44 +1918,614 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
         scalerValue: 3,
+        gpuPoolIds: ['AMPERE_48'],
+        gpuCount: 1,
+        replaceGpuSelection: true,
       });
-      assert.deepEqual(JSON.parse(outbound[1].body!).scaling, {
+      assert.deepEqual(JSON.parse(outbound.at(-1)!.body!).scaling, {
         type: 'QUEUE_DELAY',
         queueDelay: 3,
       });
     });
   });
 
-  it('update-endpoint skips that read when the caller names the scaler', async () => {
+  it('update-endpoint skips the scaler read when the caller names the scaler', async () => {
     await withV2(async () => {
-      const { handlers, outbound } = harness({ jsonBody: { id: 'ep_1' } });
+      const { handlers, outbound } = harness({
+        steps: [{ status: 200, jsonBody: { id: 'ep_1' } }],
+      });
       await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
         scalerType: 'QUEUE_DELAY',
         scalerValue: 3,
+        gpuPoolIds: ['AMPERE_48'],
+        gpuCount: 1,
+        replaceGpuSelection: true,
       });
+      // No REST GET for the scaler and no GraphQL pre-read.
       assert.equal(outbound.length, 1);
-      assert.equal(outbound[0].method, 'PATCH');
+      assert.equal(outbound.filter((o) => o.method === 'GET').length, 0);
+      assert.equal(outbound.at(-1)!.method, 'PATCH');
     });
   });
 
   it('update-endpoint → PATCH <v2>/v2/serverless/{id} with mapped body, id not in body', async () => {
     await withV2(async () => {
-      const { handlers, outbound } = harness({ jsonBody: { id: 'ep_1' } });
+      const { handlers, outbound } = harness({
+        steps: [{ status: 200, jsonBody: { id: 'ep_1' } }],
+      });
       await handlers.get('update-endpoint')!({
         endpointId: 'ep_1',
         workersMax: 5,
         imageName: 'img:3',
+        gpuPoolIds: ['AMPERE_48'],
+        gpuCount: 1,
+        replaceGpuSelection: true,
       });
-      assert.equal(
-        outbound[0].url,
-        'https://v2-rest.runpod.io/v2/serverless/ep_1'
-      );
-      assert.equal(outbound[0].method, 'PATCH');
-      const body = JSON.parse(outbound[0].body!);
+      const sent = outbound.at(-1)!;
+      assert.equal(sent.url, 'https://v2-rest.runpod.io/v2/serverless/ep_1');
+      assert.equal(sent.method, 'PATCH');
+      const body = JSON.parse(sent.body!);
       assert.deepEqual(body.workers, { max: 5 });
       assert.equal(body.image, 'img:3');
+      assert.deepEqual(body.gpu, { pools: ['AMPERE_48'], count: 1 });
       assert.equal('endpointId' in body, false);
+    });
+  });
+
+  // Shaped like a REAL GraphQL reply, which matters more than it looks: the earlier
+  // version of this fixture used `null` for the list fields and omitted instanceIds.
+  // The live resolvers return `[]` for all of them, never null, so the fixture hid
+  // both a crash (instanceIds undefined) and the reason several fields must not be
+  // echoed at all — `[]` is truthy server-side and means "clear this".
+  const gpuSnapshotFixture = {
+    id: 'ep_1',
+    name: 'ep',
+    gpuIds: 'AMPERE_48,ADA_48_PRO,-NVIDIA RTX A6000,-NVIDIA L40',
+    gpuCount: 1,
+    workersMin: 0,
+    workersMax: 3,
+    workersStandby: 3,
+    idleTimeout: 5,
+    scalerType: 'QUEUE_DELAY',
+    scalerValue: 4,
+    executionTimeoutMs: 600000,
+    requestTTL: 600,
+    flashBootType: 'FLASHBOOT',
+    type: 'QB',
+    locations: null,
+    allowedCudaVersions: null,
+    minCudaVersion: null,
+    instanceIds: [],
+  };
+
+  // ---- issue #63: v2 cannot represent GPU SKU exclusions ----
+  // EndpointGpuConfig is {pools, count}, so a PATCH round-trips the endpoint
+  // through a shape with nowhere to keep '-<GPU type id>' entries. Neither a
+  // pre-read nor a repair write can make two APIs atomic. update-endpoint therefore
+  // refuses every unrelated v2 PATCH of a GPU endpoint; a non-empty pool list is
+  // explicit replacement intent and travels in the same request as the other
+  // changes. The one pre-read it does perform — a same-host REST GET to exempt CPU
+  // endpoints — checks a fact fixed at creation (compute type), so unlike an
+  // exclusion read it cannot go stale between the read and the PATCH.
+
+  it('update-endpoint refuses an unrelated v2 PATCH of a GPU endpoint', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        steps: [
+          {
+            status: 200,
+            jsonBody: { id: 'ep_1', gpu: { pools: ['AMPERE_16'], count: 2 } },
+          },
+        ],
+      });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        imageName: 'img:9',
+      });
+      // Exactly one outbound call — the read-only CPU check. No PATCH.
+      assert.equal(outbound.length, 1);
+      assert.equal(outbound[0].method, 'GET');
+      assert.equal((out as { isError?: boolean }).isError, true);
+      const reply = parseText(out);
+      assert.equal(reply.status, 409);
+      assert.match(reply.error as string, /Update not applied/);
+      assert.match(reply.error as string, /every v2 PATCH/);
+      assert.match(reply.error as string, /gpuPoolIds/);
+      // The refusal hands back the current selection so the caller can build the
+      // required replacement — flagged as unable to show exclusions.
+      assert.deepEqual(reply.currentGpuSelection, {
+        pools: ['AMPERE_16'],
+        count: 2,
+      });
+      assert.match(reply.error as string, /CANNOT show/);
+      assert.match(reply.error as string, /includeGpuIds/);
+    });
+  });
+
+  it('update-endpoint cannot be green-lit by an exclusion-free pre-read', async () => {
+    await withV2(async () => {
+      // The REST read shows pools only — it CANNOT show exclusions, and a
+      // concurrent writer can add one between read and PATCH. So even a clean
+      // pool-only result must not authorize an unrelated PATCH of a GPU endpoint.
+      const { handlers, outbound } = harness({
+        steps: [
+          {
+            status: 200,
+            jsonBody: { id: 'ep_1', gpu: { pools: ['AMPERE_16'], count: 1 } },
+          },
+        ],
+      });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        imageName: 'img:9',
+      });
+      assert.equal(outbound.filter((o) => o.method === 'PATCH').length, 0);
+      assert.equal((out as { isError?: boolean }).isError, true);
+    });
+  });
+
+  it('update-endpoint lets a CPU endpoint through without a GPU replacement', async () => {
+    await withV2(async () => {
+      // A CPU endpoint has no gpuIds, so the lossy GPU rebuild has nothing to
+      // lose — requiring gpuPoolIds here demanded a GPU selection the endpoint
+      // cannot hold and made every CPU update a dead end.
+      const { handlers, outbound } = harness({
+        steps: [
+          {
+            status: 200,
+            jsonBody: {
+              id: 'ep_cpu',
+              cpu: { id: 'cpu5c', vcpuCount: 4, memory: 16 },
+              gpu: null,
+            },
+          },
+          { status: 200, jsonBody: { id: 'ep_cpu' } },
+        ],
+      });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_cpu',
+        imageName: 'img:9',
+      });
+      assert.equal(outbound.length, 2);
+      assert.equal(outbound[0].method, 'GET');
+      assert.equal(outbound[1].method, 'PATCH');
+      const body = JSON.parse(outbound[1].body!) as Record<string, unknown>;
+      assert.equal(body.image, 'img:9');
+      // No gpu object is fabricated for an endpoint that cannot hold one.
+      assert.equal('gpu' in body, false);
+      assert.notEqual((out as { isError?: boolean }).isError, true);
+      assert.equal(parseText(out).id, 'ep_cpu');
+    });
+  });
+
+  it('update-endpoint reuses the CPU-check read for the scaler lookup', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        steps: [
+          {
+            status: 200,
+            jsonBody: {
+              id: 'ep_cpu',
+              cpu: { id: 'cpu5c', vcpuCount: 4, memory: 16 },
+              scaling: { type: 'REQUEST_COUNT', requestCount: 2 },
+            },
+          },
+          { status: 200, jsonBody: { id: 'ep_cpu' } },
+        ],
+      });
+      await handlers.get('update-endpoint')!({
+        endpointId: 'ep_cpu',
+        scalerValue: 4,
+      });
+      // One GET serves both the CPU check and the scaler resolution.
+      assert.equal(outbound.length, 2);
+      assert.equal(outbound[1].method, 'PATCH');
+      const body = JSON.parse(outbound[1].body!) as {
+        scaling?: { type?: string };
+      };
+      assert.equal(body.scaling?.type, 'REQUEST_COUNT');
+    });
+  });
+
+  it('update-endpoint explains a facade rejection of a CPU-endpoint PATCH', async () => {
+    await withV2(async () => {
+      // Observed live on the dev facade (2026-07-30): the PATCH pipeline rebuilds
+      // a GPU-shaped config even for a CPU endpoint and rejects it with
+      // "gpuId(s) is required for a gpu endpoint" — a message that misidentifies
+      // the endpoint's compute type. The endpoint was just read and is known CPU,
+      // so the tool adds that context and the v1 escape hatch.
+      const { handlers, outbound } = harness({
+        steps: [
+          {
+            status: 200,
+            jsonBody: {
+              id: 'ep_cpu',
+              cpu: { id: 'cpu3c', vcpuCount: 2, memory: 4 },
+            },
+          },
+          {
+            status: 400,
+            text: '{"detail":"gpuId(s) is required for a gpu endpoint","status":400,"title":"Bad Request"}',
+          },
+        ],
+      });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_cpu',
+        env: { A: 'b' },
+      });
+      assert.equal(outbound.length, 2);
+      assert.equal(outbound[1].method, 'PATCH');
+      assert.equal((out as { isError?: boolean }).isError, true);
+      const reply = parseText(out);
+      assert.match(reply.error as string, /is a CPU endpoint/);
+      assert.match(reply.error as string, /RUNPOD_REST_VERSION=v1/);
+      // The server's own words stay visible — context is added, not substituted.
+      assert.match(reply.error as string, /gpuId\(s\) is required/);
+    });
+  });
+
+  it('update-endpoint propagates a non-400 CPU-endpoint PATCH failure unchanged', async () => {
+    await withV2(async () => {
+      // The CPU wrapper narrates one known 400; a 500 or 401 is not that story
+      // and must not be dressed up as "CPU update unsupported".
+      const { handlers } = harness({
+        steps: [
+          {
+            status: 200,
+            jsonBody: {
+              id: 'ep_cpu',
+              cpu: { id: 'cpu3c', vcpuCount: 2, memory: 4 },
+            },
+          },
+          { status: 500, text: 'internal error' },
+        ],
+      });
+      await assert.rejects(
+        handlers.get('update-endpoint')!({
+          endpointId: 'ep_cpu',
+          env: { A: 'b' },
+        }),
+        /500/
+      );
+    });
+  });
+
+  it('update-endpoint fails closed when the CPU-check read fails', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        steps: [{ status: 404, jsonBody: { error: 'endpoint not found' } }],
+      });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_gone',
+        imageName: 'img:9',
+      });
+      assert.equal(outbound.filter((o) => o.method === 'PATCH').length, 0);
+      assert.equal((out as { isError?: boolean }).isError, true);
+      const reply = parseText(out);
+      assert.equal(reply.status, 409);
+      assert.match(reply.error as string, /could not be read/);
+    });
+  });
+
+  it('update-endpoint fails closed on a reply that names neither cpu nor gpu', async () => {
+    await withV2(async () => {
+      // An older facade, a proxy, or a wrong host could omit both fields. That is
+      // not evidence of a CPU endpoint — only an unambiguous `cpu` with no `gpu`
+      // skips the gate.
+      const { handlers, outbound } = harness({
+        steps: [{ status: 200, jsonBody: { id: 'ep_1' } }],
+      });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        imageName: 'img:9',
+      });
+      assert.equal(outbound.filter((o) => o.method === 'PATCH').length, 0);
+      assert.equal((out as { isError?: boolean }).isError, true);
+      assert.equal(parseText(out).status, 409);
+    });
+  });
+
+  it('update-endpoint treats explicit gpuPoolIds as an intentional replacement', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        steps: [{ status: 200, jsonBody: { id: 'ep_1' } }],
+      });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        gpuPoolIds: ['ADA_24'],
+        gpuCount: 2,
+        replaceGpuSelection: true,
+      });
+      // No GraphQL read and no compensation: explicitly supplying pools means
+      // replacement, not preservation.
+      assert.equal(outbound.length, 1);
+      assert.equal(outbound[0].method, 'PATCH');
+      assert.deepEqual(JSON.parse(outbound[0].body!).gpu, {
+        pools: ['ADA_24'],
+        count: 2,
+      });
+      assert.equal(parseText(out).id, 'ep_1');
+    });
+  });
+
+  it('update-endpoint requires explicit replacement acknowledgement', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness();
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        gpuPoolIds: ['ADA_24'],
+        gpuCount: 1,
+      });
+      assert.equal(outbound.length, 0);
+      assert.equal((out as { isError?: boolean }).isError, true);
+      assert.equal(parseText(out).status, 409);
+      assert.match(parseText(out).error as string, /replaceGpuSelection:true/);
+    });
+  });
+
+  it('update-endpoint requires gpuCount for a complete acknowledged replacement', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness();
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        gpuPoolIds: ['ADA_24'],
+        replaceGpuSelection: true,
+      });
+      assert.equal(outbound.length, 0);
+      assert.equal((out as { isError?: boolean }).isError, true);
+      assert.equal(parseText(out).status, 400);
+      assert.match(parseText(out).error as string, /gpuCount is required/);
+    });
+  });
+
+  it('update-endpoint reports an empty pool replacement as an MCP error', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness();
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        gpuPoolIds: [],
+      });
+      assert.equal(outbound.length, 0);
+      assert.equal((out as { isError?: boolean }).isError, true);
+      const reply = parseText(out);
+      assert.equal(reply.status, 400);
+      assert.match(reply.error as string, /cannot be empty/);
+    });
+  });
+
+  it('get-endpoint includeGpuIds surfaces exclusions the REST reply omits', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        steps: [
+          {
+            status: 200,
+            jsonBody: { id: 'ep_1', gpu: { pools: ['AMPERE_48'], count: 1 } },
+          },
+          {
+            status: 200,
+            jsonBody: { data: { myself: { endpoint: gpuSnapshotFixture } } },
+          },
+        ],
+      });
+      const out = await handlers.get('get-endpoint')!({
+        endpointId: 'ep_1',
+        includeGpuIds: true,
+      });
+      assert.equal(outbound.length, 2);
+      const reply = parseText(out);
+      assert.equal(
+        reply.gpuIds,
+        'AMPERE_48,ADA_48_PRO,-NVIDIA RTX A6000,-NVIDIA L40'
+      );
+      assert.equal(reply.gpuIdsHasExclusions, true);
+      // The REST payload is preserved alongside it.
+      assert.deepEqual(reply.gpu, { pools: ['AMPERE_48'], count: 1 });
+      assert.equal(JSON.parse(outbound[1].body!).query, GPU_IDS_QUERY);
+    });
+  });
+
+  it('get-endpoint without includeGpuIds makes no GraphQL call', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'ep_1' } });
+      const out = await handlers.get('get-endpoint')!({ endpointId: 'ep_1' });
+      assert.equal(outbound.length, 1);
+      assert.equal('gpuIds' in parseText(out), false);
+    });
+  });
+
+  // get-endpoint's three enrichment-failure branches. Untested, they were the last
+  // unguarded reporting surface here — and every blocker on this PR so far has been a
+  // reporting path that turned a failure into a silent success.
+  it('get-endpoint includeGpuIds explains itself instead of silently doing nothing on v1', async () => {
+    const { handlers, outbound } = harness({ jsonBody: { id: 'ep_1' } });
+    const out = await handlers.get('get-endpoint')!({
+      endpointId: 'ep_1',
+      includeGpuIds: true,
+    });
+    // No GraphQL call on v1 — but the caller asked for gpuIds and must be told why
+    // the reply has none, rather than being left to guess.
+    assert.equal(outbound.length, 1);
+    assert.equal('gpuIds' in parseText(out), false);
+    assert.match(parseText(out)._gpuIdsError as string, /v2 only/);
+  });
+
+  it('get-endpoint includeGpuIds keeps the REST reply when the GraphQL read throws', async () => {
+    await withV2(async () => {
+      const { handlers } = harness({
+        steps: [
+          { status: 200, jsonBody: { id: 'ep_1' } },
+          { status: 500, jsonBody: {} },
+        ],
+      });
+      const out = await handlers.get('get-endpoint')!({
+        endpointId: 'ep_1',
+        includeGpuIds: true,
+      });
+      // The REST read succeeded, so losing the whole reply would be worse than
+      // reporting the enrichment failure alongside it.
+      assert.equal(parseText(out).id, 'ep_1');
+      assert.match(
+        parseText(out)._gpuIdsError as string,
+        /Could not read gpuIds/
+      );
+    });
+  });
+
+  it('get-endpoint includeGpuIds reports a null GraphQL user distinctly', async () => {
+    await withV2(async () => {
+      const { handlers } = harness({
+        steps: [
+          { status: 200, jsonBody: { id: 'ep_1' } },
+          { status: 200, jsonBody: { data: { myself: null } } },
+        ],
+      });
+      const out = await handlers.get('get-endpoint')!({
+        endpointId: 'ep_1',
+        includeGpuIds: true,
+      });
+      assert.match(
+        parseText(out)._gpuIdsError as string,
+        /no user for this credential/
+      );
+    });
+  });
+
+  it('get-endpoint includeGpuIds does not merge mismatched API environments', async () => {
+    await withV2(async () => {
+      const previous = process.env.RUNPOD_REST_V2_API_URL;
+      process.env.RUNPOD_REST_V2_API_URL = 'https://v2.dev.example/v2';
+      try {
+        const { handlers, outbound } = harness({
+          steps: [{ status: 200, jsonBody: { id: 'ep_1' } }],
+        });
+        const out = await handlers.get('get-endpoint')!({
+          endpointId: 'ep_1',
+          includeGpuIds: true,
+        });
+        assert.equal(outbound.length, 1);
+        assert.match(
+          parseText(out)._gpuIdsError as string,
+          /known to describe different environments/
+        );
+      } finally {
+        if (previous === undefined) delete process.env.RUNPOD_REST_V2_API_URL;
+        else process.env.RUNPOD_REST_V2_API_URL = previous;
+      }
+    });
+  });
+
+  it('get-endpoint requires an unsafe acknowledgement before merging two custom API hosts', async () => {
+    await withV2(async () => {
+      const previousRest = process.env.RUNPOD_REST_V2_API_URL;
+      const previousGraphql = process.env.RUNPOD_AUTHED_GRAPHQL_URL;
+      process.env.RUNPOD_REST_V2_API_URL = 'https://v2.dev.example/v2';
+      process.env.RUNPOD_AUTHED_GRAPHQL_URL =
+        'https://graphql.dev.example/graphql';
+      try {
+        const refused = harness({
+          steps: [{ status: 200, jsonBody: { id: 'ep_1' } }],
+        });
+        const refusedOut = await refused.handlers.get('get-endpoint')!({
+          endpointId: 'ep_1',
+          includeGpuIds: true,
+        });
+        assert.equal(refused.outbound.length, 1, 'REST read only');
+        assert.match(
+          parseText(refusedOut)._gpuIdsError as string,
+          /cannot verify/
+        );
+        assert.match(
+          parseText(refusedOut)._gpuIdsError as string,
+          /allowUnverifiedEnvironmentPair:true/
+        );
+
+        const acknowledged = harness({
+          steps: [
+            { status: 200, jsonBody: { id: 'ep_1' } },
+            {
+              status: 200,
+              jsonBody: {
+                data: {
+                  myself: {
+                    endpoint: {
+                      gpuIds: 'AMPERE_16,-NVIDIA RTX A4500',
+                    },
+                  },
+                },
+              },
+            },
+          ],
+        });
+        const acknowledgedOut = await acknowledged.handlers.get(
+          'get-endpoint'
+        )!({
+          endpointId: 'ep_1',
+          includeGpuIds: true,
+          allowUnverifiedEnvironmentPair: true,
+        });
+        assert.equal(acknowledged.outbound.length, 2);
+        const reply = parseText(acknowledgedOut);
+        assert.equal(reply.gpuIds, 'AMPERE_16,-NVIDIA RTX A4500');
+        assert.match(
+          reply._environmentPairUnverified as string,
+          /allowUnverifiedEnvironmentPair:true/
+        );
+      } finally {
+        if (previousRest === undefined)
+          delete process.env.RUNPOD_REST_V2_API_URL;
+        else process.env.RUNPOD_REST_V2_API_URL = previousRest;
+        if (previousGraphql === undefined)
+          delete process.env.RUNPOD_AUTHED_GRAPHQL_URL;
+        else process.env.RUNPOD_AUTHED_GRAPHQL_URL = previousGraphql;
+      }
+    });
+  });
+
+  it('update-endpoint rejects a lone gpuCount on v2 instead of dropping it', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'ep_1' } });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        gpuCount: 4,
+      });
+      // v2's gpu object requires pools, so the mapper drops gpu entirely and the
+      // PATCH said nothing about GPUs — 200 OK, count unchanged, caller none the
+      // wiser. Nothing is sent at all now.
+      assert.equal(outbound.length, 0);
+      assert.equal(parseText(out).status, 400);
+      assert.match(parseText(out).error as string, /gpuCount alone/);
+    });
+  });
+
+  it('update-endpoint rejects an empty gpuPoolIds instead of dropping it', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'ep_1' } });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        gpuPoolIds: [],
+      });
+      // v2's pools has minItems 1, so an empty list is dropped by the mapper and the
+      // PATCH says nothing about GPUs. An agent sending it is trying to clear the
+      // pool restriction, which v2 cannot express at all.
+      assert.equal(outbound.length, 0);
+      assert.match(parseText(out).error as string, /cannot be empty/);
+    });
+  });
+
+  it('update-endpoint allows gpuCount when sent with gpuPoolIds', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        steps: [{ status: 200, jsonBody: { id: 'ep_1' } }],
+      });
+      await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        gpuCount: 4,
+        gpuPoolIds: ['AMPERE_80'],
+        replaceGpuSelection: true,
+      });
+      const body = JSON.parse(outbound.at(-1)!.body!);
+      assert.deepEqual(body.gpu, { pools: ['AMPERE_80'], count: 4 });
     });
   });
 
@@ -2905,6 +3538,7 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
       gpuCount: 1,
       workersMin: 2,
       workersMax: 7,
+      workersStandby: 7,
       idleTimeout: 42,
       scalerType: 'REQUEST_COUNT',
       scalerValue: 9,
@@ -2912,9 +3546,11 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
       flashBootType: 'PRIORITY_FLASHBOOT',
       type: 'QB',
       locations: 'US-TX-3',
+      requestTTL: 600,
       templateId: 'tpl_pinme',
       allowedCudaVersions: '12.4,12.8',
       minCudaVersion: '12.4',
+      instanceIds: [],
       compliance: ['GDPR'],
       modelReferences: ['model_a'],
       networkVolumeIds: [{ networkVolumeId: 'nv_1', dataCenterId: 'US-TX-3' }],
@@ -2926,6 +3562,7 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
       gpuCount: 1,
       workersMin: 0,
       workersMax: 1,
+      workersStandby: 1,
       idleTimeout: 5,
       scalerType: 'QUEUE_DELAY',
       scalerValue: 4,
@@ -2933,22 +3570,52 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
       flashBootType: 'FLASHBOOT',
       type: 'QB',
       locations: null,
+      requestTTL: null,
       templateId: 'tpl_plain',
-      // No CUDA constraint or tags on this endpoint: these read null.
+      // No CUDA constraint on this endpoint: these read null.
       allowedCudaVersions: null,
       minCudaVersion: null,
-      compliance: null,
-      modelReferences: null,
+      // The live resolvers return [] for these, never null.
+      instanceIds: [],
+      compliance: [],
+      modelReferences: [],
       networkVolumeIds: [],
     },
   ];
-  // Fixture keys that must survive the echo unchanged. gpuIds is the one field
-  // the tool replaces; networkVolumeIds is asserted separately because read and
-  // write use different shapes.
+  // Keys the resolver writes only when the input carries them, so omission
+  // preserves the stored value and echoing does damage: `modelReferences: []` clears
+  // every model reference (stripping MODEL_NAME from the endpoint's env),
+  // `compliance: []` resolves to NULL and CLEARS the endpoint's compliance
+  // requirements, templateId is create-only on the write path, networkVolumeIds creates
+  // volume rows on a legacy single-volume endpoint, and `instanceIds: []` is truthy
+  // server-side so it writes '' where the column held NULL. Note instanceIds is written
+  // UNCONDITIONALLY (as null) — it is here because an empty echo is harmful, not
+  // because omission is safe. Each must be ABSENT from the mutation.
+  const gatedKeys = [
+    'templateId',
+    'compliance',
+    'modelReferences',
+    'networkVolumeIds',
+    'instanceIds',
+    // Written only `...(input.type ? {type} : {})` and validated only
+    // `if (input.type && …)`, so omission preserves it — and echoing a future
+    // AiApiType the validator rejects (RT is already in the enum) would fail the
+    // saveEndpoint mutation for no benefit.
+    'type',
+  ];
+  // Read only for the collateral-reset guard. EndpointInput has no
+  // workersStandby field; the backend always derives it from workersMax.
+  const readOnlyKeys = ['workersStandby'];
+  // Everything else must survive the echo unchanged, because the resolver writes it
+  // unconditionally. gpuIds is the one field the tool replaces. Derived from the
+  // fixture on purpose: add a field to the fixture and the test demands it be
+  // handled one way or the other.
   const preservedKeys = Object.keys(endpoints[0]).filter(
-    (k) => k !== 'gpuIds' && k !== 'networkVolumeIds'
+    (k) => k !== 'gpuIds' && !gatedKeys.includes(k) && !readOnlyKeys.includes(k)
   );
-  const queryBody = { data: { myself: { endpoints } } };
+  // The snapshot query fetches ONE endpoint by id (myself.endpoints is capped at
+  // 400 rows with no pagination, so it can't be relied on).
+  const queryBody = { data: { myself: { endpoint: endpoints[0] } } };
   const saveBody = {
     data: {
       saveEndpoint: {
@@ -2969,12 +3636,16 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
     const out = await handlers.get('set-endpoint-gpus')!({
       endpointId: 'ep_pinme',
       gpuIds: 'AMPERE_16,-NVIDIA RTX A4500',
+      allowUnvalidatedExclusions: true,
     });
 
     assert.equal(outbound.length, 2);
     assert.equal(outbound[0].url, 'https://api.runpod.io/graphql');
     assert.equal(outbound[0].headers?.Authorization, 'Bearer rpa_test');
-    assert.match(JSON.parse(outbound[0].body!).query, /myself[\s\S]*endpoints/);
+    // Exact, not a shape regex: a revision that inlined a different query string would
+    // keep the SNAPSHOT_QUERY unit tests green (they only inspect the exported
+    // constant) and still satisfy a loose match. Test the wiring, not just the helper.
+    assert.equal(JSON.parse(outbound[0].body!).query, SNAPSHOT_QUERY);
     assert.equal(outbound[1].headers?.Authorization, 'Bearer rpa_test');
     const input = (
       JSON.parse(outbound[1].body!) as {
@@ -2990,23 +3661,18 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
       );
     }
     assert.equal(input.gpuIds, 'AMPERE_16,-NVIDIA RTX A4500');
-    // NetworkVolumeIdsInput accepts networkVolumeId ONLY; the server rejects
-    // dataCenterId outright, breaking every endpoint with a volume. So assert
-    // the exact key set, not just the id.
-    assert.deepEqual(input.networkVolumeIds, [{ networkVolumeId: 'nv_1' }]);
-    for (const entry of input.networkVolumeIds as Array<
-      Record<string, unknown>
-    >) {
-      assert.deepEqual(
-        Object.keys(entry),
-        ['networkVolumeId'],
-        'NetworkVolumeIdsInput accepts networkVolumeId only'
-      );
+    // The gated fields must not appear at all. This endpoint has a volume, a
+    // compliance tag and a model reference, so an echo would be visible here.
+    for (const key of gatedKeys) {
+      assert.equal(key in input, false, `${key} must NOT be echoed`);
+    }
+    for (const key of readOnlyKeys) {
+      assert.equal(key in input, false, `${key} is read-only`);
     }
     // No stray fields beyond the echo + the GPU change.
     assert.deepEqual(
       Object.keys(input).sort(),
-      [...preservedKeys, 'gpuIds', 'networkVolumeIds'].sort()
+      [...preservedKeys, 'gpuIds'].sort()
     );
     const payload = parseText(out);
     assert.equal(payload.previousGpuIds, 'AMPERE_16');
@@ -3033,14 +3699,17 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
   });
 
   it('builds the gpuIds string from pools + excludeGpuTypeIds; empty volume list echoes null; gpuCount overridable', async () => {
+    // ep_plain is the second fixture — no volumes, no CUDA constraints. The
+    // snapshot query returns one endpoint by id, so the fixture must be that one.
     const { handlers, outbound } = harness({
-      jsonBodies: [queryBody, saveBody],
+      jsonBodies: [{ data: { myself: { endpoint: endpoints[1] } } }, saveBody],
     });
     await handlers.get('set-endpoint-gpus')!({
       endpointId: 'ep_plain',
       pools: ['AMPERE_16', 'AMPERE_24'],
       excludeGpuTypeIds: ['NVIDIA RTX A4500', 'NVIDIA L4'],
       gpuCount: 2,
+      allowUnvalidatedExclusions: true,
     });
     const input = (
       JSON.parse(outbound[1].body!) as {
@@ -3052,20 +3721,112 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
       'AMPERE_16,AMPERE_24,-NVIDIA RTX A4500,-NVIDIA L4'
     );
     assert.equal(input.gpuCount, 2);
-    assert.equal(input.networkVolumeIds, null);
     assert.equal(input.workersMax, 1);
-    // ep_plain has a template but no CUDA constraint, tags or model references:
-    // the template is carried over, the null fields omitted rather than sent as
-    // explicit nulls.
-    assert.equal(input.templateId, 'tpl_plain');
-    for (const key of [
-      'allowedCudaVersions',
-      'minCudaVersion',
-      'compliance',
-      'modelReferences',
-    ]) {
-      assert.equal(key in input, false, `${key} is null — omit, do not send`);
+    // ep_plain has no volumes, so nothing to echo — but the key must be absent
+    // rather than an explicit null: null and omitted both mean "don't touch
+    // volumes", and sending the key at all is what created rows on a legacy
+    // single-volume endpoint.
+    assert.equal('networkVolumeIds' in input, false);
+    // Its stored requestTTL is null, and that null must still be echoed: the
+    // server compares `'requestTTL' in input` for the version bump, so omitting it
+    // registers as a change and rolls the workers.
+    assert.equal('requestTTL' in input, true);
+    assert.equal(input.requestTTL, null);
+    // The CUDA fields read null on this endpoint and are echoed as null, because the
+    // resolver writes them unconditionally.
+    assert.equal(input.allowedCudaVersions, null);
+    assert.equal(input.minCudaVersion, null);
+    // Gated fields stay out even when they read as empty rather than populated.
+    for (const key of gatedKeys) {
+      assert.equal(key in input, false, `${key} must NOT be echoed`);
     }
+  });
+
+  it('accepts a count-only change and keeps the stored gpuIds, exclusions included', async () => {
+    // update-endpoint's 400 for a lone gpuCount points here, so this has to work or
+    // that advice is a dead end: two errors and no path to the thing you asked for.
+    const { handlers, outbound } = harness({
+      jsonBodies: [queryBody, saveBody],
+    });
+    const out = await handlers.get('set-endpoint-gpus')!({
+      endpointId: 'ep_pinme',
+      gpuCount: 4,
+    });
+    const input = (
+      JSON.parse(outbound[1].body!) as {
+        variables: { input: Record<string, unknown> };
+      }
+    ).variables.input;
+    assert.equal(input.gpuCount, 4);
+    // The endpoint's own selection is carried over untouched.
+    assert.equal(input.gpuIds, 'AMPERE_16');
+    assert.equal(parseText(out).previousGpuIds, 'AMPERE_16');
+  });
+
+  it('refuses a collateral workersStandby reset before mutation, then reports old/new values when acknowledged', async () => {
+    const resetSnapshot = {
+      ...endpoints[0],
+      workersStandby: 2,
+      workersMax: 7,
+    };
+    const refused = harness({
+      jsonBodies: [{ data: { myself: { endpoint: resetSnapshot } } }],
+    });
+    const refusedOut = await refused.handlers.get('set-endpoint-gpus')!({
+      endpointId: 'ep_pinme',
+      gpuIds: 'ADA_24',
+    });
+    assert.equal((refusedOut as { isError?: boolean }).isError, true);
+    assert.equal(
+      refused.outbound.filter((o) => (o.body ?? '').includes('saveEndpoint'))
+        .length,
+      0
+    );
+    assert.deepEqual(parseText(refusedOut).workersStandbyReset, {
+      from: 2,
+      to: 7,
+    });
+    assert.match(
+      parseText(refusedOut).error as string,
+      /acknowledgeStandbyReset:true/
+    );
+
+    const acknowledged = harness({
+      jsonBodies: [{ data: { myself: { endpoint: resetSnapshot } } }, saveBody],
+    });
+    const acknowledgedOut = await acknowledged.handlers.get(
+      'set-endpoint-gpus'
+    )!({
+      endpointId: 'ep_pinme',
+      gpuIds: 'ADA_24',
+      acknowledgeStandbyReset: true,
+    });
+    assert.equal((acknowledgedOut as { isError?: boolean }).isError, undefined);
+    assert.equal(
+      acknowledged.outbound.filter((o) =>
+        (o.body ?? '').includes('saveEndpoint')
+      ).length,
+      1
+    );
+    assert.deepEqual(parseText(acknowledgedOut).workersStandbyReset, {
+      from: 2,
+      to: 7,
+    });
+  });
+
+  it('still refuses a call that changes nothing', () => {
+    const { handlers, outbound } = harness({ jsonBodies: [queryBody] });
+    return handlers.get('set-endpoint-gpus')!({ endpointId: 'ep_pinme' }).then(
+      (out: unknown) => {
+        // No read either — nothing to do is decided before any request.
+        assert.equal(outbound.length, 0);
+        assert.equal((out as { isError?: boolean }).isError, true);
+        assert.match(
+          parseText(out as never).error as string,
+          /Nothing to change/
+        );
+      }
+    );
   });
 
   it('sends the authenticated GraphQL host, not the public-discovery one', async () => {
@@ -3097,23 +3858,55 @@ describe('set-endpoint-gpus (authenticated GraphQL GPU pinning)', () => {
     }
   });
 
-  it('fails BEFORE any mutation: unknown endpoint (after read), and missing GPU params (no calls at all)', async () => {
-    const unknown = harness({ jsonBodies: [queryBody] });
+  it('fails BEFORE any mutation: unreadable endpoint (after read), and missing GPU params (no calls at all)', async () => {
+    // `myself: {endpoint: null}` does NOT mean "unknown id" — the resolver throws
+    // for an id it cannot see. A null reaches here only when the GraphQL API returns
+    // no user for the credential, and the message has to say that rather than
+    // pointing the caller at list-endpoints.
+    const unknown = harness({
+      jsonBodies: [{ data: { myself: { endpoint: null } } }],
+    });
     const unknownOut = await unknown.handlers.get('set-endpoint-gpus')!({
       endpointId: 'ep_nope',
       gpuIds: 'ADA_24',
     });
     assert.equal(unknown.outbound.length, 1);
+    assert.equal((unknownOut as { isError?: boolean }).isError, true);
     assert.match(
       parseText(unknownOut).error as string,
-      /No Serverless endpoint/
+      /returned no user for this credential/
     );
+
+    // The other not-found shape, and the common one: `endpoint(id:)` is a
+    // findFirstOrThrow, so an unknown or foreign id arrives as a REJECTION. Without
+    // catching it the caller gets a raw GraphQL error with no idea what to do next.
+    const rejected = harness({
+      jsonBodies: [
+        { errors: [{ message: 'No AiApi found' }], data: { myself: null } },
+      ],
+    });
+    const rejectedOut = await rejected.handlers.get('set-endpoint-gpus')!({
+      endpointId: 'ep_typo',
+      gpuIds: 'ADA_24',
+    });
+    assert.equal(rejected.outbound.length, 1, 'must not reach the mutation');
+    assert.equal((rejectedOut as { isError?: boolean }).isError, true);
+    const rejectedError = parseText(rejectedOut).error as string;
+    // Phrased without asserting a diagnosis — the same catch sees a 401 on an expired
+    // key and a GraphQL 500, and "your id is wrong" would send those users the wrong
+    // way. It still names list-endpoints as the next step for the common case.
+    assert.match(rejectedError, /Could not read endpoint/);
+    assert.match(rejectedError, /nothing was changed/);
+    assert.match(rejectedError, /list-endpoints/);
+    // The underlying cause is kept, not swallowed.
+    assert.match(rejectedError, /No AiApi found/);
 
     const none = harness({ jsonBodies: [queryBody] });
     const noneOut = await none.handlers.get('set-endpoint-gpus')!({
       endpointId: 'ep_pinme',
     });
     assert.equal(none.outbound.length, 0);
+    assert.equal((noneOut as { isError?: boolean }).isError, true);
     assert.match(parseText(noneOut).error as string, /gpuIds .*or pools/);
   });
 });
@@ -3280,5 +4073,581 @@ describe('onUnauthorized ignores the unauthenticated GraphQL path', () => {
       'expected the public GraphQL call'
     );
     assert.equal(fired, 0, 'a no-credential 401 invalidated the verdict');
+  });
+});
+
+// ---- create-endpoint refuses v1-only fields on v2 instead of dropping them ----
+describe('create-endpoint v1-only fields on v2', () => {
+  async function reject(params: Record<string, unknown>, pattern: RegExp) {
+    return withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'ep_new' } });
+      const out = await handlers.get('create-endpoint')!({
+        name: 'x',
+        imageName: 'img',
+        gpuPoolIds: ['AMPERE_16'],
+        ...params,
+      });
+      assert.equal((out as { isError?: boolean }).isError, true);
+      const reply = parseText(out);
+      assert.equal(reply.status, 400);
+      assert.match(reply.error as string, pattern);
+      // Nothing may be created for a request that cannot be honoured as asked.
+      assert.equal(outbound.length, 0, 'no endpoint may be created');
+    });
+  }
+
+  it('refuses computeType, which v2 cannot express at all', () => {
+    // The expensive one. mapEndpointCreateToV2 reads only V2EndpointParams, which does
+    // not declare computeType — and v2 cannot create a CPU endpoint in any case (the
+    // spec marks `cpu` read-only: "CPU create/update is not yet supported"). So
+    // computeType:'CPU' silently produced a GPU endpoint, billed at GPU rates, reported
+    // as success. update-endpoint 400s for a lone gpuCount on exactly this reasoning;
+    // create-endpoint applied the opposite standard to the same class of request.
+    return reject({ computeType: 'CPU' }, /cannot create CPU endpoints/);
+  });
+
+  it('refuses gpuTypeIds rather than silently widening the pin to a pool', () => {
+    // gpuTypeIds pins individual SKUs on v1. Dropped on v2, the endpoint runs on every
+    // SKU in the pool instead — the same widening as an unmatched exclusion, and the
+    // reply looked identical to a successful pin.
+    return reject({ gpuTypeIds: ['NVIDIA RTX A4000'] }, /set-endpoint-gpus/);
+  });
+
+  it('names both fields when both are passed, and points at v1', () => {
+    return reject(
+      { computeType: 'CPU', gpuTypeIds: ['NVIDIA RTX A4000'] },
+      /computeType or gpuTypeIds.*RUNPOD_REST_VERSION=v1/s
+    );
+  });
+
+  it('still creates normally when neither is passed', () => {
+    return withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'ep_new' } });
+      const out = await handlers.get('create-endpoint')!({
+        name: 'x',
+        imageName: 'img',
+        gpuPoolIds: ['AMPERE_16'],
+      });
+      assert.equal(parseText(out).error, undefined);
+      assert.equal(outbound.length, 1);
+    });
+  });
+});
+
+// ---- set-endpoint-gpus refuses what it cannot express ----
+// Every one of these was silently accepted at some point: the request vanished, the
+// stored value was echoed back, and the reply looked like success. None of the guards
+// had a test, so deleting any of them passed the whole suite.
+describe('set-endpoint-gpus input guards', () => {
+  const gpuEndpoint = {
+    id: 'ep_1',
+    name: 'ep',
+    gpuIds: 'AMPERE_16,-NVIDIA RTX A4500',
+    gpuCount: 1,
+    workersMin: 0,
+    workersMax: 2,
+    workersStandby: 2,
+    idleTimeout: 5,
+    scalerType: 'QUEUE_DELAY',
+    scalerValue: 4,
+    executionTimeoutMs: 600000,
+    requestTTL: null,
+    flashBootType: 'FLASHBOOT',
+    locations: null,
+    allowedCudaVersions: null,
+    minCudaVersion: null,
+    instanceIds: [],
+  };
+  const snapshot = (endpoint: unknown) => ({
+    data: { myself: { endpoint } },
+  });
+
+  async function reject(params: Record<string, unknown>, pattern: RegExp) {
+    const { handlers, outbound } = harness({
+      jsonBodies: [snapshot(gpuEndpoint)],
+    });
+    const out = await handlers.get('set-endpoint-gpus')!({
+      endpointId: 'ep_1',
+      ...params,
+    });
+    assert.equal((out as { isError?: boolean }).isError, true);
+    assert.match(parseText(out).error as string, pattern);
+    // Nothing may be written for a request that cannot be honoured.
+    assert.equal(
+      outbound.some((o) => (o.body ?? '').includes('saveEndpoint')),
+      false,
+      'no mutation may be sent'
+    );
+  }
+
+  // GPU catalog shape: GET /v2/catalog/gpus returns {gpus:[{id, pool, ...}]}. AMPERE_16's
+  // real membership, from runpod-backend util/gpuPools.ts.
+  const catalog = {
+    gpus: [
+      { id: 'NVIDIA RTX A4000', pool: 'AMPERE_16' },
+      { id: 'NVIDIA RTX A4500', pool: 'AMPERE_16' },
+      { id: 'NVIDIA RTX 2000 Ada Generation', pool: 'AMPERE_16' },
+      { id: 'NVIDIA RTX 4000 Ada Generation', pool: 'AMPERE_16' },
+      { id: 'NVIDIA H100 NVL', pool: 'HOPPER_80' },
+    ],
+  };
+
+  it('rejects an exclusion that matches no SKU in the requested pools', async () => {
+    await withV2(async () => {
+      // The server validates less than it appears to. validateGpuIds rejects an exclusion
+      // that IS a pool id, and rejects excluding everything, but membership is an EXACT
+      // string filter — so a near-miss id ("NVIDIA RTX 4000 Ada", real id ends
+      // " Generation") stores happily and excludes nothing. The caller asked to pin one
+      // SKU, got the whole pool, and was told it worked. excludeGpuTypeIds is new in this
+      // PR, so the PR ships the ergonomic form that invites exactly this typo.
+      const { handlers, outbound } = harness({
+        jsonBodies: [catalog, snapshot(gpuEndpoint)],
+      });
+      const out = await handlers.get('set-endpoint-gpus')!({
+        endpointId: 'ep_1',
+        pools: ['AMPERE_16'],
+        excludeGpuTypeIds: ['NVIDIA RTX 4000 Ada'],
+        // This acknowledgement applies only when validation cannot run; it must
+        // never override a validation result that proves the exclusion is wrong.
+        allowUnvalidatedExclusions: true,
+      });
+      assert.equal((out as { isError?: boolean }).isError, true);
+      const reply = parseText(out);
+      assert.match(reply.error as string, /do(es)? not match any GPU type/);
+      assert.match(reply.error as string, /would exclude nothing/);
+      // The pool's real SKUs come back, because that is what the caller needs to fix it.
+      assert.deepEqual(
+        (reply.availableGpuTypeIds as Record<string, string[]>).AMPERE_16,
+        [
+          'NVIDIA RTX A4000',
+          'NVIDIA RTX A4500',
+          'NVIDIA RTX 2000 Ada Generation',
+          'NVIDIA RTX 4000 Ada Generation',
+        ]
+      );
+      assert.equal(
+        outbound.some((o) => (o.body ?? '').includes('saveEndpoint')),
+        false,
+        'no mutation may be sent'
+      );
+    });
+  });
+
+  it('accepts exclusions that do match, and still writes them', async () => {
+    await withV2(async () => {
+      // The guard must not become a wall: the correct spelling has to go through.
+      const { handlers, outbound } = harness({
+        jsonBodies: [
+          catalog,
+          snapshot(gpuEndpoint),
+          { data: { saveEndpoint: { id: 'ep_1', gpuIds: 'x' } } },
+        ],
+      });
+      const out = await handlers.get('set-endpoint-gpus')!({
+        endpointId: 'ep_1',
+        pools: ['AMPERE_16'],
+        excludeGpuTypeIds: ['NVIDIA RTX 4000 Ada Generation'],
+      });
+      assert.equal(parseText(out).error, undefined);
+      const mutation = outbound.find((o) =>
+        (o.body ?? '').includes('saveEndpoint')
+      );
+      assert.ok(mutation, 'the mutation must be sent');
+      assert.match(
+        mutation!.body ?? '',
+        /AMPERE_16,-NVIDIA RTX 4000 Ada Generation/
+      );
+    });
+  });
+
+  it('validates exclusions embedded in a raw gpuIds string too', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        jsonBodies: [catalog],
+      });
+      const out = await handlers.get('set-endpoint-gpus')!({
+        endpointId: 'ep_1',
+        gpuIds: 'AMPERE_16,-NVIDIA RTX 4000 Ada',
+      });
+      assert.equal((out as { isError?: boolean }).isError, true);
+      assert.match(
+        parseText(out).error as string,
+        /does not match any GPU type/
+      );
+      assert.equal(
+        outbound.some((o) => (o.body ?? '').includes('saveEndpoint')),
+        false
+      );
+    });
+  });
+
+  it('rejects a raw exclusion string with no pool before any request', async () => {
+    const { handlers, outbound } = harness();
+    const out = await handlers.get('set-endpoint-gpus')!({
+      endpointId: 'ep_1',
+      gpuIds: '-NVIDIA L4',
+    });
+    assert.equal((out as { isError?: boolean }).isError, true);
+    assert.match(parseText(out).error as string, /require at least one pool/);
+    assert.equal(outbound.length, 0);
+  });
+
+  it('fails closed when the catalog cannot be read, then allows an explicit unvalidated write', async () => {
+    await withV2(async () => {
+      const refused = harness({
+        steps: [{ status: 500, jsonBody: { error: 'catalog down' } }],
+      });
+      const refusedOut = await refused.handlers.get('set-endpoint-gpus')!({
+        endpointId: 'ep_1',
+        pools: ['AMPERE_16'],
+        excludeGpuTypeIds: ['NVIDIA RTX 4000 Ada Generation'],
+      });
+      assert.equal((refusedOut as { isError?: boolean }).isError, true);
+      assert.match(
+        parseText(refusedOut).error as string,
+        /allowUnvalidatedExclusions:true/
+      );
+      assert.equal(
+        refused.outbound.some((o) => (o.body ?? '').includes('saveEndpoint')),
+        false
+      );
+
+      const acknowledged = harness({
+        steps: [
+          { status: 500, jsonBody: { error: 'catalog down' } },
+          { jsonBody: snapshot(gpuEndpoint) },
+          { jsonBody: { data: { saveEndpoint: { id: 'ep_1', gpuIds: 'x' } } } },
+        ],
+      });
+      const acknowledgedOut = await acknowledged.handlers.get(
+        'set-endpoint-gpus'
+      )!({
+        endpointId: 'ep_1',
+        pools: ['AMPERE_16'],
+        excludeGpuTypeIds: ['NVIDIA RTX 4000 Ada Generation'],
+        allowUnvalidatedExclusions: true,
+      });
+      const reply = parseText(acknowledgedOut);
+      assert.equal(reply.error, undefined);
+      assert.match(reply._exclusionsUnvalidated as string, /could not be read/);
+      assert.equal(
+        acknowledged.outbound.some((o) =>
+          (o.body ?? '').includes('saveEndpoint')
+        ),
+        true
+      );
+    });
+  });
+
+  it('fails closed for a known environment mismatch unless explicitly acknowledged', async () => {
+    await withV2(async () => {
+      const previous = process.env.RUNPOD_REST_V2_API_URL;
+      process.env.RUNPOD_REST_V2_API_URL = 'https://v2.dev.example/v2';
+      try {
+        const refused = harness();
+        const refusedOut = await refused.handlers.get('set-endpoint-gpus')!({
+          endpointId: 'ep_1',
+          pools: ['AMPERE_16'],
+          excludeGpuTypeIds: ['NVIDIA RTX 4000 Ada Generation'],
+        });
+        assert.equal((refusedOut as { isError?: boolean }).isError, true);
+        assert.match(
+          parseText(refusedOut).error as string,
+          /known to describe different environments/
+        );
+        assert.equal(refused.outbound.length, 0);
+
+        const acknowledged = harness({
+          jsonBodies: [
+            snapshot(gpuEndpoint),
+            { data: { saveEndpoint: { id: 'ep_1', gpuIds: 'x' } } },
+          ],
+        });
+        const acknowledgedOut = await acknowledged.handlers.get(
+          'set-endpoint-gpus'
+        )!({
+          endpointId: 'ep_1',
+          pools: ['AMPERE_16'],
+          excludeGpuTypeIds: ['NVIDIA RTX 4000 Ada Generation'],
+          allowUnvalidatedExclusions: true,
+        });
+        const reply = parseText(acknowledgedOut);
+        assert.equal(reply.error, undefined);
+        assert.match(
+          reply._exclusionsUnvalidated as string,
+          /known to describe different environments/
+        );
+        assert.equal(
+          acknowledged.outbound.some((call) =>
+            call.url.startsWith('https://v2.dev.example/')
+          ),
+          false,
+          'the mismatched REST catalog must not be consulted'
+        );
+        assert.equal(
+          acknowledged.outbound.length,
+          2,
+          'GraphQL read + GraphQL mutation only'
+        );
+      } finally {
+        if (previous === undefined) delete process.env.RUNPOD_REST_V2_API_URL;
+        else process.env.RUNPOD_REST_V2_API_URL = previous;
+      }
+    });
+  });
+
+  it('treats two custom API hosts as unverified for exclusion validation', async () => {
+    await withV2(async () => {
+      const previousRest = process.env.RUNPOD_REST_V2_API_URL;
+      const previousGraphql = process.env.RUNPOD_AUTHED_GRAPHQL_URL;
+      process.env.RUNPOD_REST_V2_API_URL = 'https://v2.dev.example/v2';
+      process.env.RUNPOD_AUTHED_GRAPHQL_URL =
+        'https://graphql.dev.example/graphql';
+      try {
+        const refused = harness();
+        const refusedOut = await refused.handlers.get('set-endpoint-gpus')!({
+          endpointId: 'ep_1',
+          pools: ['AMPERE_16'],
+          excludeGpuTypeIds: ['NVIDIA RTX A4500'],
+        });
+        assert.equal((refusedOut as { isError?: boolean }).isError, true);
+        assert.match(parseText(refusedOut).error as string, /cannot verify/);
+        assert.equal(refused.outbound.length, 0);
+
+        const acknowledged = harness({
+          jsonBodies: [
+            snapshot(gpuEndpoint),
+            { data: { saveEndpoint: { id: 'ep_1', gpuIds: 'x' } } },
+          ],
+        });
+        const acknowledgedOut = await acknowledged.handlers.get(
+          'set-endpoint-gpus'
+        )!({
+          endpointId: 'ep_1',
+          pools: ['AMPERE_16'],
+          excludeGpuTypeIds: ['NVIDIA RTX A4500'],
+          allowUnvalidatedExclusions: true,
+        });
+        assert.equal(acknowledged.outbound.length, 2);
+        assert.match(
+          parseText(acknowledgedOut)._exclusionsUnvalidated as string,
+          /cannot verify/
+        );
+      } finally {
+        if (previousRest === undefined)
+          delete process.env.RUNPOD_REST_V2_API_URL;
+        else process.env.RUNPOD_REST_V2_API_URL = previousRest;
+        if (previousGraphql === undefined)
+          delete process.env.RUNPOD_AUTHED_GRAPHQL_URL;
+        else process.env.RUNPOD_AUTHED_GRAPHQL_URL = previousGraphql;
+      }
+    });
+  });
+
+  it('fails closed when the catalog carries no pool data unless explicitly acknowledged', async () => {
+    // A catalog without a `pool` field cannot answer the membership question. Treating
+    // "no data" as "no SKUs" makes every exclusion look unmatched and refuses a valid
+    // request — the same false-refusal defect as misclassifying a client's parser, in
+    // the fix for a false success. Mutating this check to always-build left the suite
+    // green, so it gets its own test.
+    await withV2(async () => {
+      const refused = harness({
+        jsonBodies: [
+          { gpus: [{ id: 'NVIDIA RTX A4000' }, { id: 'NVIDIA RTX A4500' }] },
+        ],
+      });
+      const refusedOut = await refused.handlers.get('set-endpoint-gpus')!({
+        endpointId: 'ep_1',
+        pools: ['AMPERE_16'],
+        excludeGpuTypeIds: ['NVIDIA RTX A4500'],
+      });
+      assert.equal((refusedOut as { isError?: boolean }).isError, true);
+      assert.equal(
+        refused.outbound.some((o) => (o.body ?? '').includes('saveEndpoint')),
+        false
+      );
+
+      const acknowledged = harness({
+        jsonBodies: [
+          { gpus: [{ id: 'NVIDIA RTX A4000' }, { id: 'NVIDIA RTX A4500' }] },
+          snapshot(gpuEndpoint),
+          { data: { saveEndpoint: { id: 'ep_1', gpuIds: 'x' } } },
+        ],
+      });
+      const acknowledgedOut = await acknowledged.handlers.get(
+        'set-endpoint-gpus'
+      )!({
+        endpointId: 'ep_1',
+        pools: ['AMPERE_16'],
+        excludeGpuTypeIds: ['NVIDIA RTX A4500'],
+        allowUnvalidatedExclusions: true,
+      });
+      const reply = parseText(acknowledgedOut);
+      assert.equal(reply.error, undefined, reply.error as string);
+      assert.match(reply._exclusionsUnvalidated as string, /could not be read/);
+      assert.ok(
+        acknowledged.outbound.some((o) =>
+          (o.body ?? '').includes('saveEndpoint')
+        ),
+        'the write must still happen'
+      );
+    });
+  });
+
+  it('rejects excludeGpuTypeIds without pools', () => {
+    // The round-7 blocker: accepted, exclusions discarded, stored gpuIds echoed back.
+    return reject(
+      { excludeGpuTypeIds: ['NVIDIA L4'], gpuCount: 2 },
+      /only applies alongside pools/
+    );
+  });
+
+  it('rejects pools combined with a raw gpuIds', () => {
+    // THE round-9 blocker, and the closest possible miss: identical `??` drop to the
+    // guard below, one parameter over. `params.gpuIds ?? (pools…)` takes the left branch
+    // whenever gpuIds is present, so `pools` reached neither the mutation nor the reply
+    // — the caller asked for two things and was told, without qualification, that it
+    // worked. Untested for two rounds because the comment above the guards claimed the
+    // set was exhaustive.
+    return reject(
+      { gpuIds: 'ADA_24', pools: ['AMPERE_16'] },
+      /gpuIds and pools cannot be combined/
+    );
+  });
+
+  it('rejects excludeGpuTypeIds combined with a raw gpuIds', () => {
+    // gpuIds takes precedence, so the exclusions would be silently dropped — the same
+    // failure one parameter away from the guard above.
+    return reject(
+      { gpuIds: 'ADA_24', excludeGpuTypeIds: ['NVIDIA L4'] },
+      /cannot be combined/
+    );
+  });
+
+  it('rejects even an empty excludeGpuTypeIds source combined with raw gpuIds', () => {
+    return reject(
+      {
+        gpuIds: 'AMPERE_16,-NVIDIA RTX A4500',
+        excludeGpuTypeIds: [],
+      },
+      /cannot be combined/
+    );
+  });
+
+  it('rejects an explicitly empty pools list', () => {
+    // update-endpoint 400s the identical input on v2; this used to ignore it and apply
+    // only the other fields.
+    return reject({ pools: [], gpuCount: 2 }, /pools cannot be empty/);
+  });
+
+  it('rejects an empty gpuIds string', () => {
+    // '' survives `??`, so it used to reach the fallback branch and be reported as a CPU
+    // endpoint — on an endpoint holding AMPERE_16,-NVIDIA RTX A4500.
+    return reject({ gpuIds: '   ' }, /gpuIds cannot be empty/);
+  });
+
+  it('rejects a bare raw exclusion before any API request', async () => {
+    const { handlers, outbound } = harness({
+      jsonBodies: [snapshot(gpuEndpoint)],
+    });
+    const out = await handlers.get('set-endpoint-gpus')!({
+      endpointId: 'ep_1',
+      gpuIds: 'AMPERE_16,-',
+    });
+    assert.equal((out as { isError?: boolean }).isError, true);
+    assert.match(parseText(out).error as string, /bare "-"/);
+    assert.equal(outbound.length, 0, 'no read or mutation may be sent');
+  });
+
+  it('rejects a GPU selection on a CPU endpoint instead of letting the server drop it', async () => {
+    // computeType is derived from cpu* instanceIds, and validateAndNormalizeGpuConfig
+    // returns undefined for anything not GPU without reading the gpuIds at all — so the
+    // update writes `gpuIds: null`. A write happened, the pin was never stored, and the
+    // reply claimed success.
+    const { handlers, outbound } = harness({
+      jsonBodies: [
+        snapshot({
+          ...gpuEndpoint,
+          id: 'ep_cpu',
+          gpuIds: null,
+          instanceIds: ['cpu3c-2-4'],
+        }),
+      ],
+    });
+    const out = await handlers.get('set-endpoint-gpus')!({
+      endpointId: 'ep_cpu',
+      pools: ['ADA_24'],
+    });
+    assert.equal((out as { isError?: boolean }).isError, true);
+    const error = parseText(out).error as string;
+    assert.match(error, /is a CPU endpoint/);
+    assert.match(error, /cpu3c-2-4/);
+    assert.match(error, /Nothing was changed/);
+    assert.equal(
+      outbound.some((o) => (o.body ?? '').includes('saveEndpoint')),
+      false
+    );
+  });
+
+  it('accepts GPU-prefixed instance flavors as GPU endpoints', async () => {
+    const { handlers, outbound } = harness({
+      jsonBodies: [
+        snapshot({
+          ...gpuEndpoint,
+          id: 'ep_gpu_flavor',
+          instanceIds: ['gpu1-4-16'],
+        }),
+        { data: { saveEndpoint: { id: 'ep_gpu_flavor', gpuIds: 'ADA_24' } } },
+      ],
+    });
+    const out = await handlers.get('set-endpoint-gpus')!({
+      endpointId: 'ep_gpu_flavor',
+      pools: ['ADA_24'],
+    });
+    assert.equal((out as { isError?: boolean }).isError, undefined);
+    assert.equal(
+      outbound.some((o) => (o.body ?? '').includes('saveEndpoint')),
+      true
+    );
+  });
+
+  it('still accepts pools with exclusions, and a count-only change', async () => {
+    // The guards must not reject anything expressible.
+    for (const params of [
+      {
+        pools: ['AMPERE_16'],
+        excludeGpuTypeIds: ['NVIDIA RTX A4500'],
+        allowUnvalidatedExclusions: true,
+      },
+      { gpuCount: 2 },
+      { minCudaVersion: '12.4' },
+    ]) {
+      const { handlers, outbound } = harness({
+        jsonBodies: [
+          snapshot(gpuEndpoint),
+          {
+            data: {
+              saveEndpoint: {
+                id: 'ep_1',
+                name: 'ep',
+                gpuIds: 'AMPERE_16',
+                gpuCount: 1,
+                workersMin: 0,
+                workersMax: 2,
+              },
+            },
+          },
+        ],
+      });
+      await handlers.get('set-endpoint-gpus')!({
+        endpointId: 'ep_1',
+        ...params,
+      });
+      assert.equal(
+        outbound.some((o) => (o.body ?? '').includes('saveEndpoint')),
+        true,
+        JSON.stringify(params)
+      );
+    }
   });
 });

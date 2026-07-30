@@ -1,0 +1,163 @@
+---
+'@runpod/mcp-server': major
+---
+
+Preserve GPU SKU exclusions across `update-endpoint` (#63).
+
+The v2 REST endpoint model cannot represent a SKU exclusion: `EndpointGpuConfig` is
+`{pools, count}`, with nowhere to keep the `-<GPU type id>` entries that pin an individual
+card. That value exists only in the GraphQL `gpuIds` string, so a v2 `PATCH` could drop
+exclusions even when the update never mentioned GPUs — silently, since nothing in the REST
+reply reveals it.
+
+Confirmed live on 2026-07-29: an endpoint with `gpuIds` of
+`AMPERE_16,-NVIDIA RTX A4500,-NVIDIA RTX 2000 Ada Generation`, patched with only
+`{"image": "..."}`, came back as plain `AMPERE_16`. Both exclusions were gone; every other
+field survived.
+
+`update-endpoint` now refuses every v2 update of a **GPU endpoint** that omits `gpuPoolIds`.
+The refusal is marked as an MCP tool error, explains that no fields changed, and reports the
+endpoint's current pools and count (`currentGpuSelection`) so the caller can build the
+required replacement — flagged as unable to show exclusions. To proceed, the caller must
+supply a non-empty pool list, a positive integer `gpuCount`, and `replaceGpuSelection: true`,
+explicitly acknowledging replacement of the complete GPU selection in the same PATCH as the
+other changes. Requiring the count prevents the replacement from falling back to the API's
+default count of one. A v2 endpoint with `-<GPU type id>` exclusions that must survive
+cannot be updated through this tool until the REST facade is fixed.
+
+**CPU serverless endpoints are exempt.** They have no `gpuIds`, so the lossy rebuild has
+nothing to lose — demanding a GPU replacement there would make every CPU-endpoint update a
+dead end for a risk that cannot occur. When a v2 update names no GPU replacement, the tool
+first reads the endpoint on the same v2 REST host: an unambiguous CPU endpoint (`cpu` set,
+`gpu` absent) proceeds, and anything else — a GPU config, an unrecognizable reply, or a
+failed read — keeps the refusal. Unlike an exclusion pre-read, this read cannot go stale:
+an endpoint's compute type is fixed at creation (the v2 spec marks `cpu` read-only, and the
+GraphQL resolver derives compute type from instance ids and discards `gpuIds` for CPU
+endpoints), so no concurrent write can invalidate the answer between the read and the
+PATCH.
+
+The exemption is deliberately client-side only, because the server owns the other half:
+verified live on the dev facade (2026-07-30), the current v2 PATCH pipeline itself rejects
+a CPU-endpoint update — an env-only PATCH of a live CPU endpoint returned
+`400 {"detail":"gpuId(s) is required for a gpu endpoint"}`, a message that misidentifies
+the endpoint's compute type. When that happens the tool reports the failure with the
+missing context (the endpoint is CPU, v2 cannot update CPU endpoints yet, and
+`RUNPOD_REST_VERSION=v1` works — verified live) instead of parroting an error about a GPU
+endpoint the caller does not have. A client-side hard refusal would have been wrong the day
+the facade gains CPU update support; this way that day needs no MCP change.
+
+This stronger gate is required because a GraphQL pre-read does not make the later REST
+PATCH atomic. Even if the read shows no exclusions, a dashboard or API writer can add one
+before the PATCH; the lossy facade would then erase it. There is no ETag, endpoint version
+precondition, or transaction exposed to this client. A compensating GraphQL write after
+the PATCH is unsafe too: `saveEndpoint` is not sparse, unconditionally resets
+`workersStandby` to `workersMax`, can trigger a second release and worker restart, can
+overwrite concurrent changes, and can fail after the exclusions are already gone.
+
+Explicit non-empty `gpuPoolIds` plus `gpuCount` and `replaceGpuSelection: true` is different:
+replacement is the stated intent, not an attempt to preserve hidden exclusions. The
+separate acknowledgement prevents an agent from adding pools merely to satisfy a required
+field without recognizing that exclusions will be lost.
+
+This is a major release because previously valid v2 `update-endpoint` calls that omit
+the complete GPU replacement now fail closed. That is an intentional breaking change:
+silently risking placement data is not a compatible fallback.
+
+`get-endpoint` gains `includeGpuIds`, which adds the real `gpuIds` string and a
+`gpuIdsHasExclusions` flag, so an endpoint's true GPU selection can be read back. Before
+this, the only way to see it was `set-endpoint-gpus`, which reports `gpuIds` in its reply —
+i.e. you had to write to read.
+
+Cost, stated fully:
+
+- Every v2 update of a GPU endpoint must explicitly resend `gpuPoolIds` and `gpuCount` and
+  acknowledge replacement, even when changing an unrelated field. The refusal reports the
+  current pools and count; `get-endpoint includeGpuIds:true` shows the authoritative value.
+- A v2 update that omits the GPU replacement costs one read-only GET (the CPU-endpoint
+  check) before its verdict; an update that supplies the replacement sends the PATCH
+  directly, with no pre-read.
+- No GraphQL pre-read, post-PATCH read, compensating write, second release, environment
+  cross-check, or read/write race occurs on `update-endpoint`.
+- Endpoints with SKU exclusions cannot receive unrelated v2 updates through this tool
+  until the REST facade preserves `gpuIds` when `gpu` is omitted.
+- `get-endpoint includeGpuIds` still uses authenticated GraphQL for read-only enrichment,
+  but now requests only `gpuIds` rather than the full mutation snapshot. If exactly one
+  of the v2 REST or authenticated GraphQL hosts is overridden, enrichment is refused
+  rather than merging endpoints from known-different environments. When both are custom,
+  their different URLs cannot prove they are paired; enrichment also fails closed unless
+  the caller passes `allowUnverifiedEnvironmentPair: true`, and the reply retains a
+  warning that the merge was unverified.
+
+`set-endpoint-gpus` refuses requests it cannot express, rather than accepting them and
+echoing the stored value back as though they had applied. Round 9 found one still missing,
+and the reason it was missed is worth recording: this list previously claimed to be
+exhaustive, and it was not. `pools` passed together with `gpuIds` was dropped by the same
+`??` precedence, one parameter over from the exclusion case that did have a guard. The
+completeness claim is gone; a new parameter feeding the gpuIds string needs its own guard.
+Its tool description also states the unavoidable full-read/full-save concurrency risk.
+The snapshot now reads `workersStandby`; because `saveEndpoint` always rewrites that value
+to `workersMax`, the tool refuses before mutation when the two differ unless the caller
+passes `acknowledgeStandbyReset: true`. An acknowledged success reports the old and new
+values. Callers must not treat this as a sparse or atomic alternative for unrelated
+endpoint updates.
+
+Exclusions are also checked against the pools' real SKUs before anything is written. The
+API validates less than it appears to: it rejects an exclusion that is itself a pool id,
+and rejects excluding every SKU, but membership is an exact string compare — so a
+near-miss id (`-NVIDIA RTX 4000 Ada`, where the real id ends ` Generation`) is stored
+happily and excludes nothing, leaving the endpoint on the whole pool while the reply reads
+as a successful pin. Mismatches are now refused with the pool's actual SKU list. The check
+needs the GPU catalog. When it cannot be read, or its environment cannot be verified
+against authenticated GraphQL, the write now fails closed. A caller may explicitly accept
+the placement risk with `allowUnvalidatedExclusions: true`; only then does the write
+proceed and the reply carry `_exclusionsUnvalidated`. This applies to exclusions supplied
+through either `excludeGpuTypeIds` or a raw `gpuIds` string.
+
+`create-endpoint` no longer drops v1-only fields on v2. `computeType` and `gpuTypeIds` do
+not exist in the v2 body, so they were silently ignored: `computeType:'CPU'` produced a
+**GPU endpoint billed at GPU rates** (v2 cannot create CPU endpoints at all — the API
+exposes CPU config as read-only), and `gpuTypeIds` widened an SKU pin to the entire pool.
+Both now return a 400 naming `RUNPOD_REST_VERSION=v1`, matching what `update-endpoint`
+already did for a lone `gpuCount`.
+
+Input refusals include:
+
+- `excludeGpuTypeIds` without `pools` (exclusions are built onto a pool list, so alone
+  they have nowhere to go), and either `excludeGpuTypeIds` or `pools` alongside a raw
+  `gpuIds` (the raw and structured forms are mutually exclusive).
+- An explicitly empty `pools`, and an empty `gpuIds` string — the latter previously fell
+  through to a message claiming the endpoint was a CPU one.
+- A bare `-` token in raw `gpuIds`. The backend accepts it as an empty exclusion, excludes
+  nothing, and leaves the endpoint eligible for every SKU in the pool while reporting
+  success.
+- A GPU selection aimed at a **CPU endpoint**. The server discards it silently:
+  `computeType` is derived from `cpu*` instance ids, the GPU validator returns undefined
+  for anything not GPU without reading `gpuIds` at all, and the update then writes
+  `gpuIds: null`. A write happened, the pin was never stored, and the reply claimed
+  success.
+
+All `set-endpoint-gpus` refusals and pre-write read failures are marked as MCP tool
+errors, matching `update-endpoint`; clients no longer have to inspect otherwise-successful
+content for an embedded `error` field. A write that proceeds after the caller explicitly
+sets `allowUnvalidatedExclusions: true` remains a success and carries
+`_exclusionsUnvalidated`.
+
+`update-endpoint` treats non-empty `gpuPoolIds` plus a positive integer `gpuCount` with
+`replaceGpuSelection: true` as explicit replacement intent and sends that PATCH directly.
+Omitted count, omitted acknowledgement, and explicitly empty lists are refused before any
+API request; a fully omitted GPU replacement is refused after the read-only CPU-endpoint
+check unless that check proves there is no GPU selection to protect.
+
+On the v2 GPU pod API, `create-pod` / `update-pod` reject `volumeInGb` without
+`volumeMountPath` (or the reverse). The v2 persistent volume is one object, so a lone field
+was dropped and the pod was created with no volume while the call reported success. v1
+keeps its longstanding independent-field behavior and default mount path, including the
+default-v2 CPU-pod fallback that routes to v1.
+
+Separately, `update-endpoint` now rejects a `gpuCount` sent without `gpuPoolIds` on v2. The
+v2 `gpu` object requires `pools`, so the mapper dropped `gpu` entirely and the PATCH said
+nothing about GPUs: HTTP 200, count unchanged, no indication anything was ignored. Every
+v2 update now requires both values, or use `set-endpoint-gpus` to change the count alone.
+`set-endpoint-gpus` also keeps its
+actionable "use list-endpoints" error for an unknown id, which now arrives as a rejection
+rather than a null because `endpoint(id:)` throws for an id it cannot see.

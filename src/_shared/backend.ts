@@ -97,6 +97,43 @@ export function authedGraphqlBase(env: Env): string {
   return env.RUNPOD_AUTHED_GRAPHQL_URL ?? 'https://api.runpod.io/graphql';
 }
 
+function normalizedApiBase(raw: string): string {
+  try {
+    const url = new URL(raw);
+    return `${url.protocol}//${url.host.toLowerCase()}${url.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return raw.trim().toLowerCase().replace(/\/+$/, '');
+  }
+}
+
+export type V2AuthedGraphqlEnvironmentPairStatus =
+  | 'production'
+  | 'mismatch'
+  | 'unverified';
+
+/**
+ * Classify whether v2 REST and authenticated GraphQL can safely be treated as
+ * one environment.
+ *
+ * The production defaults are the only pair this client can verify. Moving just
+ * one side is a known mismatch. Moving both sides may be a legitimate dev/staging
+ * pair, but the APIs intentionally use different domains, so URL comparison
+ * cannot prove that relationship; callers must fail closed or require an
+ * explicit unsafe acknowledgement before combining their data.
+ */
+export function v2AuthedGraphqlEnvironmentPairStatus(
+  env: Env
+): V2AuthedGraphqlEnvironmentPairStatus {
+  const restMoved =
+    normalizedApiBase(restV2Base(env)) !== normalizedApiBase(restV2Base({}));
+  const graphqlMoved =
+    normalizedApiBase(authedGraphqlBase(env)) !==
+    normalizedApiBase(authedGraphqlBase({}));
+  if (!restMoved && !graphqlMoved) return 'production';
+  if (restMoved !== graphqlMoved) return 'mismatch';
+  return 'unverified';
+}
+
 // ---- A0: unwrap a list response into a plain array ----
 // v1 returns a bare array; v2 wraps it in a per-resource envelope. Either way
 // we hand `capListResult` a plain array. Anything unexpected → [] (never throws
