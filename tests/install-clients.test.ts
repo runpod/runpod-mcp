@@ -6,7 +6,6 @@ import * as path from 'path';
 
 import {
   claudeCandidatePaths,
-  claudeLookupCommand,
   pickClaudeBinary,
   needsCmdShell,
   argsSafeForCmdShell,
@@ -43,21 +42,6 @@ const TEST_BINARY = '/opt/homebrew/bin/claude';
 // `.cmd` shim from a directory whose name contains a space — the exact combination
 // Node's docs call out as unlaunchable via execFile. It is skipped off Windows and
 // runs on the windows-latest CI leg.
-
-describe('claudeLookupCommand', () => {
-  it('uses where.exe on Windows, not the POSIX shell builtin', () => {
-    // `command -v` is a shell builtin; execSync on Windows goes through cmd.exe,
-    // which has no such builtin, so it exited non-zero whether or not Claude Code
-    // was installed. That is the whole bug.
-    assert.equal(claudeLookupCommand('win32'), 'where.exe $PATH:claude');
-  });
-
-  it('keeps command -v on POSIX platforms', () => {
-    for (const platform of ['darwin', 'linux', 'freebsd']) {
-      assert.equal(claudeLookupCommand(platform), 'command -v claude');
-    }
-  });
-});
 
 describe('claudeCandidatePaths', () => {
   it('returns exactly the documented Windows locations, win32-shaped', () => {
@@ -112,83 +96,17 @@ describe('claudeCandidatePaths', () => {
 });
 
 describe('pickClaudeBinary', () => {
-  it('prefers a .exe over a .cmd shim', () => {
-    // Both are runnable now. The .exe is still preferred because cross-spawn can
-    // launch it with no shell at all, where the .cmd costs a cmd.exe hop.
-    const stdout =
-      'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd\r\n' +
-      'C:\\Users\\dev\\.local\\bin\\claude.exe\r\n';
-    assert.equal(
-      pickClaudeBinary(stdout, 'win32'),
-      'C:\\Users\\dev\\.local\\bin\\claude.exe'
-    );
-  });
-
-  it('prefers a .cmd over the extensionless sh shim npm writes beside it', () => {
-    // npm's cmd-shim writes THREE files per bin: an extensionless `#!/bin/sh` shim,
-    // a .cmd and a .ps1. `where.exe` lists the exact-name match first, so taking the
-    // first hit picks the sh shim — which Windows cannot run at all (cross-spawn
-    // reads the shebang and tries to spawn /bin/sh). The .cmd is the runnable one.
-    assert.equal(
-      pickClaudeBinary('C:\\bin\\claude\r\nC:\\bin\\claude.cmd\r\n', 'win32'),
-      'C:\\bin\\claude.cmd'
-    );
-  });
-
-  it('ranks .exe above .cmd above anything else', () => {
+  it('never trusts Windows lookup output', () => {
+    // Windows detection probes only documented user-level install locations.
+    // PATH is project-influenced under npm/npx, and even the lookup executable
+    // itself can be shadowed from cwd.
     assert.equal(
       pickClaudeBinary(
-        'C:\\bin\\claude.ps1\r\nC:\\bin\\claude\r\nC:\\bin\\claude.cmd\r\nC:\\bin\\claude.exe\r\n',
+        'C:\\bin\\claude.exe\r\nC:\\npm\\claude.cmd\r\n',
         'win32'
       ),
-      'C:\\bin\\claude.exe'
-    );
-  });
-
-  it('rejects a hit in the current directory', () => {
-    // Even a PATH-scoped lookup can return cwd when PATH explicitly contains `.`
-    // or the current directory. Never hand the API key to a project-supplied shim.
-    assert.equal(
-      pickClaudeBinary(
-        'C:\\work\\project\\claude.cmd\r\nC:\\bin\\claude.cmd\r\n',
-        'win32',
-        'C:\\work\\project'
-      ),
-      'C:\\bin\\claude.cmd'
-    );
-  });
-
-  it('returns null rather than trusting a cwd-only hit', () => {
-    assert.equal(
-      pickClaudeBinary('C:\\work\\claude.cmd\r\n', 'win32', 'C:\\work'),
       null
     );
-  });
-
-  it('rejects relative Windows hits rather than resolving them through cwd', () => {
-    assert.equal(pickClaudeBinary('.\\claude.cmd\r\n', 'win32'), null);
-  });
-
-  it('handles CRLF line endings', () => {
-    assert.equal(
-      pickClaudeBinary('C:\\bin\\claude.exe\r\n', 'win32'),
-      'C:\\bin\\claude.exe'
-    );
-  });
-
-  it('falls back to a .cmd when that is the only hit', () => {
-    // The npm-global install. cross-spawn runs it through cmd.exe.
-    assert.equal(
-      pickClaudeBinary('C:\\bin\\claude.cmd\r\n', 'win32'),
-      'C:\\bin\\claude.cmd'
-    );
-  });
-
-  it('returns null on Windows for empty output', () => {
-    // A bare 'claude' would be a guess: PATHEXT decides what it resolves to, and
-    // the point of the lookup is to know which file was found.
-    assert.equal(pickClaudeBinary('', 'win32'), null);
-    assert.equal(pickClaudeBinary('\r\n  \r\n', 'win32'), null);
   });
 
   it('returns the resolved POSIX path from command -v', () => {
@@ -198,10 +116,8 @@ describe('pickClaudeBinary', () => {
     );
   });
 
-  it("keeps the historic bare 'claude' fallback on POSIX", () => {
-    // command -v normally prints a path, but a successful exit with no output
-    // still means "found" on POSIX, where the spawn resolves the name via PATH.
-    assert.equal(pickClaudeBinary('', 'darwin'), 'claude');
+  it('does not turn an empty lookup into a second unverified PATH resolution', () => {
+    assert.equal(pickClaudeBinary('', 'darwin'), null);
   });
 });
 
@@ -565,10 +481,17 @@ describe('redactSecret', () => {
     assert.match(out, /YOUR_RUNPOD_API_KEY/);
   });
 
-  it('is a no-op without a secret, or for one too short to be a key', () => {
+  it('is a no-op without a secret', () => {
     assert.equal(redactSecret('nothing to do'), 'nothing to do');
-    // Guard against a short value turning every message into placeholder soup.
-    assert.equal(redactSecret('a b a b', 'a'), 'a b a b');
+  });
+
+  it('redacts even a short rejected value', () => {
+    // The wizard permits a user to continue with any non-empty rejected input.
+    // Length is therefore not a safe proxy for whether output may reveal a secret.
+    assert.equal(
+      redactSecret('invalid value x appeared twice: x', 'x'),
+      'invalid value YOUR_RUNPOD_API_KEY appeared twice: YOUR_RUNPOD_API_KEY'
+    );
   });
 });
 
@@ -693,64 +616,62 @@ describe(
       return path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32');
     }
 
-    it('discovers a trusted PATH shim through the real detector and registers with it', async () => {
+    it('discovers the standard npm-global shim and registers with it', async () => {
       const dir = shimDir();
-      const shim = recordingShim(dir);
+      const appdata = path.join(dir, 'AppData', 'Roaming');
+      const npmDir = path.join(appdata, 'npm');
+      fs.mkdirSync(npmDir, { recursive: true });
+      const shim = recordingShim(npmDir);
       const safeCwd = fs.mkdtempSync(
         path.join(os.tmpdir(), 'runpod safe cwd ')
       );
       dirs.push(safeCwd);
-      const originalPath = process.env.PATH;
-      process.env.PATH = [dir, windowsSystemPath()].join(path.delimiter);
-      try {
-        const binary = findClaudeBinary({
-          homedir: path.join(dir, 'empty-home'),
-          appdata: path.join(dir, 'empty-appdata'),
-          cwd: safeCwd,
-        });
-        assert.equal(
-          path.win32.normalize(binary ?? ''),
-          path.win32.normalize(shim)
-        );
+      const binary = findClaudeBinary({
+        homedir: path.join(dir, 'empty-home'),
+        appdata,
+        cwd: safeCwd,
+      });
+      assert.equal(
+        path.win32.normalize(binary ?? ''),
+        path.win32.normalize(shim)
+      );
 
-        const client = createClaudeCodeClient(
-          () => binary,
-          () => ({
-            configPath: 'C:\\Users\\dev\\.claude.json',
-            userScope: true,
-            localScopeDirs: [],
-          })
-        );
-        const result = await client.add({
-          kind: 'local',
-          apiKey: 'rpa_ABC123def456',
-        });
-        assert.equal(result.success, true, result.message);
-        assert.deepEqual(recordedArgv(dir), [
-          'mcp',
-          'add',
-          'runpod',
-          '--scope',
-          'user',
-          '-e',
-          'RUNPOD_API_KEY=rpa_ABC123def456',
-          '--',
-          'npx',
-          '-y',
-          '@runpod/mcp-server@latest',
-        ]);
-      } finally {
-        if (originalPath === undefined) delete process.env.PATH;
-        else process.env.PATH = originalPath;
-      }
+      const client = createClaudeCodeClient(
+        () => binary,
+        () => ({
+          configPath: 'C:\\Users\\dev\\.claude.json',
+          userScope: true,
+          localScopeDirs: [],
+        })
+      );
+      const result = await client.add({
+        kind: 'local',
+        apiKey: 'rpa_ABC123def456',
+      });
+      assert.equal(result.success, true, result.message);
+      assert.deepEqual(recordedArgv(npmDir), [
+        'mcp',
+        'add',
+        'runpod',
+        '--scope',
+        'user',
+        '-e',
+        'RUNPOD_API_KEY=rpa_ABC123def456',
+        '--',
+        'npx',
+        '-y',
+        '@runpod/mcp-server@latest',
+      ]);
     });
 
-    it('does not detect or execute a cwd-only shim', () => {
+    it('does not detect or execute project-local PATH shims', () => {
       const dir = shimDir();
-      recordingShim(dir);
+      const localBin = path.join(dir, 'node_modules', '.bin');
+      fs.mkdirSync(localBin, { recursive: true });
+      recordingShim(localBin);
       const originalPath = process.env.PATH;
       const originalCwd = process.cwd();
-      process.env.PATH = windowsSystemPath();
+      process.env.PATH = [localBin, windowsSystemPath()].join(path.delimiter);
       process.chdir(dir);
       try {
         const binary = findClaudeBinary({
@@ -759,7 +680,7 @@ describe(
           cwd: dir,
         });
         assert.equal(binary, null);
-        assert.equal(recordedArgv(dir), null);
+        assert.equal(recordedArgv(localBin), null);
       } finally {
         process.chdir(originalCwd);
         if (originalPath === undefined) delete process.env.PATH;
@@ -1267,7 +1188,69 @@ describe('pickClaudeBinary rejects relative POSIX hits', () => {
       '/usr/local/bin/claude'
     );
   });
+
+  it('rejects cwd descendants and node_modules bins', () => {
+    assert.equal(
+      pickClaudeBinary(
+        '/work/project/tools/claude\n/usr/local/bin/claude\n',
+        'linux',
+        '/work/project'
+      ),
+      '/usr/local/bin/claude'
+    );
+    assert.equal(
+      pickClaudeBinary(
+        '/work/project/node_modules/.bin/claude\n',
+        'linux',
+        '/work/project/packages/app'
+      ),
+      null
+    );
+  });
 });
+
+describe(
+  'findClaudeBinary POSIX trust boundary',
+  { skip: process.platform === 'win32' ? 'POSIX-only behaviour' : false },
+  () => {
+    const dirs: string[] = [];
+    after(() => {
+      for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('rejects a repository tool reached through an outside symlink', () => {
+      const project = fs.mkdtempSync(path.join(os.tmpdir(), 'runpod-project-'));
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'runpod-alias-'));
+      dirs.push(project, outside);
+      fs.mkdirSync(path.join(project, '.git'));
+      const app = path.join(project, 'packages', 'app');
+      const tools = path.join(project, 'tools');
+      const emptyHome = path.join(outside, 'empty-home');
+      fs.mkdirSync(app, { recursive: true });
+      fs.mkdirSync(tools, { recursive: true });
+      fs.mkdirSync(emptyHome);
+      const projectClaude = path.join(tools, 'claude');
+      fs.writeFileSync(projectClaude, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      fs.symlinkSync(projectClaude, path.join(outside, 'claude'));
+
+      const originalPath = process.env.PATH;
+      process.env.PATH = [outside, '/usr/bin', '/bin'].join(path.delimiter);
+      try {
+        assert.equal(
+          findClaudeBinary({
+            platform: process.platform,
+            homedir: emptyHome,
+            cwd: app,
+          }),
+          null
+        );
+      } finally {
+        if (originalPath === undefined) delete process.env.PATH;
+        else process.env.PATH = originalPath;
+      }
+    });
+  }
+);
 
 describe('describeCommand quoting', () => {
   it('quotes cmd.exe metacharacters, not just whitespace', () => {
@@ -1392,9 +1375,8 @@ describe('config paths never resolve against the current directory', () => {
   });
 
   it('APPDATA="" does not produce a relative Claude Code candidate', () => {
-    // `npm\\claude.cmd` is probed BEFORE the PATH lookup and resolved against cwd, so a
-    // planted file there would have been spawned with `-e RUNPOD_API_KEY=<live key>`.
-    // pickClaudeBinary's cwd-deprioritisation does not cover candidates.
+    // `npm\\claude.cmd` is a direct Windows candidate. If it were relative, a planted
+    // file in cwd would receive the live API key before any safe fallback decision.
     for (const appdata of ['', '   ', 'npm-relative']) {
       for (const candidate of claudeCandidatePaths(
         'win32',

@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execFileSync, execSync } from 'child_process';
+import { execSync } from 'child_process';
 import crossSpawn from 'cross-spawn';
 import * as jsonc from 'jsonc-parser';
 
@@ -423,17 +423,18 @@ function jsonClient(opts: {
 
 // Locate the Claude Code CLI binary across common install locations and PATH.
 // Claude Code is the only client here detected by locating its executable rather
-// than by an existing config file, so it is the only one that needs a PATH lookup
-// — and the lookup has to be per-platform. `command -v` is a POSIX shell builtin;
-// execSync on Windows runs through cmd.exe, which has no such builtin, so it
-// exits non-zero whether or not claude is installed. Windows uses `where.exe`
-// (not bare `where`, which PowerShell aliases to Where-Object).
+// than by an existing config file. `command -v` remains the POSIX fallback.
+// Windows intentionally has no executable-lookup fallback: both the implicit
+// current-directory search and npm/npx's project-local PATH entries can resolve a
+// repository-supplied executable, and even a bare `where.exe` can itself be
+// shadowed. The documented native and global-npm locations cover the standard
+// Windows installs without executing anything discovered from the project.
 // Exported for tests: the platform decisions are pure, so both branches can be
 // exercised on any host without spawning anything or faking process.platform.
 
 /**
- * Install locations to probe before falling back to a PATH lookup. Windows uses
- * win32 path semantics regardless of the host so the branch is testable anywhere.
+ * Install locations to probe before the POSIX-only PATH lookup. Windows uses win32
+ * path semantics regardless of the host so the branch is testable anywhere.
  *
  * `.local\bin\claude.exe` is the documented native-installer location and comes
  * first deliberately: it is a real executable, so cross-spawn launches it with no
@@ -453,10 +454,9 @@ export function claudeCandidatePaths(
       // through cmd.exe, so it stays last — see runClaude.
       //
       // absoluteEnvDir, not `?? `: an empty or relative APPDATA yielded the relative
-      // `npm\claude.cmd`. Candidates are probed BEFORE the PATH lookup and resolved
-      // against the current directory, so a file planted there would win outright and be
-      // spawned with `-e RUNPOD_API_KEY=<live key>` — the attack pickClaudeBinary's
-      // cwd-deprioritisation guards against, which only covers where.exe output.
+      // `npm\claude.cmd`. Candidates are probed before any lookup, so a relative
+      // candidate would resolve against the current directory and receive the live
+      // API key.
       win.join(
         absoluteEnvDir(appdata, () => win.join(homedir, 'AppData', 'Roaming')),
         'npm',
@@ -477,93 +477,90 @@ export function claudeCandidatePaths(
   ];
 }
 
-/**
- * The PATH-lookup command. `command -v` is a POSIX shell builtin, and execSync on
- * Windows runs through cmd.exe, which has no such builtin — so on Windows it exited
- * non-zero whether or not claude was installed (issue #56). `where.exe` is cmd.exe's
- * native equivalent.
- *
- * `$PATH:claude` deliberately scopes `where.exe` to PATH. Bare `where.exe claude`
- * also searches the current directory, even when it is not on PATH; accepting that
- * result would let a repository-supplied `claude.cmd` receive the user's API key.
- */
-export function claudeLookupCommand(platform: string): string {
-  return platform === 'win32' ? 'where.exe $PATH:claude' : 'command -v claude';
+function pathIsInside(
+  candidate: string,
+  directory: string,
+  pathApi: typeof path.posix | typeof path.win32
+): boolean {
+  const relative = pathApi.relative(
+    pathApi.resolve(directory),
+    pathApi.resolve(candidate)
+  );
+  return (
+    relative === '' ||
+    (!relative.startsWith(`..${pathApi.sep}`) &&
+      relative !== '..' &&
+      !pathApi.isAbsolute(relative))
+  );
+}
+
+function isNodeModulesBin(candidate: string): boolean {
+  return /(^|[\\/])node_modules[\\/]\.bin([\\/]|$)/i.test(candidate);
 }
 
 /**
- * Picks one path from a lookup's stdout. `where.exe` prints every match, and an
- * npm-global install produces three: npm's `cmd-shim` writes an extensionless
- * `#!/bin/sh` shim next to `claude.cmd` and `claude.ps1`. `where` lists the
- * exact-name match first, so the naive "first hit" is the sh shim — which Windows
- * cannot run at all (cross-spawn reads its shebang and tries to spawn `/bin/sh`).
+ * Picks a trustworthy absolute result from POSIX `command -v` output.
  *
- * Hence an explicit ranking rather than a single preference:
- *   1. `.com`/`.exe`  — cross-spawn spawns these with no shell.
- *   2. `.cmd`/`.bat`  — need cmd.exe, but cmd.exe genuinely runs them.
- *   3. anything else  — extensionless, `.ps1`; may not be runnable.
- * A hit inside `cwd` is rejected rather than merely ranked lower. The PATH-only
- * lookup normally excludes it, but PATH may explicitly contain `.` or the current
- * directory. In either case, auto-detection must not hand a credential to a file
- * supplied by the project the wizard happens to be running from.
- *
- * Returns null when nothing trustworthy came back.
+ * Windows never calls this helper: its two standard install locations are probed
+ * directly, avoiding both a shadowable lookup executable and project-local PATH
+ * entries. POSIX still needs a fallback for package-manager/custom installs, but
+ * relative paths, cwd descendants, and node_modules/.bin shims are rejected before
+ * the canonical project-boundary check in findClaudeBinary.
  */
 export function pickClaudeBinary(
   stdout: string,
   platform: string,
   cwd?: string
 ): string | null {
+  if (platform === 'win32') return null;
+
   const hits = stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
-  if (hits.length === 0) return platform === 'win32' ? null : 'claude';
-  if (platform !== 'win32') {
-    // Absolute hits only, for the same reason the candidate loop rejects relative
-    // candidates: whatever comes back here is spawned with `-e RUNPOD_API_KEY=<live
-    // key>`, so a path resolved against the current directory hands the key to whatever
-    // file happens to sit there.
-    //
-    // Not hypothetical, and not Windows-only. With `.` on PATH, `command -v claude`
-    // prints the RELATIVE `./claude` under dash, bash and zsh — and on Linux `/bin/sh`
-    // IS dash, which is the shell execSync uses. (macOS `/bin/sh` absolutises it, which
-    // is why this looks unreachable when checked only on a Mac.)
-    //
-    // Returning null rather than the bare name: falling back to `claude` would just
-    // re-resolve through the same PATH and find the same cwd file, and "not found" with
-    // manual instructions is the honest answer.
-    return hits.find((hit) => path.isAbsolute(hit)) ?? null;
-  }
-
-  const normalizedCwd =
-    cwd === undefined
-      ? undefined
-      : path.win32
-          .resolve(cwd)
-          .replace(/[\\/]+$/, '')
-          .toLowerCase();
-  const trustedHits = hits.filter((hit) => {
-    // `where.exe` normally returns absolute paths. Treat anything else as
-    // untrusted rather than resolving it against the directory that may contain
-    // attacker-controlled project files.
-    if (!path.win32.isAbsolute(hit)) return false;
-    if (normalizedCwd === undefined) return true;
-    const parent = path.win32
-      .resolve(path.win32.dirname(hit))
-      .replace(/[\\/]+$/, '')
-      .toLowerCase();
-    return parent !== normalizedCwd;
-  });
-  if (trustedHits.length === 0) return null;
-
-  const rank = (hit: string): number =>
-    /\.(com|exe)$/i.test(hit) ? 0 : /\.(cmd|bat)$/i.test(hit) ? 1 : 2;
-
-  // Stable: equal ranks keep the lookup's own order.
-  return trustedHits.reduce((best, hit) =>
-    rank(hit) < rank(best) ? hit : best
+  return (
+    hits.find(
+      (hit) =>
+        path.posix.isAbsolute(hit) &&
+        !isNodeModulesBin(hit) &&
+        (cwd === undefined || !pathIsInside(hit, cwd, path.posix))
+    ) ?? null
   );
+}
+
+function nearestRepositoryRoot(cwd: string): string {
+  let current = cwd;
+  while (true) {
+    if (exists(path.join(current, '.git'))) return current;
+    const parent = path.dirname(current);
+    if (parent === current) return cwd;
+    current = parent;
+  }
+}
+
+/**
+ * Canonical trust check for a POSIX PATH result. `command -v` can print an
+ * absolute symlink or an npm workspace bin above cwd, so lexical cwd containment
+ * alone is insufficient. Known installer candidates do not use this path: they are
+ * explicit user-level locations and are trusted separately.
+ */
+function trustedPosixLookupBinary(binary: string, cwd: string): string | null {
+  try {
+    const canonicalBinary = fs.realpathSync.native(binary);
+    const canonicalCwd = fs.realpathSync.native(cwd);
+    const projectRoot = nearestRepositoryRoot(canonicalCwd);
+    if (
+      isNodeModulesBin(canonicalBinary) ||
+      pathIsInside(canonicalBinary, projectRoot, path)
+    ) {
+      return null;
+    }
+    return canonicalBinary;
+  } catch {
+    // A lookup result that cannot be canonicalized is not safe to execute with a
+    // credential, even if command -v reported it successfully.
+    return null;
+  }
 }
 
 /**
@@ -631,34 +628,25 @@ export function findClaudeBinary(
 
   for (const candidate of claudeCandidatePaths(platform, homedir, appdata)) {
     // Absolute only. `exists()` resolves a relative candidate against the CURRENT
-    // DIRECTORY, and candidates are probed before the PATH lookup — so a relative one
-    // wins outright and gets spawned with `-e RUNPOD_API_KEY=<live key>`. That is the
-    // attack pickClaudeBinary's cwd-deprioritisation exists to prevent, which only
-    // covers `where.exe` output, not candidates.
+    // DIRECTORY, and candidates are probed before the POSIX PATH lookup — so a
+    // relative one would win outright and receive the live API key.
     if (!path.isAbsolute(candidate) && !path.win32.isAbsolute(candidate))
       continue;
     if (exists(candidate)) return candidate;
   }
 
   try {
-    // Resolve to a real path rather than returning the bare name, so the choice
-    // among the several files an npm install leaves behind is made here (see
-    // pickClaudeBinary) instead of by PATHEXT order inside cmd.exe.
-    //
-    // Windows invokes the executable directly rather than through cmd.exe. The
-    // `$PATH:claude` argument is syntax understood by where.exe itself; keeping it
-    // as a separate argv element prevents a shell from interpreting or rewriting it.
-    const out =
-      platform === 'win32'
-        ? execFileSync('where.exe', ['$PATH:claude'], {
-            stdio: ['ignore', 'pipe', 'ignore'],
-            encoding: 'utf8',
-          })
-        : execSync(claudeLookupCommand(platform), {
-            stdio: ['ignore', 'pipe', 'ignore'],
-            encoding: 'utf8',
-          });
-    return pickClaudeBinary(out, platform, cwd);
+    // Do not fall back to PATH on Windows. A repository can influence PATH and the
+    // current-directory executable search, including shadowing the lookup program
+    // itself. The standard native and global-npm locations above cover issue #56.
+    if (platform === 'win32') return null;
+
+    const out = execSync('command -v claude', {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf8',
+    });
+    const binary = pickClaudeBinary(out, platform, cwd);
+    return binary === null ? null : trustedPosixLookupBinary(binary, cwd);
   } catch {
     return null;
   }
@@ -745,7 +733,7 @@ export interface RunResult extends AddResult {
  * shape-based guard cannot cover output produced by another program.
  */
 export function redactSecret(text: string, secret?: string): string {
-  if (!secret || secret.length < 8) return text;
+  if (!secret) return text;
   return text.split(secret).join(KEY_PLACEHOLDER);
 }
 

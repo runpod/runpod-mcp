@@ -12,12 +12,18 @@ three hardcoded candidate paths it checked first (`~/.claude/local/claude`,
 on Windows either, so Claude Code was undetectable on a standard Windows install.
 
 Windows now probes `%USERPROFILE%\.local\bin\claude.exe` (the documented native-installer
-location, which also covers installs whose PATH entry is missing) and the npm global
-`claude.cmd` shim, then falls back to `where.exe claude`. Multi-hit output is ranked
-`.com`/`.exe` → `.cmd`/`.bat` → anything else, because npm's `cmd-shim` writes three files
-per bin and `where.exe` lists the extensionless `#!/bin/sh` shim first — which Windows
-cannot run at all. A hit in the current directory ranks below equivalent hits elsewhere,
-since `where.exe` searches the working directory before PATH.
+location) and `%APPDATA%\npm\claude.cmd` (the standard `npm install -g` shim from #56).
+It deliberately does not execute `where.exe` or any other PATH lookup: Windows searches
+the current directory when resolving the lookup executable itself, and npm/npx prepend
+project-local `node_modules\.bin` directories to PATH. Either route could execute a
+repository-supplied program before selection, or later hand it the Runpod API key.
+Directly probing the two documented user-level locations fixes the standard native and
+global-npm installs without extending that trust boundary.
+
+The POSIX `command -v` fallback remains for custom/package-manager installs, but accepts
+only canonical paths outside the current repository and rejects `node_modules/.bin`
+results. Relative, project-local, symlinked-back-into-project, or uncanonicalizable hits
+are treated as not detected rather than being executed with a credential.
 
 Registration now spawns through `cross-spawn` instead of `child_process` directly. Node's
 docs are explicit that `.bat`/`.cmd` files "cannot be launched using
@@ -43,7 +49,7 @@ code, because on Claude Code 2.1.220 that exit code does not answer the only que
 matters — is the API key on disk or not?
 
 - With an unwritable config, `claude mcp remove` prints `Removed MCP server runpod from user
-  config / File modified: …` and exits **0** having written nothing. Same for `add`.
+config / File modified: …` and exits **0** having written nothing. Same for `add`.
 - `claude mcp add` defaults to **local** scope while this wizard removes from **user** scope,
   so an entry a user added by hand yields `No MCP server named "runpod" in user scope` and
   exit 1 — which reads as "nothing to remove" while their key stays in `~/.claude.json`.
@@ -51,17 +57,17 @@ matters — is the API key on disk or not?
 Neither is settled by a `claude mcp get` probe, and two further observations are why:
 
 - **`mcp get` is cwd-pinned.** Local scope lives at `~/.claude.json →
-  projects[<cwd>].mcpServers` and project scope in `<cwd>/.mcp.json`, so an entry added
+projects[<cwd>].mcpServers` and project scope in `<cwd>/.mcp.json`, so an entry added
   in a different directory is invisible from here (verified: added in `projA`, `mcp get`
   from `projB` exits 1 while the key is still in `~/.claude.json`).
 - **`mcp get` reports only the WINNING scope, and local shadows user.** With a
-  user-scope *and* a local-scope entry both on disk it prints only
+  user-scope _and_ a local-scope entry both on disk it prints only
   `Scope: Local config` — so one scope string cannot distinguish "user entry present,
   shadowed" from "user entry absent", and those need opposite verdicts.
 
 `--scope user` writes exactly one place: the top-level `mcpServers` of `.claude.json`.
 So the wizard reads that file. It is exact, needs no extra process, cannot be shadowed,
-and it can enumerate local-scope entries across *every* project directory rather than
+and it can enumerate local-scope entries across _every_ project directory rather than
 only the current one. A removal that leaves the user-scope entry in place is a failure
 naming the file and the likely cause; one that succeeds while local-scope entries remain
 elsewhere is a success that names those directories and the command to clear them; and a
@@ -83,8 +89,8 @@ the right answer differs. `XDG_CONFIG_HOME` and `APPDATA` name paths this wizard
 so an empty or relative value is refused outright — `??` did not catch an empty string and
 nothing rejected a relative one. The consequences were not cosmetic: an empty
 `APPDATA` yielded the relative candidate `npm\claude.cmd`, which is probed before the
-PATH lookup and resolved against the current directory, so a file planted there would
-have been spawned with the live API key; and a relative config directory meant a
+Windows lookup decision and resolved against the current directory, so a file planted
+there would have been spawned with the live API key; and a relative config directory meant a
 plaintext key written into a `Claude/` folder wherever the wizard was launched, reported
 as configured. `CLAUDE_CONFIG_DIR` is different: it names a file the Claude Code CLI owns, and that CLI
 resolves a relative value against its own cwd (verified — `CLAUDE_CONFIG_DIR=relcfg claude
@@ -126,11 +132,12 @@ rewrite, which is disclosed because it costs the file's comments. The message al
 distinguishes "this change would break it" from "it was already broken", because the advice
 differs.
 
-The PATH lookup no longer returns a relative path. Whatever it returns is spawned with the
-live API key, and with `.` on `PATH` `command -v claude` prints `./claude` under dash — which
-is `/bin/sh` on Linux, the shell this uses — so the key could go to whatever file sat in the
-working directory. The candidate list already refused relative entries for this reason; the
-PATH branch did not.
+The POSIX PATH lookup now accepts only a canonical path outside the current repository and
+never returns a relative or `node_modules/.bin` result. Whatever it returns is spawned with
+the live API key, and with `.` on `PATH` `command -v claude` prints `./claude` under dash —
+which is `/bin/sh` on Linux, the shell this uses — so the key could otherwise go to whatever
+file sat in the working directory. A global-looking symlink back into the repository is
+rejected after canonicalization too.
 
 An `add` that lands in user scope while a **local**-scope entry exists now says so. Local
 scope takes precedence, so in those directories the new entry is inert and Claude Code keeps
