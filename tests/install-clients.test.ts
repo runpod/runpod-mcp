@@ -629,6 +629,20 @@ describe(
       }
     });
 
+    it('detects the npm install when %USERPROFILE% itself carries project markers', async () => {
+      // A stray package.json in the profile directory — one accidental `npm install`
+      // in home — must not turn %USERPROFILE% into a "project" that rejects both
+      // standard candidates, which live beneath it.
+      const home = installDir();
+      fs.writeFileSync(path.join(home, 'package.json'), '{}\n');
+      const appdata = path.join(home, 'AppData', 'Roaming');
+      const npmDir = path.join(appdata, 'npm');
+      fs.mkdirSync(npmDir, { recursive: true });
+      const shim = writeInstall(npmDir);
+      const binary = findClaudeBinary({ homedir: home, appdata, cwd: home });
+      assert.equal(binary, fs.realpathSync.native(shim));
+    });
+
     it('rejects redirected APPDATA and a standard-path junction outside the profile', () => {
       const home = installDir();
       const safeCwd = installDir();
@@ -1239,6 +1253,99 @@ describe(
             cwd: app,
           }),
           null
+        );
+      } finally {
+        if (originalPath === undefined) delete process.env.PATH;
+        else process.env.PATH = originalPath;
+      }
+    });
+
+    it('still detects the native install when $HOME itself carries project markers', () => {
+      // $HOME is routinely "marked": a stray package.json from an accidental
+      // `npm install` in home, or a dotfiles .git. Treating home as a project boundary
+      // rejected every candidate beneath it — including ~/.local/bin/claude itself —
+      // so the wizard reported Claude Code not found on exactly the standard installs
+      // it probes for, from any cwd under home. Same class as #56, opposite direction.
+      const markedHome = fs.mkdtempSync(path.join(os.tmpdir(), 'runpod-home-'));
+      dirs.push(markedHome);
+      fs.writeFileSync(path.join(markedHome, 'package.json'), '{}\n');
+      fs.mkdirSync(path.join(markedHome, '.git'));
+      const userBin = path.join(markedHome, '.local', 'bin');
+      fs.mkdirSync(userBin, { recursive: true });
+      const claude = path.join(userBin, 'claude');
+      fs.writeFileSync(claude, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+
+      // From $HOME itself, and from an unmarked directory beneath it.
+      const sub = path.join(markedHome, 'notes', 'scratch');
+      fs.mkdirSync(sub, { recursive: true });
+      for (const cwd of [markedHome, sub]) {
+        assert.equal(
+          findClaudeBinary({
+            platform: process.platform,
+            homedir: markedHome,
+            cwd,
+          }),
+          fs.realpathSync.native(claude),
+          `cwd=${cwd}`
+        );
+      }
+    });
+
+    it('still rejects a project symlink when the project sits under a marked $HOME', () => {
+      // The cap must remove only the home-level false boundary, not the guard: a
+      // marked project BELOW home is still a boundary, so a user-level candidate that
+      // canonically resolves into it stays untrusted.
+      const markedHome = fs.mkdtempSync(path.join(os.tmpdir(), 'runpod-home-'));
+      dirs.push(markedHome);
+      fs.mkdirSync(path.join(markedHome, '.git'));
+      const project = path.join(markedHome, 'Desktop', 'proj');
+      fs.mkdirSync(path.join(project, 'tools'), { recursive: true });
+      fs.writeFileSync(path.join(project, 'package.json'), '{}\n');
+      const projectClaude = path.join(project, 'tools', 'claude');
+      fs.writeFileSync(projectClaude, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      const userBin = path.join(markedHome, '.local', 'bin');
+      fs.mkdirSync(userBin, { recursive: true });
+      fs.symlinkSync(projectClaude, path.join(userBin, 'claude'));
+
+      const originalPath = process.env.PATH;
+      process.env.PATH = ['/usr/bin', '/bin'].join(path.delimiter);
+      try {
+        assert.equal(
+          findClaudeBinary({
+            platform: process.platform,
+            homedir: markedHome,
+            cwd: project,
+          }),
+          null
+        );
+      } finally {
+        if (originalPath === undefined) delete process.env.PATH;
+        else process.env.PATH = originalPath;
+      }
+    });
+
+    it('accepts a version-manager PATH hit from a marked $HOME', () => {
+      // nvm/asdf/Volta live under home. With home treated as a boundary, the PATH
+      // fallback rejected them whenever the wizard ran from home — the exact case the
+      // "unmarked cwd is not a project root" rule was written to keep working.
+      const markedHome = fs.mkdtempSync(path.join(os.tmpdir(), 'runpod-home-'));
+      dirs.push(markedHome);
+      fs.writeFileSync(path.join(markedHome, 'package.json'), '{}\n');
+      const nvmBin = path.join(markedHome, '.nvm', 'current', 'bin');
+      fs.mkdirSync(nvmBin, { recursive: true });
+      const claude = path.join(nvmBin, 'claude');
+      fs.writeFileSync(claude, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+
+      const originalPath = process.env.PATH;
+      process.env.PATH = [nvmBin, '/usr/bin', '/bin'].join(path.delimiter);
+      try {
+        assert.equal(
+          findClaudeBinary({
+            platform: process.platform,
+            homedir: markedHome,
+            cwd: markedHome,
+          }),
+          fs.realpathSync.native(claude)
         );
       } finally {
         if (originalPath === undefined) delete process.env.PATH;

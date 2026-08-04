@@ -72,10 +72,6 @@ function hostedServerConfig(
   return serverProperty === 'servers' ? { type: 'http', url } : { url };
 }
 
-// Read, edit, and write a JSON config while preserving the user's existing
-// formatting and comments (jsonc). Creates the file and parent dirs if missing.
-// Exported for tests: the client wrappers hardcode real config paths under $HOME, and
-// a test must never write there.
 /**
  * How the client that owns a config parses it. This decides what "valid" means, so
  * every value here is a claim about a specific shipped parser and must be read out of
@@ -176,6 +172,10 @@ function reliesOnLeniency(content: string): boolean {
   }
 }
 
+// Read, edit, and write a JSON config while preserving the user's existing
+// formatting and comments (jsonc). Creates the file and parent dirs if missing.
+// Exported for tests: the client wrappers hardcode real config paths under $HOME, and
+// a test must never write there.
 export function upsertJsonServer(
   configPath: string,
   serverProperty: string,
@@ -405,16 +405,14 @@ function jsonClient(opts: {
   };
 }
 
-// Locate the Claude Code CLI binary across common install locations and PATH.
-// Claude Code is the only client here detected by locating its executable rather
-// than by an existing config file. `command -v` remains the POSIX fallback.
-// Windows intentionally has no executable-lookup fallback: both the implicit
-// current-directory search and npm/npx's project-local PATH entries can resolve a
-// repository-supplied executable, and even a bare `where.exe` can itself be
-// shadowed. The documented native and global-npm locations cover the standard
-// Windows installs without executing anything discovered from the project.
-// Exported for tests: the platform decisions are pure, so both branches can be
-// exercised on any host without spawning anything or faking process.platform.
+// A direct install location to probe, paired with the root its canonical target must
+// stay inside. Pairing them here — rather than re-deriving the root from the
+// candidate's position in a list, as an earlier revision did — means inserting or
+// reordering a candidate cannot silently confine it to the wrong root.
+export interface ClaudeCandidate {
+  path: string;
+  trustedRoot: string;
+}
 
 /**
  * Install locations to probe before the POSIX-only PATH lookup. Windows uses win32
@@ -425,15 +423,22 @@ function jsonClient(opts: {
  * It also covers installs where the native installer failed to add
  * itself to PATH, which the lookup below could never find.
  */
-export function claudeCandidatePaths(
+export function claudeCandidates(
   platform: string,
   homedir: string,
   appdata?: string
-): string[] {
+): ClaudeCandidate[] {
   if (platform === 'win32') {
     const win = path.win32;
+    // Automatic credential-bearing execution is limited to the standard per-user
+    // roaming root, whatever APPDATA says: an arbitrary redirected APPDATA has no
+    // trustworthy provenance merely because it is absolute.
+    const defaultAppdata = win.join(homedir, 'AppData', 'Roaming');
     return [
-      win.join(homedir, '.local', 'bin', 'claude.exe'),
+      {
+        path: win.join(homedir, '.local', 'bin', 'claude.exe'),
+        trustedRoot: homedir,
+      },
       // npm -g installs a .cmd shim. runClaude bypasses it and resolves the real
       // native or JavaScript target from the installed package manifest.
       //
@@ -441,11 +446,14 @@ export function claudeCandidatePaths(
       // `npm\claude.cmd`. Candidates are probed before any lookup, so a relative
       // candidate would resolve against the current directory and receive the live
       // API key.
-      win.join(
-        absoluteEnvDir(appdata, () => win.join(homedir, 'AppData', 'Roaming')),
-        'npm',
-        'claude.cmd'
-      ),
+      {
+        path: win.join(
+          absoluteEnvDir(appdata, () => defaultAppdata),
+          'npm',
+          'claude.cmd'
+        ),
+        trustedRoot: defaultAppdata,
+      },
     ];
   }
   return [
@@ -454,11 +462,27 @@ export function claudeCandidatePaths(
     // .local\bin\claude.exe entry — it also covers an install whose PATH entry is
     // missing, which the lookup can never find. Without it, POSIX detection depended
     // entirely on PATH.
-    path.posix.join(homedir, '.local', 'bin', 'claude'),
-    path.posix.join(homedir, '.claude', 'local', 'claude'),
-    '/usr/local/bin/claude',
-    '/opt/homebrew/bin/claude',
+    {
+      path: path.posix.join(homedir, '.local', 'bin', 'claude'),
+      trustedRoot: homedir,
+    },
+    {
+      path: path.posix.join(homedir, '.claude', 'local', 'claude'),
+      trustedRoot: homedir,
+    },
+    { path: '/usr/local/bin/claude', trustedRoot: '/usr/local' },
+    { path: '/opt/homebrew/bin/claude', trustedRoot: '/opt/homebrew' },
   ];
+}
+
+// The probe locations alone. Kept as the stable test surface for "which paths does
+// each platform look at".
+export function claudeCandidatePaths(
+  platform: string,
+  homedir: string,
+  appdata?: string
+): string[] {
+  return claudeCandidates(platform, homedir, appdata).map((c) => c.path);
 }
 
 function pathIsInside(
@@ -524,16 +548,28 @@ const PROJECT_BOUNDARY_MARKERS = [
 ] as const;
 
 /**
- * The outermost source/workspace boundary containing cwd.
+ * The outermost source/workspace boundary containing cwd, never $HOME itself.
  *
  * `.git` alone is insufficient: release archives and copied workspaces routinely
  * omit VCS metadata. A nested package can have its own package.json, so keep
  * walking and retain the outermost ancestor carrying a project marker.
+ *
+ * The walk stops at `home` (canonical) without counting it. $HOME routinely carries
+ * project markers that make it no repository at all — a stray `package.json` from an
+ * accidental `npm install`, a dotfiles `.git` — and treating it as a boundary rejects
+ * every candidate underneath it, including `~/.local/bin/claude` itself: the wizard
+ * then reports Claude Code not found on exactly the standard installs it probes for.
+ * A repository can only plant files inside its own tree, so a boundary above the
+ * outermost marked directory *below* home defends nothing. Deliberately still the
+ * OUTERMOST marked ancestor below home, not the nearest: in a monorepo whose package
+ * dirs carry their own package.json, "nearest" would trust a tool planted at the repo
+ * root.
  */
-function projectBoundary(cwd: string): string | null {
+function projectBoundary(cwd: string, home?: string): string | null {
   let current = cwd;
   let boundary: string | null = null;
   while (true) {
+    if (current === home) return boundary;
     if (
       PROJECT_BOUNDARY_MARKERS.some((marker) =>
         exists(path.join(current, marker))
@@ -554,17 +590,29 @@ function projectBoundary(cwd: string): string | null {
  * symlink/junction into the repository, and APPDATA/HOME can be redirected. PATH
  * results are rejected when they resolve inside an identifiable source/workspace
  * boundary. An unmarked cwd cannot be treated as a project root: doing so rejects
- * ordinary nvm/asdf/Volta installs when the wizard is launched from $HOME.
+ * ordinary nvm/asdf/Volta installs when the wizard is launched from $HOME. Nor can a
+ * MARKED $HOME — see projectBoundary, which never counts home itself.
  */
 function trustedClaudeBinary(
   binary: string,
   cwd: string,
+  home?: string,
   requiredRoot?: string
 ): string | null {
   try {
     const canonicalBinary = fs.realpathSync.native(binary);
     const canonicalCwd = fs.realpathSync.native(cwd);
-    const projectRoot = projectBoundary(canonicalCwd);
+    // Canonical, because the walk compares it against ancestors of a canonical cwd. A
+    // home that cannot be canonicalized falls back to no cap — the stricter direction.
+    let canonicalHome: string | undefined;
+    if (home !== undefined) {
+      try {
+        canonicalHome = fs.realpathSync.native(home);
+      } catch {
+        canonicalHome = undefined;
+      }
+    }
+    const projectRoot = projectBoundary(canonicalCwd, canonicalHome);
     const canonicalRequiredRoot =
       requiredRoot === undefined
         ? undefined
@@ -595,6 +643,16 @@ export interface FindClaudeBinaryOptions {
   cwd?: string;
 }
 
+// Locate the Claude Code CLI binary across common install locations and PATH.
+// Claude Code is the only client here detected by locating its executable rather
+// than by an existing config file. `command -v` remains the POSIX fallback.
+// Windows intentionally has no executable-lookup fallback: both the implicit
+// current-directory search and npm/npx's project-local PATH entries can resolve a
+// repository-supplied executable, and even a bare `where.exe` can itself be
+// shadowed. The documented native and global-npm locations cover the standard
+// Windows installs without executing anything discovered from the project.
+// Exported for tests: the platform decisions are pure, so both branches can be
+// exercised on any host without spawning anything or faking process.platform.
 export function findClaudeBinary(
   options: FindClaudeBinaryOptions = {}
 ): string | null {
@@ -613,44 +671,22 @@ export function findClaudeBinary(
   const appdata = options.appdata ?? process.env.APPDATA;
   const cwd = options.cwd ?? process.cwd();
 
-  const candidates = claudeCandidatePaths(platform, homedir, appdata);
-  for (const [index, candidate] of candidates.entries()) {
+  for (const candidate of claudeCandidates(platform, homedir, appdata)) {
     // Absolute only. `exists()` resolves a relative candidate against the CURRENT
     // DIRECTORY, and candidates are probed before the POSIX PATH lookup — so a
     // relative one would win outright and receive the live API key.
-    if (!path.isAbsolute(candidate) && !path.win32.isAbsolute(candidate))
+    if (
+      !path.isAbsolute(candidate.path) &&
+      !path.win32.isAbsolute(candidate.path)
+    )
       continue;
-    if (exists(candidate)) {
-      let trustedRoot: string;
-      if (platform === 'win32') {
-        if (index === 0) {
-          trustedRoot = homedir;
-        } else {
-          // Automatic credential-bearing execution is limited to the standard
-          // per-user roaming root. An arbitrary redirected APPDATA has no
-          // trustworthy provenance merely because it is absolute.
-          const defaultAppdata = path.win32.join(homedir, 'AppData', 'Roaming');
-          const candidateAppdata = path.win32.dirname(
-            path.win32.dirname(candidate)
-          );
-          try {
-            if (
-              fs.realpathSync.native(candidateAppdata) !==
-              fs.realpathSync.native(defaultAppdata)
-            ) {
-              continue;
-            }
-          } catch {
-            continue;
-          }
-          trustedRoot = defaultAppdata;
-        }
-      } else if (index < 2) {
-        trustedRoot = homedir;
-      } else {
-        trustedRoot = index === 2 ? '/usr/local' : '/opt/homebrew';
-      }
-      const trusted = trustedClaudeBinary(candidate, cwd, trustedRoot);
+    if (exists(candidate.path)) {
+      const trusted = trustedClaudeBinary(
+        candidate.path,
+        cwd,
+        homedir,
+        candidate.trustedRoot
+      );
       if (trusted !== null) return trusted;
     }
   }
@@ -670,7 +706,7 @@ export function findClaudeBinary(
     // nvm/asdf/Volta executable beneath it. The canonical check below rejects a
     // result inside cwd whenever cwd is actually part of a marked project.
     const binary = pickClaudeBinary(out, platform);
-    return binary === null ? null : trustedClaudeBinary(binary, cwd);
+    return binary === null ? null : trustedClaudeBinary(binary, cwd, homedir);
   } catch {
     return null;
   }
@@ -867,8 +903,7 @@ export function runClaude(
   // `MCP server runpod already exists in user config`, exit 1, stored key unchanged.
   // The remediation command carries the full binary path, because the first candidate
   // path exists precisely to cover installs that are not on PATH.
-  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
-  if (output.includes('already exists')) {
+  if (stdio.includes('already exists')) {
     return {
       success: true,
       // Deliberately not "to replace the API key": this branch is also reached in
@@ -880,7 +915,7 @@ export function runClaude(
   return {
     success: false,
     message: redactSecret(
-      output.trim() ||
+      stdio.trim() ||
         `${path.basename(binary)} exited with code ${result.status}`,
       secret
     ),
@@ -963,8 +998,9 @@ export function readClaudeConfigState(configPath: string): ClaudeConfigState {
     userScope: undefined,
     localScopeDirs: [],
   };
-  // Belt and braces on top of the `||` above: a relative path is never the file the
-  // CLI would use, so answering "absent" from it would be a guess. Say unknown.
+  // Belt and braces on top of claudeUserConfigPath's own resolution: a relative path
+  // is never the file the CLI would use, so answering "absent" from it would be a
+  // guess. Say unknown.
   if (!path.isAbsolute(configPath)) return unknown;
 
   let raw: string;
@@ -1024,6 +1060,12 @@ export function readClaudeConfigState(configPath: string): ClaudeConfigState {
 
   return { configPath, userScope: has(own('mcpServers')), localScopeDirs };
 }
+// Lists directories without dumping twenty paths into one line.
+function describeDirs(dirs: string[]): string {
+  if (dirs.length === 1) return dirs[0];
+  return `${dirs.length} project directories (${dirs.slice(0, 3).join(', ')}${dirs.length > 3 ? ', …' : ''})`;
+}
+
 /**
  * Turns a `claude mcp remove` run plus the config's own state into an outcome.
  *
@@ -1043,12 +1085,6 @@ export function readClaudeConfigState(configPath: string): ClaudeConfigState {
  * and local-scope entries are enumerable across every directory rather than only the
  * current one.
  */
-// Lists directories without dumping twenty paths into one line.
-function describeDirs(dirs: string[]): string {
-  if (dirs.length === 1) return dirs[0];
-  return `${dirs.length} project directories (${dirs.slice(0, 3).join(', ')}${dirs.length > 3 ? ', …' : ''})`;
-}
-
 export function interpretRemoveResult(
   result: RunResult,
   state: ClaudeConfigState,
@@ -1059,7 +1095,7 @@ export function interpretRemoveResult(
 
   const alsoElsewhere =
     state.localScopeDirs.length > 0
-      ? ` A separate local-scope ${SERVER_NAME} entry (which may carry its own API key) also exists in ${state.localScopeDirs.length === 1 ? state.localScopeDirs[0] : `${state.localScopeDirs.length} project directories`} — this wizard does not touch those. Remove with \`${describeCommand(binary, ['mcp', 'remove', SERVER_NAME, '--scope', 'local'])}\` from each.`
+      ? ` A separate local-scope ${SERVER_NAME} entry (which may carry its own API key) also exists in ${describeDirs(state.localScopeDirs)} — this wizard does not touch those. Remove with \`${describeCommand(binary, ['mcp', 'remove', SERVER_NAME, '--scope', 'local'])}\` from each.`
       : '';
 
   if (state.userScope === true) {
@@ -1170,13 +1206,6 @@ export function createClaudeCodeClient(
     name: 'Claude Code',
     detect: () => Promise.resolve(resolveBinary() !== null),
     add: (mode) => {
-      const binary = resolveBinary();
-      if (!binary) {
-        return Promise.resolve({
-          success: false,
-          message: 'claude CLI not found',
-        });
-      }
       const args =
         mode.kind === 'local'
           ? [
@@ -1202,6 +1231,17 @@ export function createClaudeCodeClient(
               SERVER_NAME,
               mode.url,
             ];
+      const binary = resolveBinary();
+      if (!binary) {
+        // Automatic detection deliberately covers only the standard install
+        // locations (see findClaudeBinary) — a custom npm prefix or redirected
+        // profile still works, the user just registers it themselves from their own
+        // shell, where their own PATH applies and this wizard's trust rules do not.
+        return Promise.resolve({
+          success: false,
+          message: `claude CLI not found in the standard install locations. If Claude Code is installed somewhere custom, register it yourself${mode.kind === 'local' ? ', substituting your key' : ''}:\n    ${describeCommandRedacted('claude', args)}`,
+        });
+      }
       // The key is passed in only so any message built from the CLI's output can have
       // it stripped — see redactSecret.
       const result = runClaude(
@@ -1209,27 +1249,18 @@ export function createClaudeCodeClient(
         args,
         mode.kind === 'local' ? mode.apiKey : undefined
       );
+      // interpretAddResult passes failures and refusals through verbatim, so only a
+      // success needs the config read to confirm it.
+      if (!result.success) return Promise.resolve(result);
       // Verified against the config, not the exit code — see interpretAddResult.
-      return Promise.resolve(
-        interpretAddResult(
-          result,
-          result.success
-            ? readState()
-            : {
-                configPath: claudeUserConfigPath(),
-                userScope: undefined,
-                localScopeDirs: [],
-              },
-          binary
-        )
-      );
+      return Promise.resolve(interpretAddResult(result, readState(), binary));
     },
     remove: () => {
       const binary = resolveBinary();
       if (!binary) {
         return Promise.resolve({
           success: false,
-          message: 'claude CLI not found',
+          message: `claude CLI not found in the standard install locations. If Claude Code is installed somewhere custom, remove the entry yourself:\n    ${describeCommand('claude', ['mcp', 'remove', SERVER_NAME, '--scope', 'user'])}`,
         });
       }
       // Through runClaude so this shares the spawn handling: previously it called
@@ -1243,18 +1274,12 @@ export function createClaudeCodeClient(
         'user',
         SERVER_NAME,
       ]);
+      // A refusal ran nothing, so there is nothing to verify — and reading the config
+      // anyway would let interpretRemoveResult convert an unexecuted removal into
+      // "nothing to remove".
+      if (result.refused) return Promise.resolve(result);
       return Promise.resolve(
-        interpretRemoveResult(
-          result,
-          result.refused
-            ? {
-                configPath: claudeUserConfigPath(),
-                userScope: undefined,
-                localScopeDirs: [],
-              }
-            : readState(),
-          binary
-        )
+        interpretRemoveResult(result, readState(), binary)
       );
     },
     describeTarget: () => 'Claude Code user config (via `claude mcp` CLI)',
