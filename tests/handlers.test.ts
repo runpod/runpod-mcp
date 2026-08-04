@@ -631,7 +631,10 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
         gpuTypeIds: ['A100', 'H100', 'L40'],
       })) as { content: Array<{ text: string }> };
       // v2 gpu is singular — only the first id reaches the wire.
-      assert.deepEqual(JSON.parse(outbound[0].body!).gpu, { id: 'A100' });
+      assert.deepEqual(JSON.parse(outbound[0].body!).gpu, {
+        id: 'A100',
+        count: 1,
+      });
       const payload = JSON.parse(out.content[0].text);
       assert.match(payload._warning, /one GPU type/);
       assert.match(payload._warning, /H100/);
@@ -773,7 +776,7 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
       assert.deepEqual(body.env, { FOO: 'bar' });
       assert.equal(body.registry, 'cra_9'); // registry inherited so private images pull
       assert.equal(body.name, 'pytorch-template'); // pod-name default from template
-      assert.deepEqual(body.gpu, { id: 'A100' }); // caller-supplied compute
+      assert.deepEqual(body.gpu, { id: 'A100', count: 1 }); // caller-supplied compute
       // template-only fields never reach the pod body
       assert.equal('serverless' in body, false);
       assert.equal('category' in body, false);

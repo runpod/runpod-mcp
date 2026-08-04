@@ -86,14 +86,18 @@ function containerConfigToV2(p: {
 
 // gpuTypeIds[] + gpuCount → gpu: { id, count }. v2 GpuConfig requires `id`, so
 // return undefined for a count-only input — an idless gpu would be rejected
-// (422). count is optional (defaults to 1 server-side).
+// (422). `count` is documented as optional (defaults to 1 server-side), but in
+// practice omitting it makes the scheduler match ZERO machines and every create
+// fails with a misleading "no instances available" 400 (observed live
+// 2026-08-04, both v2 hosts; the identical body with count:1 succeeds). So
+// always emit the documented default explicitly.
 function gpuConfigToV2(
   gpuTypeIds?: string[],
   gpuCount?: number
 ): Record<string, unknown> | undefined {
   const id = gpuTypeIds?.[0];
   if (id === undefined) return undefined;
-  return compact({ id, count: gpuCount });
+  return { id, count: gpuCount ?? 1 };
 }
 
 export function mapPodCreateToV2(params: V1PodParams): Record<string, unknown> {

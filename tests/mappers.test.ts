@@ -66,8 +66,11 @@ describe('mapPodCreateToV2', () => {
     );
   });
 
-  it('gpuTypeIds without gpuCount → gpu.id only (count optional, defaults 1 upstream)', () => {
-    assert.deepEqual(mapPodCreateToV2({ gpuTypeIds: ['A'] }).gpu, { id: 'A' });
+  it('gpuTypeIds without gpuCount → count:1 emitted (upstream "default" matches no machines)', () => {
+    assert.deepEqual(mapPodCreateToV2({ gpuTypeIds: ['A'] }).gpu, {
+      id: 'A',
+      count: 1,
+    });
   });
 
   it('cloudType → cloud; dataCenterIds[] passes through as an array (v2 field)', () => {
