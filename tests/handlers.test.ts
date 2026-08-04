@@ -807,6 +807,7 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({ jsonBody: { id: 'pod_new' } });
       await handlers.get('create-pod')!({
+        name: 'p',
         imageName: 'img:1',
         gpuTypeIds: ['A100'],
         ports: ['8888/http'],
