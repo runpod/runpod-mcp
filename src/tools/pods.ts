@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { capListResult, listPaginationParams } from '../pagination.js';
 import { HttpError } from '../_shared/http.js';
 import { restV1Base, restV2Base } from '../_shared/backend.js';
-import { podBodyFromTemplate } from '../_shared/mappers.js';
+import { applySshPublicKey, podBodyFromTemplate } from '../_shared/mappers.js';
 import { READ_ONLY, WRITE, DESTRUCTIVE, type ToolRuntime } from './runtime.js';
 import { logStreamParams, streamLogsReply } from './logs.js';
 
@@ -137,7 +137,7 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
   // Create Pod
   server.tool(
     'create-pod',
-    'Create a new GPU/CPU pod on Runpod. Pass gpuTypeIds for a GPU pod, or computeType:"CPU" for a CPU pod (CPU pods are served by the v1 API for now). Pass either imageName or templateId (templateId deploys from an existing template — its name, image, start command, ports, env, disk, volume, and registry credential are used as defaults, and any field you also pass explicitly replaces the template value for that field, e.g. passing env replaces the whole env set rather than merging; pass containerRegistryAuthId to override or supply a private-image credential, or an empty string to deploy with none). If the user specifies neither an image nor a template, recommend the "Runpod Pytorch 2.8.0" image (runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404) as the default — it has the most up-to-date CUDA and PyTorch versions.',
+    'Create a new GPU/CPU pod on Runpod. Pass gpuTypeIds for a GPU pod, or computeType:"CPU" for a CPU pod (CPU pods are served by the v1 API for now). Pass either imageName or templateId (templateId deploys from an existing template — its name, image, start command, ports, env, disk, volume, and registry credential are used as defaults, and any field you also pass explicitly replaces the template value for that field, e.g. passing env replaces the whole env set rather than merging; pass containerRegistryAuthId to override or supply a private-image credential, or an empty string to deploy with none). For full SSH access (including SCP/SFTP/rsync), pass sshPublicKey — it sets the PUBLIC_KEY env var and exposes 22/tcp, which official Runpod images turn into a running sshd with the key authorized. If the user specifies neither an image nor a template, recommend the "Runpod Pytorch 2.8.0" image (runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404) as the default — it has the most up-to-date CUDA and PyTorch versions.',
     {
       name: z
         .string()
@@ -184,6 +184,12 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
         .optional()
         .describe("Ports to expose (e.g., '8888/http', '22/tcp')"),
       env: z.record(z.string()).optional().describe('Environment variables'),
+      sshPublicKey: z
+        .string()
+        .optional()
+        .describe(
+          'SSH PUBLIC key(s) to authorize on the pod — the contents of your ~/.ssh/<key>.pub (never the private key); newline-separate multiple keys. Merges the key into the PUBLIC_KEY env var and ensures 22/tcp is exposed, enabling full SSH (SCP/SFTP/rsync) on any image that honors the PUBLIC_KEY convention — all runpod/* official images do. Extends template ports/env rather than replacing them.'
+        ),
       containerRegistryAuthId: z
         .string()
         .optional()
@@ -198,6 +204,26 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
     { title: 'Create pod', ...WRITE },
     async (params) => {
       const backend = backendFor('pods');
+
+      // sshPublicKey is an MCP-side convenience, not an API field: strip it from
+      // the params that become the request body (v1 mapCreate is identity, so it
+      // would leak through) and fold it into the FINAL body via applySshPublicKey.
+      const { sshPublicKey, ...podParams } = params;
+
+      // Refuse anything that smells like a PRIVATE key before it can end up in
+      // a pod's env (and in every process listing inside the container).
+      if (sshPublicKey && /PRIVATE KEY/.test(sshPublicKey)) {
+        return jsonReply({
+          error:
+            'sshPublicKey looks like a PRIVATE key. Pass the PUBLIC key instead — the contents of your ~/.ssh/<key>.pub file (e.g. "ssh-ed25519 AAAA…").',
+          status: 400,
+        });
+      }
+
+      // Reply note attached whenever sshPublicKey was applied, so the caller
+      // knows what was set up and what full SSH still depends on.
+      const sshNote =
+        'sshPublicKey applied: PUBLIC_KEY env set and 22/tcp exposed. Full SSH (incl. SCP/SFTP/rsync) also requires an image that installs PUBLIC_KEY into authorized_keys and starts sshd (all runpod/* official images do) and a machine with a public IP — read the pod’s portMappings for port 22 once it is running.';
 
       // Template deploy is v2-only: v2 CreatePodRequest has no templateId, so we
       // fetch the template and spread its container config into the body below.
@@ -273,18 +299,25 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
               status: 400,
             });
           }
-          // v1 is a passthrough (mapCreate is identity there), so the raw tool
-          // params are the correct v1 body — `computeType` is a valid v1 field.
-          // Wrap the call so a v1 error surfaces as a clean message, not a raw
-          // throw (matching the GPU/v2 path's error handling below).
+          // v1 is a passthrough (mapCreate is identity there), so the stripped
+          // tool params are the correct v1 body — `computeType` is a valid v1
+          // field. Wrap the call so a v1 error surfaces as a clean message, not
+          // a raw throw (matching the GPU/v2 path's error handling below).
           try {
+            const cpuBody = sshPublicKey
+              ? applySshPublicKey(
+                  podParams as Record<string, unknown>,
+                  sshPublicKey
+                )
+              : (podParams as Record<string, unknown>);
             const result = (await callRestUrl(
               `${restV1Base(env)}/pods`,
               'POST',
-              params as Record<string, unknown>
+              cpuBody
             )) as Record<string, unknown>;
             return jsonReply({
               ...result,
+              ...(sshPublicKey ? { _ssh: sshNote } : {}),
               _servedBy: 'v1',
               _note:
                 'CPU pod: created on the v1 API, because the v2 REST API does not support CPU pods yet.',
@@ -303,7 +336,7 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
         }
       }
 
-      let body = backend.mapCreate(params) as Record<string, unknown>;
+      let body = backend.mapCreate(podParams) as Record<string, unknown>;
 
       // Template-based deploy (guaranteed v2 here). Fetch the template and use its
       // container config as the base; the mapped pod params spread ON TOP so an
@@ -332,24 +365,29 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
         body = { ...podBodyFromTemplate(template), ...body };
       }
 
+      // After the template merge, so a template's ports/env are extended (a
+      // pre-merge injection would clobber the template's ports whole-field).
+      if (sshPublicKey) body = applySshPublicKey(body, sshPublicKey);
+
       try {
         const result = (await callRestUrl(
           `${backend.base}${backend.list}`,
           'POST',
           body
         )) as Record<string, unknown>;
+        const extras: Record<string, unknown> = {};
+        if (sshPublicKey) extras._ssh = sshNote;
         // v2 accepts a single GPU type (`gpu.id`); v1's gpuTypeIds is "any of
         // these". If the caller offered several, only the first was sent — say
         // so in the reply so the narrowing isn't silent.
         if (backend.version === 'v2' && (params.gpuTypeIds?.length ?? 0) > 1) {
-          return jsonReply({
-            ...result,
-            _warning: `v2 accepts one GPU type per pod; used "${params.gpuTypeIds![0]}" and ignored ${
-              params.gpuTypeIds!.length - 1
-            } other(s): ${params.gpuTypeIds!.slice(1).join(', ')}.`,
-          });
+          extras._warning = `v2 accepts one GPU type per pod; used "${params.gpuTypeIds![0]}" and ignored ${
+            params.gpuTypeIds!.length - 1
+          } other(s): ${params.gpuTypeIds!.slice(1).join(', ')}.`;
         }
-        return jsonReply(result);
+        return jsonReply(
+          Object.keys(extras).length ? { ...result, ...extras } : result
+        );
       } catch (error) {
         if (error instanceof HttpError) {
           // Surface any API rejection (4xx/429/5xx/501) as a clean {error, status}

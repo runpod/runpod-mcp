@@ -367,6 +367,36 @@ export function podBodyFromTemplate(
   return out;
 }
 
+// ---- SSH convenience (create-pod sshPublicKey param) ----
+// The REST API has no SSH switch yet: the console and runpodctl set GraphQL
+// `startSsh`, which injects the account's registered keys as a PUBLIC_KEY env
+// var that official images install into authorized_keys before starting sshd.
+// Until REST v2 ships its own startSsh field, create-pod reproduces the
+// convention client-side from a caller-supplied key: merge the key into
+// env.PUBLIC_KEY and make sure 22/tcp is exposed. Must run on the FINAL body
+// (after any template merge) so a template's ports/env are extended, not
+// clobbered. Works on v1 and v2 bodies alike — `ports` and `env` have the
+// same shape on both.
+export function applySshPublicKey(
+  body: Record<string, unknown>,
+  sshPublicKey: string
+): Record<string, unknown> {
+  const ports = Array.isArray(body.ports) ? (body.ports as string[]) : [];
+  const hasSshPort = ports.some((p) => /^\s*22\/tcp\s*$/i.test(String(p)));
+  const env = { ...((body.env as Record<string, string> | undefined) ?? {}) };
+  const key = sshPublicKey.trim();
+  // A PUBLIC_KEY already present (caller's env or the template's) stays
+  // authorized: authorized_keys is one key per line, so append, don't replace.
+  if (!env.PUBLIC_KEY) env.PUBLIC_KEY = key;
+  else if (!env.PUBLIC_KEY.includes(key))
+    env.PUBLIC_KEY = `${env.PUBLIC_KEY}\n${key}`;
+  return {
+    ...body,
+    ports: hasSshPort ? ports : [...ports, '22/tcp'],
+    env,
+  };
+}
+
 interface V1TemplateUpdate {
   name?: string;
   imageName?: string;

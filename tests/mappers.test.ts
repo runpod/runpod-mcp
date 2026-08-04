@@ -12,6 +12,7 @@ import {
   mapEndpointCreateToV2,
   mapEndpointUpdateToV2,
   podBodyFromTemplate,
+  applySshPublicKey,
 } from '../src/_shared/mappers.js';
 import { parseLogSse } from '../src/tools/logs.js';
 
@@ -433,6 +434,61 @@ describe('mapEndpointCreateToV2', () => {
     const out = mapEndpointCreateToV2({ imageName: 'i', idleTimeout: 7 });
     assert.deepEqual(out.workers, { idleTimeout: 7 });
     assert.equal('idleTimeout' in (out.scaling as object), false);
+  });
+});
+
+describe('applySshPublicKey', () => {
+  const KEY = 'ssh-ed25519 AAAAC3Nza… user@laptop';
+
+  it('bare body → PUBLIC_KEY env + 22/tcp port', () => {
+    const out = applySshPublicKey({}, KEY);
+    assert.deepEqual(out.ports, ['22/tcp']);
+    assert.deepEqual(out.env, { PUBLIC_KEY: KEY });
+  });
+
+  it('appends 22/tcp to existing ports without touching them', () => {
+    const out = applySshPublicKey({ ports: ['8888/http'] }, KEY);
+    assert.deepEqual(out.ports, ['8888/http', '22/tcp']);
+  });
+
+  it('does not duplicate an already-exposed 22/tcp (case/space-insensitive)', () => {
+    for (const existing of ['22/tcp', '22/TCP', ' 22/tcp ']) {
+      const out = applySshPublicKey({ ports: [existing] }, KEY);
+      assert.deepEqual(out.ports, [existing]);
+    }
+  });
+
+  it('22/udp or 22/http do NOT count as the SSH port', () => {
+    const out = applySshPublicKey({ ports: ['22/udp', '22/http'] }, KEY);
+    assert.deepEqual(out.ports, ['22/udp', '22/http', '22/tcp']);
+  });
+
+  it('preserves existing env vars and does not mutate the input body', () => {
+    const body = { env: { FOO: 'bar' } };
+    const out = applySshPublicKey(body, KEY);
+    assert.deepEqual(out.env, { FOO: 'bar', PUBLIC_KEY: KEY });
+    assert.deepEqual(body.env, { FOO: 'bar' }); // input untouched
+  });
+
+  it('appends to an existing PUBLIC_KEY (both keys stay authorized)', () => {
+    const out = applySshPublicKey(
+      { env: { PUBLIC_KEY: 'ssh-rsa BBBB other@host' } },
+      KEY
+    );
+    assert.equal(
+      (out.env as Record<string, string>).PUBLIC_KEY,
+      `ssh-rsa BBBB other@host\n${KEY}`
+    );
+  });
+
+  it('does not re-append a key PUBLIC_KEY already contains', () => {
+    const out = applySshPublicKey({ env: { PUBLIC_KEY: KEY } }, KEY);
+    assert.equal((out.env as Record<string, string>).PUBLIC_KEY, KEY);
+  });
+
+  it('trims surrounding whitespace from the supplied key', () => {
+    const out = applySshPublicKey({}, `  ${KEY}\n`);
+    assert.deepEqual(out.env, { PUBLIC_KEY: KEY });
   });
 });
 

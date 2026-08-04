@@ -194,6 +194,37 @@ describe('outbound-request golden (v1 unchanged)', () => {
     assert.equal(outbound[0].body, JSON.stringify(params));
   });
 
+  it('create-pod v1 sshPublicKey → PUBLIC_KEY env + 22/tcp, param itself never on the wire', async () => {
+    const { handlers, outbound } = harness({ jsonBody: { id: 'pod_1' } });
+    const out = (await handlers.get('create-pod')!({
+      imageName: 'img:1',
+      env: { FOO: 'bar' },
+      sshPublicKey: 'ssh-ed25519 AAAA me@laptop',
+    })) as { content: Array<{ text: string }> };
+    const body = JSON.parse(outbound[0].body!);
+    assert.equal('sshPublicKey' in body, false); // MCP-side param, not an API field
+    assert.deepEqual(body.ports, ['22/tcp']);
+    assert.deepEqual(body.env, {
+      FOO: 'bar',
+      PUBLIC_KEY: 'ssh-ed25519 AAAA me@laptop',
+    });
+    // Reply carries the SSH note so the caller knows what full SSH still needs.
+    const payload = JSON.parse(out.content[0].text);
+    assert.match(payload._ssh, /PUBLIC_KEY env set and 22\/tcp exposed/);
+  });
+
+  it('create-pod rejects a PRIVATE key in sshPublicKey, fires no request', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    const out = (await handlers.get('create-pod')!({
+      imageName: 'img:1',
+      sshPublicKey: '-----BEGIN OPENSSH PRIVATE KEY-----\nabc',
+    })) as { content: Array<{ text: string }> };
+    assert.equal(outbound.length, 0);
+    const payload = JSON.parse(out.content[0].text);
+    assert.equal(payload.status, 400);
+    assert.match(payload.error, /PRIVATE key/);
+  });
+
   it('stop-pod → POST <rest>/v1/pods/{id}/stop', async () => {
     const { handlers, outbound } = harness({ jsonBody: {} });
     await handlers.get('stop-pod')!({ podId: 'pod_9' });
@@ -574,6 +605,23 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
     });
   });
 
+  it('create-pod v2 CPU pod applies sshPublicKey on the v1 passthrough body too', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'pod_cpu' } });
+      const out = (await handlers.get('create-pod')!({
+        imageName: 'i',
+        computeType: 'CPU',
+        sshPublicKey: 'ssh-ed25519 AAAA me@laptop',
+      })) as { content: Array<{ text: string }> };
+      const body = JSON.parse(outbound[0].body!);
+      assert.equal('sshPublicKey' in body, false);
+      assert.deepEqual(body.ports, ['22/tcp']);
+      assert.deepEqual(body.env, { PUBLIC_KEY: 'ssh-ed25519 AAAA me@laptop' });
+      const payload = JSON.parse(out.content[0].text);
+      assert.match(payload._ssh, /PUBLIC_KEY env set/);
+    });
+  });
+
   it('create-pod v2 with >1 gpuTypeId → succeeds, warns only the first was used', async () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({ jsonBody: { id: 'pod_multi' } });
@@ -752,6 +800,43 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
       assert.equal(body.disk, 100); // caller disk wins
       assert.equal(body.registry, 'cra_override'); // caller registry overrides template's cra_9
       assert.equal(body.args, 'python -u handler.py'); // untouched template field stays
+    });
+  });
+
+  it('create-pod v2 sshPublicKey → PUBLIC_KEY env + 22/tcp appended to the mapped body', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'pod_new' } });
+      await handlers.get('create-pod')!({
+        imageName: 'img:1',
+        gpuTypeIds: ['A100'],
+        ports: ['8888/http'],
+        sshPublicKey: 'ssh-ed25519 AAAA me@laptop',
+      });
+      const body = JSON.parse(outbound[0].body!);
+      assert.equal('sshPublicKey' in body, false);
+      assert.deepEqual(body.ports, ['8888/http', '22/tcp']);
+      assert.deepEqual(body.env, { PUBLIC_KEY: 'ssh-ed25519 AAAA me@laptop' });
+    });
+  });
+
+  it('create-pod v2 sshPublicKey EXTENDS template ports/env (applied after the merge)', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        jsonBodies: [TEMPLATE_JSON, { id: 'pod_new' }],
+      });
+      await handlers.get('create-pod')!({
+        templateId: 'tpl_1',
+        gpuTypeIds: ['A100'],
+        sshPublicKey: 'ssh-ed25519 AAAA me@laptop',
+      });
+      const body = JSON.parse(outbound[1].body!);
+      // Template ports/env survive with the SSH additions folded in — NOT the
+      // whole-field replacement that a caller-passed ports/env would cause.
+      assert.deepEqual(body.ports, ['8888/http', '22/tcp']);
+      assert.deepEqual(body.env, {
+        FOO: 'bar',
+        PUBLIC_KEY: 'ssh-ed25519 AAAA me@laptop',
+      });
     });
   });
 
