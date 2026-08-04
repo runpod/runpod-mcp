@@ -638,7 +638,10 @@ const CMD_META = /[()\][%!^"`<>&|;, *?\t\n\v\r]/;
 
 export interface FindClaudeBinaryOptions {
   platform?: string;
-  homedir?: string;
+  // `null` means "known unavailable" — what a failed os.userInfo() lookup produces.
+  // Distinct from `undefined` (= resolve it here), so a test can drive the
+  // no-home-directory path without mocking os.userInfo across module boundaries.
+  homedir?: string | null;
   appdata?: string;
   cwd?: string;
 }
@@ -665,13 +668,20 @@ export function findClaudeBinary(
       // redirect an automatic credential-bearing candidate through those variables.
       homedir = os.userInfo().homedir;
     } catch {
-      return null;
+      // No passwd entry for the process UID (arbitrary-UID containers, some CI
+      // sandboxes). NOT os.homedir(): its answer is exactly the env-redirectable one
+      // userInfo() exists to avoid. Home-anchored candidates are skipped, but the
+      // POSIX PATH lookup below needs no homedir — returning here regressed those
+      // environments from working (on main, via `command -v`) to undetectable.
+      homedir = null;
     }
   }
   const appdata = options.appdata ?? process.env.APPDATA;
   const cwd = options.cwd ?? process.cwd();
 
-  for (const candidate of claudeCandidates(platform, homedir, appdata)) {
+  const candidates =
+    homedir == null ? [] : claudeCandidates(platform, homedir, appdata);
+  for (const candidate of candidates) {
     // Absolute only. `exists()` resolves a relative candidate against the CURRENT
     // DIRECTORY, and candidates are probed before the POSIX PATH lookup — so a
     // relative one would win outright and receive the live API key.
@@ -681,10 +691,11 @@ export function findClaudeBinary(
     )
       continue;
     if (exists(candidate.path)) {
+      // `?? undefined` only for the type: candidates is empty when homedir is null.
       const trusted = trustedClaudeBinary(
         candidate.path,
         cwd,
-        homedir,
+        homedir ?? undefined,
         candidate.trustedRoot
       );
       if (trusted !== null) return trusted;
@@ -706,7 +717,9 @@ export function findClaudeBinary(
     // nvm/asdf/Volta executable beneath it. The canonical check below rejects a
     // result inside cwd whenever cwd is actually part of a marked project.
     const binary = pickClaudeBinary(out, platform);
-    return binary === null ? null : trustedClaudeBinary(binary, cwd, homedir);
+    return binary === null
+      ? null
+      : trustedClaudeBinary(binary, cwd, homedir ?? undefined);
   } catch {
     return null;
   }
@@ -933,6 +946,12 @@ export function runClaude(
 //
 // `--scope user` writes exactly one place: the top-level `mcpServers` of
 // `.claude.json`. Reading it is exact, needs no spawn, and cannot be shadowed.
+//
+// VERSION COUPLING: that storage location is a claim about claude 2.1.x. If a future
+// Claude Code moves user-scope entries elsewhere, this reader will report "absent"
+// after every successful add — turning each one into a false "Nothing was configured"
+// failure in interpretAddResult. If that starts happening on a new CLI version, check
+// where `--scope user` writes before suspecting the wizard.
 export interface ClaudeConfigState {
   // The file this state was read from. Carried so a message names the file actually
   // consulted — the reader is injectable, so `claudeUserConfigPath()` is not

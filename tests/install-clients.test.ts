@@ -1353,6 +1353,39 @@ describe(
       }
     });
 
+    it('falls through to the PATH lookup when no home directory is resolvable', () => {
+      // os.userInfo() throws for a process UID with no passwd entry
+      // (arbitrary-UID containers, some CI sandboxes). That only makes the
+      // home-anchored candidates unavailable — the `command -v` fallback needs no
+      // homedir, and returning early instead regressed those environments from
+      // working (on main) to undetectable. homedir: null is the sentinel that catch
+      // produces.
+      const globalRoot = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'runpod-global-')
+      );
+      dirs.push(globalRoot);
+      const bin = path.join(globalRoot, 'bin');
+      fs.mkdirSync(bin);
+      const globalClaude = path.join(bin, 'claude');
+      fs.writeFileSync(globalClaude, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+
+      const originalPath = process.env.PATH;
+      process.env.PATH = [bin, '/usr/bin', '/bin'].join(path.delimiter);
+      try {
+        assert.equal(
+          findClaudeBinary({
+            platform: process.platform,
+            homedir: null,
+            cwd: globalRoot,
+          }),
+          fs.realpathSync.native(globalClaude)
+        );
+      } finally {
+        if (originalPath === undefined) delete process.env.PATH;
+        else process.env.PATH = originalPath;
+      }
+    });
+
     it('accepts a canonical global PATH hit when no project boundary exists', () => {
       const workspace = fs.mkdtempSync(
         path.join(os.tmpdir(), 'runpod-unmarked-')
