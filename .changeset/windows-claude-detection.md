@@ -2,157 +2,34 @@
 '@runpod/mcp-server': patch
 ---
 
-Fix Claude Code detection on Windows in the install wizard (#56).
+Fix Claude Code detection and registration in the install wizard on Windows (#56).
 
-`findClaudeBinary()` fell back to `execSync('command -v claude')`. `command -v` is a
-POSIX shell builtin and `execSync` on Windows runs through `cmd.exe`, which has no such
-builtin — so the lookup exited non-zero whether or not Claude Code was installed. The
-three hardcoded candidate paths it checked first (`~/.claude/local/claude`,
-`/usr/local/bin/claude`, `/opt/homebrew/bin/claude`) are POSIX-only and can never resolve
-on Windows either, so Claude Code was undetectable on a standard Windows install.
+Detection used the POSIX-only `command -v claude` plus three POSIX install paths, so
+Claude Code was undetectable on a standard Windows install. Windows now probes
+`%USERPROFILE%\.local\bin\claude.exe` (native installer) and `%APPDATA%\npm\claude.cmd`
+(global npm), and registration resolves the real entrypoint from the installed package
+manifest instead of running the `.cmd` shim through `cmd.exe`. Candidates are
+canonicalized and confined to their standard install roots, a PATH result resolving into
+the current project is rejected, and Claude Code is spawned with `PATH`, `COMSPEC`,
+`PATHEXT`, `NODE_OPTIONS`, and `NODE_PATH` sanitized, so nothing a project directory can
+plant receives your API key. Custom npm prefixes and redirected roaming profiles are
+still not auto-detected; when Claude Code is not found, the wizard now prints the exact
+`claude mcp` command to register or remove the entry yourself.
 
-Windows now probes `%USERPROFILE%\.local\bin\claude.exe` (the documented native-installer
-location) and `%APPDATA%\npm\claude.cmd` (the standard `npm install -g` shim from #56).
-It deliberately does not execute `where.exe` or any other PATH lookup: Windows searches
-the current directory when resolving the lookup executable itself, and npm/npx prepend
-project-local `node_modules\.bin` directories to PATH. Either route could execute a
-repository-supplied program before selection, or later hand it the Runpod API key.
-Directly probing the two documented user-level locations fixes the standard native and
-global-npm installs without extending that trust boundary.
+Claude Code add and remove are now verified against its own `.claude.json` rather than
+the CLI exit code, which reports success for writes it never made. Re-running the wizard
+over an existing entry now says the entry was left unchanged instead of printing a bare
+success, since the CLI does not update it and a rotated API key would otherwise look
+applied. An entry shadowed by a local-scope one is called out with the command to clear
+it.
 
-The POSIX `command -v` fallback remains for custom/package-manager installs, but accepts
-only canonical absolute paths and rejects `node_modules/.bin` results. When the cwd is
-inside an identifiable source/workspace boundary, anything resolving back into that
-boundary is rejected. An unmarked cwd is not treated as a project root, so launching the
-wizard from `$HOME` or another ordinary directory continues to support nvm, asdf, Volta,
-and custom global installs. Direct installer candidates are canonicalized through the
-same boundary check, so a standard-looking path that is really a symlink or junction back
-into a marked project is not trusted.
-
-Registration never executes the Windows npm `.cmd` shim. Node cannot launch one directly,
-while launching it through `cmd.exe` would make `COMSPEC`, PATH resolution, and `%*`
-re-parsing part of the credential-bearing path. The wizard reads the installed package's
-`bin.claude` manifest entry, canonicalizes the target inside
-`node_modules/@anthropic-ai/claude-code`, and invokes it without a shell. Claude Code
-2.1.212 (the version in #56) and 2.1.220 both publish `bin/claude.exe`, which postinstall
-replaces with the platform-native binary; a legacy JavaScript manifest target is invoked
-with the already-running Node process. The child gets a minimal interpreter PATH with
-`COMSPEC`, `PATHEXT`, `NODE_OPTIONS`, and `NODE_PATH` removed. Arguments therefore remain
-an argv array even when a value contains a shell metacharacter, and the PR adds no runtime
-dependency.
-
-Direct candidates are confined to their canonical install roots: home for the native
-locations, `/usr/local` or `/opt/homebrew` for their POSIX candidates, and the default
-`%USERPROFILE%\AppData\Roaming` root for Windows npm. A redirected `APPDATA` and a
-standard-path junction escaping that root are not executed automatically. This is
-deliberately narrower than accepting every custom prefix: the issue's standard global
-npm install works, while an arbitrary environment-provided directory is not treated as
-trusted merely because it is absolute.
-
-`add` and `remove` are now verified against the config instead of trusting the CLI's exit
-code, because on Claude Code 2.1.220 that exit code does not answer the only question that
-matters — is the API key on disk or not?
-
-- With an unwritable config, `claude mcp remove` prints `Removed MCP server runpod from user
-config / File modified: …` and exits **0** having written nothing. Same for `add`.
-- `claude mcp add` defaults to **local** scope while this wizard removes from **user** scope,
-  so an entry a user added by hand yields `No MCP server named "runpod" in user scope` and
-  exit 1 — which reads as "nothing to remove" while their key stays in `~/.claude.json`.
-
-Neither is settled by a `claude mcp get` probe, and two further observations are why:
-
-- **`mcp get` is cwd-pinned.** Local scope lives at `~/.claude.json →
-projects[<cwd>].mcpServers` and project scope in `<cwd>/.mcp.json`, so an entry added
-  in a different directory is invisible from here (verified: added in `projA`, `mcp get`
-  from `projB` exits 1 while the key is still in `~/.claude.json`).
-- **`mcp get` reports only the WINNING scope, and local shadows user.** With a
-  user-scope _and_ a local-scope entry both on disk it prints only
-  `Scope: Local config` — so one scope string cannot distinguish "user entry present,
-  shadowed" from "user entry absent", and those need opposite verdicts.
-
-`--scope user` writes exactly one place: the top-level `mcpServers` of `.claude.json`.
-So the wizard reads that file. It is exact, needs no extra process, cannot be shadowed,
-and it can enumerate local-scope entries across _every_ project directory rather than
-only the current one. A removal that leaves the user-scope entry in place is a failure
-naming the file and the likely cause; one that succeeds while local-scope entries remain
-elsewhere is a success that names those directories and the command to clear them; and a
-config that cannot be read or parsed is reported as unverified rather than assumed
-either way.
-
-(`remove` also previously called `execFileSync` directly — which cannot spawn a `.cmd` — and
-reported success from its `catch` regardless.)
-
-Re-running the wizard over an existing entry no longer prints a bare success either. The
-CLI does not update an existing entry, so a user re-running the wizard after rotating their
-API key was told "configured" while the old key remained. The result line now says the entry
-was left unchanged and gives the full-path command to replace it. An API key taken from the
-environment is also trimmed, matching the pasted path — a trailing newline used to be
-written verbatim into every client config.
-
-Environment-provided directories are handled by variable, not by one blanket rule, because
-the right answer differs. `XDG_CONFIG_HOME` and `APPDATA` name paths this wizard invents,
-so an empty or relative value is refused outright — `??` did not catch an empty string and
-nothing rejected a relative one. The consequences were not cosmetic: an empty
-`APPDATA` yielded the relative candidate `npm\claude.cmd`, which is probed before the
-Windows lookup decision and resolved against the current directory, so a file planted
-there would have been spawned with the live API key; and a relative config directory meant a
-plaintext key written into a `Claude/` folder wherever the wizard was launched, reported
-as configured. `CLAUDE_CONFIG_DIR` is different: it names a file the Claude Code CLI owns, and that CLI
-resolves a relative value against its own cwd (verified — `CLAUDE_CONFIG_DIR=relcfg claude
-mcp add … --scope user` writes `relcfg/.claude.json`). Treating it as unset would point
-this code at `$HOME/.claude.json`, a file the CLI never touched, and then report a definite
-verdict about it — so it is resolved the same way the CLI resolves it. As a backstop,
-writing or deleting through a non-absolute config path is refused outright, whatever
-computed it. `vsCodeConfigPath` also honours
-`XDG_CONFIG_HOME` now — it hardcoded `~/.config`, so an XDG user was told VS Code was
-configured for a file VS Code does not read.
-
-Two smaller leaks in the same area: a client config created by this wizard is written `0600`
-rather than `0644`, since it holds a plaintext API key (a freshly created Claude Code config is `0600`);
-and any message built from the CLI's output has the key stripped by value, not just by argv
-shape — that CLI does echo `-e` tokens back on some errors. A config the owning client cannot parse is
-also no longer reported as configured, and validity is now decided by the parser that
-client actually uses, read out of each client's shipped code rather than inferred from
-"it's an Electron app". Claude Desktop is strict — a bare `JSON.parse(readFileSync(...))`
-with no preprocessing and no retry — so validating its config leniently meant reporting
-success for a file it silently never loads, the same defect a leading BOM had and far more
-reachable, since a commented-out server in a hand-edited config is routine. Cursor is
-**not** strict, despite also being an Electron app: it is a VS Code fork and its MCP reader
-keeps VS Code's tolerance, stripping comments and retrying without trailing commas, so it
-is treated as JSONC like VS Code. Windsurf's parser could not be read, so it is marked
-unverified: the entry is written, and if the config relies on that leniency the success
-message says the tolerance is unconfirmed rather than asserting it. Guessing is not
-free in either direction — too strict refuses a healthy config and leaves the client
-unconfigured, too lenient reports success for a file that never loads — so the dialect is
-required per client with no default, and asserted per client in the tests.
-
-Two further ways an edit could be valid yet ineffective are now caught. Duplicate keys are
-legal JSON, and `jsonc.modify` edits the first occurrence while every client keeps the last,
-so the entry could land in a block nothing reads — a plaintext key on disk, reported as
-configured; both the add and the remove path now confirm the result with the client's own
-parser instead of trusting that an edit applied. And removing the sole entry of a
-`servers` block followed by a trailing comma left `{ , }` behind, turning a clean config
-into one with a parse error while printing a tick; that removal now fails closed and
-leaves the original file untouched rather than structurally rewriting away unrelated
-comments and formatting. An already malformed config is also left untouched rather than
-editing the malformed document and reporting success. The message also
-distinguishes "this change would break it" from "it was already broken", because the advice
-differs.
-
-The POSIX PATH lookup now accepts only a canonical absolute path, never returns a relative
-or `node_modules/.bin` result, and rejects hits inside a marked source/workspace boundary.
-Whatever it returns is spawned with the live API key, and with `.` on `PATH`
-`command -v claude` prints `./claude` under dash — which is `/bin/sh` on Linux, the shell
-this uses — so the key could otherwise go to whatever file sat in the working directory.
-A global-looking symlink back into the repository is rejected after canonicalization too.
-
-An `add` that lands in user scope while a **local**-scope entry exists now says so. Local
-scope takes precedence, so in those directories the new entry is inert and Claude Code keeps
-using the old key — the exact rotation failure the "already exists" caveat was added to
-prevent, which that caveat cannot catch because `mcp add --scope user` exits 0 when the
-collision is in another scope.
-
-CI gains a `windows-latest` runner. The suite models the published 2.1.212 npm manifest and
-native `bin/claude.exe` layout in a space-containing global prefix, asserts the shim is
-never executed, and verifies that arguments arrive intact at the native target. A
-Windows-only fix with no Windows CI is how this class of bug ships.
+For the clients that own a JSON config, an edit that would leave the file unparseable —
+or land in a duplicated server block the client does not read — now fails with the
+original file untouched instead of reporting success, and validity is judged by the
+parser each client actually ships (Claude Desktop is strict JSON, Cursor and VS Code
+accept JSONC, Windsurf's tolerance is unverified and disclosed rather than assumed).
+Claude Desktop on Linux and VS Code now honour `XDG_CONFIG_HOME` instead of writing
+where those clients never read, an empty or relative `APPDATA`/`XDG_CONFIG_HOME` no
+longer resolves a config path against the current directory, configs this wizard creates
+are `0600` because they hold a plaintext API key, and a key taken from the environment is
+trimmed.
