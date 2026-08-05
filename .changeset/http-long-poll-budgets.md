@@ -1,0 +1,5 @@
+---
+'@runpod/mcp-server': patch
+---
+
+Clamp long-poll tool budgets to 45 seconds on the hosted HTTP server. The hosted server runs inside a serverless function the platform kills at 60 seconds, but `runsync-endpoint` waited up to 90 seconds by default (300 via `wait`) and `stream-job` polled for up to 5 minutes — so for any slow job the platform reaped the function before the tool's own graceful-timeout path could run: the client got a bare 504, everything collected so far was discarded, and the function stayed pinned (billed) for the full 60 seconds. On the HTTP transport `runsync-endpoint` now always sends a `wait` capped at 45000 ms (a longer wait falls back to the documented job-ID + `get-job-status` polling path upstream), and `stream-job` stops polling after 45 seconds, returning the chunks collected so far with `pollingTimedOut: true` and a note to call `stream-job` again (the `/stream` endpoint hands out chunks incrementally, so a repeat call resumes where the last one stopped). The stdio server has no platform deadline and keeps the full budgets unchanged.

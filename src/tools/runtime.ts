@@ -219,6 +219,11 @@ export interface ToolRuntime {
   // The process env, exposed for the few handlers that resolve base URLs
   // directly (e.g. create-pod's CPU → v1 fallback).
   env: Env;
+  // Which transport this server runs under. The hosted HTTP server lives inside
+  // a serverless function with a hard platform deadline (Vercel maxDuration),
+  // so long-poll tools clamp their wait budgets on 'http' (see jobs.ts) instead
+  // of planning more seconds than the platform will give them.
+  transport: 'stdio' | 'http';
 }
 
 // Helper to make GraphQL requests to Runpod (public, no auth required). Bound to
@@ -486,5 +491,6 @@ export function createToolRuntime(
     streamSse,
     podAction,
     env: process.env as Env,
+    transport: ctx.transport,
   };
 }

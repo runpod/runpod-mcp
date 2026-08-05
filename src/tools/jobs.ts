@@ -25,6 +25,16 @@ export function clearQueuedJobDiagnosisCache(): void {
   diagnosisCache.clear();
 }
 
+// The hosted HTTP server runs inside a serverless function the platform kills
+// at 60s (vercel.json maxDuration). A tool that plans to wait longer than that
+// never reaches its own graceful-timeout path — the platform reaps the function
+// first, the client gets a bare 504 with everything collected so far discarded,
+// and the function stays pinned (billed) for the full 60s. So on 'http' every
+// long-poll budget is clamped to comfortably under the platform ceiling,
+// leaving headroom for the credential pre-flight and response serialization.
+// stdio has no platform deadline and keeps the full budgets.
+const HTTP_LONG_POLL_BUDGET_MS = 45_000;
+
 export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
   const { jsonReply, serverlessRequest, backendFor, callRestUrl } = rt;
 
@@ -201,7 +211,7 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
   // Run Endpoint Sync
   server.tool(
     'runsync-endpoint',
-    'Submit a synchronous job to a Serverless endpoint and wait for the result. Best for tasks completing within 90 seconds. If processing exceeds 90 seconds, the response returns a job ID to poll with get-job-status. Max payload: 20 MB. Results expire after 1 minute. Use the wait parameter to extend the server-side wait up to 5 minutes (300000 ms).',
+    'Submit a synchronous job to a Serverless endpoint and wait for the result. Best for fast tasks; if the job is still running when the wait expires, the response returns a job ID to poll with get-job-status. Max payload: 20 MB. Results expire after 1 minute. Use the wait parameter to extend the server-side wait up to 5 minutes (300000 ms) — on the hosted (HTTP) server the wait is capped at 45 seconds, so submit longer jobs with run-endpoint and poll get-job-status instead.',
     {
       endpointId: endpointIdSchema.describe(
         'ID of the Serverless endpoint to run synchronously'
@@ -213,7 +223,7 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
         .max(300000)
         .optional()
         .describe(
-          'How long in milliseconds the server should wait for a result before returning a job ID to poll (1000–300000). Defaults to 90000 (90 seconds).'
+          'How long in milliseconds the server should wait for a result before returning a job ID to poll (1000–300000). Defaults to 90000 (90 seconds). On the hosted (HTTP) server the effective wait is capped at 45000.'
         ),
       webhook: webhookSchema,
       policy: policySchema,
@@ -222,7 +232,19 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
     { title: 'Run endpoint (sync)', ...WRITE },
     async (params) => {
       const { endpointId, wait, ...body } = params;
-      const path = wait ? `/runsync?wait=${wait}` : '/runsync';
+      // Hosted HTTP: the upstream default (90s) and the param ceiling (300s)
+      // both exceed the platform deadline, so the wait is ALWAYS sent there,
+      // clamped — an omitted wait would otherwise hold the function past 60s.
+      // When the clamped wait expires upstream, the response carries the job
+      // ID + IN_PROGRESS, which is exactly the documented poll-with-
+      // get-job-status path. stdio passes the caller's wait through untouched.
+      const effectiveWait =
+        rt.transport === 'http'
+          ? Math.min(wait ?? 90_000, HTTP_LONG_POLL_BUDGET_MS)
+          : wait;
+      const path = effectiveWait
+        ? `/runsync?wait=${effectiveWait}`
+        : '/runsync';
       const result = await serverlessRequest(
         endpointId,
         path,
@@ -273,7 +295,7 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
   // Stream Job Results
   server.tool(
     'stream-job',
-    'Retrieve all streaming output from a Serverless job by polling until the job reaches a terminal state. The worker must support streaming output. Polls /stream/{jobId} repeatedly and collects every chunk until status is COMPLETED, FAILED, CANCELLED, or TIMED_OUT.',
+    'Retrieve streaming output from a Serverless job by polling until the job reaches a terminal state. The worker must support streaming output. Polls /stream/{jobId} repeatedly and collects every chunk until status is COMPLETED, FAILED, CANCELLED, or TIMED_OUT. Polls for up to 5 minutes (45 seconds on the hosted HTTP server); if the job is still running when the budget expires, returns the chunks collected so far with pollingTimedOut: true — call stream-job again to keep collecting from where it left off, or get-job-status to check without streaming.',
     {
       endpointId: endpointIdSchema.describe(
         'ID of the Serverless endpoint the job belongs to'
@@ -288,7 +310,8 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
         'CANCELLED',
         'TIMED_OUT',
       ]);
-      const MAX_POLL_TIME_MS = 5 * 60 * 1000; // 5 minutes
+      const MAX_POLL_TIME_MS =
+        rt.transport === 'http' ? HTTP_LONG_POLL_BUDGET_MS : 5 * 60 * 1000;
       const POLL_INTERVAL_MS = 1000;
       const MAX_CONSECUTIVE_ERRORS = 5;
       const allChunks: unknown[] = [];
@@ -326,8 +349,10 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
 
         if (Date.now() - startTime > MAX_POLL_TIME_MS) {
           finalResult.pollingTimedOut = true;
-          finalResult.note =
-            'Polling timed out after 5 minutes. Use get-job-status to check the job later.';
+          // /stream/{jobId} hands out chunks incrementally (each call returns
+          // what is new since the last drain), so a repeat call resumes where
+          // this one stopped rather than replaying from the start.
+          finalResult.note = `Polling stopped after ${Math.round(MAX_POLL_TIME_MS / 1000)} seconds with the job still running. Call stream-job again to continue collecting output, or get-job-status to check the job without streaming.`;
           // Surface the most recent error (if any) instead of discarding it —
           // the last poll may have been failing (e.g. job expired) even though
           // earlier polls succeeded.
