@@ -1,7 +1,12 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import fetch from 'node-fetch';
 import { randomUUID } from 'node:crypto';
-import { createHttpClient } from '../_shared/http.js';
+import {
+  createHttpClient,
+  EXPIRED_CREDENTIAL_HINT,
+  HttpError,
+} from '../_shared/http.js';
+import { rateLimitHint } from '../_shared/rate-limit.js';
 import { buildTrackingHeaders } from '../_shared/tracking.js';
 import { readSseSnapshot, type SseFetch } from './logs.js';
 import {
@@ -214,6 +219,11 @@ export interface ToolRuntime {
   // The process env, exposed for the few handlers that resolve base URLs
   // directly (e.g. create-pod's CPU → v1 fallback).
   env: Env;
+  // Which transport this server runs under. The hosted HTTP server lives inside
+  // a serverless function with a hard platform deadline (Vercel maxDuration),
+  // so long-poll tools clamp their wait budgets on 'http' (see jobs.ts) instead
+  // of planning more seconds than the platform will give them.
+  transport: 'stdio' | 'http';
 }
 
 // Helper to make GraphQL requests to Runpod (public, no auth required). Bound to
@@ -243,6 +253,61 @@ async function graphqlRequest<T>(
       ...(options?.variables ? { variables: options.variables } : {}),
     }),
   });
+
+  // HTTP-level failures used to fall through to response.json() and surface
+  // as an opaque parse error ("Unexpected token '<'" for a 429/5xx HTML
+  // body). Handle them like the REST client (http.ts): status + body + a
+  // wait hint on 429. A non-OK response whose body still carries a GraphQL
+  // errors array keeps the readable GraphQL message (servers commonly return
+  // 400 for malformed queries), with the status attached.
+  if (!response.ok) {
+    const bodyText = await response.text();
+    let gqlErrors: Array<{ message: string }> | undefined;
+    try {
+      gqlErrors = (
+        JSON.parse(bodyText) as { errors?: Array<{ message: string }> }
+      ).errors;
+    } catch {
+      // Not JSON (HTML error page, empty body) — the HttpError below carries
+      // the raw body instead.
+    }
+    // Array.isArray, not truthiness: proxies/WAFs emit shapes like
+    // {"errors":"internal failure"}, where a non-empty string passes a
+    // .length check and then .map() throws — a worse error than the parse
+    // error this handling exists to eliminate. 401/429 fall through to
+    // the hinted HttpError below, so the re-auth and rate-limit hints are
+    // never suppressed by a prettier message. Still an HttpError (with the
+    // extracted messages as the body) so `.status` stays machine-readable.
+    if (
+      Array.isArray(gqlErrors) &&
+      gqlErrors.length > 0 &&
+      response.status !== 401 &&
+      response.status !== 429
+    ) {
+      throw new HttpError(
+        'Runpod GraphQL Error',
+        response.status,
+        gqlErrors.map((e) => String(e?.message ?? JSON.stringify(e))).join(', ')
+      );
+    }
+    throw new HttpError(
+      'Runpod GraphQL Error',
+      response.status,
+      bodyText,
+      response.status === 429
+        ? rateLimitHint(
+            response.headers.get('ratelimit'),
+            response.headers.get('retry-after')
+          )
+        : // Only when this request actually carried the caller's API key: the
+          // public path sends no Authorization header, so a 401 from that
+          // host (WAF, misconfigured RUNPOD_PUBLIC_GRAPHQL_URL) says nothing
+          // about the credential — same rationale as observeUnauthorized.
+          response.status === 401 && options?.apiKey
+          ? EXPIRED_CREDENTIAL_HINT
+          : undefined
+    );
+  }
 
   const result = (await response.json()) as {
     data?: T;
@@ -426,5 +491,6 @@ export function createToolRuntime(
     streamSse,
     podAction,
     env: process.env as Env,
+    transport: ctx.transport,
   };
 }

@@ -168,6 +168,8 @@ const ALLOWLIST_PENDING_REST: Record<string, string> = {
     'GPU SKU pinning is only expressible via the GraphQL saveEndpoint gpuIds string; no REST equivalent (revisit if gpuPoolIds gains SKU exclusion)',
   'list-public-endpoints':
     'Public Endpoints catalog is served by the public GraphQL endpoint; no v2 REST home yet (revisit when Public Endpoints get REST)',
+  'get-capacity':
+    'Per-CUDA-version capacity is only expressible via the public GraphQL gpuTypes.lowestPrice query (gpuTypeCudaVersions / allowedCudaVersions); the v2 REST catalog offers only a minCudaVersion floor filter on availability, not an exact per-version breakdown (revisit if it gains one)',
 };
 
 const ALLOWLIST_UNMAPPED_TOOLS: Record<string, string> = {

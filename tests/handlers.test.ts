@@ -1,5 +1,6 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 // Defense-in-depth: the v1 goldens assume the version env vars are unset. Clear
 // them before every test so a leak (from another test or the CI env) can't
@@ -20,7 +21,11 @@ beforeEach(() => {
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerTools } from '../src/tools.js';
-import { clearQueuedJobDiagnosisCache } from '../src/tools/jobs.js';
+import {
+  clearQueuedJobDiagnosisCache,
+  HTTP_LONG_POLL_BUDGET_MS,
+  STREAM_JOB_POLL_INTERVAL_MS,
+} from '../src/tools/jobs.js';
 
 // ============== Handler integration / outbound-request golden ==============
 // Drives the REAL registerTools against a fake McpServer (captures handlers) and
@@ -38,6 +43,9 @@ interface OutboundRecord {
 }
 
 function harness(opts?: {
+  // Transport the tools believe they run under (default stdio). 'http' engages
+  // the hosted long-poll clamps in jobs.ts.
+  transport?: 'stdio' | 'http';
   // What the fake fetch returns (defaults to an empty JSON array — a v1 list).
   jsonBody?: unknown;
   // A queue of bodies returned one-per-call (for poll loops like stream-job).
@@ -48,7 +56,15 @@ function harness(opts?: {
   // single-response options once exhausted). For handlers that make more than one
   // call with DIFFERENT statuses — e.g. update-endpoint's scaler lookup followed
   // by the PATCH.
-  steps?: Array<{ status?: number; jsonBody?: unknown; text?: string }>;
+  steps?: Array<{
+    status?: number;
+    jsonBody?: unknown;
+    text?: string;
+    // Extra response headers for this step (lowercase names), consulted
+    // before the content-type fallback — lets a test exercise header-driven
+    // paths like the 429 RateLimit hint.
+    headers?: Record<string, string>;
+  }>;
   // Fake SSE reader for stream-pod-logs (the real one uses node-fetch directly,
   // bypassing the injected fetch). Records its calls and returns canned text.
   streamSse?: (
@@ -100,10 +116,13 @@ function harness(opts?: {
       ok: status >= 200 && status < 300,
       status,
       headers: {
-        get: (n: string) =>
-          n.toLowerCase() === 'content-type'
+        get: (n: string) => {
+          const fromStep = step?.headers?.[n.toLowerCase()];
+          if (fromStep !== undefined) return fromStep;
+          return n.toLowerCase() === 'content-type'
             ? (opts?.contentType ?? 'application/json')
-            : null,
+            : null;
+        },
       },
       json: async () => jsonBody,
       text: async () => step?.text ?? '',
@@ -114,7 +133,7 @@ function harness(opts?: {
     fakeServer,
     {
       apiKey: 'rpa_test',
-      transport: 'stdio',
+      transport: opts?.transport ?? 'stdio',
       ...(opts?.onUnauthorized ? { onUnauthorized: opts.onUnauthorized } : {}),
     },
     {
@@ -127,6 +146,7 @@ function harness(opts?: {
             sseFetch: async () => ({
               ok: opts.sseStatus! >= 200 && opts.sseStatus! < 300,
               status: opts.sseStatus!,
+              headers: { get: () => null },
               text: async () => 'denied',
               body: null,
             }),
@@ -474,7 +494,7 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({ jsonBody: { pods: [] } });
       await handlers.get('list-pods')!({ computeType: 'GPU', name: 'x' });
-      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/pods');
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/pods');
       assert.equal(outbound[0].method, 'GET');
     });
   });
@@ -500,7 +520,7 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
         includeMachine: true,
         includeNetworkVolume: true,
       });
-      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/pods/pod_7');
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/pods/pod_7');
       assert.equal(outbound[0].method, 'GET');
     });
   });
@@ -517,7 +537,7 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
         volumeInGb: 40,
         volumeMountPath: '/workspace',
       });
-      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/pods');
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/pods');
       assert.equal(outbound[0].method, 'POST');
       const body = JSON.parse(outbound[0].body!);
       assert.equal(body.image, 'img:1');
@@ -536,11 +556,12 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
       const { handlers, outbound } = harness({ jsonBody: {} });
       // gpuTypeIds present so it stays on v2 (a GPU-less create routes to v1).
       await handlers.get('create-pod')!({
+        name: 'p',
         imageName: 'i',
         gpuTypeIds: ['A100'],
         volumeInGb: 40,
       });
-      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/pods');
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/pods');
       const body = JSON.parse(outbound[0].body!);
       assert.equal('mounts' in body, false);
     });
@@ -567,6 +588,7 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({ jsonBody: { id: 'pod_multi' } });
       const out = (await handlers.get('create-pod')!({
+        name: 'p',
         imageName: 'i',
         gpuTypeIds: ['A100', 'H100', 'L40'],
       })) as { content: Array<{ text: string }> };
@@ -609,6 +631,31 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
       const payload = JSON.parse(out.content[0].text);
       assert.equal(payload.status, 400);
       assert.match(payload.error, /A GPU pod needs gpuTypeIds/);
+    });
+  });
+
+  it('create-pod v2 GPU create with no name and no templateId → 400, no request (v2 requires name)', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      const out = (await handlers.get('create-pod')!({
+        imageName: 'i',
+        gpuTypeIds: ['A100'],
+      })) as { content: Array<{ text: string }> };
+      assert.equal(outbound.length, 0, 'must not fire a request');
+      const payload = JSON.parse(out.content[0].text);
+      assert.equal(payload.status, 400);
+      assert.match(payload.error, /Provide a name/);
+    });
+  });
+
+  it('create-pod v2 CPU pod without a name still routes to v1 (name is a v2-only requirement)', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'pod_cpu' } });
+      await handlers.get('create-pod')!({
+        imageName: 'i',
+        computeType: 'CPU',
+      });
+      assert.equal(outbound[0].url, 'https://rest.runpod.io/v1/pods');
     });
   });
 
@@ -674,11 +721,11 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
       // 1) template GET
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/templates/tpl_1'
+        'https://api.runpod.io/v2/templates/tpl_1'
       );
       assert.equal(outbound[0].method, 'GET');
       // 2) pod POST with the template's container config folded in
-      assert.equal(outbound[1].url, 'https://v2-rest.runpod.io/v2/pods');
+      assert.equal(outbound[1].url, 'https://api.runpod.io/v2/pods');
       assert.equal(outbound[1].method, 'POST');
       const body = JSON.parse(outbound[1].body!);
       assert.equal(body.image, 'runpod/pytorch:2.8.0');
@@ -793,6 +840,7 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
       // Must RESOLVE (not reject) so the model sees a readable error rather than
       // a raw thrown stack.
       const out = (await handlers.get('create-pod')!({
+        name: 'p',
         imageName: 'i',
         gpuTypeIds: ['A100'],
       })) as { content: Array<{ text: string }> };
@@ -809,6 +857,7 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
     await withV2(async () => {
       const { handlers } = harness({ status: 501, jsonBody: {} });
       const out = (await handlers.get('create-pod')!({
+        name: 'p',
         imageName: 'i',
         gpuTypeIds: ['A100'],
       })) as { content: Array<{ text: string }> };
@@ -824,7 +873,7 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
     try {
       const { handlers, outbound } = harness({ jsonBody: { pods: [] } });
       return handlers.get('list-pods')!({}).then(() => {
-        assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/pods');
+        assert.equal(outbound[0].url, 'https://api.runpod.io/v2/pods');
       });
     } finally {
       if (prev === undefined) delete process.env.RUNPOD_REST_VERSION_PODS;
@@ -838,7 +887,7 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
       await handlers.get('stop-pod')!({ podId: 'pod_9' });
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/pods/pod_9/action'
+        'https://api.runpod.io/v2/pods/pod_9/action'
       );
       assert.equal(outbound[0].method, 'POST');
       assert.deepEqual(JSON.parse(outbound[0].body!), { action: 'stop' });
@@ -851,7 +900,7 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
       await handlers.get('start-pod')!({ podId: 'pod_1' });
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/pods/pod_1/action'
+        'https://api.runpod.io/v2/pods/pod_1/action'
       );
       assert.deepEqual(JSON.parse(outbound[0].body!), { action: 'start' });
     });
@@ -863,7 +912,7 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
       await handlers.get('restart-pod')!({ podId: 'pod_1' });
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/pods/pod_1/action'
+        'https://api.runpod.io/v2/pods/pod_1/action'
       );
       assert.deepEqual(JSON.parse(outbound[0].body!), { action: 'restart' });
     });
@@ -873,7 +922,7 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({ jsonBody: {} });
       await handlers.get('update-pod')!({ podId: 'pod_2', imageName: 'i2' });
-      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/pods/pod_2');
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/pods/pod_2');
       assert.equal(outbound[0].method, 'PATCH');
       const body = JSON.parse(outbound[0].body!);
       assert.equal(body.image, 'i2');
@@ -886,7 +935,7 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({ jsonBody: {} });
       await handlers.get('delete-pod')!({ podId: 'pod_x' });
-      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/pods/pod_x');
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/pods/pod_x');
       assert.equal(outbound[0].method, 'DELETE');
     });
   });
@@ -897,7 +946,7 @@ describe('template / network-volume / registry routing under v2', () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({ jsonBody: { templates: [] } });
       await handlers.get('list-templates')!({ includeRunpodTemplates: true });
-      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/templates');
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/templates');
     });
   });
 
@@ -909,7 +958,7 @@ describe('template / network-volume / registry routing under v2', () => {
         imageName: 'i',
         isServerless: true,
       });
-      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/templates');
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/templates');
       const body = JSON.parse(outbound[0].body!);
       assert.equal(body.image, 'i');
       assert.equal('imageName' in body, false);
@@ -928,7 +977,7 @@ describe('template / network-volume / registry routing under v2', () => {
       await handlers.get('list-network-volumes')!({});
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/network-volumes'
+        'https://api.runpod.io/v2/network-volumes'
       );
     });
   });
@@ -943,7 +992,7 @@ describe('template / network-volume / registry routing under v2', () => {
       });
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/network-volumes'
+        'https://api.runpod.io/v2/network-volumes'
       );
       const body = JSON.parse(outbound[0].body!);
       assert.equal(body.dataCenter, 'EU-RO-1');
@@ -957,7 +1006,7 @@ describe('template / network-volume / registry routing under v2', () => {
       await handlers.get('get-network-volume')!({ networkVolumeId: 'nv_1' });
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/network-volumes/nv_1'
+        'https://api.runpod.io/v2/network-volumes/nv_1'
       );
     });
   });
@@ -971,7 +1020,7 @@ describe('template / network-volume / registry routing under v2', () => {
       });
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/templates/t_1'
+        'https://api.runpod.io/v2/templates/t_1'
       );
       assert.equal(outbound[0].method, 'PATCH');
       const body = JSON.parse(outbound[0].body!);
@@ -990,7 +1039,7 @@ describe('template / network-volume / registry routing under v2', () => {
       });
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/network-volumes/nv_1'
+        'https://api.runpod.io/v2/network-volumes/nv_1'
       );
       assert.equal(outbound[0].method, 'PATCH');
       assert.equal('networkVolumeId' in JSON.parse(outbound[0].body!), false);
@@ -1001,7 +1050,7 @@ describe('template / network-volume / registry routing under v2', () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({ jsonBody: { registries: [] } });
       await handlers.get('list-container-registry-auths')!({});
-      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/registries');
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/registries');
     });
   });
 
@@ -1017,7 +1066,7 @@ describe('template / network-volume / registry routing under v2', () => {
       const out = await handlers.get('list-registry-delegations')!({});
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/registries/delegations'
+        'https://api.runpod.io/v2/registries/delegations'
       );
       assert.equal(outbound[0].method, 'GET');
       assert.equal((parseText(out).items as unknown[]).length, 3);
@@ -1041,7 +1090,7 @@ describe('template / network-volume / registry routing under v2', () => {
       });
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/registries/delegations'
+        'https://api.runpod.io/v2/registries/delegations'
       );
       assert.equal(outbound[0].method, 'POST');
       assert.deepEqual(JSON.parse(outbound[0].body!), {
@@ -1069,7 +1118,7 @@ describe('template / network-volume / registry routing under v2', () => {
       });
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/registries/delegations/deleg%2F1'
+        'https://api.runpod.io/v2/registries/delegations/deleg%2F1'
       );
       assert.equal(outbound[0].method, 'DELETE');
     });
@@ -1080,7 +1129,7 @@ describe('template / network-volume / registry routing under v2', () => {
       const { handlers, outbound } = harness({ jsonBody: {} });
       const params = { name: 'r', username: 'u', password: 'p' };
       await handlers.get('create-container-registry-auth')!({ ...params });
-      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/registries');
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/registries');
       assert.deepEqual(JSON.parse(outbound[0].body!), params);
     });
   });
@@ -1093,7 +1142,7 @@ describe('template / network-volume / registry routing under v2', () => {
       });
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/registries/cra_1'
+        'https://api.runpod.io/v2/registries/cra_1'
       );
       assert.equal(outbound[0].method, 'DELETE');
     });
@@ -1126,7 +1175,7 @@ describe('catalog routing (B5)', () => {
       })) as { content: Array<{ text: string }> };
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/catalog/gpus?include=AVAILABILITY'
+        'https://api.runpod.io/v2/catalog/gpus?include=AVAILABILITY'
       );
       const payload = JSON.parse(out.content[0].text).items;
       assert.equal(payload.length, 1);
@@ -1191,7 +1240,7 @@ describe('catalog routing (B5)', () => {
       })) as { content: Array<{ text: string }> };
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/catalog/gpus'
+        'https://api.runpod.io/v2/catalog/gpus'
       );
       // no availability data → nothing filtered out
       assert.equal(JSON.parse(out.content[0].text).items.length, 2);
@@ -1268,7 +1317,7 @@ describe('catalog routing (B5)', () => {
       })) as { content: Array<{ text: string }> };
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/catalog/datacenters'
+        'https://api.runpod.io/v2/catalog/datacenters'
       );
       const payload = JSON.parse(out.content[0].text).items;
       assert.equal(payload.length, 1);
@@ -1298,7 +1347,7 @@ describe('catalog routing (B5)', () => {
       };
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/catalog/cpus'
+        'https://api.runpod.io/v2/catalog/cpus'
       );
       assert.deepEqual(JSON.parse(out.content[0].text).items, [
         { id: 'cpu5c' },
@@ -1326,7 +1375,7 @@ describe('catalog routing (B5)', () => {
       // availability is requested by default
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/catalog/gpus/a100?include=AVAILABILITY'
+        'https://api.runpod.io/v2/catalog/gpus/a100?include=AVAILABILITY'
       );
       // raw passthrough (no unwrap) — body preserved
       assert.deepEqual(JSON.parse(out.content[0].text), {
@@ -1345,7 +1394,7 @@ describe('catalog routing (B5)', () => {
       });
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/catalog/gpus/NVIDIA%20GeForce%20RTX%204090'
+        'https://api.runpod.io/v2/catalog/gpus/NVIDIA%20GeForce%20RTX%204090'
       );
     });
   });
@@ -1405,6 +1454,319 @@ describe('stream-job poll loop (sequenced responses)', () => {
   });
 });
 
+// ====== Hosted (HTTP) long-poll clamps ======
+// The hosted server runs under a 60s platform deadline (vercel.json
+// maxDuration), so on the 'http' transport runsync's server-side wait and
+// stream-job's poll loop are clamped to 45s — a budget the function can
+// actually finish inside. On stdio both keep their full budgets (locked by the
+// unchanged goldens above, which all run with the harness default 'stdio').
+describe('hosted HTTP transport clamps long-poll budgets', () => {
+  it('runsync-endpoint on http: explicit wait above the cap is clamped to 45000', async () => {
+    const { handlers, outbound } = harness({ transport: 'http', jsonBody: {} });
+    await handlers.get('runsync-endpoint')!({
+      endpointId: 'ep_h',
+      input: { a: 1 },
+      wait: 120000,
+    });
+    assert.equal(
+      outbound[0].url,
+      'https://api.runpod.ai/v2/ep_h/runsync?wait=45000'
+    );
+    // The clamp only rewrites the query — wait must stay out of the body.
+    assert.equal(
+      JSON.parse(outbound[0].body!).wait,
+      undefined,
+      'wait must not leak into the body'
+    );
+  });
+
+  it('runsync-endpoint on http: omitted wait is pinned to 45000 (upstream default of 90s exceeds the platform deadline)', async () => {
+    const { handlers, outbound } = harness({ transport: 'http', jsonBody: {} });
+    await handlers.get('runsync-endpoint')!({
+      endpointId: 'ep_h',
+      input: { a: 1 },
+    });
+    assert.equal(
+      outbound[0].url,
+      'https://api.runpod.ai/v2/ep_h/runsync?wait=45000'
+    );
+  });
+
+  it('runsync-endpoint on http: a wait already under the cap passes through untouched', async () => {
+    const { handlers, outbound } = harness({ transport: 'http', jsonBody: {} });
+    await handlers.get('runsync-endpoint')!({
+      endpointId: 'ep_h',
+      input: { a: 1 },
+      wait: 30000,
+    });
+    assert.equal(
+      outbound[0].url,
+      'https://api.runpod.ai/v2/ep_h/runsync?wait=30000'
+    );
+  });
+
+  it('runsync-endpoint on stdio: wait passes through unclamped (no platform deadline)', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    await handlers.get('runsync-endpoint')!({
+      endpointId: 'ep_s',
+      input: { a: 1 },
+      wait: 120000,
+    });
+    assert.equal(
+      outbound[0].url,
+      'https://api.runpod.ai/v2/ep_s/runsync?wait=120000'
+    );
+  });
+
+  // The clamp above is invisible in the reply, and an agent that reads a
+  // non-terminal status as "my 5-minute wait elapsed" cancels a job that is 45
+  // seconds old. These pin the marker that says otherwise — and, just as much,
+  // the three cases where it must stay quiet.
+  function waitClampedOf(out: unknown) {
+    return parseText(out).waitClamped as
+      | { requestedMs: number; effectiveMs: number; reason: string }
+      | undefined;
+  }
+
+  it('runsync-endpoint on http: a clamped wait with a non-terminal reply is marked waitClamped', async () => {
+    const { handlers } = harness({
+      transport: 'http',
+      jsonBody: { id: 'job1', status: 'IN_QUEUE' },
+    });
+    const out = await handlers.get('runsync-endpoint')!({
+      endpointId: 'ep_h',
+      input: { a: 1 },
+      wait: 300000,
+    });
+    const marker = waitClampedOf(out);
+    assert.ok(marker, 'non-terminal reply to a clamped wait must be marked');
+    assert.equal(marker.requestedMs, 300000);
+    assert.equal(marker.effectiveMs, HTTP_LONG_POLL_BUDGET_MS);
+    assert.match(marker.reason, /get-job-status/);
+    // Everything upstream sent still passes through untouched.
+    assert.equal(parseText(out).id, 'job1');
+    assert.equal(parseText(out).status, 'IN_QUEUE');
+  });
+
+  it('runsync-endpoint on http: a clamped wait that still COMPLETED is not marked', async () => {
+    const { handlers } = harness({
+      transport: 'http',
+      jsonBody: { id: 'job2', status: 'COMPLETED', output: { ok: true } },
+    });
+    const out = await handlers.get('runsync-endpoint')!({
+      endpointId: 'ep_h',
+      input: { a: 1 },
+      wait: 300000,
+    });
+    assert.equal(
+      waitClampedOf(out),
+      undefined,
+      'the job finished inside the budget — the clamp cost the caller nothing'
+    );
+  });
+
+  it('runsync-endpoint on http: a wait under the cap is never marked', async () => {
+    const { handlers } = harness({
+      transport: 'http',
+      jsonBody: { id: 'job3', status: 'IN_PROGRESS' },
+    });
+    const out = await handlers.get('runsync-endpoint')!({
+      endpointId: 'ep_h',
+      input: { a: 1 },
+      wait: 30000,
+    });
+    assert.equal(waitClampedOf(out), undefined);
+  });
+
+  it('runsync-endpoint on stdio: a long wait is never marked (nothing was clamped)', async () => {
+    const { handlers } = harness({
+      jsonBody: { id: 'job4', status: 'IN_QUEUE' },
+    });
+    const out = await handlers.get('runsync-endpoint')!({
+      endpointId: 'ep_s',
+      input: { a: 1 },
+      wait: 300000,
+    });
+    assert.equal(waitClampedOf(out), undefined);
+  });
+
+  it('runsync-endpoint on http: an omitted wait is marked against the 90s upstream default', async () => {
+    const { handlers } = harness({
+      transport: 'http',
+      jsonBody: { id: 'job5', status: 'IN_QUEUE' },
+    });
+    const out = await handlers.get('runsync-endpoint')!({
+      endpointId: 'ep_h',
+      input: { a: 1 },
+    });
+    const marker = waitClampedOf(out);
+    assert.ok(marker, 'the upstream 90s default is clamped too');
+    assert.equal(marker.requestedMs, 90000);
+    assert.equal(marker.effectiveMs, HTTP_LONG_POLL_BUDGET_MS);
+  });
+
+  // Drive stream-job's poll loop on a fully deterministic clock and return what
+  // it produced. Two clocks matter: setTimeout (the 1s poll sleep) and Date.now
+  // (the budget check). setTimeout is mocked via node:test mock timers — Node
+  // >=20.11 takes `{apis}`, Node 18 takes a bare array, so try both. Date is NOT
+  // mockable on Node 18 at all, so the budget clock is stubbed by hand on every
+  // version and advanced in lockstep with the ticks.
+  async function driveStreamJobToBudget(
+    t: {
+      mock: {
+        timers: { enable: (o: unknown) => void; tick: (ms: number) => void };
+      };
+    },
+    opts: { transport: 'stdio' | 'http'; endpointId: string; ticks: number }
+  ) {
+    const enable = t.mock?.timers?.enable;
+    if (typeof enable !== 'function') {
+      throw new Error(
+        'node:test mock timers unavailable (needs Node >=18.19) — this test cannot run on this runtime'
+      );
+    }
+    try {
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+    } catch (err) {
+      // Node 18 takes a bare array and rejects the object form with a TypeError
+      // naming the `timers` argument. Anything else is a real failure, not a
+      // signature mismatch, so don't swallow it behind a second attempt.
+      if (!(err instanceof TypeError)) throw err;
+      (t.mock.timers.enable as unknown as (apis: string[]) => void)([
+        'setTimeout',
+      ]);
+    }
+    let fakeNow = 0;
+    const realNow = Date.now;
+    Date.now = () => fakeNow;
+    try {
+      const { handlers, outbound } = harness({
+        transport: opts.transport,
+        // Never terminal — only the budget can end the loop.
+        jsonBody: { status: 'IN_PROGRESS', stream: [{ chunk: 'x' }] },
+      });
+      const pending = handlers.get('stream-job')!({
+        endpointId: opts.endpointId,
+        jobId: 'jH',
+      });
+      // setImmediate is NOT mocked, so each round lets the in-flight poll (fake
+      // fetch + json()) settle before advancing both clocks by one real poll
+      // interval — imported, not hardcoded, so halving the interval in the
+      // source can't double the live request rate with these tests still green.
+      for (let i = 0; i < opts.ticks; i++) {
+        await new Promise((r) => setImmediate(r));
+        fakeNow += STREAM_JOB_POLL_INTERVAL_MS;
+        t.mock.timers.tick(STREAM_JOB_POLL_INTERVAL_MS);
+      }
+      await new Promise((r) => setImmediate(r));
+      // The loop MUST have ended by now. If a regression widened the budget it
+      // would still be polling, and a bare `await pending` would hang forever —
+      // node:test has no default timeout, so that stalls this file's remaining
+      // ~90 tests until CI's job timeout instead of failing here.
+      const ended = await Promise.race([
+        pending.then(() => true),
+        new Promise((r) => setImmediate(() => r(false))),
+      ]);
+      if (!ended) {
+        throw new Error(
+          `stream-job was still polling after ${opts.ticks} ticks (${
+            (opts.ticks * STREAM_JOB_POLL_INTERVAL_MS) / 1000
+          }s of fake time) — its budget is larger than this test expects`
+        );
+      }
+      const out = (await pending) as { content: Array<{ text: string }> };
+      return {
+        outbound,
+        result: JSON.parse(out.content[0].text) as {
+          pollingTimedOut?: boolean;
+          note?: string;
+          stream: unknown[];
+        },
+      };
+    } finally {
+      Date.now = realNow;
+    }
+  }
+
+  it('stream-job on http: stops polling at 45s and returns collected chunks with the resume note', async (t) => {
+    const { outbound, result } = await driveStreamJobToBudget(t, {
+      transport: 'http',
+      endpointId: 'ep_h',
+      ticks: 60,
+    });
+    assert.equal(result.pollingTimedOut, true);
+    assert.match(result.note!, /45 seconds/);
+    assert.match(result.note!, /Call stream-job again/);
+    // Collected chunks survive the budget cut.
+    assert.ok(result.stream.length > 0, 'keeps chunks collected so far');
+    // The clock is fully deterministic, so pin the exact count rather than a
+    // window: poll k tests (k-1)*1000 > 45000, first true at k=47. A range would
+    // silently accept the budget drifting to 40s or 50s — the very constant
+    // this test exists to lock.
+    assert.equal(
+      outbound.length,
+      47,
+      `polled ${outbound.length} times; expected 47 (45s budget / 1s interval)`
+    );
+    // Every http poll caps the upstream hold: an empty /stream otherwise blocks
+    // ~10s server-side, overshooting the budget toward the platform reaper.
+    for (const rec of outbound) {
+      assert.equal(
+        rec.url,
+        'https://api.runpod.ai/v2/ep_h/stream/jH?wait=1000'
+      );
+    }
+  });
+
+  it('stream-job on stdio: keeps the full 5-minute budget and bare poll URLs', async (t) => {
+    // The mirror of the case above, and the only thing stopping someone from
+    // "simplifying" the transport ternary into one 45s budget for both: without
+    // this, every other test still passes when stdio gets clamped too.
+    const { outbound, result } = await driveStreamJobToBudget(t, {
+      transport: 'stdio',
+      endpointId: 'ep_s',
+      ticks: 320,
+    });
+    assert.equal(result.pollingTimedOut, true);
+    // Rendered in minutes, matching the tool's own description.
+    assert.match(result.note!, /5 minutes/);
+    // Poll k tests (k-1)*1000 > 300000, first true at k=302 — still polling
+    // long past the 47 the hosted budget allows.
+    assert.equal(
+      outbound.length,
+      302,
+      `polled ${outbound.length} times; expected 302 (300s budget / 1s interval)`
+    );
+    // No wait cap upstream: stdio has no platform deadline to race.
+    for (const rec of outbound) {
+      assert.equal(rec.url, 'https://api.runpod.ai/v2/ep_s/stream/jH');
+    }
+  });
+
+  it('the hosted budget still fits inside vercel.json maxDuration, with room for the pre-flight', () => {
+    // The clamp's entire premise is a relationship between two files that
+    // nothing else connects. Raise maxDuration and the budget silently stays
+    // low; lower it and the reaping is back with every other test green.
+    const vercel = JSON.parse(
+      readFileSync(new URL('../vercel.json', import.meta.url), 'utf8')
+    ) as { functions?: Record<string, { maxDuration?: number }> };
+    const maxDuration = Object.values(vercel.functions ?? {}).find(
+      (f) => typeof f.maxDuration === 'number'
+    )?.maxDuration;
+    assert.ok(
+      typeof maxDuration === 'number',
+      'vercel.json no longer declares a maxDuration — the budget below is derived from it'
+    );
+    // 8s covers the credential pre-flight (4s) and the v2 probe (4s), both of
+    // which run before the tool does; the rest is serialization + cold start.
+    const PRE_FLIGHT_HEADROOM_MS = 8_000;
+    assert.ok(
+      HTTP_LONG_POLL_BUDGET_MS + PRE_FLIGHT_HEADROOM_MS <= maxDuration * 1000,
+      `HTTP_LONG_POLL_BUDGET_MS (${HTTP_LONG_POLL_BUDGET_MS}) + pre-flight headroom (${PRE_FLIGHT_HEADROOM_MS}) exceeds maxDuration (${maxDuration}s). Adjust the budget in src/tools/jobs.ts to match.`
+    );
+  });
+});
+
 describe('list tools: unwrap + cap (v1 bare array)', () => {
   function parse(result: unknown): {
     items: unknown[];
@@ -1457,7 +1819,7 @@ describe('billing tool (v2-only)', () => {
         jsonBody: { records, metadata: { total: 123 } },
       });
       const out = await handlers.get('get-billing')!({});
-      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/billing');
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/billing');
       const env = parseText(out);
       assert.equal((env.pagination as { total: number }).total, 25);
       assert.equal((env.items as unknown[]).length, 20);
@@ -1488,7 +1850,7 @@ describe('billing tool (v2-only)', () => {
       await handlers.get('get-billing')!({ scope: 'pods', lastN: 5 });
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/billing/pods?lastN=5'
+        'https://api.runpod.io/v2/billing/pods?lastN=5'
       );
     });
   });
@@ -1515,7 +1877,7 @@ describe('list-endpoint-workers (v2-only)', () => {
       });
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/serverless/ep_1/workers'
+        'https://api.runpod.io/v2/serverless/ep_1/workers'
       );
       const env = parseText(out);
       assert.equal((env.items as unknown[]).length, 3);
@@ -1538,7 +1900,7 @@ describe('catalog gets (v2-only)', () => {
       await handlers.get('get-cpu-type')!({ cpuTypeId: 'cpu5c' });
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/catalog/cpus/cpu5c'
+        'https://api.runpod.io/v2/catalog/cpus/cpu5c'
       );
     });
   });
@@ -1555,7 +1917,7 @@ describe('catalog gets (v2-only)', () => {
       await handlers.get('get-data-center')!({ dataCenterId: 'EU-RO-1' });
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/catalog/datacenters/EU-RO-1'
+        'https://api.runpod.io/v2/catalog/datacenters/EU-RO-1'
       );
     });
   });
@@ -1604,7 +1966,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       const out = await handlers.get('list-endpoints')!({
         includeWorkers: true, // v1-only param, must be dropped on v2
       });
-      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/serverless');
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/serverless');
       assert.equal(outbound[0].method, 'GET');
       assert.equal((parseText(out).items as unknown[]).length, 2);
     });
@@ -1619,7 +1981,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       });
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/serverless/ep_1'
+        'https://api.runpod.io/v2/serverless/ep_1'
       );
     });
   });
@@ -1644,7 +2006,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
         flashboot: 'FLASHBOOT',
         containerRegistryAuthId: 'cra_1',
       });
-      assert.equal(outbound[0].url, 'https://v2-rest.runpod.io/v2/serverless');
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/serverless');
       assert.equal(outbound[0].method, 'POST');
       const body = JSON.parse(outbound[0].body!);
       assert.equal(body.name, 'e');
@@ -1815,7 +2177,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       assert.equal(outbound[0].method, 'GET');
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/serverless/ep_1'
+        'https://api.runpod.io/v2/serverless/ep_1'
       );
       assert.equal(outbound[1].method, 'PATCH');
       assert.deepEqual(JSON.parse(outbound[1].body!).scaling, {
@@ -1887,7 +2249,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       });
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/serverless/ep_1'
+        'https://api.runpod.io/v2/serverless/ep_1'
       );
       assert.equal(outbound[0].method, 'PATCH');
       const body = JSON.parse(outbound[0].body!);
@@ -1903,7 +2265,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       await handlers.get('delete-endpoint')!({ endpointId: 'ep_1' });
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/serverless/ep_1'
+        'https://api.runpod.io/v2/serverless/ep_1'
       );
       assert.equal(outbound[0].method, 'DELETE');
     });
@@ -1996,7 +2358,7 @@ describe('log streaming tools (v2-only)', () => {
       // `source: both` is the default → NO source query param.
       assert.equal(
         calls[0].url,
-        'https://v2-rest.runpod.io/v2/pods/pod_1/logs'
+        'https://api.runpod.io/v2/pods/pod_1/logs'
       );
       assert.equal(calls[0].maxWaitMs, 5000);
       assert.equal(calls[0].maxBytes, 256 * 1024);
@@ -2026,7 +2388,7 @@ describe('log streaming tools (v2-only)', () => {
       });
       assert.equal(
         calls[0].url,
-        'https://v2-rest.runpod.io/v2/pods/pod_2/logs?source=container&tail=50&since=2026-05-01T22%3A00%3A00Z'
+        'https://api.runpod.io/v2/pods/pod_2/logs?source=container&tail=50&since=2026-05-01T22%3A00%3A00Z'
       );
       assert.equal(calls[0].maxWaitMs, 8000);
     });
@@ -2044,7 +2406,7 @@ describe('log streaming tools (v2-only)', () => {
       });
       assert.equal(
         calls[0].url,
-        'https://v2-rest.runpod.io/v2/serverless/ep_1/workers/w_9/logs?source=system&tail=0'
+        'https://api.runpod.io/v2/serverless/ep_1/workers/w_9/logs?source=system&tail=0'
       );
       assert.equal(parseText(out).count, 2);
     });
@@ -2079,6 +2441,440 @@ describe('v1 catalog GraphQL uses the injected fetch (offline seam)', () => {
     assert.equal(outbound[0].url, 'https://api.runpod.io/graphql');
     assert.equal(outbound[0].method, 'POST');
     assert.ok((parseText(out).items as unknown[]).length >= 1);
+  });
+});
+
+// get-capacity: GPU × host-CUDA availability. Both modes go through the
+// public GraphQL catalog regardless of REST version, so these goldens pin the
+// outbound query shape (matrix vs per-version probe) and the row mapping.
+describe('get-capacity — GPU × CUDA availability', () => {
+  const matrixGpu = (over: Record<string, unknown>) => ({
+    id: 'NVIDIA GeForce RTX 4090',
+    displayName: 'RTX 4090',
+    memoryInGb: 24,
+    secureCloud: true,
+    communityCloud: true,
+    lowestPrice: {
+      stockStatus: 'Low',
+      uninterruptablePrice: 0.34,
+      gpuTypeCudaVersions: [
+        { cudaVersion: '12.8', availability: 'AVAILABLE' },
+        { cudaVersion: '13.0', availability: 'AVAILABLE' },
+      ],
+    },
+    ...over,
+  });
+
+  it('matrix mode → ONE public GraphQL call requesting gpuTypeCudaVersions; maps rows, sorts most-available first', async () => {
+    const { handlers, outbound } = harness({
+      jsonBody: {
+        data: {
+          gpuTypes: [
+            matrixGpu({
+              id: 'NVIDIA H100 80GB HBM3',
+              displayName: 'H100 SXM',
+              lowestPrice: {
+                stockStatus: 'High',
+                uninterruptablePrice: 2.69,
+                gpuTypeCudaVersions: [
+                  { cudaVersion: '12.8', availability: 'UNAVAILABLE' },
+                  { cudaVersion: '13.0', availability: 'AVAILABLE' },
+                ],
+              },
+            }),
+            matrixGpu({}),
+            // The catalog's NONE-stock placeholder must never leak into rows.
+            matrixGpu({ id: 'unknown' }),
+          ],
+        },
+      },
+    });
+    const out = await handlers.get('get-capacity')!({});
+    assert.equal(outbound.length, 1);
+    assert.equal(outbound[0].url, 'https://api.runpod.io/graphql');
+    const body = JSON.parse(outbound[0].body!) as { query: string };
+    assert.ok(body.query.includes('gpuTypeCudaVersions'));
+    assert.ok(body.query.includes('gpuCount: 1'));
+    assert.ok(!body.query.includes('allowedCudaVersions'));
+    const parsed = parseText(out);
+    const items = parsed.items as Array<Record<string, unknown>>;
+    // unknown sentinel dropped; 4090 (2 AVAILABLE) sorts above H100 (1).
+    assert.equal(items.length, 2);
+    assert.equal(items[0].id, 'NVIDIA GeForce RTX 4090');
+    assert.deepEqual(items[0].cudaVersions, {
+      '12.8': 'AVAILABLE',
+      '13.0': 'AVAILABLE',
+    });
+    assert.equal(items[1].stockStatus, 'High');
+  });
+
+  it('matrix mode gpuTypeIds filters by case-insensitive id/displayName substring', async () => {
+    const { handlers } = harness({
+      jsonBody: {
+        data: {
+          gpuTypes: [
+            matrixGpu({}),
+            matrixGpu({ id: 'NVIDIA H200', displayName: 'H200 SXM' }),
+          ],
+        },
+      },
+    });
+    const out = await handlers.get('get-capacity')!({
+      gpuTypeIds: ['h200'],
+    });
+    const items = parseText(out).items as Array<Record<string, unknown>>;
+    assert.equal(items.length, 1);
+    assert.equal(items[0].id, 'NVIDIA H200');
+  });
+
+  it('probe mode → one call per version with allowedCudaVersions inlined; merges per-GPU cells and omits no-stock GPUs', async () => {
+    const probeGpus = (stock128: string | null, stock130: string | null) => [
+      {
+        data: {
+          gpuTypes: [
+            {
+              id: 'NVIDIA GeForce RTX 4090',
+              displayName: 'RTX 4090',
+              memoryInGb: 24,
+              secureCloud: true,
+              communityCloud: true,
+              lowestPrice: stock128
+                ? { stockStatus: stock128, uninterruptablePrice: 0.34 }
+                : null,
+            },
+            {
+              id: 'NVIDIA L4',
+              displayName: 'L4',
+              memoryInGb: 24,
+              secureCloud: true,
+              communityCloud: false,
+              lowestPrice: null,
+            },
+          ],
+        },
+      },
+      {
+        data: {
+          gpuTypes: [
+            {
+              id: 'NVIDIA GeForce RTX 4090',
+              displayName: 'RTX 4090',
+              memoryInGb: 24,
+              secureCloud: true,
+              communityCloud: true,
+              lowestPrice: stock130
+                ? { stockStatus: stock130, uninterruptablePrice: 0.34 }
+                : null,
+            },
+            {
+              id: 'NVIDIA L4',
+              displayName: 'L4',
+              memoryInGb: 24,
+              secureCloud: true,
+              communityCloud: false,
+              lowestPrice: null,
+            },
+          ],
+        },
+      },
+    ];
+    const { handlers, outbound } = harness({
+      jsonBodies: probeGpus('Low', 'Medium'),
+    });
+    const out = await handlers.get('get-capacity')!({
+      cudaVersions: ['12.8', '13.0'],
+    });
+    assert.equal(outbound.length, 2);
+    const q1 = (JSON.parse(outbound[0].body!) as { query: string }).query;
+    const q2 = (JSON.parse(outbound[1].body!) as { query: string }).query;
+    assert.ok(q1.includes('allowedCudaVersions: ["12.8"]'));
+    assert.ok(q2.includes('allowedCudaVersions: ["13.0"]'));
+    const parsed = parseText(out);
+    assert.deepEqual(parsed.probedCudaVersions, ['12.8', '13.0']);
+    const items = parsed.items as Array<Record<string, unknown>>;
+    // Nothing hidden by default: L4 (no stock on either version) is included
+    // with explicit Out cells and sorts last.
+    assert.equal(items.length, 2);
+    assert.equal(items[0].id, 'NVIDIA GeForce RTX 4090');
+    assert.deepEqual(items[0].cudaVersions, {
+      '12.8': { stock: 'Low', pricePerHr: 0.34 },
+      '13.0': { stock: 'Medium', pricePerHr: 0.34 },
+    });
+    assert.deepEqual(items[1].cudaVersions, {
+      '12.8': { stock: 'Out', pricePerHr: null },
+      '13.0': { stock: 'Out', pricePerHr: null },
+    });
+  });
+
+  it('probe mode includeUnavailable:false hides GPUs with no stock on any probed version', async () => {
+    const gpus = (stock: string | null) => ({
+      data: {
+        gpuTypes: [
+          {
+            id: 'NVIDIA GeForce RTX 4090',
+            displayName: 'RTX 4090',
+            memoryInGb: 24,
+            secureCloud: true,
+            communityCloud: true,
+            lowestPrice: stock
+              ? { stockStatus: stock, uninterruptablePrice: 0.34 }
+              : null,
+          },
+          {
+            id: 'NVIDIA L4',
+            displayName: 'L4',
+            memoryInGb: 24,
+            secureCloud: true,
+            communityCloud: false,
+            lowestPrice: { stockStatus: 'Out', uninterruptablePrice: null },
+          },
+        ],
+      },
+    });
+    const { handlers } = harness({ jsonBodies: [gpus('Low')] });
+    const out = await handlers.get('get-capacity')!({
+      cudaVersions: ['12.8'],
+      includeUnavailable: false,
+    });
+    const items = parseText(out).items as Array<Record<string, unknown>>;
+    assert.equal(items.length, 1);
+    assert.equal(items[0].id, 'NVIDIA GeForce RTX 4090');
+  });
+
+  it('probe mode survives a failed version: allSettled keeps good results and reports probeErrors', async () => {
+    const good = {
+      data: {
+        gpuTypes: [
+          {
+            id: 'NVIDIA GeForce RTX 4090',
+            displayName: 'RTX 4090',
+            memoryInGb: 24,
+            secureCloud: true,
+            communityCloud: true,
+            lowestPrice: { stockStatus: 'Low', uninterruptablePrice: 0.34 },
+          },
+        ],
+      },
+    };
+    const bad = { errors: [{ message: 'rate limited' }] };
+    const { handlers, outbound } = harness({ jsonBodies: [good, bad] });
+    const out = await handlers.get('get-capacity')!({
+      cudaVersions: ['12.8', '13.0'],
+    });
+    assert.equal(outbound.length, 2);
+    const parsed = parseText(out);
+    const items = parsed.items as Array<Record<string, unknown>>;
+    assert.equal(items.length, 1);
+    assert.deepEqual(items[0].cudaVersions, {
+      '12.8': { stock: 'Low', pricePerHr: 0.34 },
+    });
+    const errs = parsed.probeErrors as Record<string, string>;
+    assert.ok(errs['13.0'].includes('rate limited'));
+    assert.equal(errs['12.8'], undefined);
+  });
+
+  it('probe mode dedupes repeated versions before querying', async () => {
+    const { handlers, outbound } = harness({
+      jsonBodies: [{ data: { gpuTypes: [] } }],
+    });
+    const out = await handlers.get('get-capacity')!({
+      cudaVersions: ['12.8', '12.8', '12.8'],
+    });
+    assert.equal(outbound.length, 1);
+    assert.deepEqual(parseText(out).probedCudaVersions, ['12.8']);
+  });
+
+  it('gpuCount is runtime-coerced into the wire query (zod bypassed): 9999 → 8, non-numeric → 1', async () => {
+    const { handlers, outbound } = harness({
+      jsonBody: { data: { gpuTypes: [] } },
+    });
+    await handlers.get('get-capacity')!({ gpuCount: 9999 });
+    await handlers.get('get-capacity')!({ gpuCount: '8; }) { x }' });
+    const q1 = (JSON.parse(outbound[0].body!) as { query: string }).query;
+    const q2 = (JSON.parse(outbound[1].body!) as { query: string }).query;
+    assert.ok(q1.includes('gpuCount: 8'));
+    assert.ok(q2.includes('gpuCount: 1'));
+    assert.ok(!q2.includes('8; }'));
+  });
+
+  it('matrix mode secureCloudOnly inlines secureCloud: true; blank gpuTypeIds entries mean no filter', async () => {
+    const { handlers, outbound } = harness({
+      jsonBody: {
+        data: {
+          gpuTypes: [matrixGpu({}), matrixGpu({ id: 'NVIDIA H200' })],
+        },
+      },
+    });
+    const out = await handlers.get('get-capacity')!({
+      secureCloudOnly: true,
+      gpuTypeIds: ['', '   '],
+    });
+    const q = (JSON.parse(outbound[0].body!) as { query: string }).query;
+    assert.ok(q.includes('secureCloud: true'));
+    // All-blank filter treated as "no filter", not match-everything-by-accident.
+    const items = parseText(out).items as Array<Record<string, unknown>>;
+    assert.equal(items.length, 2);
+  });
+
+  it('probe mode secureCloudOnly inlines secureCloud: true into the query', async () => {
+    const { handlers, outbound } = harness({
+      jsonBodies: [{ data: { gpuTypes: [] } }],
+    });
+    await handlers.get('get-capacity')!({
+      cudaVersions: ['12.8'],
+      secureCloudOnly: true,
+    });
+    const q = (JSON.parse(outbound[0].body!) as { query: string }).query;
+    assert.ok(q.includes('secureCloud: true'));
+  });
+
+  it('probe mode rejects malformed version strings with a 400 reply (handler-level guard, zod bypassed)', async () => {
+    const { handlers, outbound } = harness({});
+    // Direct handler calls skip schema validation — the injection guard must
+    // hold on its own. This string would otherwise break out of the inlined
+    // GraphQL argument.
+    const out = await handlers.get('get-capacity')!({
+      cudaVersions: ['12.8"] }) { id } }'],
+    });
+    assert.equal(outbound.length, 0);
+    const parsed = parseText(out);
+    assert.equal(parsed.status, 400);
+    assert.ok(String(parsed.error).includes('Invalid CUDA version'));
+  });
+});
+
+// graphqlRequest HTTP-status handling: before this, a non-OK response fell
+// straight into response.json(), so a 429/5xx HTML error page surfaced as an
+// opaque "Unexpected token '<'" parse error. The GraphQL path now mirrors the
+// REST client (#64): HttpError with status + body, and the RateLimit wait
+// hint on 429. Driven through list-gpu-types' v1 path (the public GraphQL
+// seam).
+describe('graphql helper — HTTP-level failures are named, not parse errors', () => {
+  it('429 HTML body → HttpError naming the status with back-off guidance', async () => {
+    const { handlers } = harness({
+      steps: [{ status: 429, text: '<html>Too Many Requests</html>' }],
+      contentType: 'text/html',
+    });
+    await assert.rejects(
+      handlers.get('list-gpu-types')!({}),
+      (e: Error) =>
+        e.name === 'HttpError' &&
+        e.message.includes('429') &&
+        /rate limit/i.test(e.message) &&
+        !e.message.includes('Unexpected token')
+    );
+  });
+
+  it('non-OK response with a GraphQL errors body keeps the readable message plus status', async () => {
+    const { handlers } = harness({
+      steps: [{ status: 400, text: '{"errors":[{"message":"bad query"}]}' }],
+    });
+    // HttpError, not a plain Error: `.status` stays machine-readable so a
+    // caller can branch on it without parsing the message string.
+    await assert.rejects(
+      handlers.get('list-gpu-types')!({}),
+      (e: Error & { status?: number }) =>
+        e.name === 'HttpError' &&
+        e.status === 400 &&
+        e.message === 'Runpod GraphQL Error: 400 - bad query'
+    );
+  });
+
+  it('OK response with a GraphQL errors array is unchanged (golden)', async () => {
+    const { handlers } = harness({
+      jsonBody: { errors: [{ message: 'boom' }] },
+    });
+    await assert.rejects(
+      handlers.get('list-gpu-types')!({}),
+      (e: Error) => e.message === 'GraphQL Error: boom'
+    );
+  });
+
+  it('429 with a RateLimit header names the exhausted window and reset in the hint', async () => {
+    const { handlers } = harness({
+      steps: [
+        {
+          status: 429,
+          text: 'rate limit exceeded',
+          headers: { ratelimit: '"minute";r=0;t=120' },
+        },
+      ],
+    });
+    await assert.rejects(
+      handlers.get('list-gpu-types')!({}),
+      (e: Error) =>
+        e.message.includes('429') &&
+        /minute/.test(e.message) &&
+        /120/.test(e.message)
+    );
+  });
+
+  it('non-array "errors" in a non-OK JSON body → HttpError, not a TypeError', async () => {
+    // Proxies/WAFs emit {"errors":"..."} — a non-empty string passes a
+    // .length check; the Array.isArray guard must route this to HttpError.
+    const { handlers } = harness({
+      steps: [{ status: 502, text: '{"errors":"internal failure"}' }],
+    });
+    await assert.rejects(
+      handlers.get('list-gpu-types')!({}),
+      (e: Error) =>
+        e.name === 'HttpError' &&
+        e.message.includes('502') &&
+        e.message.includes('internal failure') &&
+        !e.message.includes('is not a function')
+    );
+  });
+
+  it('public-path 401 carries NO re-auth hint (no credential was sent), even with a GraphQL errors body', async () => {
+    // list-gpu-types goes through the public, credential-free GraphQL path —
+    // a 401 from that host (WAF, misconfigured RUNPOD_PUBLIC_GRAPHQL_URL)
+    // says nothing about the caller's API key, so advising a re-auth would
+    // send an agent off to rotate a credential that was never in play. The
+    // errors-array prettifier still yields to HttpError on 401 so the status
+    // stays front and center.
+    const { handlers } = harness({
+      steps: [{ status: 401, text: '{"errors":[{"message":"unauthorized"}]}' }],
+    });
+    await assert.rejects(
+      handlers.get('list-gpu-types')!({}),
+      (e: Error & { status?: number }) =>
+        e.name === 'HttpError' &&
+        e.status === 401 &&
+        !/expired or revoked/.test(e.message)
+    );
+  });
+
+  it('authed-path 401 DOES carry the re-auth hint (the request sent the API key)', async () => {
+    // set-endpoint-gpus' first call is the authenticated `myself.endpoints`
+    // read via graphqlAuthed — the Bearer token was sent, so a 401 really is
+    // about the credential.
+    const { handlers } = harness({
+      steps: [{ status: 401, text: '{"errors":[{"message":"unauthorized"}]}' }],
+    });
+    await assert.rejects(
+      handlers.get('set-endpoint-gpus')!({
+        endpointId: 'ep_x',
+        gpuIds: 'AMPERE_16',
+      }),
+      (e: Error & { status?: number }) =>
+        e.name === 'HttpError' &&
+        e.status === 401 &&
+        /expired or revoked/.test(e.message)
+    );
+  });
+
+  it('huge non-JSON error body is truncated in the message but preserved on .body', async () => {
+    const { handlers } = harness({
+      steps: [{ status: 500, text: 'x'.repeat(5000) }],
+      contentType: 'text/html',
+    });
+    await assert.rejects(
+      handlers.get('list-gpu-types')!({}),
+      (e: Error & { body?: string }) =>
+        e.message.includes('truncated') &&
+        e.message.length < 3000 &&
+        e.body?.length === 5000
+    );
   });
 });
 
@@ -2130,7 +2926,7 @@ describe('get-job-status — queued-job worker diagnosis', () => {
       assert.equal(outbound[0].url, 'https://api.runpod.ai/v2/ep/status/j1');
       assert.equal(
         outbound[1].url,
-        'https://v2-rest.runpod.io/v2/serverless/ep/workers'
+        'https://api.runpod.io/v2/serverless/ep/workers'
       );
       const payload = parseText(out);
       assert.equal(payload.status, 'IN_QUEUE');
@@ -3164,7 +3960,7 @@ describe('v2 additions surfaced by the spec resync', () => {
       });
       assert.equal(
         outbound[0].url,
-        'https://v2-rest.runpod.io/v2/serverless/ep_1/releases'
+        'https://api.runpod.io/v2/serverless/ep_1/releases'
       );
       assert.equal(outbound[0].method, 'GET');
       const reply = parseText(out);
@@ -3241,6 +4037,24 @@ describe('ToolContext.onUnauthorized — SSE tools', () => {
       });
       await handlers.get('stream-pod-logs')!({ podId: 'p' }).catch(() => {});
       assert.equal(fired, 0, 'only a 401 means a dead credential');
+    });
+  });
+
+  // The SSE reader builds its own HttpError and reads response headers to do
+  // it. A 429 must come back as a classified reply, not a TypeError thrown
+  // past the handler's `instanceof HttpError` catch.
+  it('an SSE 429 comes back as a 429 reply, not a thrown TypeError', async () => {
+    await withV2(async () => {
+      const { handlers } = harness({ sseStatus: 429 });
+      const out = (await handlers.get('stream-pod-logs')!({
+        podId: 'p',
+      })) as { content: { text: string }[] };
+      const reply = JSON.parse(out.content[0].text) as {
+        error: string;
+        status: number;
+      };
+      assert.equal(reply.status, 429);
+      assert.match(reply.error, /rate limited/);
     });
   });
 });

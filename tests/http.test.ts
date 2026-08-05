@@ -345,3 +345,113 @@ describe('tracking headers', () => {
     );
   });
 });
+
+// A 429 reaches the client's error through the shared hint builder; these pin
+// the wiring (which headers are read), not the hint's own wording.
+describe('createHttpClient — 429 hint wiring', () => {
+  const HEADER = '"minute";r=12;t=44, "hour";r=0;t=1724, "day";r=31839;t=23324';
+
+  it('a 429 response carries the parsed hint on the error message', async () => {
+    const resp = {
+      ok: false,
+      status: 429,
+      headers: {
+        get: (n: string) => (n.toLowerCase() === 'ratelimit' ? HEADER : null),
+      },
+      json: async () => ({}),
+      text: async () => '{"detail":"rate limit exceeded for the hour window"}',
+    };
+    const client = createHttpClient({
+      apiKey: 'k',
+      fetch: async () => resp,
+      tracking: noTracking,
+      errorPrefix: 'Runpod API Error',
+    });
+    await assert.rejects(
+      () => client('http://x'),
+      (err: unknown) => {
+        assert.ok(err instanceof HttpError);
+        assert.equal(err.status, 429);
+        assert.match(err.message, /the hour quota is exhausted/);
+        assert.match(err.message, /wait ~29 minutes \(1724s\)/);
+        // status/body stay clean for programmatic callers.
+        assert.equal(
+          err.body,
+          '{"detail":"rate limit exceeded for the hour window"}'
+        );
+        return true;
+      }
+    );
+  });
+
+  it('the client reads Retry-After off the response, not just RateLimit', async () => {
+    const resp = {
+      ok: false,
+      status: 429,
+      headers: {
+        get: (n: string) => {
+          const name = n.toLowerCase();
+          if (name === 'ratelimit') return '"minute";r=0;t=12, "hour";r=0;t=60';
+          if (name === 'retry-after') return '900';
+          return null;
+        },
+      },
+      json: async () => ({}),
+      text: async () => '{"detail":"rate limit exceeded"}',
+    };
+    const client = createHttpClient({
+      apiKey: 'k',
+      fetch: async () => resp,
+      tracking: noTracking,
+      errorPrefix: 'Runpod API Error',
+    });
+    await assert.rejects(
+      () => client('http://x'),
+      (err: unknown) => {
+        assert.ok(err instanceof HttpError);
+        assert.match(err.message, /the hour quota is exhausted/);
+        assert.match(err.message, /wait ~15 minutes \(900s\)/);
+        return true;
+      }
+    );
+  });
+
+  it('non-429 errors carry no rate-limit hint', async () => {
+    const client = createHttpClient({
+      apiKey: 'k',
+      fetch: fakeFetch(
+        fakeResponse({ status: 500, ok: false, textBody: 'boom' })
+      ),
+      tracking: noTracking,
+      errorPrefix: 'Runpod API Error',
+    });
+    await assert.rejects(
+      () => client('http://x'),
+      /Runpod API Error: 500 - boom$/
+    );
+  });
+
+  it('a 401 carries the re-auth hint (every request this client sends is credentialed)', async () => {
+    // The hint moved out of the HttpError constructor (the public GraphQL
+    // path must be able to omit it), so this pins that the REST client still
+    // wires it in — without it, a stdio agent with a revoked key gets a bare
+    // "401 - Unauthorized" and nothing actionable.
+    const client = createHttpClient({
+      apiKey: 'k',
+      fetch: fakeFetch(
+        fakeResponse({ status: 401, ok: false, textBody: 'Unauthorized' })
+      ),
+      tracking: noTracking,
+      errorPrefix: 'Runpod API Error',
+    });
+    await assert.rejects(
+      () => client('http://x'),
+      (err: unknown) => {
+        assert.ok(err instanceof HttpError);
+        assert.equal(err.status, 401);
+        assert.match(err.message, /expired or revoked/);
+        return true;
+      }
+    );
+  });
+});

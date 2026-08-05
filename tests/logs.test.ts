@@ -19,7 +19,15 @@ import { HttpError } from '../src/_shared/http.js';
 // Build a mock fetch that streams the given byte chunks as the response body.
 function streamingFetch(
   chunks: Buffer[],
-  { ok = true, status = 200 }: { ok?: boolean; status?: number } = {}
+  {
+    ok = true,
+    status = 200,
+    headers = {},
+  }: {
+    ok?: boolean;
+    status?: number;
+    headers?: Record<string, string>;
+  } = {}
 ): { fetchImpl: SseFetch; aborted: () => boolean } {
   let sawAbort = false;
   const fetchImpl: SseFetch = async (_url, init) => {
@@ -34,6 +42,7 @@ function streamingFetch(
     const res: SseResponse = {
       ok,
       status,
+      headers: { get: (name: string) => headers[name.toLowerCase()] ?? null },
       text: async () => 'error-body',
       body,
     };
@@ -95,6 +104,7 @@ describe('readSseSnapshot (real reader)', () => {
     const fetchImpl: SseFetch = async () => ({
       ok: true,
       status: 200,
+      headers: { get: () => null },
       text: async () => '',
       body: {
         async *[Symbol.asyncIterator]() {
@@ -123,10 +133,76 @@ describe('readSseSnapshot (real reader)', () => {
     );
   });
 
+  // This path throws its own HttpError instead of going through
+  // createHttpClient, so the hint is wired up separately here.
+  it('429 → the error message carries the rate-limit hint', async () => {
+    const fetchImpl: SseFetch = async () => ({
+      ok: false,
+      status: 429,
+      headers: {
+        get: (n: string) => {
+          const name = n.toLowerCase();
+          if (name === 'ratelimit') return '"hour";r=0;t=60';
+          // Strictly longer than the window's own reset, so this assertion
+          // fails if the Retry-After read is dropped from the SSE path.
+          if (name === 'retry-after') return '1724';
+          return null;
+        },
+      },
+      text: async () => '{"detail":"rate limit exceeded"}',
+      body: null,
+    });
+    await assert.rejects(
+      () => readSseSnapshot(fetchImpl, 'u', HDRS, BIG),
+      (err: unknown) => {
+        assert.ok(err instanceof HttpError);
+        assert.equal(err.status, 429);
+        assert.match(err.message, /the hour quota is exhausted/);
+        assert.match(err.message, /wait ~29 minutes \(1724s\)/);
+        assert.equal(err.body, '{"detail":"rate limit exceeded"}');
+        return true;
+      }
+    );
+  });
+
+  it('401 → the error message carries the re-auth hint (the SSE request is always credentialed)', async () => {
+    // Same wiring concern as the 429 above: this path throws its own
+    // HttpError, and the hint no longer comes baked into the constructor —
+    // forgetting the 401 branch here would strip stream-pod-logs /
+    // stream-worker-logs 401s of the hint while every other test stays green.
+    const { fetchImpl } = streamingFetch([], { ok: false, status: 401 });
+    await assert.rejects(
+      () => readSseSnapshot(fetchImpl, 'u', HDRS, BIG),
+      (err: unknown) => {
+        assert.ok(err instanceof HttpError);
+        assert.equal(err.status, 401);
+        assert.match(err.message, /expired or revoked/);
+        return true;
+      }
+    );
+  });
+
+  // v2 omits RateLimit for exempt callers, so a 429 can carry no quota headers.
+  it('429 with no rate-limit headers → generic hint, no crash', async () => {
+    const { fetchImpl } = streamingFetch([], { ok: false, status: 429 });
+    await assert.rejects(
+      () => readSseSnapshot(fetchImpl, 'u', HDRS, BIG),
+      (err: unknown) => {
+        assert.ok(err instanceof HttpError);
+        assert.match(
+          err.message,
+          /back off before retrying, and pace bulk operations/
+        );
+        return true;
+      }
+    );
+  });
+
   it('a non-abort error mid read propagates (not swallowed)', async () => {
     const fetchImpl: SseFetch = async () => ({
       ok: true,
       status: 200,
+      headers: { get: () => null },
       text: async () => '',
       body: {
         async *[Symbol.asyncIterator]() {
@@ -148,8 +224,7 @@ describe('collectLogSnapshot', () => {
 
   it('drops the last (partial) frame when the stream was truncated', async () => {
     // The final frame is sliced mid-JSON by the byte cap.
-    const raw =
-      'data: {"line":"a"}\n\ndata: {"line":"b"}\n\ndata: {"line":"c';
+    const raw = 'data: {"line":"a"}\n\ndata: {"line":"b"}\n\ndata: {"line":"c';
     const out = await collectLogSnapshot(
       passthroughStreamSse(raw, true),
       'u',
@@ -184,9 +259,10 @@ describe('parseLogSse non-object guard', () => {
   });
 
   it('a JSON object frame parses into a LogEntry as before', () => {
-    assert.deepEqual(parseLogSse('data: {"line":"x","source":"container"}\n\n'), [
-      { line: 'x', source: 'container' },
-    ]);
+    assert.deepEqual(
+      parseLogSse('data: {"line":"x","source":"container"}\n\n'),
+      [{ line: 'x', source: 'container' }]
+    );
   });
 });
 

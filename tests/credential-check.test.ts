@@ -372,6 +372,41 @@ function fakeReqRes(
   return { req, res, written };
 }
 
+describe('handleMcpRequest — standalone GET SSE stream is refused', () => {
+  // Stateless server: no server-initiated messages, so GET gets the spec's
+  // 405 rather than an idle open SSE stream.
+  it('GET → 405 with Allow, JSON-RPC error body, and no credential check', async () => {
+    let checkerCalls = 0;
+    const { req, res, written } = fakeReqRes(
+      { authorization: 'Bearer rpa_x', accept: 'text/event-stream' },
+      { method: 'GET' }
+    );
+    await handleMcpRequest(req, res, {
+      verifyCredential: async () => {
+        checkerCalls++;
+        return { status: 'valid' as const };
+      },
+    });
+    assert.equal(written.statusCode, 405);
+    assert.equal(written.headers!['Allow'], 'POST, DELETE');
+    const body = JSON.parse(written.body!) as {
+      jsonrpc: string;
+      error: { code: number; message: string };
+    };
+    assert.equal(body.jsonrpc, '2.0');
+    assert.equal(body.error.code, -32000);
+    assert.match(body.error.message, /Method Not Allowed/);
+    assert.equal(checkerCalls, 0);
+  });
+
+  it('unauthenticated GET → 405, not 401 (a 401 would trigger a pointless re-auth flow)', async () => {
+    const { req, res, written } = fakeReqRes({}, { method: 'GET' });
+    await handleMcpRequest(req, res, {});
+    assert.equal(written.statusCode, 405);
+    assert.equal(written.headers!['WWW-Authenticate'], undefined);
+  });
+});
+
 describe('handleMcpRequest — credential pre-flight', () => {
   it('dead credential → HTTP 401 with WWW-Authenticate resource metadata (the re-auth trigger)', async () => {
     const { req, res, written } = fakeReqRes({
@@ -766,7 +801,7 @@ describe('env-mismatch guard keys off the RESOLVED host, not mere presence', () 
       true
     );
     assert.equal(
-      await gateRan({ RUNPOD_REST_V2_API_URL: 'https://v2-rest.runpod.io/v2' }),
+      await gateRan({ RUNPOD_REST_V2_API_URL: 'https://api.runpod.io/v2' }),
       true
     );
     assert.equal(
@@ -775,9 +810,28 @@ describe('env-mismatch guard keys off the RESOLVED host, not mere presence', () 
     );
   });
 
+  it('still runs when the RETIRED v2 default host is pinned (alias, not a move)', async () => {
+    // `v2-rest.runpod.io/v2` was the default before `api.runpod.io/v2` became
+    // canonical, and it is the same backend. A deployment that pinned it back
+    // when it WAS the default must not lose the pre-flight to a host rename.
+    assert.equal(
+      await gateRan({ RUNPOD_REST_V2_API_URL: 'https://v2-rest.runpod.io/v2' }),
+      true
+    );
+  });
+
   it('skips when a host genuinely points elsewhere and GraphQL was left behind', async () => {
     assert.equal(
       await gateRan({ RUNPOD_REST_API_URL: 'https://api.runpod.dev/v1' }),
+      false
+    );
+    // The alias covers the prod rename only. The dev host is a real different
+    // environment — normalizing it into prod would validate dev keys against
+    // prod GraphQL and 401 every request the tools could have served.
+    assert.equal(
+      await gateRan({
+        RUNPOD_REST_V2_API_URL: 'https://v2-rest.runpod.dev/v2',
+      }),
       false
     );
   });
@@ -1239,8 +1293,9 @@ describe('credential_check log line', () => {
   });
 
   it('distinguishes each skip reason', async () => {
+    // DELETE: GET is answered 405 before the gate runs.
     assert.deepEqual(
-      await outcomeFor({ authorization: 'Bearer x' }, true, 'GET'),
+      await outcomeFor({ authorization: 'Bearer x' }, true, 'DELETE'),
       ['skip_not_post']
     );
     assert.deepEqual(

@@ -34,7 +34,7 @@ All optional, with production-safe defaults:
 - `RUNPOD_GRAPHQL_URL`: flash auth backend for the OAuth flow (default `https://api.runpod.io/graphql`). Also the host the hosted credential pre-flight verifies against, so unlike the guest flash-auth mutations it now receives the caller's bearer token — point it only at a host you trust with that.
 - `CONSOLE_BASE_URL`: console hosting the sign-in handoff page (default `https://console.runpod.io`).
 - `RUNPOD_REST_API_URL` / `RUNPOD_SERVERLESS_API_URL`: override the REST and Serverless API hosts.
-- `RUNPOD_PUBLIC_GRAPHQL_URL`: override the public discovery GraphQL host used by `list-gpu-types`/`list-data-centers`. Never carries a credential.
+- `RUNPOD_PUBLIC_GRAPHQL_URL`: override the public discovery GraphQL host used by `list-gpu-types`, `list-data-centers`, `get-capacity`, `list-hub-repos`, and `list-public-endpoints`. Never carries a credential.
 - `RUNPOD_AUTHED_GRAPHQL_URL`: override the GraphQL host for authenticated, no-REST-equivalent operations (`deploy-hub-repo`, `set-endpoint-gpus`). Sends the caller's API key — point it only at a trusted host.
 - `RUNPOD_API_KEY_NAME`: name for the minted key (default `runpod-mcp`; `""` to omit).
 - `MCP_VERBOSE_LOGS`: `true` to log OAuth request ids (live auth codes) for debugging.

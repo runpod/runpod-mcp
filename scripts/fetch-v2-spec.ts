@@ -12,7 +12,7 @@
 // subset of dev's, so vendoring dev is the more conservative choice for a parity
 // gate (it covers strictly more endpoints). Override with RUNPOD_V2_SPEC_URL to
 // vendor the prod spec once prod v2 is general — e.g.
-//   RUNPOD_V2_SPEC_URL=https://v2-rest.runpod.io/v2/openapi.yaml pnpm tsx scripts/fetch-v2-spec.ts
+//   RUNPOD_V2_SPEC_URL=https://api.runpod.io/v2/openapi.yaml pnpm tsx scripts/fetch-v2-spec.ts
 
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';

@@ -81,7 +81,7 @@ export function restV1Base(env: Env): string {
   return env.RUNPOD_REST_API_URL ?? 'https://rest.runpod.io/v1';
 }
 export function restV2Base(env: Env): string {
-  return env.RUNPOD_REST_V2_API_URL ?? 'https://v2-rest.runpod.io/v2';
+  return env.RUNPOD_REST_V2_API_URL ?? 'https://api.runpod.io/v2';
 }
 export function serverlessBase(env: Env): string {
   return env.RUNPOD_SERVERLESS_API_URL ?? 'https://api.runpod.ai/v2';
@@ -335,7 +335,7 @@ const V2_ONLY: ReadonlySet<Resource> = new Set<Resource>([
 ]);
 
 // v2 REST paths (the control-plane resources). Paths are relative to the v2
-// base which ALREADY includes `/v2` (restV2Base → https://v2-rest.runpod.io/v2),
+// base which ALREADY includes `/v2` (restV2Base → https://api.runpod.io/v2),
 // so they do NOT repeat the `/v2` prefix — `base + list` = `.../v2/pods`. (The
 // prober relies on the same convention: `base + /catalog/gpus`.)
 // Renames vs v1: network-volumes (hyphen), registries (was containerregistryauth),

@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { HttpError } from '../_shared/http.js';
+import { EXPIRED_CREDENTIAL_HINT, HttpError } from '../_shared/http.js';
+import { rateLimitHint } from '../_shared/rate-limit.js';
 import type { Backend, Resource } from '../_shared/backend.js';
 import type { StreamSse, ToolRuntime } from './runtime.js';
 
@@ -58,6 +59,11 @@ export const LOG_STREAM_MAX_BYTES = 256 * 1024;
 export interface SseResponse {
   ok: boolean;
   status: number;
+  // Read only for the 429 rate-limit hint. Required, so a fake that omits it
+  // is an editor error — `pnpm type-check` excludes `**/*.test.ts`, so nothing
+  // in CI enforces it. The one production caller casts global `fetch`
+  // (`as unknown as SseFetch`), whose Response always carries headers.
+  headers: { get(name: string): string | null };
   text(): Promise<string>;
   body: AsyncIterable<Buffer> | null;
 }
@@ -96,7 +102,19 @@ export async function readSseSnapshot(
       throw new HttpError(
         'Runpod API Error',
         res.status,
-        await res.text().catch(() => '')
+        await res.text().catch(() => ''),
+        // This throw bypasses createHttpClient, so the status hints are built
+        // here too or these two tools alone return a bare 429/401. The 401
+        // hint applies: this request always carries Authorization (see the
+        // headers bound in runtime.ts streamSse).
+        res.status === 429
+          ? rateLimitHint(
+              res.headers.get('ratelimit'),
+              res.headers.get('retry-after')
+            )
+          : res.status === 401
+            ? EXPIRED_CREDENTIAL_HINT
+            : undefined
       );
     }
     for await (const chunk of (res.body ?? []) as AsyncIterable<Buffer>) {

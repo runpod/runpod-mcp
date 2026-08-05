@@ -92,12 +92,23 @@ export const defaultCredentialChecker: CredentialCheckerHandle =
 
 const sameHost = (a: string, b: string) => normalizeUrl(a) === normalizeUrl(b);
 
+// Hosts that are the same backend under a different name. `v2-rest.runpod.io`
+// served as the REST v2 default before `api.runpod.io` became canonical, and a
+// deployment that pinned it back then must not read as "REST moved" — that
+// disagreement with the (unmoved) GraphQL host would silently switch the
+// pre-flight off. Prod pair only: `v2-rest.runpod.dev` is genuinely a different
+// environment and must NOT normalize into prod.
+const HOST_ALIASES: Record<string, string> = {
+  'v2-rest.runpod.io': 'api.runpod.io',
+};
+
 // Lowercased origin + path with any trailing slash removed, so cosmetic
 // differences in an env var do not read as a different environment.
 function normalizeUrl(raw: string): string {
   try {
     const u = new URL(raw);
-    return `${u.protocol}//${u.host.toLowerCase()}${u.pathname.replace(/\/+$/, '')}`;
+    const host = u.host.toLowerCase();
+    return `${u.protocol}//${HOST_ALIASES[host] ?? host}${u.pathname.replace(/\/+$/, '')}`;
   } catch {
     return raw.trim().toLowerCase().replace(/\/+$/, '');
   }
@@ -327,6 +338,27 @@ export async function handleMcpRequest(
     url: req.url,
     hasBearerToken: !!bearerToken,
   });
+  // Stateless server: there are no server-initiated messages, so the standalone
+  // GET SSE stream has nothing to carry. Per spec, answer 405 instead of letting
+  // the SDK hold an idle stream open until the platform kills it.
+  if (req.method === 'GET') {
+    res.writeHead(405, {
+      Allow: 'POST, DELETE',
+      'Content-Type': 'application/json',
+    });
+    res.end(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        error: {
+          code: -32000,
+          message:
+            'Method Not Allowed: this server does not offer a standalone SSE stream.',
+        },
+        id: null,
+      })
+    );
+    return;
+  }
   if (!bearerToken) {
     writeUnauthorized(
       req,

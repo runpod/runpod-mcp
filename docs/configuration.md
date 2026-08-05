@@ -4,13 +4,13 @@ Environment variables and behavior notes for the Runpod MCP server. See the [REA
 
 ## REST API version (v1 / v2)
 
-The server targets either the v1 REST API (`rest.runpod.io/v1`) or the newer v2 REST API (`v2-rest.runpod.io/v2`). It **defaults to v2**. These variables are read once at startup:
+The server targets either the v1 REST API (`rest.runpod.io/v1`) or the newer v2 REST API (`api.runpod.io/v2`). It **defaults to v2**. These variables are read once at startup:
 
 | Variable                         | Values                 | Default                        | Effect                                                      |
 | -------------------------------- | ---------------------- | ------------------------------ | ----------------------------------------------------------- |
 | `RUNPOD_REST_VERSION`            | `v1` \| `v2` \| `auto` | `v2`                           | Version used for all resources.                             |
 | `RUNPOD_REST_VERSION_<RESOURCE>` | `v1` \| `v2` \| `auto` | —                              | Per-resource override (e.g. `RUNPOD_REST_VERSION_PODS=v2`). |
-| `RUNPOD_REST_V2_API_URL`         | URL                    | `https://v2-rest.runpod.io/v2` | v2 base URL.                                                |
+| `RUNPOD_REST_V2_API_URL`         | URL                    | `https://api.runpod.io/v2` | v2 base URL.                                                |
 | `RUNPOD_REST_API_URL`            | URL                    | `https://rest.runpod.io/v1`    | v1 base URL.                                                |
 | `RUNPOD_SERVERLESS_API_URL`      | URL                    | `https://api.runpod.ai/v2`     | Serverless runtime base URL.                                |
 

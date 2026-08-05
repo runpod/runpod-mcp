@@ -637,7 +637,7 @@ describe('resolveBackend (v1)', () => {
       v2Available: true,
     });
     assert.equal(b.version, 'v2');
-    assert.equal(b.base, 'https://v2-rest.runpod.io/v2');
+    assert.equal(b.base, 'https://api.runpod.io/v2');
   });
 });
 
@@ -662,20 +662,20 @@ describe('resolveBackend (v2 descriptors)', () => {
     for (const [resource, list, get] of expect) {
       const b = resolveBackend({ resource, env: v2env, ctx: stdio });
       assert.equal(b.version, 'v2', `${resource} version`);
-      assert.equal(b.base, 'https://v2-rest.runpod.io/v2', `${resource} base`);
+      assert.equal(b.base, 'https://api.runpod.io/v2', `${resource} base`);
       assert.equal(b.kind, 'rest', `${resource} kind (catalog is REST in v2)`);
       assert.equal(b.list, list, `${resource} list`);
       assert.equal(get ? b.get!('X') : b.get, get, `${resource} get`);
       // the combined URL is exactly one /v2 segment (list AND get + action)
       assert.equal(
         b.base + b.list,
-        `https://v2-rest.runpod.io/v2${list}`,
+        `https://api.runpod.io/v2${list}`,
         `${resource} combined list url`
       );
       if (b.get) {
         assert.equal(
           b.base + b.get('X'),
-          `https://v2-rest.runpod.io/v2${get}`,
+          `https://api.runpod.io/v2${get}`,
           `${resource} combined get url`
         );
         assert.equal(
@@ -728,9 +728,9 @@ describe('resolveBackend (v2 descriptors)', () => {
     const env = { RUNPOD_REST_VERSION: 'v1', RUNPOD_REST_VERSION_PODS: 'v2' };
     const pods = resolveBackend({ resource: 'pods', env, ctx: stdio });
     assert.equal(pods.version, 'v2');
-    assert.equal(pods.base, 'https://v2-rest.runpod.io/v2');
+    assert.equal(pods.base, 'https://api.runpod.io/v2');
     assert.equal(pods.list, '/pods');
-    assert.equal(pods.base + pods.list, 'https://v2-rest.runpod.io/v2/pods');
+    assert.equal(pods.base + pods.list, 'https://api.runpod.io/v2/pods');
     assert.equal(
       (pods.mapCreate({ imageName: 'i' }) as Record<string, unknown>).image,
       'i'
@@ -758,7 +758,7 @@ describe('resolveBackend (v2 descriptors)', () => {
       ctx: stdio,
     });
     assert.equal(ep.version, 'v2');
-    assert.equal(ep.base, 'https://v2-rest.runpod.io/v2');
+    assert.equal(ep.base, 'https://api.runpod.io/v2');
     assert.equal(ep.list, '/serverless');
     assert.equal(ep.get!('X'), '/serverless/X');
   });

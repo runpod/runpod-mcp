@@ -139,7 +139,12 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
     'create-pod',
     'Create a new GPU/CPU pod on Runpod. Pass gpuTypeIds for a GPU pod, or computeType:"CPU" for a CPU pod (CPU pods are served by the v1 API for now). Pass either imageName or templateId (templateId deploys from an existing template — its name, image, start command, ports, env, disk, volume, and registry credential are used as defaults, and any field you also pass explicitly replaces the template value for that field, e.g. passing env replaces the whole env set rather than merging; pass containerRegistryAuthId to override or supply a private-image credential, or an empty string to deploy with none). If the user specifies neither an image nor a template, recommend the "Runpod Pytorch 2.8.0" image (runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404) as the default — it has the most up-to-date CUDA and PyTorch versions.',
     {
-      name: z.string().optional().describe('Name for the pod'),
+      name: z
+        .string()
+        .optional()
+        .describe(
+          'Name for the pod. Required on v2 unless deploying from a templateId (the template supplies its name as the default).'
+        ),
       imageName: z
         .string()
         .optional()
@@ -242,6 +247,17 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
           return jsonReply({
             error:
               'A GPU pod needs gpuTypeIds (see list-gpu-types); gpuCount or computeType alone is under-specified.',
+            status: 400,
+          });
+        }
+        // v2 CreatePodRequest requires `name`. Guard the direct-image path so
+        // the caller gets a clean 400 instead of the API's raw 422; a
+        // templateId deploy inherits the template's name below. CPU pods fall
+        // through to v1, which has no such requirement.
+        if (!wantsCpu && !params.name && !params.templateId) {
+          return jsonReply({
+            error:
+              'Provide a name for the pod (deploying from a templateId inherits the template name).',
             status: 400,
           });
         }

@@ -25,8 +25,59 @@ export function clearQueuedJobDiagnosisCache(): void {
   diagnosisCache.clear();
 }
 
+// An http deployment is assumed to sit behind a gateway that reaps the request
+// mid-flight; Runpod's hosted one does, at 60s (vercel.json maxDuration). Wait
+// longer than the budget and the gateway kills the call before the tool's own
+// timeout path runs: bare 504, collected output discarded. 45s leaves room for
+// the credential pre-flight and v2 probe (4s each). Exported for the test that
+// checks it against vercel.json; stdio has no deadline.
+export const HTTP_LONG_POLL_BUDGET_MS = 45_000;
+const STDIO_STREAM_BUDGET_MS = 5 * 60 * 1000;
+// Upstream defaults, mirrored not derived — re-check against ai-api
+// (pkg/api/runsync.go, pkg/api/stream.go) if the service changes.
+const RUNSYNC_UPSTREAM_DEFAULT_WAIT_MS = 90_000;
+// Caps how long an empty /stream may hold the poll. Left at the server's 10s
+// default, a chunk-sparse job overshoots the 45s budget to ~54s, since the
+// budget is only checked between polls. Accepted range 1000–300000.
+const HTTP_STREAM_POLL_WAIT_MS = 1000;
+// Exported so the budget tests tick the real interval, not a copy of it.
+export const STREAM_JOB_POLL_INTERVAL_MS = 1000;
+// Shared by stream-job (stop polling) and runsync (nothing was lost to the
+// clamp), so the two can't drift on what "finished" means.
+const TERMINAL_STATUSES = new Set([
+  'COMPLETED',
+  'FAILED',
+  'CANCELLED',
+  'TIMED_OUT',
+]);
+// Annotatable: a plain object (spreading an array yields {"0":…}) for a job
+// still running, not already carrying the key.
+function isUnfinishedJobReply(
+  result: unknown
+): result is Record<string, unknown> {
+  return (
+    result !== null &&
+    typeof result === 'object' &&
+    !Array.isArray(result) &&
+    !('waitClamped' in result) &&
+    !TERMINAL_STATUSES.has((result as { status?: string }).status ?? '')
+  );
+}
+
+function formatBudget(ms: number): string {
+  return ms >= 120_000
+    ? `${Math.round(ms / 60_000)} minutes`
+    : `${Math.round(ms / 1000)} seconds`;
+}
+
 export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
   const { jsonReply, serverlessRequest, backendFor, callRestUrl } = rt;
+  // Built per instance so each caller is told only the budget that applies to
+  // them; stating both leaves every reader a clause that is false for them.
+  const hosted = rt.transport === 'http';
+  const streamBudget = formatBudget(
+    hosted ? HTTP_LONG_POLL_BUDGET_MS : STDIO_STREAM_BUDGET_MS
+  );
 
   // A job stuck IN_QUEUE has two very different causes that its status alone
   // cannot distinguish: no host has the endpoint's GPU available (capacity),
@@ -201,7 +252,11 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
   // Run Endpoint Sync
   server.tool(
     'runsync-endpoint',
-    'Submit a synchronous job to a Serverless endpoint and wait for the result. Best for tasks completing within 90 seconds. If processing exceeds 90 seconds, the response returns a job ID to poll with get-job-status. Max payload: 20 MB. Results expire after 1 minute. Use the wait parameter to extend the server-side wait up to 5 minutes (300000 ms).',
+    `Submit a synchronous job to a Serverless endpoint and wait for the result. Best for fast tasks: if the job outlives the wait, the response returns a job ID and a non-terminal status (IN_QUEUE or IN_PROGRESS) to poll with get-job-status. Max payload 20 MB; results expire after 1 minute. ${
+      hosted
+        ? `This server waits up to ${HTTP_LONG_POLL_BUDGET_MS} ms — it runs behind a 60-second gateway deadline, so that is both the default and the ceiling for the wait parameter. For longer jobs use run-endpoint + get-job-status, or POST https://api.runpod.ai/v2/{endpointId}/runsync?wait=300000 directly with a Bearer API key.`
+        : 'The wait parameter extends the server-side wait to up to 5 minutes (300000 ms); it defaults to 90000 (90 seconds).'
+    }`,
     {
       endpointId: endpointIdSchema.describe(
         'ID of the Serverless endpoint to run synchronously'
@@ -213,7 +268,9 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
         .max(300000)
         .optional()
         .describe(
-          'How long in milliseconds the server should wait for a result before returning a job ID to poll (1000–300000). Defaults to 90000 (90 seconds).'
+          hosted
+            ? `How long in milliseconds the server should wait for a result before returning a job ID to poll. Accepted range 1000–300000, but this server clamps anything above ${HTTP_LONG_POLL_BUDGET_MS} down to ${HTTP_LONG_POLL_BUDGET_MS}, which is also the effective default.`
+            : 'How long in milliseconds the server should wait for a result before returning a job ID to poll (1000–300000). Defaults to 90000 (90 seconds).'
         ),
       webhook: webhookSchema,
       policy: policySchema,
@@ -222,13 +279,47 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
     { title: 'Run endpoint (sync)', ...WRITE },
     async (params) => {
       const { endpointId, wait, ...body } = params;
-      const path = wait ? `/runsync?wait=${wait}` : '/runsync';
+      // Always sent on http: the upstream default (90s) outlives the deadline
+      // too, so an omitted wait is as fatal as a long one.
+      const effectiveWait = hosted
+        ? Math.min(
+            wait ?? RUNSYNC_UPSTREAM_DEFAULT_WAIT_MS,
+            HTTP_LONG_POLL_BUDGET_MS
+          )
+        : wait;
+      // undefined, not falsy: `wait: 0` would drop the query and inherit the
+      // upstream 90s default. Zod blocks 0 today, but handlers are called
+      // directly (catalog.ts guards the same way).
+      const waitQuery =
+        effectiveWait === undefined ? '' : `?wait=${effectiveWait}`;
+      const path = `/runsync${waitQuery}`;
       const result = await serverlessRequest(
         endpointId,
         path,
         'POST',
         body as Record<string, unknown>
       );
+
+      // Unmarked, a reply from a job 45s in is identical to one from a job that
+      // outlived the 300s asked for — and the reaction to the latter is to
+      // cancel it. Only marked when the caller could actually be misled.
+      const requestedWait = wait ?? RUNSYNC_UPSTREAM_DEFAULT_WAIT_MS;
+      if (
+        hosted &&
+        requestedWait > HTTP_LONG_POLL_BUDGET_MS &&
+        isUnfinishedJobReply(result)
+      ) {
+        return jsonReply({
+          ...result,
+          waitClamped: {
+            requestedMs: requestedWait,
+            effectiveMs: effectiveWait,
+            reason: `This server runs behind a 60-second gateway deadline, so a non-terminal status here means the job outlived ${formatBudget(
+              HTTP_LONG_POLL_BUDGET_MS
+            )}, not the requested wait — poll get-job-status rather than treating it as stuck.`,
+          },
+        });
+      }
 
       return jsonReply(result);
     }
@@ -273,7 +364,11 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
   // Stream Job Results
   server.tool(
     'stream-job',
-    'Retrieve all streaming output from a Serverless job by polling until the job reaches a terminal state. The worker must support streaming output. Polls /stream/{jobId} repeatedly and collects every chunk until status is COMPLETED, FAILED, CANCELLED, or TIMED_OUT.',
+    `Retrieve streaming output from a Serverless job. The worker must support streaming output. Polls /stream/{jobId} and collects chunks until the status is COMPLETED, FAILED, CANCELLED, or TIMED_OUT, for up to ${streamBudget}${hosted ? ' (this server runs behind a 60-second gateway deadline)' : ''}. If the budget expires first, returns the chunks collected so far with pollingTimedOut: true — call stream-job again to resume where it left off, or get-job-status to check without streaming.${
+      hosted
+        ? ' To collect with no budget, poll GET https://api.runpod.ai/v2/{endpointId}/stream/{jobId} yourself with a Bearer API key until the status is terminal — each request drains only the chunks buffered so far, so a single request is not the whole output.'
+        : ''
+    }`,
     {
       endpointId: endpointIdSchema.describe(
         'ID of the Serverless endpoint the job belongs to'
@@ -282,26 +377,25 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
     },
     { title: 'Stream job', ...READ_ONLY },
     async (params) => {
-      const TERMINAL_STATUSES = new Set([
-        'COMPLETED',
-        'FAILED',
-        'CANCELLED',
-        'TIMED_OUT',
-      ]);
-      const MAX_POLL_TIME_MS = 5 * 60 * 1000; // 5 minutes
-      const POLL_INTERVAL_MS = 1000;
+      const MAX_POLL_TIME_MS = hosted
+        ? HTTP_LONG_POLL_BUDGET_MS
+        : STDIO_STREAM_BUDGET_MS;
       const MAX_CONSECUTIVE_ERRORS = 5;
       const allChunks: unknown[] = [];
       let finalResult: Record<string, unknown> = {};
       let consecutiveErrors = 0;
       let lastError: string | undefined;
       const startTime = Date.now();
+      // stdio keeps the server's default hold: fewer requests, no deadline to race.
+      const streamQuery =
+        rt.transport === 'http' ? `?wait=${HTTP_STREAM_POLL_WAIT_MS}` : '';
+      const streamPath = `/stream/${params.jobId}${streamQuery}`;
 
       while (true) {
         try {
           const result = (await serverlessRequest(
             params.endpointId,
-            `/stream/${params.jobId}`
+            streamPath
           )) as Record<string, unknown>;
 
           consecutiveErrors = 0;
@@ -326,8 +420,9 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
 
         if (Date.now() - startTime > MAX_POLL_TIME_MS) {
           finalResult.pollingTimedOut = true;
-          finalResult.note =
-            'Polling timed out after 5 minutes. Use get-job-status to check the job later.';
+          // /stream drains what it hands out, so calling again resumes where
+          // this run stopped rather than replaying from the start.
+          finalResult.note = `Polling stopped after ${formatBudget(MAX_POLL_TIME_MS)} with the job possibly still running. Call stream-job again to continue collecting output, get-job-status to check the job without streaming, or stream without a budget by calling the runtime API directly (GET https://api.runpod.ai/v2/{endpointId}/stream/{jobId} with a Bearer API key).`;
           // Surface the most recent error (if any) instead of discarding it —
           // the last poll may have been failing (e.g. job expired) even though
           // earlier polls succeeded.
@@ -335,7 +430,9 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
           break;
         }
 
-        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+        await new Promise((resolve) =>
+          setTimeout(resolve, STREAM_JOB_POLL_INTERVAL_MS)
+        );
       }
 
       return jsonReply({ ...finalResult, stream: allChunks });

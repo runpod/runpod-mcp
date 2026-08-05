@@ -11,7 +11,8 @@ How to test the v2 REST migration — the 4-PR stack **#44 → #45 → #46 → #
 - For the offline suite: **nothing else** (no key, no network).
 - For the live walkthrough: a Runpod **dev-account** API key + an MCP-capable agent (Claude Code, Cursor, Claude Desktop, …).
 
-> ✅ **v2 prod is now live.** `v2-rest.runpod.io/v2` is cut over and authenticates
+> ✅ **v2 prod is now live.** `api.runpod.io/v2` (canonical; `v2-rest.runpod.io/v2`
+> is the same backend) is cut over and authenticates
 > with a **prod** key (allowlist-gated — an off-allowlist account 401s/403s).
 > `v2-rest.runpod.dev/v2` also still works with a **dev** key. Use whichever env's
 > key you have; the commands below show dev — swap the host + key for prod.
@@ -237,7 +238,7 @@ A guided, human-in-the-loop pass: you launch the server locally pointed at the *
 | dev-account key | dev v2 (`v2-rest.runpod.dev/v2`) | **this walkthrough** — set as the Bearer |
 | prod-account key | v1 prod (`rest.runpod.io/v1`) | v1 CRUD parity (section F) — mutates a **real prod account**, be careful |
 
-Use the **dev** key for the dev host. v2 **prod** (`v2-rest.runpod.io/v2`) is now cut over — a **prod** key works there (allowlist-gated). To run this walkthrough against prod, swap `RUNPOD_REST_V2_API_URL` to the `.io` host and use a prod key.
+Use the **dev** key for the dev host. v2 **prod** (`api.runpod.io/v2`, the default) is now cut over — a **prod** key works there (allowlist-gated). To run this walkthrough against prod, swap `RUNPOD_REST_V2_API_URL` to `https://api.runpod.io/v2` (or just unset it) and use a prod key.
 
 ### a) Launch the server locally
 
