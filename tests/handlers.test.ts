@@ -1,4 +1,5 @@
 import { describe, it, beforeEach } from 'node:test';
+import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
@@ -1611,12 +1612,14 @@ describe('hosted HTTP transport clamps long-poll budgets', () => {
   // >=20.11 takes `{apis}`, Node 18 takes a bare array, so try both. Date is NOT
   // mockable on Node 18 at all, so the budget clock is stubbed by hand on every
   // version and advanced in lockstep with the ticks.
+  // `t` is node:test's own TestContext, NOT a hand-rolled structural type: an
+  // `enable: (o: unknown) => void` field cannot accept the real signature under
+  // strictFunctionTypes (a function taking `unknown` is not assignable from one
+  // taking MockTimersOptions), so that annotation compiled only while tests were
+  // excluded from type-check. The Node 18 bare-array form is handled by the cast
+  // in the catch below.
   async function driveStreamJobToBudget(
-    t: {
-      mock: {
-        timers: { enable: (o: unknown) => void; tick: (ms: number) => void };
-      };
-    },
+    t: TestContext,
     opts: { transport: 'stdio' | 'http'; endpointId: string; ticks: number }
   ) {
     const enable = t.mock?.timers?.enable;
