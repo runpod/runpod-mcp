@@ -338,6 +338,27 @@ export async function handleMcpRequest(
     url: req.url,
     hasBearerToken: !!bearerToken,
   });
+  // Stateless server: there are no server-initiated messages, so the standalone
+  // GET SSE stream has nothing to carry. Per spec, answer 405 instead of letting
+  // the SDK hold an idle stream open until the platform kills it.
+  if (req.method === 'GET') {
+    res.writeHead(405, {
+      Allow: 'POST, DELETE',
+      'Content-Type': 'application/json',
+    });
+    res.end(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        error: {
+          code: -32000,
+          message:
+            'Method Not Allowed: this server does not offer a standalone SSE stream.',
+        },
+        id: null,
+      })
+    );
+    return;
+  }
   if (!bearerToken) {
     writeUnauthorized(
       req,
