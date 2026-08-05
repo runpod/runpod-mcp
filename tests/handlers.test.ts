@@ -1511,12 +1511,20 @@ describe('hosted HTTP transport clamps long-poll budgets', () => {
     );
   });
 
-  it('stream-job on http: stops polling at ~45s and returns collected chunks with the resume note', async (t) => {
-    // Two clocks drive the loop: setTimeout (the 1s poll sleep) and Date.now
-    // (the budget check). setTimeout is mocked via node:test mock timers —
-    // Node ≥20.11 takes `{apis}`, Node 18 takes a bare array, so try both.
-    // Date is NOT mockable on Node 18 at all, so the budget clock is stubbed
-    // by hand on every version and advanced in lockstep with the ticks.
+  // Drive stream-job's poll loop on a fully deterministic clock and return what
+  // it produced. Two clocks matter: setTimeout (the 1s poll sleep) and Date.now
+  // (the budget check). setTimeout is mocked via node:test mock timers — Node
+  // >=20.11 takes `{apis}`, Node 18 takes a bare array, so try both. Date is NOT
+  // mockable on Node 18 at all, so the budget clock is stubbed by hand on every
+  // version and advanced in lockstep with the ticks.
+  async function driveStreamJobToBudget(
+    t: {
+      mock: {
+        timers: { enable: (o: unknown) => void; tick: (ms: number) => void };
+      };
+    },
+    opts: { transport: 'stdio' | 'http'; endpointId: string; ticks: number }
+  ) {
     try {
       t.mock.timers.enable({ apis: ['setTimeout'] });
     } catch {
@@ -1529,51 +1537,88 @@ describe('hosted HTTP transport clamps long-poll budgets', () => {
     Date.now = () => fakeNow;
     try {
       const { handlers, outbound } = harness({
-        transport: 'http',
+        transport: opts.transport,
         // Never terminal — only the budget can end the loop.
         jsonBody: { status: 'IN_PROGRESS', stream: [{ chunk: 'x' }] },
       });
       const pending = handlers.get('stream-job')!({
-        endpointId: 'ep_h',
+        endpointId: opts.endpointId,
         jobId: 'jH',
       });
-      // Drive the loop: setImmediate is NOT mocked, so each round lets the
-      // in-flight poll (fake fetch + json()) settle before advancing both
-      // clocks by 1s — the loop crosses the 45s budget after ~45 polls
-      // instead of the stdio 5 minutes.
-      for (let i = 0; i < 60; i++) {
+      // setImmediate is NOT mocked, so each round lets the in-flight poll (fake
+      // fetch + json()) settle before advancing both clocks by 1s.
+      for (let i = 0; i < opts.ticks; i++) {
         await new Promise((r) => setImmediate(r));
         fakeNow += 1000;
         t.mock.timers.tick(1000);
       }
       await new Promise((r) => setImmediate(r));
       const out = (await pending) as { content: Array<{ text: string }> };
-      const result = JSON.parse(out.content[0].text) as {
-        pollingTimedOut?: boolean;
-        note?: string;
-        stream: unknown[];
+      return {
+        outbound,
+        result: JSON.parse(out.content[0].text) as {
+          pollingTimedOut?: boolean;
+          note?: string;
+          stream: unknown[];
+        },
       };
-      assert.equal(result.pollingTimedOut, true);
-      assert.match(result.note!, /45 seconds/);
-      assert.match(result.note!, /Call stream-job again/);
-      // Collected chunks survive the budget cut.
-      assert.ok(result.stream.length > 0, 'keeps chunks collected so far');
-      // The loop must stop near the 45s budget, nowhere near the 60 ticks driven.
-      assert.ok(
-        outbound.length >= 40 && outbound.length <= 50,
-        `polled ${outbound.length} times; expected ~46 (45s budget / 1s interval)`
-      );
-      // Every http poll caps the upstream hold: an empty /stream otherwise
-      // blocks ~10s server-side, overshooting the budget toward the platform
-      // reaper (stdio polls stay bare — locked by the golden above).
-      for (const rec of outbound) {
-        assert.equal(
-          rec.url,
-          'https://api.runpod.ai/v2/ep_h/stream/jH?wait=1000'
-        );
-      }
     } finally {
       Date.now = realNow;
+    }
+  }
+
+  it('stream-job on http: stops polling at 45s and returns collected chunks with the resume note', async (t) => {
+    const { outbound, result } = await driveStreamJobToBudget(t, {
+      transport: 'http',
+      endpointId: 'ep_h',
+      ticks: 60,
+    });
+    assert.equal(result.pollingTimedOut, true);
+    assert.match(result.note!, /45 seconds/);
+    assert.match(result.note!, /Call stream-job again/);
+    // Collected chunks survive the budget cut.
+    assert.ok(result.stream.length > 0, 'keeps chunks collected so far');
+    // The clock is fully deterministic, so pin the exact count rather than a
+    // window: poll k tests (k-1)*1000 > 45000, first true at k=47. A range would
+    // silently accept the budget drifting to 40s or 50s — the very constant
+    // this test exists to lock.
+    assert.equal(
+      outbound.length,
+      47,
+      `polled ${outbound.length} times; expected 47 (45s budget / 1s interval)`
+    );
+    // Every http poll caps the upstream hold: an empty /stream otherwise blocks
+    // ~10s server-side, overshooting the budget toward the platform reaper.
+    for (const rec of outbound) {
+      assert.equal(
+        rec.url,
+        'https://api.runpod.ai/v2/ep_h/stream/jH?wait=1000'
+      );
+    }
+  });
+
+  it('stream-job on stdio: keeps the full 5-minute budget and bare poll URLs', async (t) => {
+    // The mirror of the case above, and the only thing stopping someone from
+    // "simplifying" the transport ternary into one 45s budget for both: without
+    // this, every other test still passes when stdio gets clamped too.
+    const { outbound, result } = await driveStreamJobToBudget(t, {
+      transport: 'stdio',
+      endpointId: 'ep_s',
+      ticks: 320,
+    });
+    assert.equal(result.pollingTimedOut, true);
+    // Rendered in minutes, matching the tool's own description.
+    assert.match(result.note!, /5 minutes/);
+    // Poll k tests (k-1)*1000 > 300000, first true at k=302 — still polling
+    // long past the 47 the hosted budget allows.
+    assert.equal(
+      outbound.length,
+      302,
+      `polled ${outbound.length} times; expected 302 (300s budget / 1s interval)`
+    );
+    // No wait cap upstream: stdio has no platform deadline to race.
+    for (const rec of outbound) {
+      assert.equal(rec.url, 'https://api.runpod.ai/v2/ep_s/stream/jH');
     }
   });
 });

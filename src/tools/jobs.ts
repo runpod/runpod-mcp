@@ -363,7 +363,14 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
           // /stream/{jobId} hands out chunks incrementally (each call returns
           // what is new since the last drain), so a repeat call resumes where
           // this one stopped rather than replaying from the start.
-          finalResult.note = `Polling stopped after ${Math.round(MAX_POLL_TIME_MS / 1000)} seconds with the job possibly still running. Call stream-job again to continue collecting output, get-job-status to check the job without streaming, or stream without a budget by calling the runtime API directly (GET https://api.runpod.ai/v2/{endpointId}/stream/{jobId} with a Bearer API key).`;
+          // Rendered in minutes above two of them, so the stdio budget reads
+          // "5 minutes" — matching this tool's own description — rather than
+          // the "300 seconds" a bare division would print.
+          const budget =
+            MAX_POLL_TIME_MS >= 120_000
+              ? `${Math.round(MAX_POLL_TIME_MS / 60_000)} minutes`
+              : `${Math.round(MAX_POLL_TIME_MS / 1000)} seconds`;
+          finalResult.note = `Polling stopped after ${budget} with the job possibly still running. Call stream-job again to continue collecting output, get-job-status to check the job without streaming, or stream without a budget by calling the runtime API directly (GET https://api.runpod.ai/v2/{endpointId}/stream/{jobId} with a Bearer API key).`;
           // Surface the most recent error (if any) instead of discarding it —
           // the last poll may have been failing (e.g. job expired) even though
           // earlier polls succeeded.
