@@ -211,7 +211,7 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
   // Run Endpoint Sync
   server.tool(
     'runsync-endpoint',
-    'Submit a synchronous job to a Serverless endpoint and wait for the result. Best for fast tasks; if the job is still running when the wait expires, the response returns a job ID to poll with get-job-status. Max payload: 20 MB. Results expire after 1 minute. Use the wait parameter to extend the server-side wait up to 5 minutes (300000 ms) — on the hosted (HTTP) server the wait is capped at 45 seconds, so submit longer jobs with run-endpoint and poll get-job-status instead.',
+    'Submit a synchronous job to a Serverless endpoint and wait for the result. Best for fast tasks; if the job is still running when the wait expires, the response returns a job ID to poll with get-job-status. Max payload: 20 MB. Results expire after 1 minute. Use the wait parameter to extend the server-side wait up to 5 minutes (300000 ms) — on the hosted (HTTP) server the wait is capped at 45 seconds. For longer jobs, submit with run-endpoint and poll get-job-status, or bypass this server and call the runtime API directly: POST https://api.runpod.ai/v2/{endpointId}/runsync?wait=300000 with an Authorization: Bearer <RUNPOD_API_KEY> header supports the full wait.',
     {
       endpointId: endpointIdSchema.describe(
         'ID of the Serverless endpoint to run synchronously'
@@ -295,7 +295,7 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
   // Stream Job Results
   server.tool(
     'stream-job',
-    'Retrieve streaming output from a Serverless job by polling until the job reaches a terminal state. The worker must support streaming output. Polls /stream/{jobId} repeatedly and collects every chunk until status is COMPLETED, FAILED, CANCELLED, or TIMED_OUT. Polls for up to 5 minutes (45 seconds on the hosted HTTP server); if the job is still running when the budget expires, returns the chunks collected so far with pollingTimedOut: true — call stream-job again to keep collecting from where it left off, or get-job-status to check without streaming.',
+    'Retrieve streaming output from a Serverless job by polling until the job reaches a terminal state. The worker must support streaming output. Polls /stream/{jobId} repeatedly and collects every chunk until status is COMPLETED, FAILED, CANCELLED, or TIMED_OUT. Polls for up to 5 minutes (45 seconds on the hosted HTTP server); if the job is still running when the budget expires, returns the chunks collected so far with pollingTimedOut: true — call stream-job again to keep collecting from where it left off, or get-job-status to check without streaming. For an uncapped live stream, bypass this server and call the runtime API directly: GET https://api.runpod.ai/v2/{endpointId}/stream/{jobId} with an Authorization: Bearer <RUNPOD_API_KEY> header returns new chunks per call with no budget.',
     {
       endpointId: endpointIdSchema.describe(
         'ID of the Serverless endpoint the job belongs to'
@@ -352,7 +352,7 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
           // /stream/{jobId} hands out chunks incrementally (each call returns
           // what is new since the last drain), so a repeat call resumes where
           // this one stopped rather than replaying from the start.
-          finalResult.note = `Polling stopped after ${Math.round(MAX_POLL_TIME_MS / 1000)} seconds with the job still running. Call stream-job again to continue collecting output, or get-job-status to check the job without streaming.`;
+          finalResult.note = `Polling stopped after ${Math.round(MAX_POLL_TIME_MS / 1000)} seconds with the job still running. Call stream-job again to continue collecting output, get-job-status to check the job without streaming, or stream without a budget by calling the runtime API directly (GET https://api.runpod.ai/v2/{endpointId}/stream/{jobId} with a Bearer API key).`;
           // Surface the most recent error (if any) instead of discarding it —
           // the last poll may have been failing (e.g. job expired) even though
           // earlier polls succeeded.
