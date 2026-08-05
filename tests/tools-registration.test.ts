@@ -223,4 +223,39 @@ describe('tool registration', () => {
       });
     }
   });
+
+  // The hosted clamp computes min(wait ?? 90000, 45000) and only omits the
+  // query when the result is undefined. A `wait: 0` would therefore be sent as
+  // `?wait=0`, which upstream rejects — loudly, which is the point. What must
+  // never happen is 0 silently becoming "no wait" and handing the request back
+  // to the upstream 90s default, past the gateway deadline. This bound is the
+  // first line of that defense, and the handler tests bypass it entirely.
+  describe('runsync-endpoint wait bounds', () => {
+    const parseWait = (value: unknown) => {
+      const { schemas } = captureRegisteredTools();
+      const schema = schemas.get('runsync-endpoint');
+      assert.ok(schema, 'no schema captured for runsync-endpoint');
+      const field = schema.wait as {
+        safeParse: (v: unknown) => { success: boolean };
+      };
+      assert.ok(
+        field && typeof field.safeParse === 'function',
+        'runsync-endpoint.wait is not a zod schema'
+      );
+      return field.safeParse(value).success;
+    };
+
+    it('accepts the documented 1000-300000 range and rejects outside it', () => {
+      assert.equal(parseWait(1000), true);
+      assert.equal(parseWait(45000), true);
+      assert.equal(parseWait(300000), true);
+      assert.equal(parseWait(0), false, 'accepted 0');
+      assert.equal(parseWait(999), false, 'accepted 999');
+      assert.equal(parseWait(300001), false, 'accepted 300001');
+    });
+
+    it('stays optional — an omitted wait is what the hosted clamp pins to its budget', () => {
+      assert.equal(parseWait(undefined), true);
+    });
+  });
 });

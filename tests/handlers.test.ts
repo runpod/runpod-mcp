@@ -1,5 +1,6 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 // Defense-in-depth: the v1 goldens assume the version env vars are unset. Clear
 // them before every test so a leak (from another test or the CI env) can't
@@ -20,7 +21,11 @@ beforeEach(() => {
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerTools } from '../src/tools.js';
-import { clearQueuedJobDiagnosisCache } from '../src/tools/jobs.js';
+import {
+  clearQueuedJobDiagnosisCache,
+  HTTP_LONG_POLL_BUDGET_MS,
+  STREAM_JOB_POLL_INTERVAL_MS,
+} from '../src/tools/jobs.js';
 
 // ============== Handler integration / outbound-request golden ==============
 // Drives the REAL registerTools against a fake McpServer (captures handlers) and
@@ -1525,9 +1530,19 @@ describe('hosted HTTP transport clamps long-poll budgets', () => {
     },
     opts: { transport: 'stdio' | 'http'; endpointId: string; ticks: number }
   ) {
+    const enable = t.mock?.timers?.enable;
+    if (typeof enable !== 'function') {
+      throw new Error(
+        'node:test mock timers unavailable (needs Node >=18.19) — this test cannot run on this runtime'
+      );
+    }
     try {
       t.mock.timers.enable({ apis: ['setTimeout'] });
-    } catch {
+    } catch (err) {
+      // Node 18 takes a bare array and rejects the object form with a TypeError
+      // naming the `timers` argument. Anything else is a real failure, not a
+      // signature mismatch, so don't swallow it behind a second attempt.
+      if (!(err instanceof TypeError)) throw err;
       (t.mock.timers.enable as unknown as (apis: string[]) => void)([
         'setTimeout',
       ]);
@@ -1546,13 +1561,30 @@ describe('hosted HTTP transport clamps long-poll budgets', () => {
         jobId: 'jH',
       });
       // setImmediate is NOT mocked, so each round lets the in-flight poll (fake
-      // fetch + json()) settle before advancing both clocks by 1s.
+      // fetch + json()) settle before advancing both clocks by one real poll
+      // interval — imported, not hardcoded, so halving the interval in the
+      // source can't double the live request rate with these tests still green.
       for (let i = 0; i < opts.ticks; i++) {
         await new Promise((r) => setImmediate(r));
-        fakeNow += 1000;
-        t.mock.timers.tick(1000);
+        fakeNow += STREAM_JOB_POLL_INTERVAL_MS;
+        t.mock.timers.tick(STREAM_JOB_POLL_INTERVAL_MS);
       }
       await new Promise((r) => setImmediate(r));
+      // The loop MUST have ended by now. If a regression widened the budget it
+      // would still be polling, and a bare `await pending` would hang forever —
+      // node:test has no default timeout, so that stalls this file's remaining
+      // ~90 tests until CI's job timeout instead of failing here.
+      const ended = await Promise.race([
+        pending.then(() => true),
+        new Promise((r) => setImmediate(() => r(false))),
+      ]);
+      if (!ended) {
+        throw new Error(
+          `stream-job was still polling after ${opts.ticks} ticks (${
+            (opts.ticks * STREAM_JOB_POLL_INTERVAL_MS) / 1000
+          }s of fake time) — its budget is larger than this test expects`
+        );
+      }
       const out = (await pending) as { content: Array<{ text: string }> };
       return {
         outbound,
@@ -1620,6 +1652,29 @@ describe('hosted HTTP transport clamps long-poll budgets', () => {
     for (const rec of outbound) {
       assert.equal(rec.url, 'https://api.runpod.ai/v2/ep_s/stream/jH');
     }
+  });
+
+  it('the hosted budget still fits inside vercel.json maxDuration, with room for the pre-flight', () => {
+    // The clamp's entire premise is a relationship between two files that
+    // nothing else connects. Raise maxDuration and the budget silently stays
+    // low; lower it and the reaping is back with every other test green.
+    const vercel = JSON.parse(
+      readFileSync(new URL('../vercel.json', import.meta.url), 'utf8')
+    ) as { functions?: Record<string, { maxDuration?: number }> };
+    const maxDuration = Object.values(vercel.functions ?? {}).find(
+      (f) => typeof f.maxDuration === 'number'
+    )?.maxDuration;
+    assert.ok(
+      typeof maxDuration === 'number',
+      'vercel.json no longer declares a maxDuration — the budget below is derived from it'
+    );
+    // 8s covers the credential pre-flight (4s) and the v2 probe (4s), both of
+    // which run before the tool does; the rest is serialization + cold start.
+    const PRE_FLIGHT_HEADROOM_MS = 8_000;
+    assert.ok(
+      HTTP_LONG_POLL_BUDGET_MS + PRE_FLIGHT_HEADROOM_MS <= maxDuration * 1000,
+      `HTTP_LONG_POLL_BUDGET_MS (${HTTP_LONG_POLL_BUDGET_MS}) + pre-flight headroom (${PRE_FLIGHT_HEADROOM_MS}) exceeds maxDuration (${maxDuration}s). Adjust the budget in src/tools/jobs.ts to match.`
+    );
   });
 });
 
