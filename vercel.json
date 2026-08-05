@@ -1,5 +1,6 @@
 {
   "buildCommand": "pnpm build",
+  "ignoreCommand": "[ \"$VERCEL_ENV\" = \"production\" ] && exit 1 || exit 0",
   "outputDirectory": "public",
   "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }],
   "functions": {
