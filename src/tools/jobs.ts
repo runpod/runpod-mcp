@@ -319,12 +319,23 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
       let consecutiveErrors = 0;
       let lastError: string | undefined;
       const startTime = Date.now();
+      // An empty /stream blocks SERVER-side until a chunk arrives or its own
+      // wait expires — default 10000ms — and the budget above is only checked
+      // between polls. On http a chunk-sparse job would therefore poll at ~11s
+      // cadence and overshoot the 45s budget to ~54s, right back against the
+      // platform's 60s reaper. Cap the upstream hold at 1s there (the endpoint
+      // accepts wait=1000–300000); stdio keeps the default block, where the
+      // longer server-side hold just means fewer requests.
+      const streamPath =
+        rt.transport === 'http'
+          ? `/stream/${params.jobId}?wait=1000`
+          : `/stream/${params.jobId}`;
 
       while (true) {
         try {
           const result = (await serverlessRequest(
             params.endpointId,
-            `/stream/${params.jobId}`
+            streamPath
           )) as Record<string, unknown>;
 
           consecutiveErrors = 0;
@@ -352,7 +363,7 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
           // /stream/{jobId} hands out chunks incrementally (each call returns
           // what is new since the last drain), so a repeat call resumes where
           // this one stopped rather than replaying from the start.
-          finalResult.note = `Polling stopped after ${Math.round(MAX_POLL_TIME_MS / 1000)} seconds with the job still running. Call stream-job again to continue collecting output, get-job-status to check the job without streaming, or stream without a budget by calling the runtime API directly (GET https://api.runpod.ai/v2/{endpointId}/stream/{jobId} with a Bearer API key).`;
+          finalResult.note = `Polling stopped after ${Math.round(MAX_POLL_TIME_MS / 1000)} seconds with the job possibly still running. Call stream-job again to continue collecting output, get-job-status to check the job without streaming, or stream without a budget by calling the runtime API directly (GET https://api.runpod.ai/v2/{endpointId}/stream/{jobId} with a Bearer API key).`;
           // Surface the most recent error (if any) instead of discarding it —
           // the last poll may have been failing (e.g. job expired) even though
           // earlier polls succeeded.

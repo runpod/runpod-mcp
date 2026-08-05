@@ -1563,6 +1563,15 @@ describe('hosted HTTP transport clamps long-poll budgets', () => {
         outbound.length >= 40 && outbound.length <= 50,
         `polled ${outbound.length} times; expected ~46 (45s budget / 1s interval)`
       );
+      // Every http poll caps the upstream hold: an empty /stream otherwise
+      // blocks ~10s server-side, overshooting the budget toward the platform
+      // reaper (stdio polls stay bare — locked by the golden above).
+      for (const rec of outbound) {
+        assert.equal(
+          rec.url,
+          'https://api.runpod.ai/v2/ep_h/stream/jH?wait=1000'
+        );
+      }
     } finally {
       Date.now = realNow;
     }
