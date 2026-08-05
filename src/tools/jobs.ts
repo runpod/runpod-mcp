@@ -257,7 +257,8 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
               HTTP_LONG_POLL_BUDGET_MS
             )
           : wait;
-      const path = `/runsync${effectiveWait ? `?wait=${effectiveWait}` : ''}`;
+      const waitQuery = effectiveWait ? `?wait=${effectiveWait}` : '';
+      const path = `/runsync${waitQuery}`;
       const result = await serverlessRequest(
         endpointId,
         path,
