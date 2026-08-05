@@ -1512,43 +1512,60 @@ describe('hosted HTTP transport clamps long-poll budgets', () => {
   });
 
   it('stream-job on http: stops polling at ~45s and returns collected chunks with the resume note', async (t) => {
-    // Mock both clocks the loop reads: Date (the budget check) and setTimeout
-    // (the 1s poll sleep). Each tick(1000) releases one sleep AND advances the
-    // elapsed time by 1s, so the loop crosses the 45s budget after ~45 polls
-    // instead of the stdio 5 minutes.
-    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
-    const { handlers, outbound } = harness({
-      transport: 'http',
-      // Never terminal — only the budget can end the loop.
-      jsonBody: { status: 'IN_PROGRESS', stream: [{ chunk: 'x' }] },
-    });
-    const pending = handlers.get('stream-job')!({
-      endpointId: 'ep_h',
-      jobId: 'jH',
-    });
-    // Drive the loop: setImmediate is NOT mocked, so each round lets the
-    // in-flight poll (fake fetch + json()) settle before advancing the clock.
-    for (let i = 0; i < 60; i++) {
-      await new Promise((r) => setImmediate(r));
-      t.mock.timers.tick(1000);
+    // Two clocks drive the loop: setTimeout (the 1s poll sleep) and Date.now
+    // (the budget check). setTimeout is mocked via node:test mock timers —
+    // Node ≥20.11 takes `{apis}`, Node 18 takes a bare array, so try both.
+    // Date is NOT mockable on Node 18 at all, so the budget clock is stubbed
+    // by hand on every version and advanced in lockstep with the ticks.
+    try {
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+    } catch {
+      (t.mock.timers.enable as unknown as (apis: string[]) => void)([
+        'setTimeout',
+      ]);
     }
-    await new Promise((r) => setImmediate(r));
-    const out = (await pending) as { content: Array<{ text: string }> };
-    const result = JSON.parse(out.content[0].text) as {
-      pollingTimedOut?: boolean;
-      note?: string;
-      stream: unknown[];
-    };
-    assert.equal(result.pollingTimedOut, true);
-    assert.match(result.note!, /45 seconds/);
-    assert.match(result.note!, /Call stream-job again/);
-    // Collected chunks survive the budget cut.
-    assert.ok(result.stream.length > 0, 'keeps chunks collected so far');
-    // The loop must stop near the 45s budget, nowhere near the 60 ticks driven.
-    assert.ok(
-      outbound.length >= 40 && outbound.length <= 50,
-      `polled ${outbound.length} times; expected ~46 (45s budget / 1s interval)`
-    );
+    let fakeNow = 0;
+    const realNow = Date.now;
+    Date.now = () => fakeNow;
+    try {
+      const { handlers, outbound } = harness({
+        transport: 'http',
+        // Never terminal — only the budget can end the loop.
+        jsonBody: { status: 'IN_PROGRESS', stream: [{ chunk: 'x' }] },
+      });
+      const pending = handlers.get('stream-job')!({
+        endpointId: 'ep_h',
+        jobId: 'jH',
+      });
+      // Drive the loop: setImmediate is NOT mocked, so each round lets the
+      // in-flight poll (fake fetch + json()) settle before advancing both
+      // clocks by 1s — the loop crosses the 45s budget after ~45 polls
+      // instead of the stdio 5 minutes.
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setImmediate(r));
+        fakeNow += 1000;
+        t.mock.timers.tick(1000);
+      }
+      await new Promise((r) => setImmediate(r));
+      const out = (await pending) as { content: Array<{ text: string }> };
+      const result = JSON.parse(out.content[0].text) as {
+        pollingTimedOut?: boolean;
+        note?: string;
+        stream: unknown[];
+      };
+      assert.equal(result.pollingTimedOut, true);
+      assert.match(result.note!, /45 seconds/);
+      assert.match(result.note!, /Call stream-job again/);
+      // Collected chunks survive the budget cut.
+      assert.ok(result.stream.length > 0, 'keeps chunks collected so far');
+      // The loop must stop near the 45s budget, nowhere near the 60 ticks driven.
+      assert.ok(
+        outbound.length >= 40 && outbound.length <= 50,
+        `polled ${outbound.length} times; expected ~46 (45s budget / 1s interval)`
+      );
+    } finally {
+      Date.now = realNow;
+    }
   });
 });
 
