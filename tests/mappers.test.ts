@@ -13,6 +13,7 @@ import {
   mapEndpointUpdateToV2,
   podBodyFromTemplate,
   applySshPublicKey,
+  normalizeSshPublicKey,
 } from '../src/_shared/mappers.js';
 import { parseLogSse } from '../src/tools/logs.js';
 
@@ -492,6 +493,116 @@ describe('applySshPublicKey', () => {
   it('trims surrounding whitespace from the supplied key', () => {
     const out = applySshPublicKey({}, `  ${KEY}\n`);
     assert.deepEqual(out.env, { PUBLIC_KEY: KEY });
+  });
+});
+
+describe('normalizeSshPublicKey', () => {
+  const KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI user@laptop';
+
+  const ok = (input: string): string => {
+    const result = normalizeSshPublicKey(input);
+    assert.equal(
+      result.ok,
+      true,
+      `expected accept, got: ${JSON.stringify(result)}`
+    );
+    return (result as { ok: true; key: string }).key;
+  };
+  const rejected = (input: string): string => {
+    const result = normalizeSshPublicKey(input);
+    assert.equal(
+      result.ok,
+      false,
+      `expected reject, got: ${JSON.stringify(result)}`
+    );
+    return (result as { ok: false; error: string }).error;
+  };
+
+  it('accepts every OpenSSH public key type', () => {
+    for (const type of [
+      'ssh-ed25519',
+      'ssh-rsa',
+      'ssh-dss',
+      'ecdsa-sha2-nistp256',
+      'ecdsa-sha2-nistp521',
+      'sk-ssh-ed25519@openssh.com',
+      'sk-ecdsa-sha2-nistp256@openssh.com',
+    ])
+      assert.equal(
+        ok(`${type} AAAAB3Nza me@host`),
+        `${type} AAAAB3Nza me@host`
+      );
+  });
+
+  it('accepts a key with no trailing comment', () => {
+    assert.equal(ok('ssh-ed25519 AAAAB3Nza'), 'ssh-ed25519 AAAAB3Nza');
+  });
+
+  it('trims the value and normalizes CRLF (a stray \\r corrupts authorized_keys)', () => {
+    assert.equal(ok(`\r\n  ${KEY}  \r\n`), KEY);
+  });
+
+  it('keeps multiple newline-separated keys, dropping blank lines', () => {
+    const second = 'ssh-rsa BBBB other@host';
+    assert.equal(ok(`${KEY}\r\n\n${second}\n`), `${KEY}\n${second}`);
+  });
+
+  it('rejects an empty or whitespace-only value (omit the param for no SSH)', () => {
+    for (const blank of ['', ' ', '   ', '\n', '\r\n', ' \t \n '])
+      assert.match(rejected(blank), /sshPublicKey is empty/);
+  });
+
+  it('rejects a PEM private key in any case', () => {
+    for (const pem of [
+      '-----BEGIN OPENSSH PRIVATE KEY-----\nabc',
+      '-----begin rsa private key-----\nabc',
+      '-----BEGIN EC PRIVATE KEY-----\nabc',
+    ])
+      assert.match(rejected(pem), /PRIVATE key/);
+  });
+
+  it('rejects a PuTTY .ppk, which never contains the words "private key"', () => {
+    const ppk =
+      'PuTTY-User-Key-File-2: ssh-ed25519\nEncryption: none\nPrivate-Lines: 1\nAAAAsecret';
+    assert.equal(/PRIVATE KEY/.test(ppk), false); // what the old guard tested
+    assert.match(rejected(ppk), /PRIVATE key/);
+  });
+
+  it('rejects a private key hidden after a valid public key line', () => {
+    assert.match(
+      rejected(`${KEY}\n-----BEGIN OPENSSH PRIVATE KEY-----\nabc`),
+      /PRIVATE key/
+    );
+  });
+
+  it('rejects a path passed instead of the file contents', () => {
+    for (const path of [
+      '~/.ssh/id_ed25519.pub',
+      '/home/me/.ssh/id_rsa.pub',
+      'C:\\Users\\me\\.ssh\\id_ed25519.pub',
+    ])
+      assert.match(rejected(path), /not an SSH public key/);
+  });
+
+  it('rejects a fingerprint, a bare base64 blob, and other garbage', () => {
+    for (const bad of [
+      'SHA256:abc123def',
+      'AAAAC3NzaC1lZDI1NTE5AAAAIexample',
+      'my key please',
+      'ssh-ed25519', // key type with no base64 blob
+      'no-port-forwarding ssh-rsa AAAA', // authorized_keys options prefix
+    ])
+      assert.match(rejected(bad), /not an SSH public key/);
+  });
+
+  it('rejects when any one of several lines is not a key', () => {
+    assert.match(rejected(`${KEY}\nnot-a-key`), /not an SSH public key/);
+  });
+
+  it('never echoes the rejected value back (it may be secret)', () => {
+    const secret = 'AAAAC3NzaSUPERSECRETBLOB';
+    assert.equal(rejected(secret).includes(secret), false);
+    assert.equal(rejected(`${secret} PRIVATE KEY`).includes(secret), false);
   });
 });
 

@@ -180,11 +180,11 @@ describe('tool registration', () => {
     }
   });
 
-  // The autoscaling bounds are in the v2 spec, so an out-of-range value can be
-  // refused here instead of spending a round trip on a 422. Asserted on the
-  // registered zod schema because the handler tests call handlers directly and
-  // never run parameter validation.
-  describe('autoscaling parameter bounds', () => {
+  // These bounds are in the v2 spec, so an out-of-range value can be refused
+  // here instead of spending a round trip on a 422. Asserted on the registered
+  // zod schema because the handler tests call handlers directly and never run
+  // parameter validation.
+  describe('numeric parameter bounds', () => {
     const parse = (tool: string, param: string, value: unknown) => {
       const { schemas } = captureRegisteredTools();
       const schema = schemas.get(tool);
@@ -222,5 +222,18 @@ describe('tool registration', () => {
         assert.equal(parse(tool, 'scalerValue', 0), false, 'accepted 0');
       });
     }
+
+    // v2 GpuConfig.count is `integer, minimum: 1`. The mapper defaults an
+    // OMITTED count to 1, but an explicit 0 / -1 / 1.5 flowed through to the
+    // wire and came back as a raw 422.
+    it('create-pod bounds gpuCount to an integer >= 1', () => {
+      assert.equal(parse('create-pod', 'gpuCount', 1), true);
+      assert.equal(parse('create-pod', 'gpuCount', 8), true);
+      assert.equal(parse('create-pod', 'gpuCount', 0), false, 'accepted 0');
+      assert.equal(parse('create-pod', 'gpuCount', -1), false, 'accepted -1');
+      assert.equal(parse('create-pod', 'gpuCount', 1.5), false, 'accepted 1.5');
+      // Still optional — omitting it is how the caller takes the default of 1.
+      assert.equal(parse('create-pod', 'gpuCount', undefined), true);
+    });
   });
 });

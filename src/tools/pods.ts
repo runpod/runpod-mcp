@@ -3,7 +3,11 @@ import { z } from 'zod';
 import { capListResult, listPaginationParams } from '../pagination.js';
 import { HttpError } from '../_shared/http.js';
 import { restV1Base, restV2Base } from '../_shared/backend.js';
-import { applySshPublicKey, podBodyFromTemplate } from '../_shared/mappers.js';
+import {
+  applySshPublicKey,
+  normalizeSshPublicKey,
+  podBodyFromTemplate,
+} from '../_shared/mappers.js';
 import { READ_ONLY, WRITE, DESTRUCTIVE, type ToolRuntime } from './runtime.js';
 import { logStreamParams, streamLogsReply } from './logs.js';
 
@@ -169,7 +173,15 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
         .array(z.string())
         .optional()
         .describe('List of acceptable GPU types'),
-      gpuCount: z.number().optional().describe('Number of GPUs'),
+      // v2 GpuConfig.count is `integer, minimum: 1`. Without these bounds a 0,
+      // a negative, or a fractional count reached the wire as-is and came back
+      // as a raw 422; reject it here with a message that names the field.
+      gpuCount: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .describe('Number of GPUs (minimum 1)'),
       containerDiskInGb: z
         .number()
         .optional()
@@ -188,7 +200,7 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
         .string()
         .optional()
         .describe(
-          'SSH PUBLIC key(s) to authorize on the pod — the contents of your ~/.ssh/<key>.pub (never the private key); newline-separate multiple keys. Merges the key into the PUBLIC_KEY env var and ensures 22/tcp is exposed, enabling full SSH (SCP/SFTP/rsync) on any image that honors the PUBLIC_KEY convention — all runpod/* official images do. Extends template ports/env rather than replacing them.'
+          'SSH PUBLIC key(s) to authorize on the pod — the CONTENTS of your ~/.ssh/<key>.pub file, i.e. a literal "ssh-ed25519 AAAAC3Nza… you@host" line, NOT a path to the file, a fingerprint, or the private key; newline-separate multiple keys. Merges the key into the PUBLIC_KEY env var and ensures 22/tcp is exposed, enabling full SSH (SCP/SFTP/rsync) on any image that honors the PUBLIC_KEY convention — all runpod/* official images do. Extends template ports/env rather than replacing them.'
         ),
       containerRegistryAuthId: z
         .string()
@@ -210,14 +222,18 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
       // would leak through) and fold it into the FINAL body via applySshPublicKey.
       const { sshPublicKey, ...podParams } = params;
 
-      // Refuse anything that smells like a PRIVATE key before it can end up in
-      // a pod's env (and in every process listing inside the container).
-      if (sshPublicKey && /PRIVATE KEY/.test(sshPublicKey)) {
-        return jsonReply({
-          error:
-            'sshPublicKey looks like a PRIVATE key. Pass the PUBLIC key instead — the contents of your ~/.ssh/<key>.pub file (e.g. "ssh-ed25519 AAAA…").',
-          status: 400,
-        });
+      // Validate and normalize BEFORE any pod exists. Refuses a PRIVATE key
+      // before it can reach a pod's env (and every process listing inside the
+      // container), and refuses a value that is not a public key at all — a path
+      // or a fingerprint passed instead of the .pub file's contents used to
+      // succeed, exposing 22/tcp with junk in PUBLIC_KEY and reporting SSH as
+      // configured. See normalizeSshPublicKey.
+      let sshKey: string | undefined;
+      if (sshPublicKey !== undefined) {
+        const validated = normalizeSshPublicKey(sshPublicKey);
+        if (!validated.ok)
+          return jsonReply({ error: validated.error, status: 400 });
+        sshKey = validated.key;
       }
 
       // Reply note attached whenever sshPublicKey was applied, so the caller
@@ -304,11 +320,8 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
           // field. Wrap the call so a v1 error surfaces as a clean message, not
           // a raw throw (matching the GPU/v2 path's error handling below).
           try {
-            const cpuBody = sshPublicKey
-              ? applySshPublicKey(
-                  podParams as Record<string, unknown>,
-                  sshPublicKey
-                )
+            const cpuBody = sshKey
+              ? applySshPublicKey(podParams as Record<string, unknown>, sshKey)
               : (podParams as Record<string, unknown>);
             const result = (await callRestUrl(
               `${restV1Base(env)}/pods`,
@@ -317,7 +330,7 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
             )) as Record<string, unknown>;
             return jsonReply({
               ...result,
-              ...(sshPublicKey ? { _ssh: sshNote } : {}),
+              ...(sshKey ? { _ssh: sshNote } : {}),
               _servedBy: 'v1',
               _note:
                 'CPU pod: created on the v1 API, because the v2 REST API does not support CPU pods yet.',
@@ -367,7 +380,7 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
 
       // After the template merge, so a template's ports/env are extended (a
       // pre-merge injection would clobber the template's ports whole-field).
-      if (sshPublicKey) body = applySshPublicKey(body, sshPublicKey);
+      if (sshKey) body = applySshPublicKey(body, sshKey);
 
       try {
         const result = (await callRestUrl(
@@ -376,7 +389,7 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
           body
         )) as Record<string, unknown>;
         const extras: Record<string, unknown> = {};
-        if (sshPublicKey) extras._ssh = sshNote;
+        if (sshKey) extras._ssh = sshNote;
         // v2 accepts a single GPU type (`gpu.id`); v1's gpuTypeIds is "any of
         // these". If the caller offered several, only the first was sent — say
         // so in the reply so the narrowing isn't silent.
