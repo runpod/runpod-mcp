@@ -54,6 +54,30 @@ const HTTP_STREAM_POLL_WAIT_MS = 1000;
 // clock by the real interval rather than a hardcoded copy of it — otherwise
 // halving the interval doubles the live request rate with the tests still green.
 export const STREAM_JOB_POLL_INTERVAL_MS = 1000;
+// Statuses that mean the job is over. Shared by stream-job (stop polling) and
+// runsync (a terminal reply is proof the clamp cost the caller nothing), so the
+// two cannot drift apart on what "finished" means.
+const TERMINAL_STATUSES = new Set([
+  'COMPLETED',
+  'FAILED',
+  'CANCELLED',
+  'TIMED_OUT',
+]);
+// A reply worth annotating: a plain object (spreading an array would turn
+// ["a"] into {"0":"a"}) for a job that has not finished, and not one already
+// carrying the key. A terminal reply proves the clamp cost the caller nothing.
+function isUnfinishedJobReply(
+  result: unknown
+): result is Record<string, unknown> {
+  return (
+    result !== null &&
+    typeof result === 'object' &&
+    !Array.isArray(result) &&
+    !('waitClamped' in result) &&
+    !TERMINAL_STATUSES.has((result as { status?: string }).status ?? '')
+  );
+}
+
 // The one place a budget is rendered dynamically. Both call sites pass a
 // compile-time constant, so only the two round values below are reachable.
 function formatBudget(ms: number): string {
@@ -300,6 +324,30 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
         body as Record<string, unknown>
       );
 
+      // Waiting less than asked, silently, is the failure mode: the reply for a
+      // job that outlived 45s is byte-identical to one that outlived the 300s
+      // the caller requested, and the plausible reaction to the latter is to
+      // cancel the job or call it broken. Say so — but only when the caller can
+      // actually be misled, since this is the one tool that otherwise returns
+      // the upstream body verbatim.
+      const requestedWait = wait ?? RUNSYNC_UPSTREAM_DEFAULT_WAIT_MS;
+      if (
+        hosted &&
+        requestedWait > HTTP_LONG_POLL_BUDGET_MS &&
+        isUnfinishedJobReply(result)
+      ) {
+        return jsonReply({
+          ...result,
+          waitClamped: {
+            requestedMs: requestedWait,
+            effectiveMs: effectiveWait,
+            reason: `This server runs behind a 60-second gateway deadline, so a non-terminal status here means the job outlived ${formatBudget(
+              HTTP_LONG_POLL_BUDGET_MS
+            )}, not the requested wait — poll get-job-status rather than treating it as stuck.`,
+          },
+        });
+      }
+
       return jsonReply(result);
     }
   );
@@ -356,12 +404,6 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
     },
     { title: 'Stream job', ...READ_ONLY },
     async (params) => {
-      const TERMINAL_STATUSES = new Set([
-        'COMPLETED',
-        'FAILED',
-        'CANCELLED',
-        'TIMED_OUT',
-      ]);
       const MAX_POLL_TIME_MS = hosted
         ? HTTP_LONG_POLL_BUDGET_MS
         : STDIO_STREAM_BUDGET_MS;

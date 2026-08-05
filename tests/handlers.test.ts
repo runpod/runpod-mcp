@@ -1516,6 +1516,93 @@ describe('hosted HTTP transport clamps long-poll budgets', () => {
     );
   });
 
+  // The clamp above is invisible in the reply, and an agent that reads a
+  // non-terminal status as "my 5-minute wait elapsed" cancels a job that is 45
+  // seconds old. These pin the marker that says otherwise — and, just as much,
+  // the three cases where it must stay quiet.
+  function waitClampedOf(out: unknown) {
+    return parseText(out).waitClamped as
+      | { requestedMs: number; effectiveMs: number; reason: string }
+      | undefined;
+  }
+
+  it('runsync-endpoint on http: a clamped wait with a non-terminal reply is marked waitClamped', async () => {
+    const { handlers } = harness({
+      transport: 'http',
+      jsonBody: { id: 'job1', status: 'IN_QUEUE' },
+    });
+    const out = await handlers.get('runsync-endpoint')!({
+      endpointId: 'ep_h',
+      input: { a: 1 },
+      wait: 300000,
+    });
+    const marker = waitClampedOf(out);
+    assert.ok(marker, 'non-terminal reply to a clamped wait must be marked');
+    assert.equal(marker.requestedMs, 300000);
+    assert.equal(marker.effectiveMs, HTTP_LONG_POLL_BUDGET_MS);
+    assert.match(marker.reason, /get-job-status/);
+    // Everything upstream sent still passes through untouched.
+    assert.equal(parseText(out).id, 'job1');
+    assert.equal(parseText(out).status, 'IN_QUEUE');
+  });
+
+  it('runsync-endpoint on http: a clamped wait that still COMPLETED is not marked', async () => {
+    const { handlers } = harness({
+      transport: 'http',
+      jsonBody: { id: 'job2', status: 'COMPLETED', output: { ok: true } },
+    });
+    const out = await handlers.get('runsync-endpoint')!({
+      endpointId: 'ep_h',
+      input: { a: 1 },
+      wait: 300000,
+    });
+    assert.equal(
+      waitClampedOf(out),
+      undefined,
+      'the job finished inside the budget — the clamp cost the caller nothing'
+    );
+  });
+
+  it('runsync-endpoint on http: a wait under the cap is never marked', async () => {
+    const { handlers } = harness({
+      transport: 'http',
+      jsonBody: { id: 'job3', status: 'IN_PROGRESS' },
+    });
+    const out = await handlers.get('runsync-endpoint')!({
+      endpointId: 'ep_h',
+      input: { a: 1 },
+      wait: 30000,
+    });
+    assert.equal(waitClampedOf(out), undefined);
+  });
+
+  it('runsync-endpoint on stdio: a long wait is never marked (nothing was clamped)', async () => {
+    const { handlers } = harness({
+      jsonBody: { id: 'job4', status: 'IN_QUEUE' },
+    });
+    const out = await handlers.get('runsync-endpoint')!({
+      endpointId: 'ep_s',
+      input: { a: 1 },
+      wait: 300000,
+    });
+    assert.equal(waitClampedOf(out), undefined);
+  });
+
+  it('runsync-endpoint on http: an omitted wait is marked against the 90s upstream default', async () => {
+    const { handlers } = harness({
+      transport: 'http',
+      jsonBody: { id: 'job5', status: 'IN_QUEUE' },
+    });
+    const out = await handlers.get('runsync-endpoint')!({
+      endpointId: 'ep_h',
+      input: { a: 1 },
+    });
+    const marker = waitClampedOf(out);
+    assert.ok(marker, 'the upstream 90s default is clamped too');
+    assert.equal(marker.requestedMs, 90000);
+    assert.equal(marker.effectiveMs, HTTP_LONG_POLL_BUDGET_MS);
+  });
+
   // Drive stream-job's poll loop on a fully deterministic clock and return what
   // it produced. Two clocks matter: setTimeout (the 1s poll sleep) and Date.now
   // (the budget check). setTimeout is mocked via node:test mock timers — Node

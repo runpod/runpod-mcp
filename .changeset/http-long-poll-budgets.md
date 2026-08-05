@@ -1,5 +1,5 @@
 ---
-'@runpod/mcp-server': patch
+'@runpod/mcp-server': minor
 ---
 
 Clamp long-poll tool budgets on the hosted HTTP server, which runs behind a 60-second Vercel function limit. `runsync-endpoint` waited 90 seconds by default (300 via `wait`) and `stream-job` polled for up to 5 minutes, so for a slow job the function was reaped mid-flight: the caller got a bare 504 and every chunk collected so far was discarded.
