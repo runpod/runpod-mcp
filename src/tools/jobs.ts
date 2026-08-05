@@ -25,47 +25,33 @@ export function clearQueuedJobDiagnosisCache(): void {
   diagnosisCache.clear();
 }
 
-// An HTTP deployment is assumed to sit behind a gateway deadline that reaps the
-// request mid-flight; Runpod's hosted one does, at 60s (vercel.json maxDuration).
-// A tool that plans to wait longer never reaches its own graceful-timeout path —
-// the gateway kills it first, so the caller gets a bare 504, everything collected
-// so far is discarded, and the instance holds its provisioned memory until then.
-// Budget = 60s - 4s credential pre-flight (_shared/credential-check.ts) - 4s v2
-// probe (_shared/backend.ts) - response serialization, rounded down for
-// cold-start slack. stdio has no deadline and keeps the full budgets.
-// Exported so a test can assert it still fits inside vercel.json's maxDuration —
-// that relationship is the whole premise of the clamp, and nothing else links
-// the two files.
+// An http deployment is assumed to sit behind a gateway that reaps the request
+// mid-flight; Runpod's hosted one does, at 60s (vercel.json maxDuration). Wait
+// longer than the budget and the gateway kills the call before the tool's own
+// timeout path runs: bare 504, collected output discarded. 45s leaves room for
+// the credential pre-flight and v2 probe (4s each). Exported for the test that
+// checks it against vercel.json; stdio has no deadline.
 export const HTTP_LONG_POLL_BUDGET_MS = 45_000;
 const STDIO_STREAM_BUDGET_MS = 5 * 60 * 1000;
-// Upstream defaults, mirrored here so the clamp can reason about them. Both are
-// restatements of the service, not derived from it — re-check against ai-api
-// (pkg/api/runsync.go, pkg/api/stream.go) if upstream behavior changes.
-//
-// What /runsync waits when the request omits `wait`. Only bites if upstream ever
-// drops this below the budget; until then min(90s, 45s) is always the budget.
+// Upstream defaults, mirrored not derived — re-check against ai-api
+// (pkg/api/runsync.go, pkg/api/stream.go) if the service changes.
 const RUNSYNC_UPSTREAM_DEFAULT_WAIT_MS = 90_000;
-// How long an http /stream poll lets the server hold an empty response. Without
-// it the server blocks for its own 10s default, and since the budget is only
-// checked between polls a chunk-sparse job overshoots 45s to ~54s. The endpoint
-// accepts 1000–300000 (undocumented publicly; see stream.go).
+// Caps how long an empty /stream may hold the poll. Left at the server's 10s
+// default, a chunk-sparse job overshoots the 45s budget to ~54s, since the
+// budget is only checked between polls. Accepted range 1000–300000.
 const HTTP_STREAM_POLL_WAIT_MS = 1000;
-// Gap between stream-job polls. Exported so the budget tests advance their fake
-// clock by the real interval rather than a hardcoded copy of it — otherwise
-// halving the interval doubles the live request rate with the tests still green.
+// Exported so the budget tests tick the real interval, not a copy of it.
 export const STREAM_JOB_POLL_INTERVAL_MS = 1000;
-// Statuses that mean the job is over. Shared by stream-job (stop polling) and
-// runsync (a terminal reply is proof the clamp cost the caller nothing), so the
-// two cannot drift apart on what "finished" means.
+// Shared by stream-job (stop polling) and runsync (nothing was lost to the
+// clamp), so the two can't drift on what "finished" means.
 const TERMINAL_STATUSES = new Set([
   'COMPLETED',
   'FAILED',
   'CANCELLED',
   'TIMED_OUT',
 ]);
-// A reply worth annotating: a plain object (spreading an array would turn
-// ["a"] into {"0":"a"}) for a job that has not finished, and not one already
-// carrying the key. A terminal reply proves the clamp cost the caller nothing.
+// Annotatable: a plain object (spreading an array yields {"0":…}) for a job
+// still running, not already carrying the key.
 function isUnfinishedJobReply(
   result: unknown
 ): result is Record<string, unknown> {
@@ -78,8 +64,6 @@ function isUnfinishedJobReply(
   );
 }
 
-// The one place a budget is rendered dynamically. Both call sites pass a
-// compile-time constant, so only the two round values below are reachable.
 function formatBudget(ms: number): string {
   return ms >= 120_000
     ? `${Math.round(ms / 60_000)} minutes`
@@ -88,10 +72,8 @@ function formatBudget(ms: number): string {
 
 export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
   const { jsonReply, serverlessRequest, backendFor, callRestUrl } = rt;
-  // Descriptions are built per server instance, so each caller is told the one
-  // budget that applies to them. Stating both ("5 minutes, or 45s if hosted")
-  // guarantees every reader gets a clause that is false for them, with no way
-  // to tell which — and these strings are the contract an agent plans against.
+  // Built per instance so each caller is told only the budget that applies to
+  // them; stating both leaves every reader a clause that is false for them.
   const hosted = rt.transport === 'http';
   const streamBudget = formatBudget(
     hosted ? HTTP_LONG_POLL_BUDGET_MS : STDIO_STREAM_BUDGET_MS
@@ -297,23 +279,17 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
     { title: 'Run endpoint (sync)', ...WRITE },
     async (params) => {
       const { endpointId, wait, ...body } = params;
-      // On http the wait is ALWAYS sent, clamped: both the upstream default
-      // (90s) and the param ceiling (300s) outlive the gateway deadline, so an
-      // omitted wait is just as fatal as a long one. When the clamped wait
-      // expires the response carries the job ID and a non-terminal status —
-      // the documented get-job-status path. stdio passes `wait` through as-is.
+      // Always sent on http: the upstream default (90s) outlives the deadline
+      // too, so an omitted wait is as fatal as a long one.
       const effectiveWait = hosted
         ? Math.min(
             wait ?? RUNSYNC_UPSTREAM_DEFAULT_WAIT_MS,
             HTTP_LONG_POLL_BUDGET_MS
           )
         : wait;
-      // Tested against undefined, not truthiness: `wait: 0` clamps to 0, and a
-      // falsy check would drop the query entirely — handing the request back to
-      // the upstream 90s default, i.e. the reaping this exists to prevent. The
-      // Zod min(1000) makes 0 unreachable today, but handlers are called
-      // directly by tests and could be by another transport (see the same
-      // re-enforcement in catalog.ts), and here the cost of the gap is a 504.
+      // undefined, not falsy: `wait: 0` would drop the query and inherit the
+      // upstream 90s default. Zod blocks 0 today, but handlers are called
+      // directly (catalog.ts guards the same way).
       const waitQuery =
         effectiveWait === undefined ? '' : `?wait=${effectiveWait}`;
       const path = `/runsync${waitQuery}`;
@@ -324,12 +300,9 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
         body as Record<string, unknown>
       );
 
-      // Waiting less than asked, silently, is the failure mode: the reply for a
-      // job that outlived 45s is byte-identical to one that outlived the 300s
-      // the caller requested, and the plausible reaction to the latter is to
-      // cancel the job or call it broken. Say so — but only when the caller can
-      // actually be misled, since this is the one tool that otherwise returns
-      // the upstream body verbatim.
+      // Unmarked, a reply from a job 45s in is identical to one from a job that
+      // outlived the 300s asked for — and the reaction to the latter is to
+      // cancel it. Only marked when the caller could actually be misled.
       const requestedWait = wait ?? RUNSYNC_UPSTREAM_DEFAULT_WAIT_MS;
       if (
         hosted &&
