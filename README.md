@@ -1,5 +1,7 @@
 # Runpod MCP server
 
+[![MCP Toplist](https://mcptoplist.com/badge/pulsemcp%2Frunpod.svg)](https://mcptoplist.com/server/pulsemcp%2Frunpod)
+
 [![smithery badge](https://smithery.ai/badge/@runpod/runpod-mcp-ts)](https://smithery.ai/server/@runpod/runpod-mcp-ts)
 
 The official Runpod Model Context Protocol (MCP) server. It lets MCP clients such as Claude Code, Claude Desktop, Cursor, Windsurf, and VS Code manage your Runpod Pods, Serverless endpoints, templates, network volumes, and more.
