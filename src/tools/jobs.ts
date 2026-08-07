@@ -98,8 +98,9 @@ export const MIN_STREAM_POLL_TIMEOUT_MS = 2_000;
 // a bonus. Short enough that losing it costs little.
 export const QUEUED_DIAGNOSIS_TIMEOUT_MS = 5_000;
 
-// Deadline for ONE /stream poll: the hold it brackets, floored, and never past
-// what is left of the budget. The budget is a ceiling here, never the target —
+// Deadline for ONE /stream poll: the hold it brackets, bounded by what is left
+// of the budget, and never below MIN_STREAM_POLL_TIMEOUT_MS. The budget is a
+// ceiling here, never the target —
 //
 //   above the hold  — a poll that aborts before the server's own wait elapses
 //                     kills a reply that was on its way, every time.

@@ -101,7 +101,8 @@ function sleep(ms: number): Promise<void> {
 // their way out of, since they have no credential yet. Tool requests get the
 // same treatment through createHttpClient (src/_shared/http.ts); these calls
 // build their own request, so they are bounded here.
-const DEFAULT_FLASH_GRAPHQL_TIMEOUT_MS = 10_000;
+// Exported so the parsing test asserts the real fallback, not a copy of it.
+export const DEFAULT_FLASH_GRAPHQL_TIMEOUT_MS = 10_000;
 // Whole-poll budget for /token, below maxDuration so the OAuth error response
 // is serialized rather than reaped. 20 attempts spaced 2s apart can otherwise
 // reach the platform limit on latency alone, with or without a wedged socket.
@@ -120,7 +121,7 @@ const MIN_TOKEN_POLL_REMAINDER_MS = 1_000;
  * an ops dial for a slow backend, and how the timeout tests reach this path in
  * milliseconds instead of ten real seconds. Ignored unless it parses to a
  * positive number, so a typo falls back to the default rather than disabling
- * the deadline.
+ * the deadline. Exported so the test for that promise calls the real parser.
  */
 export function getFlashTimeoutMs(): number {
   const override = Number(process.env.MCP_FLASH_TIMEOUT_MS);
@@ -528,7 +529,7 @@ async function handleToken(
       // the code atomically upstream, so a read that failed on our side may
       // already have minted and burned the key. Retrying would then read
       // CONSUMED-with-no-key and report "already used" — a worse answer than
-      // the honest failure. One read, then we stop.
+      // the honest failure. One failed read ends the poll.
       const status = await getFlashAuthStatus(
         code,
         tokenPollDeadlineMs(remainingBudgetMs())

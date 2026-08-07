@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { after, before, beforeEach, describe, it } from 'node:test';
 
-import handler, { getFlashTimeoutMs } from '../api/index.js';
+import handler, {
+  DEFAULT_FLASH_GRAPHQL_TIMEOUT_MS,
+  getFlashTimeoutMs,
+} from '../api/index.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -278,16 +281,19 @@ describe('OAuth PKCE endpoints', () => {
   it('ignores a MCP_FLASH_TIMEOUT_MS that is not a positive number', () => {
     // CLAUDE.md promises a typo cannot disable the deadline, which is only
     // true while every non-positive parse falls back to the default.
-    for (const bad of ['abc', '0', '-1', '', ' ', 'NaN', 'Infinity']) {
-      process.env.MCP_FLASH_TIMEOUT_MS = bad;
-      assert.equal(
-        getFlashTimeoutMs(),
-        10_000,
-        `MCP_FLASH_TIMEOUT_MS=${JSON.stringify(bad)} must fall back to the default`
-      );
+    try {
+      for (const bad of ['abc', '0', '-1', '', ' ', 'NaN', 'Infinity']) {
+        process.env.MCP_FLASH_TIMEOUT_MS = bad;
+        assert.equal(
+          getFlashTimeoutMs(),
+          DEFAULT_FLASH_GRAPHQL_TIMEOUT_MS,
+          `MCP_FLASH_TIMEOUT_MS=${JSON.stringify(bad)} must fall back to the default`
+        );
+      }
+      process.env.MCP_FLASH_TIMEOUT_MS = '250';
+      assert.equal(getFlashTimeoutMs(), 250, 'a positive number is honored');
+    } finally {
+      delete process.env.MCP_FLASH_TIMEOUT_MS;
     }
-    process.env.MCP_FLASH_TIMEOUT_MS = '250';
-    assert.equal(getFlashTimeoutMs(), 250, 'a positive number is honored');
-    delete process.env.MCP_FLASH_TIMEOUT_MS;
   });
 });

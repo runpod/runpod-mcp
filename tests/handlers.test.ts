@@ -146,6 +146,18 @@ function useFakeClock(t: TestContext) {
   };
 }
 
+// node:test has no default timeout, so a loop that fails to terminate would
+// stall every remaining test in this file until CI's job timeout instead of
+// failing here. Every direct drive of a poll loop goes through this.
+async function settled<T>(pending: Promise<T>, what: string): Promise<T> {
+  const done = await Promise.race([
+    pending.then(() => true),
+    new Promise((resolve) => setImmediate(() => resolve(false))),
+  ]);
+  if (!done) throw new Error(`${what} was still running when the drive ended`);
+  return pending;
+}
+
 function harness(opts?: {
   // Transport the tools believe they run under (default stdio). 'http' engages
   // the hosted long-poll clamps in jobs.ts.
@@ -1733,22 +1745,14 @@ describe('hosted HTTP transport clamps long-poll budgets', () => {
       clock.advance(STREAM_JOB_POLL_INTERVAL_MS);
     }
     await clock.settle();
-    // The loop MUST have ended by now. If a regression widened the budget it
-    // would still be polling, and a bare `await pending` would hang forever —
-    // node:test has no default timeout, so that stalls this file's remaining
-    // ~90 tests until CI's job timeout instead of failing here.
-    const ended = await Promise.race([
-      pending.then(() => true),
-      new Promise((r) => setImmediate(() => r(false))),
-    ]);
-    if (!ended) {
-      throw new Error(
-        `stream-job was still polling after ${opts.ticks} ticks (${
-          (opts.ticks * STREAM_JOB_POLL_INTERVAL_MS) / 1000
-        }s of fake time) — its budget is larger than this test expects`
-      );
-    }
-    const out = (await pending) as { content: Array<{ text: string }> };
+    // The loop MUST have ended by now; if a regression widened the budget it
+    // would still be polling. Hence `settled` rather than a bare await.
+    const out = (await settled(
+      pending,
+      `stream-job after ${opts.ticks} ticks (${
+        (opts.ticks * STREAM_JOB_POLL_INTERVAL_MS) / 1000
+      }s of fake time; its budget is larger than this test expects)`
+    )) as { content: Array<{ text: string }> };
     return {
       outbound,
       result: JSON.parse(out.content[0].text) as {
@@ -1821,12 +1825,13 @@ describe('hosted HTTP transport clamps long-poll budgets', () => {
     const vercel = JSON.parse(
       readFileSync(new URL('../vercel.json', import.meta.url), 'utf8')
     ) as { functions?: Record<string, { maxDuration?: number }> };
-    const maxDuration = Object.values(vercel.functions ?? {}).find(
-      (f) => typeof f.maxDuration === 'number'
-    )?.maxDuration;
+    // Keyed to the function both budgets actually run in, not to the first
+    // entry that happens to declare a limit: adding a second function ahead of
+    // it would otherwise assert against a number that governs neither.
+    const maxDuration = vercel.functions?.['api/index.ts']?.maxDuration;
     assert.ok(
       typeof maxDuration === 'number',
-      'vercel.json no longer declares a maxDuration — the budget below is derived from it'
+      'vercel.json no longer declares a maxDuration for api/index.ts — both budgets below are derived from it'
     );
     // The credential pre-flight (4s) runs before dispatch; the rest is
     // serialization and cold start. The v2 probe is stdio-only startup wiring,
@@ -1897,7 +1902,10 @@ describe('stream-job poll loop', () => {
       clock.advance(STREAM_JOB_POLL_INTERVAL_MS);
     }
     await clock.settle();
-    const { result, chunks } = await pending;
+    const { result, chunks } = await settled(
+      pending,
+      'the error-cap poll loop'
+    );
     assert.equal(asked.length, MAX_CONSECUTIVE_STREAM_ERRORS);
     for (const deadline of asked) {
       assert.equal(
@@ -1946,7 +1954,7 @@ describe('stream-job poll loop', () => {
       clock.advance(STREAM_JOB_POLL_INTERVAL_MS);
     }
     await clock.settle();
-    const { result, chunks } = await pending;
+    const { result, chunks } = await settled(pending, 'the recovery poll loop');
     assert.equal(
       attempt,
       script.length,
