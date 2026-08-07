@@ -101,14 +101,19 @@ function sleep(ms: number): Promise<void> {
 // their way out of, since they have no credential yet. Tool requests get the
 // same treatment through createHttpClient (src/_shared/http.ts); these calls
 // build their own request, so they are bounded here.
-const FLASH_GRAPHQL_TIMEOUT_MS = 10_000;
+const DEFAULT_FLASH_GRAPHQL_TIMEOUT_MS = 10_000;
 // Whole-poll budget for /token, below maxDuration so the OAuth error response
 // is serialized rather than reaped. 20 attempts spaced 2s apart can otherwise
 // reach the platform limit on latency alone, with or without a wedged socket.
-const TOKEN_POLL_BUDGET_MS = 45_000;
+// Exported for the test that checks it against vercel.json — the same
+// cross-file invariant HTTP_LONG_POLL_BUDGET_MS is pinned by, and the same
+// silent failure if maxDuration moves and this does not.
+export const TOKEN_POLL_BUDGET_MS = 45_000;
 const TOKEN_POLL_INTERVAL_MS = 2_000;
-// A clamped deadline still has to be long enough for a warm backend to answer.
-const MIN_FLASH_GRAPHQL_TIMEOUT_MS = 1_000;
+// Floor for the REMAINING budget when clamping a call's deadline: a budget
+// down to its last milliseconds still buys one honest attempt rather than a 0ms
+// one that reads as a backend fault. It never lengthens the per-call deadline.
+const MIN_TOKEN_POLL_REMAINDER_MS = 1_000;
 
 /**
  * Deadline for one flash-backend call. `MCP_FLASH_TIMEOUT_MS` overrides it —
@@ -117,11 +122,22 @@ const MIN_FLASH_GRAPHQL_TIMEOUT_MS = 1_000;
  * positive number, so a typo falls back to the default rather than disabling
  * the deadline.
  */
-function getFlashTimeoutMs(): number {
+export function getFlashTimeoutMs(): number {
   const override = Number(process.env.MCP_FLASH_TIMEOUT_MS);
   return Number.isFinite(override) && override > 0
     ? override
-    : FLASH_GRAPHQL_TIMEOUT_MS;
+    : DEFAULT_FLASH_GRAPHQL_TIMEOUT_MS;
+}
+
+// Deadline for one /token poll: the per-call deadline, never past what is left
+// of the whole poll. The sibling of streamPollTimeoutMs in src/tools/jobs.ts,
+// and floored on the same reasoning — a stall on the last attempt must not push
+// the response past maxDuration.
+function tokenPollDeadlineMs(remainingMs: number): number {
+  return Math.min(
+    getFlashTimeoutMs(),
+    Math.max(remainingMs, MIN_TOKEN_POLL_REMAINDER_MS)
+  );
 }
 
 /**
@@ -508,17 +524,14 @@ async function handleToken(
       attempt < maxAttempts && remainingBudgetMs() > 0;
       attempt++
     ) {
-      // Each read is bounded, and never past what is left of the poll: a stall
-      // on the last attempt must not push the response past maxDuration. The
-      // floor applies to the REMAINING budget only — it never lengthens the
-      // per-call deadline, so a nearly-spent budget still gets one honest
-      // attempt instead of a 0ms one that reads as a backend fault.
+      // Deliberately NOT wrapped in try/continue: an APPROVED read consumes
+      // the code atomically upstream, so a read that failed on our side may
+      // already have minted and burned the key. Retrying would then read
+      // CONSUMED-with-no-key and report "already used" — a worse answer than
+      // the honest failure. One read, then we stop.
       const status = await getFlashAuthStatus(
         code,
-        Math.min(
-          getFlashTimeoutMs(),
-          Math.max(remainingBudgetMs(), MIN_FLASH_GRAPHQL_TIMEOUT_MS)
-        )
+        tokenPollDeadlineMs(remainingBudgetMs())
       );
       console.log('oauth_token_poll', {
         attempt,

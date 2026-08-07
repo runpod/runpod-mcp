@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { after, before, beforeEach, describe, it } from 'node:test';
 
-import handler from '../api/index.js';
+import handler, { getFlashTimeoutMs } from '../api/index.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -45,6 +45,7 @@ const LOOPBACK_REDIRECT = 'http://127.0.0.1:8765/callback';
 const originalGraphqlUrl = process.env.RUNPOD_GRAPHQL_URL;
 const originalConsoleBaseUrl = process.env.CONSOLE_BASE_URL;
 const originalApiKeyName = process.env.RUNPOD_API_KEY_NAME;
+const originalFlashTimeout = process.env.MCP_FLASH_TIMEOUT_MS;
 
 let backend: http.Server;
 let backendRequests: string[] = [];
@@ -111,6 +112,9 @@ after(async () => {
   else process.env.CONSOLE_BASE_URL = originalConsoleBaseUrl;
   if (originalApiKeyName === undefined) delete process.env.RUNPOD_API_KEY_NAME;
   else process.env.RUNPOD_API_KEY_NAME = originalApiKeyName;
+  if (originalFlashTimeout === undefined)
+    delete process.env.MCP_FLASH_TIMEOUT_MS;
+  else process.env.MCP_FLASH_TIMEOUT_MS = originalFlashTimeout;
 
   await new Promise<void>((resolve, reject) =>
     backend.close((error) => (error ? reject(error) : resolve()))
@@ -269,5 +273,21 @@ describe('OAuth PKCE endpoints', () => {
     } finally {
       delete process.env.MCP_FLASH_TIMEOUT_MS;
     }
+  });
+
+  it('ignores a MCP_FLASH_TIMEOUT_MS that is not a positive number', () => {
+    // CLAUDE.md promises a typo cannot disable the deadline, which is only
+    // true while every non-positive parse falls back to the default.
+    for (const bad of ['abc', '0', '-1', '', ' ', 'NaN', 'Infinity']) {
+      process.env.MCP_FLASH_TIMEOUT_MS = bad;
+      assert.equal(
+        getFlashTimeoutMs(),
+        10_000,
+        `MCP_FLASH_TIMEOUT_MS=${JSON.stringify(bad)} must fall back to the default`
+      );
+    }
+    process.env.MCP_FLASH_TIMEOUT_MS = '250';
+    assert.equal(getFlashTimeoutMs(), 250, 'a positive number is honored');
+    delete process.env.MCP_FLASH_TIMEOUT_MS;
   });
 });

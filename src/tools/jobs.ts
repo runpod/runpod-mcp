@@ -33,21 +33,26 @@ export function clearQueuedJobDiagnosisCache(): void {
 // stdio-only, see backend.ts). Exported for the test that checks it against
 // vercel.json; stdio has no deadline.
 export const HTTP_LONG_POLL_BUDGET_MS = 45_000;
+// Exported so the poll-deadline tests measure attempts against the real stdio
+// budget rather than a copy of it.
 export const STDIO_STREAM_BUDGET_MS = 5 * 60 * 1000;
 // Upstream defaults, mirrored not derived — re-check against ai-api
 // (pkg/api/runsync.go, pkg/api/stream.go) if the service changes.
 const RUNSYNC_UPSTREAM_DEFAULT_WAIT_MS = 90_000;
 // What an empty GET /stream holds for when no ?wait= is sent. stdio omits the
 // query, so this — not the http value below — is the hold its polls bracket.
+// Exported so those tests read the hold instead of restating it.
 export const STREAM_UPSTREAM_DEFAULT_WAIT_MS = 10_000;
 // Caps how long an empty /stream may hold the poll. Left at the server's 10s
 // default, a chunk-sparse job overshoots the 45s budget to ~54s, since the
-// budget is only checked between polls. Accepted range 1000–300000.
+// budget is only checked between polls. Accepted range 1000–300000. Exported
+// for the same reason as its stdio sibling above.
 export const HTTP_STREAM_POLL_WAIT_MS = 1000;
 // Exported so the budget tests tick the real interval, not a copy of it.
 export const STREAM_JOB_POLL_INTERVAL_MS = 1000;
 // Consecutive failures that end the poll. Only reachable while each attempt is
-// bounded well inside the budget — see streamPollTimeoutMs.
+// bounded well inside the budget — see streamPollTimeoutMs. Exported so the
+// guard asserting the budget fits that many attempts counts the real cap.
 export const MAX_CONSECUTIVE_STREAM_ERRORS = 5;
 // Shared by stream-job (stop polling) and runsync (nothing was lost to the
 // clamp), so the two can't drift on what "finished" means.
@@ -83,7 +88,8 @@ function formatBudget(ms: number): string {
 // Must also fit under the http ceiling, or the clamp lands the deadline back on
 // the hold (asserted in tests/http.test.ts).
 export const UPSTREAM_HOLD_SLACK_MS = 5_000;
-// So the last poll of a nearly-spent budget can still answer.
+// So the last poll of a nearly-spent budget can still answer. Exported so the
+// floor test asserts the real value.
 export const MIN_STREAM_POLL_TIMEOUT_MS = 2_000;
 // The queued-job diagnosis is enrichment on an answer we already have, and it is
 // discarded on any failure. The shared invocation budget stops it from causing a
@@ -92,7 +98,8 @@ export const MIN_STREAM_POLL_TIMEOUT_MS = 2_000;
 // a bonus. Short enough that losing it costs little.
 export const QUEUED_DIAGNOSIS_TIMEOUT_MS = 5_000;
 
-// Deadline for ONE /stream poll. Two bounds, and the budget is not one of them:
+// Deadline for ONE /stream poll: the hold it brackets, floored, and never past
+// what is left of the budget. The budget is a ceiling here, never the target —
 //
 //   above the hold  — a poll that aborts before the server's own wait elapses
 //                     kills a reply that was on its way, every time.
@@ -103,7 +110,10 @@ export const QUEUED_DIAGNOSIS_TIMEOUT_MS = 5_000;
 //                     built to survive.
 //
 // The floor only bites once the budget is nearly spent, where a 0ms deadline
-// would report a server fault for time we had already used.
+// would report a server fault for time we had already used. On the hosted
+// transport it is not the last word either: clampTimeout then measures the
+// result against the remaining invocation budget, whose own floor is
+// MIN_REQUEST_TIMEOUT_MS (src/_shared/http.ts).
 export function streamPollTimeoutMs(
   remainingMs: number,
   holdMs: number
@@ -118,6 +128,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// The annotation added when the budget runs out before the job finishes.
 // /stream drains what it hands out, so calling again resumes where this run
 // stopped rather than replaying from the start.
 function budgetExhaustedNote(
@@ -149,6 +160,8 @@ export async function collectJobStream(deps: {
   const startedAt = Date.now();
   const elapsed = () => Date.now() - startedAt;
   const chunks: unknown[] = [];
+  // Never mutated in place: `poll` is caller-supplied now that this is
+  // exported, and the last reply is not ours to annotate.
   let result: Record<string, unknown> = {};
   let consecutiveErrors = 0;
   let lastError: string | undefined;
@@ -158,6 +171,8 @@ export async function collectJobStream(deps: {
       const reply = await poll(
         streamPollTimeoutMs(budgetMs - elapsed(), holdMs)
       );
+      // A success clears the count: only CONSECUTIVE failures end the run, so
+      // a flaky endpoint that answers in between keeps streaming.
       consecutiveErrors = 0;
       if (Array.isArray(reply.stream)) chunks.push(...reply.stream);
       result = reply;
@@ -166,13 +181,16 @@ export async function collectJobStream(deps: {
       consecutiveErrors++;
       lastError = error instanceof Error ? error.message : String(error);
       if (consecutiveErrors >= MAX_CONSECUTIVE_STREAM_ERRORS) {
-        result.error = `Polling aborted after ${MAX_CONSECUTIVE_STREAM_ERRORS} consecutive errors: ${lastError}`;
+        result = {
+          ...result,
+          error: `Polling aborted after ${MAX_CONSECUTIVE_STREAM_ERRORS} consecutive errors: ${lastError}`,
+        };
         break;
       }
     }
 
     if (elapsed() > budgetMs) {
-      Object.assign(result, budgetExhaustedNote(budgetMs, lastError));
+      result = { ...result, ...budgetExhaustedNote(budgetMs, lastError) };
       break;
     }
 
@@ -499,8 +517,9 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
     },
     { title: 'Stream job', ...READ_ONLY },
     async (params) => {
-      // stdio keeps the server's default hold: fewer requests, no deadline to
-      // race. Whichever hold applies is what each poll's deadline brackets.
+      // stdio keeps the server's default hold: fewer requests, and no platform
+      // deadline to race (its polls are still bounded — by the hold below).
+      // Whichever hold applies is what each poll's deadline brackets.
       const streamQuery = hosted ? `?wait=${HTTP_STREAM_POLL_WAIT_MS}` : '';
       const streamPath = `/stream/${params.jobId}${streamQuery}`;
 

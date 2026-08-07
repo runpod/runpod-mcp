@@ -35,6 +35,7 @@ import {
   UPSTREAM_HOLD_SLACK_MS,
 } from '../src/tools/jobs.js';
 import { isGraphqlMutation } from '../src/tools/runtime.js';
+import { TOKEN_POLL_BUDGET_MS } from '../api/index.js';
 import { DEFAULT_REQUEST_TIMEOUT_MS } from '../src/_shared/http.js';
 
 // ============== Handler integration / outbound-request golden ==============
@@ -101,6 +102,12 @@ function useFakeClock(t: TestContext) {
   let fakeNow = 0;
   const realNow = Date.now;
   Date.now = () => fakeNow;
+  // Registered here rather than left to each caller's try/finally: a test that
+  // throws mid-drive would otherwise leave every later test in this file on a
+  // frozen clock.
+  t.after(() => {
+    Date.now = realNow;
+  });
   return {
     // Move both clocks together: a pending sleep fires and the budget ages by
     // the same amount, which is what the real runtime does.
@@ -116,10 +123,25 @@ function useFakeClock(t: TestContext) {
     // setImmediate is not mocked, so this lets in-flight microtasks (the fake
     // fetch and its json()) settle before the clock moves again.
     settle: () => new Promise((resolve) => setImmediate(resolve)),
-    realDelay: (ms: number) =>
-      new Promise((resolve) => realSetTimeout(resolve, ms)),
-    restore() {
-      Date.now = realNow;
+    // Wait on the condition, not on a guess about how long a real deadline
+    // takes: a fixed sleep sized to a 40ms abort is the kind of test that only
+    // fails on a loaded CI box.
+    async waitFor(
+      predicate: () => boolean,
+      description: string,
+      timeoutMs = 5_000
+    ) {
+      const deadline = realNow() + timeoutMs;
+      while (!predicate()) {
+        if (realNow() > deadline) {
+          throw new Error(
+            `timed out after ${timeoutMs}ms waiting for ${description}`
+          );
+        }
+        await new Promise((resolve) => realSetTimeout(resolve, 5));
+      }
+      // Let whatever the predicate observed finish settling.
+      await new Promise((resolve) => setImmediate(resolve));
     },
   };
 }
@@ -820,10 +842,7 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
       });
       assert.equal(outbound.length, 2);
       // 1) template GET
-      assert.equal(
-        outbound[0].url,
-        'https://api.runpod.io/v2/templates/tpl_1'
-      );
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/templates/tpl_1');
       assert.equal(outbound[0].method, 'GET');
       // 2) pod POST with the template's container config folded in
       assert.equal(outbound[1].url, 'https://api.runpod.io/v2/pods');
@@ -1076,10 +1095,7 @@ describe('template / network-volume / registry routing under v2', () => {
         jsonBody: { networkVolumes: [] },
       });
       await handlers.get('list-network-volumes')!({});
-      assert.equal(
-        outbound[0].url,
-        'https://api.runpod.io/v2/network-volumes'
-      );
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/network-volumes');
     });
   });
 
@@ -1091,10 +1107,7 @@ describe('template / network-volume / registry routing under v2', () => {
         size: 50,
         dataCenterId: 'EU-RO-1',
       });
-      assert.equal(
-        outbound[0].url,
-        'https://api.runpod.io/v2/network-volumes'
-      );
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/network-volumes');
       const body = JSON.parse(outbound[0].body!);
       assert.equal(body.dataCenter, 'EU-RO-1');
       assert.equal('dataCenterId' in body, false);
@@ -1119,10 +1132,7 @@ describe('template / network-volume / registry routing under v2', () => {
         templateId: 't_1',
         imageName: 'img2',
       });
-      assert.equal(
-        outbound[0].url,
-        'https://api.runpod.io/v2/templates/t_1'
-      );
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/templates/t_1');
       assert.equal(outbound[0].method, 'PATCH');
       const body = JSON.parse(outbound[0].body!);
       assert.equal(body.image, 'img2'); // v2 mapper maps it
@@ -1339,10 +1349,7 @@ describe('catalog routing (B5)', () => {
       const out = (await handlers.get('list-gpu-types')!({
         includeAvailability: false,
       })) as { content: Array<{ text: string }> };
-      assert.equal(
-        outbound[0].url,
-        'https://api.runpod.io/v2/catalog/gpus'
-      );
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/catalog/gpus');
       // no availability data → nothing filtered out
       assert.equal(JSON.parse(out.content[0].text).items.length, 2);
     });
@@ -1446,10 +1453,7 @@ describe('catalog routing (B5)', () => {
       const out = (await handlers.get('list-cpu-types')!({})) as {
         content: Array<{ text: string }>;
       };
-      assert.equal(
-        outbound[0].url,
-        'https://api.runpod.io/v2/catalog/cpus'
-      );
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/catalog/cpus');
       assert.deepEqual(JSON.parse(out.content[0].text).items, [
         { id: 'cpu5c' },
       ]);
@@ -1711,52 +1715,48 @@ describe('hosted HTTP transport clamps long-poll budgets', () => {
     opts: { transport: 'stdio' | 'http'; endpointId: string; ticks: number }
   ) {
     const clock = useFakeClock(t);
-    try {
-      const { handlers, outbound } = harness({
-        transport: opts.transport,
-        // Never terminal — only the budget can end the loop.
-        jsonBody: { status: 'IN_PROGRESS', stream: [{ chunk: 'x' }] },
-      });
-      const pending = handlers.get('stream-job')!({
-        endpointId: opts.endpointId,
-        jobId: 'jH',
-      });
-      // setImmediate is NOT mocked, so each round lets the in-flight poll (fake
-      // fetch + json()) settle before advancing both clocks by one real poll
-      // interval — imported, not hardcoded, so halving the interval in the
-      // source can't double the live request rate with these tests still green.
-      for (let i = 0; i < opts.ticks; i++) {
-        await clock.settle();
-        clock.advance(STREAM_JOB_POLL_INTERVAL_MS);
-      }
+    const { handlers, outbound } = harness({
+      transport: opts.transport,
+      // Never terminal — only the budget can end the loop.
+      jsonBody: { status: 'IN_PROGRESS', stream: [{ chunk: 'x' }] },
+    });
+    const pending = handlers.get('stream-job')!({
+      endpointId: opts.endpointId,
+      jobId: 'jH',
+    });
+    // setImmediate is NOT mocked, so each round lets the in-flight poll (fake
+    // fetch + json()) settle before advancing both clocks by one real poll
+    // interval — imported, not hardcoded, so halving the interval in the
+    // source can't double the live request rate with these tests still green.
+    for (let i = 0; i < opts.ticks; i++) {
       await clock.settle();
-      // The loop MUST have ended by now. If a regression widened the budget it
-      // would still be polling, and a bare `await pending` would hang forever —
-      // node:test has no default timeout, so that stalls this file's remaining
-      // ~90 tests until CI's job timeout instead of failing here.
-      const ended = await Promise.race([
-        pending.then(() => true),
-        new Promise((r) => setImmediate(() => r(false))),
-      ]);
-      if (!ended) {
-        throw new Error(
-          `stream-job was still polling after ${opts.ticks} ticks (${
-            (opts.ticks * STREAM_JOB_POLL_INTERVAL_MS) / 1000
-          }s of fake time) — its budget is larger than this test expects`
-        );
-      }
-      const out = (await pending) as { content: Array<{ text: string }> };
-      return {
-        outbound,
-        result: JSON.parse(out.content[0].text) as {
-          pollingTimedOut?: boolean;
-          note?: string;
-          stream: unknown[];
-        },
-      };
-    } finally {
-      clock.restore();
+      clock.advance(STREAM_JOB_POLL_INTERVAL_MS);
     }
+    await clock.settle();
+    // The loop MUST have ended by now. If a regression widened the budget it
+    // would still be polling, and a bare `await pending` would hang forever —
+    // node:test has no default timeout, so that stalls this file's remaining
+    // ~90 tests until CI's job timeout instead of failing here.
+    const ended = await Promise.race([
+      pending.then(() => true),
+      new Promise((r) => setImmediate(() => r(false))),
+    ]);
+    if (!ended) {
+      throw new Error(
+        `stream-job was still polling after ${opts.ticks} ticks (${
+          (opts.ticks * STREAM_JOB_POLL_INTERVAL_MS) / 1000
+        }s of fake time) — its budget is larger than this test expects`
+      );
+    }
+    const out = (await pending) as { content: Array<{ text: string }> };
+    return {
+      outbound,
+      result: JSON.parse(out.content[0].text) as {
+        pollingTimedOut?: boolean;
+        note?: string;
+        stream: unknown[];
+      },
+    };
   }
 
   it('stream-job on http: stops polling at 45s and returns collected chunks with the resume note', async (t) => {
@@ -1814,6 +1814,40 @@ describe('hosted HTTP transport clamps long-poll budgets', () => {
     }
   });
 
+  it('the hosted budget still fits inside vercel.json maxDuration, with room for the pre-flight', () => {
+    // The clamp's entire premise is a relationship between two files that
+    // nothing else connects. Raise maxDuration and the budget silently stays
+    // low; lower it and the reaping is back with every other test green.
+    const vercel = JSON.parse(
+      readFileSync(new URL('../vercel.json', import.meta.url), 'utf8')
+    ) as { functions?: Record<string, { maxDuration?: number }> };
+    const maxDuration = Object.values(vercel.functions ?? {}).find(
+      (f) => typeof f.maxDuration === 'number'
+    )?.maxDuration;
+    assert.ok(
+      typeof maxDuration === 'number',
+      'vercel.json no longer declares a maxDuration — the budget below is derived from it'
+    );
+    // The credential pre-flight (4s) runs before dispatch; the rest is
+    // serialization and cold start. The v2 probe is stdio-only startup wiring,
+    // so it is not in this path despite what an earlier version of this
+    // comment said.
+    const PRE_FLIGHT_HEADROOM_MS = 8_000;
+    assert.ok(
+      HTTP_LONG_POLL_BUDGET_MS + PRE_FLIGHT_HEADROOM_MS <= maxDuration * 1000,
+      `HTTP_LONG_POLL_BUDGET_MS (${HTTP_LONG_POLL_BUDGET_MS}) + pre-flight headroom (${PRE_FLIGHT_HEADROOM_MS}) exceeds maxDuration (${maxDuration}s). Adjust the budget in src/tools/jobs.ts to match.`
+    );
+    // The OAuth /token poll runs in the same function under the same limit and
+    // is the same 45s for the same reason, so it is pinned here rather than
+    // left as a comment claiming an invariant nothing checks.
+    assert.ok(
+      TOKEN_POLL_BUDGET_MS + PRE_FLIGHT_HEADROOM_MS <= maxDuration * 1000,
+      `TOKEN_POLL_BUDGET_MS (${TOKEN_POLL_BUDGET_MS}) leaves no room under maxDuration (${maxDuration}s) to serialize the OAuth error. Adjust it in api/index.ts.`
+    );
+  });
+});
+
+describe('stream-job poll loop', () => {
   it('bounds each poll by the hold it brackets, not by the whole budget', async () => {
     // The deadline the loop actually asks for, observed rather than inferred.
     // The regression this pins let one wedged socket spend the entire budget in
@@ -1845,44 +1879,85 @@ describe('hosted HTTP transport clamps long-poll budgets', () => {
     // socket. Fails immediately (no stall) so the loop, not the transport, is
     // what this measures.
     const clock = useFakeClock(t);
-    try {
-      const asked: number[] = [];
-      const pending = collectJobStream({
-        budgetMs: STDIO_STREAM_BUDGET_MS,
-        holdMs: STREAM_UPSTREAM_DEFAULT_WAIT_MS,
-        poll: (timeoutMs) => {
-          asked.push(timeoutMs);
-          return Promise.reject(
-            new Error('Runpod Serverless API Error: no response after 15000ms')
-          );
-        },
-      });
-      // One tick per sleep between attempts; the budget is nowhere near spent,
-      // so only the error cap can end this.
-      for (let i = 0; i < MAX_CONSECUTIVE_STREAM_ERRORS; i++) {
-        await clock.settle();
-        clock.advance(STREAM_JOB_POLL_INTERVAL_MS);
-      }
-      await clock.settle();
-      const { result, chunks } = await pending;
-      assert.equal(asked.length, MAX_CONSECUTIVE_STREAM_ERRORS);
-      for (const deadline of asked) {
-        assert.equal(
-          deadline,
-          STREAM_UPSTREAM_DEFAULT_WAIT_MS + UPSTREAM_HOLD_SLACK_MS
+    const asked: number[] = [];
+    const pending = collectJobStream({
+      budgetMs: STDIO_STREAM_BUDGET_MS,
+      holdMs: STREAM_UPSTREAM_DEFAULT_WAIT_MS,
+      poll: (timeoutMs) => {
+        asked.push(timeoutMs);
+        return Promise.reject(
+          new Error('Runpod Serverless API Error: no response after 15000ms')
         );
-      }
-      assert.match(
-        String(result.error),
-        /Polling aborted after 5 consecutive errors/
-      );
-      assert.deepEqual(chunks, []);
-    } finally {
-      clock.restore();
+      },
+    });
+    // One tick per sleep between attempts; the budget is nowhere near spent,
+    // so only the error cap can end this.
+    for (let i = 0; i < MAX_CONSECUTIVE_STREAM_ERRORS; i++) {
+      await clock.settle();
+      clock.advance(STREAM_JOB_POLL_INTERVAL_MS);
     }
+    await clock.settle();
+    const { result, chunks } = await pending;
+    assert.equal(asked.length, MAX_CONSECUTIVE_STREAM_ERRORS);
+    for (const deadline of asked) {
+      assert.equal(
+        deadline,
+        STREAM_UPSTREAM_DEFAULT_WAIT_MS + UPSTREAM_HOLD_SLACK_MS
+      );
+    }
+    assert.match(
+      String(result.error),
+      /Polling aborted after 5 consecutive errors/
+    );
+    assert.deepEqual(chunks, []);
   });
 
-  it('stream-job: a wedged poll aborts on its own deadline, and the run ends with pollingTimedOut + lastError', async (t) => {
+  it('counts only CONSECUTIVE failures, so a job that recovers keeps streaming', async (t) => {
+    // Without the reset, a long stream over a flaky endpoint dies at the fifth
+    // failure however many good polls sat between them — and every other test
+    // here still passes, because none of them ever succeeds after a failure.
+    const clock = useFakeClock(t);
+    const script: Array<'fail' | 'chunk' | 'done'> = [
+      'fail',
+      'fail',
+      'fail',
+      'chunk',
+      'fail',
+      'fail',
+      'fail',
+      'done',
+    ];
+    let attempt = 0;
+    const pending = collectJobStream({
+      budgetMs: STDIO_STREAM_BUDGET_MS,
+      holdMs: STREAM_UPSTREAM_DEFAULT_WAIT_MS,
+      poll: () => {
+        const step = script[attempt++];
+        if (step === 'fail') return Promise.reject(new Error('transient 502'));
+        return Promise.resolve(
+          step === 'done'
+            ? { status: 'COMPLETED', stream: [{ chunk: 'last' }] }
+            : { status: 'IN_PROGRESS', stream: [{ chunk: 'mid' }] }
+        );
+      },
+    });
+    for (let i = 0; i < script.length; i++) {
+      await clock.settle();
+      clock.advance(STREAM_JOB_POLL_INTERVAL_MS);
+    }
+    await clock.settle();
+    const { result, chunks } = await pending;
+    assert.equal(
+      attempt,
+      script.length,
+      `stopped after ${attempt} polls; six failures spread across a recovery must not trip the ${MAX_CONSECUTIVE_STREAM_ERRORS}-error cap`
+    );
+    assert.equal(result.status, 'COMPLETED');
+    assert.equal(result.error, undefined);
+    assert.deepEqual(chunks, [{ chunk: 'mid' }, { chunk: 'last' }]);
+  });
+
+  it('a wedged poll aborts on its own deadline, and the run ends with pollingTimedOut + lastError', async (t) => {
     // End to end through the real handler and the real deadline: the server
     // accepts the connection and never answers, so only the AbortSignal the
     // client attaches can end the poll. The ceiling seam shrinks that deadline
@@ -1890,77 +1965,49 @@ describe('hosted HTTP transport clamps long-poll budgets', () => {
     // production code.
     const POLL_DEADLINE_MS = 40;
     const clock = useFakeClock(t);
-    try {
-      const { handlers, outbound } = harness({
-        transport: 'http',
-        maxTimeoutMs: POLL_DEADLINE_MS,
-        // Far longer than the deadline: the abort has to be what ends it.
-        delayMs: 60_000,
-      });
-      const pending = handlers.get('stream-job')!({
-        endpointId: 'ep_h',
-        jobId: 'jW',
-      }) as Promise<{ content: Array<{ text: string }> }>;
+    const { handlers, outbound } = harness({
+      transport: 'http',
+      maxTimeoutMs: POLL_DEADLINE_MS,
+      // Far longer than the deadline: the abort has to be what ends it.
+      delayMs: 60_000,
+    });
+    const pending = handlers.get('stream-job')!({
+      endpointId: 'ep_h',
+      jobId: 'jW',
+    }) as Promise<{ content: Array<{ text: string }> }>;
 
-      // Real time, because AbortSignal.timeout does not run on the mocked
-      // clock. The first poll aborts, the loop finds budget left, and parks in
-      // its (mocked) sleep.
-      await clock.realDelay(POLL_DEADLINE_MS * 3);
-      // Spend the budget while it is parked, then release the sleep: the second
-      // poll still goes out — proving the loop reconnects rather than waiting a
-      // wedged socket out — and the check after it ends the run.
-      clock.jump(HTTP_LONG_POLL_BUDGET_MS);
-      clock.advance(STREAM_JOB_POLL_INTERVAL_MS);
-      await clock.realDelay(POLL_DEADLINE_MS * 3);
-      await clock.settle();
+    // Waited for in real time, because AbortSignal.timeout does not run on the
+    // mocked clock — and waited on the recorded signal, not on `outbound`,
+    // which is appended when the request goes out rather than when it aborts.
+    const aborted = (n: number) => () => outbound[n]?.signal?.aborted === true;
+    await clock.waitFor(aborted(0), 'the first poll to abort');
+    // The loop found budget left and parked in its (mocked) sleep. Spend the
+    // budget while it is parked, then release the sleep: the second poll still
+    // goes out — proving the loop reconnects rather than waiting a wedged
+    // socket out — and the check after it ends the run.
+    clock.jump(HTTP_LONG_POLL_BUDGET_MS);
+    clock.advance(STREAM_JOB_POLL_INTERVAL_MS);
+    await clock.waitFor(aborted(1), 'the retry to go out and abort');
 
-      const out = await pending;
-      const result = JSON.parse(out.content[0].text) as {
-        pollingTimedOut?: boolean;
-        lastError?: string;
-        stream: unknown[];
-      };
-      assert.equal(
-        outbound.length,
-        2,
-        `polled ${outbound.length} times; a wedged socket must be abandoned and retried, not waited out`
-      );
-      assert.equal(result.pollingTimedOut, true);
-      assert.match(
-        result.lastError ?? '',
-        new RegExp(`no response after ${POLL_DEADLINE_MS}ms`),
-        'the stall must be reported as this poll’s deadline, not discarded'
-      );
-      assert.match(result.lastError ?? '', /Runpod Serverless API Error/);
-      assert.deepEqual(result.stream, []);
-    } finally {
-      clock.restore();
-    }
-  });
-
-  it('the hosted budget still fits inside vercel.json maxDuration, with room for the pre-flight', () => {
-    // The clamp's entire premise is a relationship between two files that
-    // nothing else connects. Raise maxDuration and the budget silently stays
-    // low; lower it and the reaping is back with every other test green.
-    const vercel = JSON.parse(
-      readFileSync(new URL('../vercel.json', import.meta.url), 'utf8')
-    ) as { functions?: Record<string, { maxDuration?: number }> };
-    const maxDuration = Object.values(vercel.functions ?? {}).find(
-      (f) => typeof f.maxDuration === 'number'
-    )?.maxDuration;
-    assert.ok(
-      typeof maxDuration === 'number',
-      'vercel.json no longer declares a maxDuration — the budget below is derived from it'
+    const out = await pending;
+    const result = JSON.parse(out.content[0].text) as {
+      pollingTimedOut?: boolean;
+      lastError?: string;
+      stream: unknown[];
+    };
+    assert.equal(
+      outbound.length,
+      2,
+      `polled ${outbound.length} times; a wedged socket must be abandoned and retried, not waited out`
     );
-    // The credential pre-flight (4s) runs before dispatch; the rest is
-    // serialization and cold start. The v2 probe is stdio-only startup wiring,
-    // so it is not in this path despite what an earlier version of this
-    // comment said.
-    const PRE_FLIGHT_HEADROOM_MS = 8_000;
-    assert.ok(
-      HTTP_LONG_POLL_BUDGET_MS + PRE_FLIGHT_HEADROOM_MS <= maxDuration * 1000,
-      `HTTP_LONG_POLL_BUDGET_MS (${HTTP_LONG_POLL_BUDGET_MS}) + pre-flight headroom (${PRE_FLIGHT_HEADROOM_MS}) exceeds maxDuration (${maxDuration}s). Adjust the budget in src/tools/jobs.ts to match.`
+    assert.equal(result.pollingTimedOut, true);
+    assert.match(
+      result.lastError ?? '',
+      new RegExp(`no response after ${POLL_DEADLINE_MS}ms`),
+      'the stall must be reported as this poll’s deadline, not discarded'
     );
+    assert.match(result.lastError ?? '', /Runpod Serverless API Error/);
+    assert.deepEqual(result.stream, []);
   });
 });
 
@@ -2176,10 +2223,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
         endpointId: 'ep_1',
         includeTemplate: true,
       });
-      assert.equal(
-        outbound[0].url,
-        'https://api.runpod.io/v2/serverless/ep_1'
-      );
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/serverless/ep_1');
     });
   });
 
@@ -2372,10 +2416,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
       });
       assert.equal(outbound.length, 2);
       assert.equal(outbound[0].method, 'GET');
-      assert.equal(
-        outbound[0].url,
-        'https://api.runpod.io/v2/serverless/ep_1'
-      );
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/serverless/ep_1');
       assert.equal(outbound[1].method, 'PATCH');
       assert.deepEqual(JSON.parse(outbound[1].body!).scaling, {
         type: 'REQUEST_COUNT',
@@ -2444,10 +2485,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
         workersMax: 5,
         imageName: 'img:3',
       });
-      assert.equal(
-        outbound[0].url,
-        'https://api.runpod.io/v2/serverless/ep_1'
-      );
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/serverless/ep_1');
       assert.equal(outbound[0].method, 'PATCH');
       const body = JSON.parse(outbound[0].body!);
       assert.deepEqual(body.workers, { max: 5 });
@@ -2460,10 +2498,7 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({ jsonBody: {} });
       await handlers.get('delete-endpoint')!({ endpointId: 'ep_1' });
-      assert.equal(
-        outbound[0].url,
-        'https://api.runpod.io/v2/serverless/ep_1'
-      );
+      assert.equal(outbound[0].url, 'https://api.runpod.io/v2/serverless/ep_1');
       assert.equal(outbound[0].method, 'DELETE');
     });
   });
@@ -2553,10 +2588,7 @@ describe('log streaming tools (v2-only)', () => {
       const out = await handlers.get('stream-pod-logs')!({ podId: 'pod_1' });
       assert.equal(calls.length, 1);
       // `source: both` is the default → NO source query param.
-      assert.equal(
-        calls[0].url,
-        'https://api.runpod.io/v2/pods/pod_1/logs'
-      );
+      assert.equal(calls[0].url, 'https://api.runpod.io/v2/pods/pod_1/logs');
       assert.equal(calls[0].maxWaitMs, 5000);
       assert.equal(calls[0].maxBytes, 256 * 1024);
       const body = parseText(out);
@@ -3257,7 +3289,11 @@ describe('get-job-status — queued-job worker diagnosis', () => {
         endpointId: 'ep',
         jobId: 'j1',
       });
-      assert.equal(outbound.length, 2, 'expected the diagnosis to be attempted');
+      assert.equal(
+        outbound.length,
+        2,
+        'expected the diagnosis to be attempted'
+      );
       const payload = parseText(out);
       assert.equal(payload.status, 'IN_QUEUE');
       assert.equal(payload.workerHealth, undefined);
@@ -4400,7 +4436,10 @@ describe('per-request deadline', () => {
     );
     // A read must not inherit the write warning: anonymous operations and the
     // explicit `query` keyword are both reads.
-    assert.equal(isGraphqlMutation('query { myself { endpoints { id } } }'), false);
+    assert.equal(
+      isGraphqlMutation('query { myself { endpoints { id } } }'),
+      false
+    );
     assert.equal(isGraphqlMutation('{ gpuTypes { id displayName } }'), false);
     assert.equal(
       isGraphqlMutation('# mutation, eventually\nquery { gpuTypes { id } }'),
