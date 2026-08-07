@@ -1769,35 +1769,41 @@ describe('config edits land where the client actually reads', () => {
 // needed its own deadline. Interactive code with no other test surface: the
 // failure mode is a spinner that never resolves and no way out but ^C.
 describe('verifyApiKey deadline', () => {
-  it('reports a stalled host as "check failed" instead of hanging', async (t) => {
-    const stalled: http.ServerResponse[] = [];
-    const server = http.createServer((_req, res) => {
-      // Accept and go quiet — the shape node-fetch has no answer for.
-      stalled.push(res);
-    });
-    await new Promise<void>((resolve) =>
-      server.listen(0, '127.0.0.1', () => resolve())
-    );
-    const address = server.address();
-    assert.ok(address && typeof address === 'object');
-    const previous = process.env.RUNPOD_REST_API_URL;
-    process.env.RUNPOD_REST_API_URL = `http://127.0.0.1:${address.port}/v1`;
-    t.after(async () => {
-      if (previous === undefined) delete process.env.RUNPOD_REST_API_URL;
-      else process.env.RUNPOD_REST_API_URL = previous;
-      for (const res of stalled) res.destroy();
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve()))
+  // Bounded: without the deadline this hangs rather than fails, and node:test
+  // has no default timeout.
+  it(
+    'reports a stalled host as "check failed" instead of hanging',
+    { timeout: 5_000 },
+    async (t) => {
+      const stalled: http.ServerResponse[] = [];
+      const server = http.createServer((_req, res) => {
+        // Accept and go quiet — the shape node-fetch has no answer for.
+        stalled.push(res);
+      });
+      await new Promise<void>((resolve) =>
+        server.listen(0, '127.0.0.1', () => resolve())
       );
-    });
+      const address = server.address();
+      assert.ok(address && typeof address === 'object');
+      const previous = process.env.RUNPOD_REST_API_URL;
+      process.env.RUNPOD_REST_API_URL = `http://127.0.0.1:${address.port}/v1`;
+      t.after(async () => {
+        if (previous === undefined) delete process.env.RUNPOD_REST_API_URL;
+        else process.env.RUNPOD_REST_API_URL = previous;
+        for (const res of stalled) res.destroy();
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve()))
+        );
+      });
 
-    const startedAt = Date.now();
-    // null is the wizard's "could not check" verdict — it warns and lets the
-    // user continue, which is right for a host that never answered.
-    assert.equal(await verifyApiKey('rpa_test', 100), null);
-    assert.ok(
-      Date.now() - startedAt < 5_000,
-      'the deadline did not end the stalled verification'
-    );
-  });
+      const startedAt = Date.now();
+      // null is the wizard's "could not check" verdict — it warns and lets the
+      // user continue, which is right for a host that never answered.
+      assert.equal(await verifyApiKey('rpa_test', 100), null);
+      assert.ok(
+        Date.now() - startedAt < 5_000,
+        'the deadline did not end the stalled verification'
+      );
+    }
+  );
 });
