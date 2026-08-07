@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { after, before, beforeEach, describe, it } from 'node:test';
 
-import handler from '../api/index.js';
+import handler, {
+  DEFAULT_FLASH_GRAPHQL_TIMEOUT_MS,
+  getFlashTimeoutMs,
+} from '../api/index.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -45,10 +48,16 @@ const LOOPBACK_REDIRECT = 'http://127.0.0.1:8765/callback';
 const originalGraphqlUrl = process.env.RUNPOD_GRAPHQL_URL;
 const originalConsoleBaseUrl = process.env.CONSOLE_BASE_URL;
 const originalApiKeyName = process.env.RUNPOD_API_KEY_NAME;
+const originalFlashTimeout = process.env.MCP_FLASH_TIMEOUT_MS;
 
 let backend: http.Server;
 let backendRequests: string[] = [];
 let flashStatus: JsonObject;
+// When set, the backend accepts the request and never answers — the wedged
+// socket this file's timeout test exists for. Held so they can be destroyed in
+// teardown; an open response would otherwise keep server.close() waiting.
+let backendStalls = false;
+const stalledResponses: http.ServerResponse[] = [];
 
 before(async () => {
   backend = http.createServer((req, res) => {
@@ -59,6 +68,10 @@ before(async () => {
         query: string;
       };
       backendRequests.push(payload.query);
+      if (backendStalls) {
+        stalledResponses.push(res);
+        return;
+      }
       res.setHeader('content-type', 'application/json');
       if (payload.query.includes('createFlashAuthRequest')) {
         res.end(
@@ -82,6 +95,7 @@ before(async () => {
 
 beforeEach(() => {
   backendRequests = [];
+  backendStalls = false;
   flashStatus = {
     id: 'code-1',
     status: 'APPROVED',
@@ -92,12 +106,18 @@ beforeEach(() => {
 });
 
 after(async () => {
+  for (const res of stalledResponses) res.destroy();
+  stalledResponses.length = 0;
+
   if (originalGraphqlUrl === undefined) delete process.env.RUNPOD_GRAPHQL_URL;
   else process.env.RUNPOD_GRAPHQL_URL = originalGraphqlUrl;
   if (originalConsoleBaseUrl === undefined) delete process.env.CONSOLE_BASE_URL;
   else process.env.CONSOLE_BASE_URL = originalConsoleBaseUrl;
   if (originalApiKeyName === undefined) delete process.env.RUNPOD_API_KEY_NAME;
   else process.env.RUNPOD_API_KEY_NAME = originalApiKeyName;
+  if (originalFlashTimeout === undefined)
+    delete process.env.MCP_FLASH_TIMEOUT_MS;
+  else process.env.MCP_FLASH_TIMEOUT_MS = originalFlashTimeout;
 
   await new Promise<void>((resolve, reject) =>
     backend.close((error) => (error ? reject(error) : resolve()))
@@ -224,5 +244,82 @@ describe('OAuth PKCE endpoints', () => {
       access_token: 'rp_test_secret',
       token_type: 'Bearer',
     });
+  });
+
+  // Bounded: without the deadline this hangs rather than fails, and node:test
+  // has no default timeout — one regression would stall the whole file.
+  it(
+    'answers with a named error when the flash backend accepts and goes silent',
+    { timeout: 10_000 },
+    async () => {
+      // node-fetch applies no timeout of its own, so before this deadline the
+      // poll below sat on a wedged socket until Vercel reaped the function at
+      // maxDuration: a blank 504 on the one flow with no credential yet, so the
+      // user cannot even retry into a working state.
+      backendStalls = true;
+      process.env.MCP_FLASH_TIMEOUT_MS = '150';
+      try {
+        const startedAt = Date.now();
+        const res = await token(VERIFIER);
+        const elapsed = Date.now() - startedAt;
+
+        assert.equal(res.statusCode, 500);
+        assert.equal(res.body?.error, 'server_error');
+        // Names the operation, the host and the deadline — a bare AbortError
+        // names none of them, and this string is what the client shows.
+        assert.match(
+          String(res.body?.error_description),
+          /flashAuthRequestStatus got no response from http:\/\/127\.0\.0\.1:\d+\/graphql after 150ms/
+        );
+        assert.ok(
+          elapsed < 5_000,
+          `took ${elapsed}ms — the deadline did not end the wedged poll`
+        );
+        // One attempt: a read that may have consumed the code upstream is not
+        // silently retried.
+        assert.equal(backendRequests.length, 1);
+      } finally {
+        delete process.env.MCP_FLASH_TIMEOUT_MS;
+      }
+    }
+  );
+
+  it('ignores a MCP_FLASH_TIMEOUT_MS that is not a positive number', () => {
+    // CLAUDE.md promises a typo cannot disable the deadline, which is only
+    // true while every non-positive parse falls back to the default.
+    try {
+      // Fractional and out-of-range values are the dangerous ones:
+      // AbortSignal.timeout takes a uint32, throws ERR_OUT_OF_RANGE on a
+      // fraction (500ing BOTH OAuth routes), and above int32 fires
+      // immediately instead — turning the dial up would turn it off.
+      const bads = [
+        'abc',
+        '0',
+        '-1',
+        '',
+        ' ',
+        'NaN',
+        'Infinity',
+        '10000.5',
+        '5000000000',
+        '3000000000',
+        '9007199254740993',
+      ];
+      for (const bad of bads) {
+        process.env.MCP_FLASH_TIMEOUT_MS = bad;
+        assert.equal(
+          getFlashTimeoutMs(),
+          DEFAULT_FLASH_GRAPHQL_TIMEOUT_MS,
+          `MCP_FLASH_TIMEOUT_MS=${JSON.stringify(bad)} must fall back to the default`
+        );
+      }
+      process.env.MCP_FLASH_TIMEOUT_MS = '250';
+      assert.equal(getFlashTimeoutMs(), 250, 'a positive integer is honored');
+      // What the accepted values are actually handed to. A value this rejects
+      // would throw here instead, synchronously, on every OAuth request.
+      assert.doesNotThrow(() => AbortSignal.timeout(getFlashTimeoutMs()));
+    } finally {
+      delete process.env.MCP_FLASH_TIMEOUT_MS;
+    }
   });
 });

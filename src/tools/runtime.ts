@@ -2,9 +2,13 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import fetch from 'node-fetch';
 import { randomUUID } from 'node:crypto';
 import {
+  clampTimeout,
   createHttpClient,
   EXPIRED_CREDENTIAL_HINT,
   HttpError,
+  withRequestTimeout,
+  type RequestOptions,
+  type TimeoutCeiling,
 } from '../_shared/http.js';
 import { rateLimitHint } from '../_shared/rate-limit.js';
 import { buildTrackingHeaders } from '../_shared/tracking.js';
@@ -98,6 +102,32 @@ function trackingHeaders(
   });
 }
 
+// A BACKSTOP for a wedged socket, not a budget. It has to clear the wait
+// runsync asks the server to hold (or we abort a reply in flight) and still
+// fire before the platform — measured from the INVOCATION, which starts with
+// the 4s credential pre-flight, not from our request. That is what makes 55s
+// wrong. Both bounds asserted in tests/http.test.ts.
+//
+//   0s   invocation starts
+//   4s   credential pre-flight, worst case, before any tool request
+//   54s  this backstop fires
+//   60s  vercel.json maxDuration
+export const HTTP_TRANSPORT_BUDGET_MS = 50_000;
+
+// Spent across the whole invocation, not per request: a handler that issues two
+// calls (get-job-status, deploy-hub-repo, update-endpoint) would otherwise get
+// two full deadlines and outlive the platform anyway. Safe to anchor at runtime
+// construction because on http the server, and so this runtime, is built per
+// request and disposed with the response (src/http.ts).
+// Exported for the test that pins the reset: if registerTools were ever hoisted
+// out of the http request handler to save cold-start time, this window would
+// keep decaying across requests and every request after the first would run on
+// the floor — a silent, load-shaped failure rather than an obvious one.
+export function invocationBudget(totalMs: number): () => number {
+  const startedAt = Date.now();
+  return () => totalMs - (Date.now() - startedAt);
+}
+
 // The fetch implementation the unified client uses. Defaults to node-fetch;
 // tests inject a fake to capture outbound requests offline (the A4 seam).
 export type HttpFetch = Parameters<typeof createHttpClient>[0]['fetch'];
@@ -154,6 +184,13 @@ export interface ToolDeps {
   // whole reader (and so bypasses the 401 observer); this replaces only its
   // transport, which is what lets a test drive an SSE 401 through the observer.
   sseFetch?: SseFetch;
+  // Test seam: shrink the deadline so a suite need not wait out the real one.
+  defaultTimeoutMs?: number;
+  // Ceiling on every request's deadline, including one a tool asks to lengthen
+  // (stream-job's per-poll hold, runsync's ?wait=). The hosted transport
+  // installs the remaining invocation budget here; a test pins it low so a
+  // stalled socket aborts in milliseconds instead of seconds.
+  maxTimeoutMs?: TimeoutCeiling;
 }
 
 // A bounded Server-Sent-Events read. Returns the raw accumulated stream text
@@ -187,23 +224,27 @@ export interface ToolRuntime {
     variables?: Record<string, unknown>
   ) => Promise<T>;
   // Authenticated v1 REST call, path-relative to the v1 base (e.g. `/endpoints`).
+
   runpodRequest: (
     endpoint: string,
     method?: string,
-    body?: Record<string, unknown>
+    body?: Record<string, unknown>,
+    options?: RequestOptions
   ) => Promise<unknown>;
   // Authenticated Serverless runtime call (api.runpod.ai/v2/{endpointId}{path}).
   serverlessRequest: (
     endpointId: string,
     path: string,
     method?: string,
-    body?: Record<string, unknown>
+    body?: Record<string, unknown>,
+    options?: RequestOptions
   ) => Promise<unknown>;
   // Authenticated REST call to a fully-resolved URL (the adapter builds the URL).
   callRestUrl: (
     url: string,
     method?: string,
-    body?: Record<string, unknown>
+    body?: Record<string, unknown>,
+    options?: RequestOptions
   ) => Promise<unknown>;
   // Resolve a resource's v1/v2 backend descriptor for the current env/transport.
   backendFor: (resource: Resource) => Backend;
@@ -239,6 +280,49 @@ async function graphqlRequest<T>(
   options?: {
     variables?: Record<string, unknown>;
     apiKey?: string;
+    // See http.ts.
+    timeoutMs?: number;
+    // Remaining invocation budget, same thunk the REST clients are capped by.
+    // deploy-hub-repo spends two GraphQL calls in one invocation.
+    maxTimeoutMs?: TimeoutCeiling;
+  }
+): Promise<T> {
+  // Builds its own request rather than going through createHttpClient, so the
+  // deadline is wired separately — otherwise list-gpu-types / get-capacity
+  // against a wedged host hang the way the REST calls used to.
+  return withRequestTimeout(
+    'Runpod GraphQL Error',
+    clampTimeout(options?.timeoutMs, options?.maxTimeoutMs),
+    // GraphQL is POST on the wire whatever it carries, but the retry advice keys
+    // off the method, and telling a caller its list-gpu-types "may have
+    // SUCCEEDED upstream — check with the matching list-/get- tool first" points
+    // it back at the tool that just failed. The operation keyword is what
+    // actually says whether anything could have been written.
+    isGraphqlMutation(query) ? 'POST' : 'GET',
+    (signal) => runGraphql<T>(query, tracking, fetchImpl, url, signal, options)
+  );
+}
+
+// Anonymous operations (`{ gpuTypes { ... } }`) and the explicit `query` keyword
+// are both reads; only `mutation` writes. Leading whitespace and comments are
+// the shapes that actually occur in this file's template literals.
+export function isGraphqlMutation(query: string): boolean {
+  const firstMeaningful = query
+    .split('\n')
+    .map((line) => line.trim())
+    .find((line) => line.length > 0 && !line.startsWith('#'));
+  return /^mutation\b/.test(firstMeaningful ?? '');
+}
+
+async function runGraphql<T>(
+  query: string,
+  tracking: () => Record<string, string>,
+  fetchImpl: HttpFetch,
+  url: string,
+  signal: AbortSignal,
+  options?: {
+    variables?: Record<string, unknown>;
+    apiKey?: string;
   }
 ): Promise<T> {
   const response = await fetchImpl(url, {
@@ -252,6 +336,7 @@ async function graphqlRequest<T>(
       query,
       ...(options?.variables ? { variables: options.variables } : {}),
     }),
+    signal,
   });
 
   // HTTP-level failures used to fall through to response.json() and surface
@@ -364,20 +449,38 @@ export function createToolRuntime(
   const rawFetch = deps.fetch ?? defaultFetch;
   const httpFetch = observeUnauthorized(rawFetch);
 
+  // Deadline policy for all three JSON clients. One budget object shared by all
+  // of them, so a handler that crosses clients (get-job-status: serverless, then
+  // REST for the diagnosis) draws down a single allowance.
+  const remainingHttpBudgetMs = invocationBudget(HTTP_TRANSPORT_BUDGET_MS);
+  const timeouts = {
+    defaultTimeoutMs: deps.defaultTimeoutMs,
+    maxTimeoutMs:
+      deps.maxTimeoutMs ??
+      (ctx.transport === 'http' ? remainingHttpBudgetMs : undefined),
+  };
+
   // v1 REST client (path-relative to the v1 base).
   const v1Client = createHttpClient({
     apiKey: ctx.apiKey,
     fetch: httpFetch,
     tracking,
     errorPrefix: 'Runpod API Error',
+    ...timeouts,
   });
   const runpodRequest = (
     endpoint: string,
     method: string = 'GET',
-    body?: Record<string, unknown>
+    body?: Record<string, unknown>,
+    options?: RequestOptions
   ) =>
     withApiErrorLog('Error calling Runpod API:', () =>
-      v1Client(`${restV1Base(process.env as Env)}${endpoint}`, method, body)
+      v1Client(
+        `${restV1Base(process.env as Env)}${endpoint}`,
+        method,
+        body,
+        options
+      )
     );
 
   // Serverless runtime client (endpointId + path against the serverless base).
@@ -386,18 +489,21 @@ export function createToolRuntime(
     fetch: httpFetch,
     tracking,
     errorPrefix: 'Runpod Serverless API Error',
+    ...timeouts,
   });
   const serverlessRequest = (
     endpointId: string,
     path: string,
     method: string = 'GET',
-    body?: Record<string, unknown>
+    body?: Record<string, unknown>,
+    options?: RequestOptions
   ) =>
     withApiErrorLog('Error calling Runpod Serverless API:', () =>
       serverlessClient(
         `${serverlessBase(process.env as Env)}/${endpointId}${path}`,
         method,
-        body
+        body,
+        options
       )
     );
 
@@ -408,14 +514,16 @@ export function createToolRuntime(
     fetch: httpFetch,
     tracking,
     errorPrefix: 'Runpod API Error',
+    ...timeouts,
   });
   const callRestUrl = (
     url: string,
     method: string = 'GET',
-    body?: Record<string, unknown>
+    body?: Record<string, unknown>,
+    options?: RequestOptions
   ): Promise<unknown> =>
     withApiErrorLog('Error calling Runpod API:', () =>
-      restClient(url, method, body)
+      restClient(url, method, body, options)
     );
 
   // Bounded SSE reader for stream-pod-logs / stream-worker-logs. Uses node-fetch
@@ -467,13 +575,19 @@ export function createToolRuntime(
 
   return {
     jsonReply,
+    // No GraphQL caller overrides a deadline, but both are still capped by the
+    // shared budget: deploy-hub-repo spends one of each back to back.
     graphql: <T>(query: string) =>
       graphqlRequest<T>(
         query,
         tracking,
         // rawFetch, not httpFetch: this call carries no credential (see above).
         rawFetch,
-        publicGraphqlBase(process.env as Env)
+        publicGraphqlBase(process.env as Env),
+        {
+          timeoutMs: deps.defaultTimeoutMs,
+          maxTimeoutMs: timeouts.maxTimeoutMs,
+        }
       ),
     graphqlAuthed: <T>(query: string, variables?: Record<string, unknown>) =>
       graphqlRequest<T>(
@@ -482,7 +596,12 @@ export function createToolRuntime(
         httpFetch,
         // NOT publicGraphqlBase: this call carries the caller's API key.
         authedGraphqlBase(process.env as Env),
-        { variables, apiKey: ctx.apiKey }
+        {
+          variables,
+          apiKey: ctx.apiKey,
+          timeoutMs: deps.defaultTimeoutMs,
+          maxTimeoutMs: timeouts.maxTimeoutMs,
+        }
       ),
     runpodRequest,
     serverlessRequest,

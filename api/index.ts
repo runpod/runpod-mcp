@@ -94,6 +94,61 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// node-fetch applies no timeout of its own, and this file runs under
+// vercel.json's 60s maxDuration for api/index.ts. A flash backend that accepts
+// the connection and goes quiet would otherwise hang the OAuth handshake until
+// the platform reaps it — a blank 504 on the one flow the user cannot retry
+// their way out of, since they have no credential yet. Tool requests get the
+// same treatment through createHttpClient (src/_shared/http.ts); these calls
+// build their own request, so they are bounded here.
+// Exported so the parsing test asserts the real fallback, not a copy of it.
+export const DEFAULT_FLASH_GRAPHQL_TIMEOUT_MS = 10_000;
+// Whole-poll budget for /token, below maxDuration so the OAuth error response
+// is serialized rather than reaped. 20 attempts spaced 2s apart can otherwise
+// reach the platform limit on latency alone, with or without a wedged socket.
+// Exported for the test that checks it against vercel.json — the same
+// cross-file invariant HTTP_LONG_POLL_BUDGET_MS is pinned by, and the same
+// silent failure if maxDuration moves and this does not.
+export const TOKEN_POLL_BUDGET_MS = 45_000;
+const TOKEN_POLL_INTERVAL_MS = 2_000;
+// Budget below which /token stops polling instead of squeezing in one more
+// read. Reading an APPROVED request consumes the code atomically upstream, so a
+// read we abandon mid-flight can burn it — the user's retry then gets "already
+// used" rather than a key. Stopping answers authorization_pending, which is
+// retryable and consumes nothing, so it is the better trade for the last few
+// seconds of a budget.
+const MIN_TOKEN_POLL_REMAINDER_MS = 5_000;
+// AbortSignal.timeout takes a uint32: a fractional or out-of-range delay throws
+// ERR_OUT_OF_RANGE synchronously, which would 500 BOTH OAuth routes and make
+// signing in impossible. Just above int32 it does not throw at all — it warns
+// and fires immediately, turning a dial someone raised into a 1ms deadline.
+const MAX_FLASH_TIMEOUT_MS = 2_147_483_647;
+
+/**
+ * Deadline for one flash-backend call. `MCP_FLASH_TIMEOUT_MS` overrides it —
+ * an ops dial for a slow backend, and how the timeout tests reach this path in
+ * milliseconds instead of ten real seconds. Anything that is not a positive
+ * integer inside the timer's range is ignored, so no value of this variable can
+ * disable the deadline or break the routes that depend on it. Exported so the
+ * test for that promise calls the real parser.
+ */
+export function getFlashTimeoutMs(): number {
+  const override = Number(process.env.MCP_FLASH_TIMEOUT_MS);
+  return Number.isSafeInteger(override) &&
+    override > 0 &&
+    override <= MAX_FLASH_TIMEOUT_MS
+    ? override
+    : DEFAULT_FLASH_GRAPHQL_TIMEOUT_MS;
+}
+
+// Deadline for one /token poll: the per-call deadline, never past what is left
+// of the whole poll. The sibling of streamPollTimeoutMs in src/tools/jobs.ts.
+// No floor is needed — the loop below will not start a read at all once the
+// budget is down to MIN_TOKEN_POLL_REMAINDER_MS.
+function tokenPollDeadlineMs(remainingMs: number): number {
+  return Math.min(getFlashTimeoutMs(), remainingMs);
+}
+
 /**
  * Name for the minted Runpod API key, shown in the user's dashboard. Defaults
  * to "runpod-mcp" so keys minted through this server are identifiable and
@@ -120,15 +175,34 @@ interface FlashAuthRequestStatus {
  * non-JSON responses (e.g. an SST live-debug notice when the dev session is
  * down) as a clear error instead of a cryptic JSON parse failure.
  */
-async function flashGraphql<T>(query: string, field: string): Promise<T> {
+async function flashGraphql<T>(
+  query: string,
+  field: string,
+  requestedTimeoutMs?: number
+): Promise<T> {
   const url = getRunpodGraphqlUrl();
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query }),
-  });
+  const timeoutMs = requestedTimeoutMs ?? getFlashTimeoutMs();
+  // Covers the body drain too: a backend can send headers and then stall.
+  const signal = AbortSignal.timeout(timeoutMs);
+  let response: Awaited<ReturnType<typeof fetch>>;
+  let text: string;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+      signal,
+    });
+    text = await response.text();
+  } catch (error) {
+    // `signal.aborted`, not the error name — node-fetch and undici label an
+    // abort differently, and a transport failure must keep its own message.
+    if (!signal.aborted) throw error;
+    throw new Error(
+      `${field} got no response from ${url} after ${timeoutMs}ms — the Runpod API may be unavailable. Start the sign-in again.`
+    );
+  }
 
-  const text = await response.text();
   let result: { data?: Record<string, T>; errors?: Array<{ message: string }> };
   try {
     result = JSON.parse(text);
@@ -175,12 +249,16 @@ async function createFlashAuthRequest(codeChallenge: string): Promise<string> {
  * Read the current status of a flash auth request (guest query). Once the user
  * approves it in the console, the backend mints and returns a Runpod API key.
  */
-async function getFlashAuthStatus(id: string): Promise<FlashAuthRequestStatus> {
+async function getFlashAuthStatus(
+  id: string,
+  timeoutMs?: number
+): Promise<FlashAuthRequestStatus> {
   return flashGraphql<FlashAuthRequestStatus>(
     `query { flashAuthRequestStatus(flashAuthRequestId: ${JSON.stringify(
       id
     )}) { id status apiKey codeChallenge codeChallengeMethod } }`,
-    'flashAuthRequestStatus'
+    'flashAuthRequestStatus',
+    timeoutMs
   );
 }
 
@@ -447,8 +525,27 @@ async function handleToken(
     // once (backend: model/src/flash/authRequests.ts), so this poll cannot hand
     // the same key out twice.
     const maxAttempts = 20;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const status = await getFlashAuthStatus(code);
+    const startedAt = Date.now();
+    const remainingBudgetMs = () =>
+      TOKEN_POLL_BUDGET_MS - (Date.now() - startedAt);
+    // Stops on whichever comes first: the attempt count, or a budget too thin
+    // to cover a read we would rather not start (MIN_TOKEN_POLL_REMAINDER_MS).
+    // Both fall through to the authorization_pending answer below.
+    for (
+      let attempt = 0;
+      attempt < maxAttempts &&
+      remainingBudgetMs() >= MIN_TOKEN_POLL_REMAINDER_MS;
+      attempt++
+    ) {
+      // Deliberately NOT wrapped in try/continue: an APPROVED read consumes
+      // the code atomically upstream, so a read that failed on our side may
+      // already have minted and burned the key. Retrying would then read
+      // CONSUMED-with-no-key and report "already used" — a worse answer than
+      // the honest failure. One failed read ends the poll.
+      const status = await getFlashAuthStatus(
+        code,
+        tokenPollDeadlineMs(remainingBudgetMs())
+      );
       console.log('oauth_token_poll', {
         attempt,
         status: status.status,
@@ -503,8 +600,10 @@ async function handleToken(
         return;
       }
 
-      // PENDING — wait and retry.
-      if (attempt < maxAttempts - 1) await sleep(2000);
+      // PENDING — wait and retry. Always the full interval: skipping the sleep
+      // near the end of the budget bought the user no extra approval time and
+      // just re-read the backend back to back.
+      if (attempt < maxAttempts - 1) await sleep(TOKEN_POLL_INTERVAL_MS);
     }
 
     tokenError(

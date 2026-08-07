@@ -27,21 +27,33 @@ export function clearQueuedJobDiagnosisCache(): void {
 
 // An http deployment is assumed to sit behind a gateway that reaps the request
 // mid-flight; Runpod's hosted one does, at 60s (vercel.json maxDuration). Wait
-// longer than the budget and the gateway kills the call before the tool's own
-// timeout path runs: bare 504, collected output discarded. 45s leaves room for
-// the credential pre-flight and v2 probe (4s each). Exported for the test that
-// checks it against vercel.json; stdio has no deadline.
+// longer and the gateway kills the call before the tool's own timeout path
+// runs: bare 504, collected output discarded. 45s leaves room for the 4s
+// credential pre-flight that precedes dispatch (the v2 probe does NOT apply —
+// stdio-only, see backend.ts). Exported for the test that checks it against
+// vercel.json; stdio has no deadline.
 export const HTTP_LONG_POLL_BUDGET_MS = 45_000;
-const STDIO_STREAM_BUDGET_MS = 5 * 60 * 1000;
+// Exported so the poll-deadline tests measure attempts against the real stdio
+// budget rather than a copy of it.
+export const STDIO_STREAM_BUDGET_MS = 5 * 60 * 1000;
 // Upstream defaults, mirrored not derived — re-check against ai-api
 // (pkg/api/runsync.go, pkg/api/stream.go) if the service changes.
 const RUNSYNC_UPSTREAM_DEFAULT_WAIT_MS = 90_000;
+// What an empty GET /stream holds for when no ?wait= is sent. stdio omits the
+// query, so this — not the http value below — is the hold its polls bracket.
+// Exported so those tests read the hold instead of restating it.
+export const STREAM_UPSTREAM_DEFAULT_WAIT_MS = 10_000;
 // Caps how long an empty /stream may hold the poll. Left at the server's 10s
 // default, a chunk-sparse job overshoots the 45s budget to ~54s, since the
-// budget is only checked between polls. Accepted range 1000–300000.
-const HTTP_STREAM_POLL_WAIT_MS = 1000;
+// budget is only checked between polls. Accepted range 1000–300000. Exported
+// for the same reason as its stdio sibling above.
+export const HTTP_STREAM_POLL_WAIT_MS = 1000;
 // Exported so the budget tests tick the real interval, not a copy of it.
 export const STREAM_JOB_POLL_INTERVAL_MS = 1000;
+// Consecutive failures that end the poll. Only reachable while each attempt is
+// bounded well inside the budget — see streamPollTimeoutMs. Exported so the
+// guard asserting the budget fits that many attempts counts the real cap.
+export const MAX_CONSECUTIVE_STREAM_ERRORS = 5;
 // Shared by stream-job (stop polling) and runsync (nothing was lost to the
 // clamp), so the two can't drift on what "finished" means.
 const TERMINAL_STATUSES = new Set([
@@ -68,6 +80,161 @@ function formatBudget(ms: number): string {
   return ms >= 120_000
     ? `${Math.round(ms / 60_000)} minutes`
     : `${Math.round(ms / 1000)} seconds`;
+}
+
+// A client deadline must outlast the wait the server was asked to hold, or we
+// abort the reply we are waiting for; this is the round-trip room on top. Used
+// by both long-poll callers (runsync's ?wait=, stream-job's per-poll hold).
+// Must also fit under the http ceiling, or the clamp lands the deadline back on
+// the hold (asserted in tests/http.test.ts).
+export const UPSTREAM_HOLD_SLACK_MS = 5_000;
+// So the last poll of a nearly-spent budget can still answer. Exported so the
+// floor test asserts the real value.
+export const MIN_STREAM_POLL_TIMEOUT_MS = 2_000;
+// The queued-job diagnosis is enrichment on an answer we already have, and it is
+// discarded on any failure. The shared invocation budget stops it from causing a
+// 504, but spending 30 of the caller's seconds to decorate a reply that was
+// ready is still the wrong trade — the status belongs to the caller, the hint is
+// a bonus. Short enough that losing it costs little.
+export const QUEUED_DIAGNOSIS_TIMEOUT_MS = 5_000;
+
+// Deadline for ONE /stream poll: the hold it brackets, bounded by what is left
+// of the budget, and never below MIN_STREAM_POLL_TIMEOUT_MS. The budget is a
+// ceiling here, never the target —
+//
+//   above the hold  — a poll that aborts before the server's own wait elapses
+//                     kills a reply that was on its way, every time.
+//   below the budget — a deadline set TO the budget lets one wedged socket
+//                     spend the entire run in a single attempt, so
+//                     MAX_CONSECUTIVE_STREAM_ERRORS never engages and the
+//                     caller gets nothing back from a stall the retry loop was
+//                     built to survive.
+//
+// The floor only bites once the budget is nearly spent, where a 0ms deadline
+// would report a server fault for time we had already used. On the hosted
+// transport it is not the last word either: clampTimeout then measures the
+// result against the remaining invocation budget, whose own floor is
+// MIN_REQUEST_TIMEOUT_MS (src/_shared/http.ts).
+export function streamPollTimeoutMs(
+  remainingMs: number,
+  holdMs: number
+): number {
+  return Math.max(
+    Math.min(remainingMs, holdMs + UPSTREAM_HOLD_SLACK_MS),
+    MIN_STREAM_POLL_TIMEOUT_MS
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Everything about a stream-job run that depends on the transport, chosen in
+// one place. The query and the hold MUST agree — a poll that asks the server
+// for one wait while its deadline brackets another either aborts replies in
+// flight or waits far past what it should — and bundling the budget with them
+// means a wrong transport here cannot slip past the budget tests.
+// stdio sends no ?wait= (fewer requests, no platform deadline to race), so its
+// hold is the server's own default rather than one we picked.
+export function streamPollPlan(hosted: boolean): {
+  budgetMs: number;
+  holdMs: number;
+  query: string;
+} {
+  return hosted
+    ? {
+        budgetMs: HTTP_LONG_POLL_BUDGET_MS,
+        holdMs: HTTP_STREAM_POLL_WAIT_MS,
+        query: `?wait=${HTTP_STREAM_POLL_WAIT_MS}`,
+      }
+    : {
+        budgetMs: STDIO_STREAM_BUDGET_MS,
+        holdMs: STREAM_UPSTREAM_DEFAULT_WAIT_MS,
+        query: '',
+      };
+}
+
+// Both unfinished exits (budget spent, error cap) say the same two things: what
+// stopped the run, and that /stream drains what it hands out — so calling again
+// resumes where this run stopped rather than replaying from the start. Shared so
+// an agent that hits the error cap is not left with chunks and no way forward.
+const RESUME_ADVICE =
+  'Call stream-job again to continue collecting output, get-job-status to check the job without streaming, or stream without a budget by calling the runtime API directly (GET https://api.runpod.ai/v2/{endpointId}/stream/{jobId} with a Bearer API key).';
+
+function budgetExhaustedNote(
+  budgetMs: number,
+  lastError: string | undefined
+): Record<string, unknown> {
+  return {
+    pollingTimedOut: true,
+    note: `Polling stopped after ${formatBudget(
+      budgetMs
+    )} with the job possibly still running. ${RESUME_ADVICE}`,
+    // Surface the trailing error (if any) instead of discarding it — the last
+    // polls may have been failing (e.g. job expired) even though earlier ones
+    // succeeded. Cleared on success, so this is never a stale error from
+    // minutes of healthy streaming ago.
+    ...(lastError ? { lastError } : {}),
+  };
+}
+
+function errorCapNote(lastError: string): Record<string, unknown> {
+  return {
+    error: `Polling aborted after ${MAX_CONSECUTIVE_STREAM_ERRORS} consecutive errors: ${lastError}`,
+    note: `Polling stopped after ${MAX_CONSECUTIVE_STREAM_ERRORS} consecutive errors with the job possibly still running. ${RESUME_ADVICE}`,
+  };
+}
+
+// Poll until the job reaches a terminal status, the budget runs out, or the API
+// fails MAX_CONSECUTIVE_STREAM_ERRORS times in a row. Lifted out of the handler
+// so those three exits read in one screen, and so a test can drive the loop
+// through `poll` without an MCP server around it.
+export async function collectJobStream(deps: {
+  poll: (timeoutMs: number) => Promise<Record<string, unknown>>;
+  budgetMs: number;
+  holdMs: number;
+}): Promise<{ result: Record<string, unknown>; chunks: unknown[] }> {
+  const { poll, budgetMs, holdMs } = deps;
+  const startedAt = Date.now();
+  const elapsed = () => Date.now() - startedAt;
+  const chunks: unknown[] = [];
+  // Never mutated in place: `poll` is caller-supplied now that this is
+  // exported, and the last reply is not ours to annotate.
+  let result: Record<string, unknown> = {};
+  let consecutiveErrors = 0;
+  let lastError: string | undefined;
+
+  while (true) {
+    try {
+      const reply = await poll(
+        streamPollTimeoutMs(budgetMs - elapsed(), holdMs)
+      );
+      // A success clears both: only CONSECUTIVE failures end the run, so a
+      // flaky endpoint that answers in between keeps streaming — and the error
+      // reported at the end is one that was still happening at the end.
+      consecutiveErrors = 0;
+      lastError = undefined;
+      if (Array.isArray(reply.stream)) chunks.push(...reply.stream);
+      result = reply;
+      if (TERMINAL_STATUSES.has(reply.status as string)) break;
+    } catch (error) {
+      consecutiveErrors++;
+      lastError = error instanceof Error ? error.message : String(error);
+      if (consecutiveErrors >= MAX_CONSECUTIVE_STREAM_ERRORS) {
+        result = { ...result, ...errorCapNote(lastError) };
+        break;
+      }
+    }
+
+    if (elapsed() > budgetMs) {
+      result = { ...result, ...budgetExhaustedNote(budgetMs, lastError) };
+      break;
+    }
+
+    await sleep(STREAM_JOB_POLL_INTERVAL_MS);
+  }
+
+  return { result, chunks };
 }
 
 export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
@@ -109,7 +276,10 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
       const backend = backendFor('workers');
       if (backend.version !== 'v2') return null;
       const raw = (await callRestUrl(
-        `${backend.base}/serverless/${endpointId}/workers`
+        `${backend.base}/serverless/${endpointId}/workers`,
+        'GET',
+        undefined,
+        { timeoutMs: QUEUED_DIAGNOSIS_TIMEOUT_MS }
       )) as
         | {
             summary?: WorkerSummary;
@@ -297,7 +467,14 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
         endpointId,
         path,
         'POST',
-        body as Record<string, unknown>
+        body as Record<string, unknown>,
+        {
+          // From the wait actually sent — on http the clamped 45s, not the
+          // 300s the caller may have asked for.
+          timeoutMs:
+            (effectiveWait ?? RUNSYNC_UPSTREAM_DEFAULT_WAIT_MS) +
+            UPSTREAM_HOLD_SLACK_MS,
+        }
       );
 
       // Unmarked, a reply from a job 45s in is identical to one from a job that
@@ -377,65 +554,19 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
     },
     { title: 'Stream job', ...READ_ONLY },
     async (params) => {
-      const MAX_POLL_TIME_MS = hosted
-        ? HTTP_LONG_POLL_BUDGET_MS
-        : STDIO_STREAM_BUDGET_MS;
-      const MAX_CONSECUTIVE_ERRORS = 5;
-      const allChunks: unknown[] = [];
-      let finalResult: Record<string, unknown> = {};
-      let consecutiveErrors = 0;
-      let lastError: string | undefined;
-      const startTime = Date.now();
-      // stdio keeps the server's default hold: fewer requests, no deadline to race.
-      const streamQuery =
-        rt.transport === 'http' ? `?wait=${HTTP_STREAM_POLL_WAIT_MS}` : '';
-      const streamPath = `/stream/${params.jobId}${streamQuery}`;
+      const plan = streamPollPlan(hosted);
+      const streamPath = `/stream/${params.jobId}${plan.query}`;
 
-      while (true) {
-        try {
-          const result = (await serverlessRequest(
-            params.endpointId,
-            streamPath
-          )) as Record<string, unknown>;
+      const { result, chunks } = await collectJobStream({
+        budgetMs: plan.budgetMs,
+        holdMs: plan.holdMs,
+        poll: (timeoutMs) =>
+          serverlessRequest(params.endpointId, streamPath, 'GET', undefined, {
+            timeoutMs,
+          }) as Promise<Record<string, unknown>>,
+      });
 
-          consecutiveErrors = 0;
-
-          if (Array.isArray(result.stream)) {
-            allChunks.push(...result.stream);
-          }
-
-          finalResult = result;
-
-          if (TERMINAL_STATUSES.has(result.status as string)) {
-            break;
-          }
-        } catch (error) {
-          consecutiveErrors++;
-          lastError = error instanceof Error ? error.message : String(error);
-          if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-            finalResult.error = `Polling aborted after ${MAX_CONSECUTIVE_ERRORS} consecutive errors: ${lastError}`;
-            break;
-          }
-        }
-
-        if (Date.now() - startTime > MAX_POLL_TIME_MS) {
-          finalResult.pollingTimedOut = true;
-          // /stream drains what it hands out, so calling again resumes where
-          // this run stopped rather than replaying from the start.
-          finalResult.note = `Polling stopped after ${formatBudget(MAX_POLL_TIME_MS)} with the job possibly still running. Call stream-job again to continue collecting output, get-job-status to check the job without streaming, or stream without a budget by calling the runtime API directly (GET https://api.runpod.ai/v2/{endpointId}/stream/{jobId} with a Bearer API key).`;
-          // Surface the most recent error (if any) instead of discarding it —
-          // the last poll may have been failing (e.g. job expired) even though
-          // earlier polls succeeded.
-          if (lastError) finalResult.lastError = lastError;
-          break;
-        }
-
-        await new Promise((resolve) =>
-          setTimeout(resolve, STREAM_JOB_POLL_INTERVAL_MS)
-        );
-      }
-
-      return jsonReply({ ...finalResult, stream: allChunks });
+      return jsonReply({ ...result, stream: chunks });
     }
   );
 

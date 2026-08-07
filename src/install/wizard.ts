@@ -6,6 +6,7 @@ import {
   type AddMode,
   type McpClient,
 } from './clients.js';
+import { verifyApiKey } from './verify-key.js';
 
 const API_KEYS_URL = 'https://www.runpod.io/console/user/settings';
 
@@ -26,23 +27,6 @@ function openBrowser(url: string): void {
     }
   } catch {
     // Ignore — the user can open the URL manually.
-  }
-}
-
-// Verify the API key works by calling a read-only REST endpoint. Returns true
-// on success, false on auth failure, and null when the check itself failed
-// (offline, etc.) so we can warn without blocking.
-async function verifyApiKey(apiKey: string): Promise<boolean | null> {
-  try {
-    const base = process.env.RUNPOD_REST_API_URL ?? 'https://rest.runpod.io/v1';
-    const response = await fetch(`${base}/pods`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-    if (response.ok) return true;
-    if (response.status === 401 || response.status === 403) return false;
-    return null;
-  } catch {
-    return null;
   }
 }
 
