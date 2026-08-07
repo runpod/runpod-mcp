@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import http from 'node:http';
 
-import { verifyApiKey } from '../src/install/wizard.js';
+import { verifyApiKey } from '../src/install/verify-key.js';
 import {
   claudeCandidatePaths,
   pickClaudeBinary,
