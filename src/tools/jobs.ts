@@ -27,10 +27,11 @@ export function clearQueuedJobDiagnosisCache(): void {
 
 // An http deployment is assumed to sit behind a gateway that reaps the request
 // mid-flight; Runpod's hosted one does, at 60s (vercel.json maxDuration). Wait
-// longer than the budget and the gateway kills the call before the tool's own
-// timeout path runs: bare 504, collected output discarded. 45s leaves room for
-// the credential pre-flight and v2 probe (4s each). Exported for the test that
-// checks it against vercel.json; stdio has no deadline.
+// longer and the gateway kills the call before the tool's own timeout path
+// runs: bare 504, collected output discarded. 45s leaves room for the 4s
+// credential pre-flight that precedes dispatch (the v2 probe does NOT apply —
+// stdio-only, see backend.ts). Exported for the test that checks it against
+// vercel.json; stdio has no deadline.
 export const HTTP_LONG_POLL_BUDGET_MS = 45_000;
 const STDIO_STREAM_BUDGET_MS = 5 * 60 * 1000;
 // Upstream defaults, mirrored not derived — re-check against ai-api
@@ -69,6 +70,19 @@ function formatBudget(ms: number): string {
     ? `${Math.round(ms / 60_000)} minutes`
     : `${Math.round(ms / 1000)} seconds`;
 }
+
+// runsync's client deadline must outlast the wait it sent, or we abort the
+// reply we are waiting for. Must also fit under the http ceiling, or the clamp
+// lands the deadline back on the hold (asserted in tests/http.test.ts).
+export const RUNSYNC_TIMEOUT_SLACK_MS = 5_000;
+// So the last poll of a nearly-spent budget can still answer.
+const MIN_STREAM_POLL_TIMEOUT_MS = 2_000;
+// The queued-job diagnosis is enrichment on an answer we already have, and it is
+// discarded on any failure. The shared invocation budget stops it from causing a
+// 504, but spending 30 of the caller's seconds to decorate a reply that was
+// ready is still the wrong trade — the status belongs to the caller, the hint is
+// a bonus. Short enough that losing it costs little.
+export const QUEUED_DIAGNOSIS_TIMEOUT_MS = 5_000;
 
 export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
   const { jsonReply, serverlessRequest, backendFor, callRestUrl } = rt;
@@ -109,7 +123,10 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
       const backend = backendFor('workers');
       if (backend.version !== 'v2') return null;
       const raw = (await callRestUrl(
-        `${backend.base}/serverless/${endpointId}/workers`
+        `${backend.base}/serverless/${endpointId}/workers`,
+        'GET',
+        undefined,
+        { timeoutMs: QUEUED_DIAGNOSIS_TIMEOUT_MS }
       )) as
         | {
             summary?: WorkerSummary;
@@ -297,7 +314,14 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
         endpointId,
         path,
         'POST',
-        body as Record<string, unknown>
+        body as Record<string, unknown>,
+        {
+          // From the wait actually sent — on http the clamped 45s, not the
+          // 300s the caller may have asked for.
+          timeoutMs:
+            (effectiveWait ?? RUNSYNC_UPSTREAM_DEFAULT_WAIT_MS) +
+            RUNSYNC_TIMEOUT_SLACK_MS,
+        }
       );
 
       // Unmarked, a reply from a job 45s in is identical to one from a job that
@@ -393,9 +417,16 @@ export function registerJobTools(server: McpServer, rt: ToolRuntime): void {
 
       while (true) {
         try {
+          // The budget is only checked between polls, so a stalled poll adds
+          // its whole deadline on top: 45s + the 30s default outlives the
+          // platform and pollingTimedOut below never runs.
+          const remaining = MAX_POLL_TIME_MS - (Date.now() - startTime);
           const result = (await serverlessRequest(
             params.endpointId,
-            streamPath
+            streamPath,
+            'GET',
+            undefined,
+            { timeoutMs: Math.max(remaining, MIN_STREAM_POLL_TIMEOUT_MS) }
           )) as Record<string, unknown>;
 
           consecutiveErrors = 0;

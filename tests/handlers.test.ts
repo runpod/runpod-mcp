@@ -25,8 +25,11 @@ import { registerTools } from '../src/tools.js';
 import {
   clearQueuedJobDiagnosisCache,
   HTTP_LONG_POLL_BUDGET_MS,
+  QUEUED_DIAGNOSIS_TIMEOUT_MS,
   STREAM_JOB_POLL_INTERVAL_MS,
 } from '../src/tools/jobs.js';
+import { isGraphqlMutation } from '../src/tools/runtime.js';
+import { DEFAULT_REQUEST_TIMEOUT_MS } from '../src/_shared/http.js';
 
 // ============== Handler integration / outbound-request golden ==============
 // Drives the REAL registerTools against a fake McpServer (captures handlers) and
@@ -41,6 +44,19 @@ interface OutboundRecord {
   method: string;
   body?: string;
   headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+// Accepts the connection then stays quiet, rejecting on the caller's signal
+// the way a real fetch does.
+function stall(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => {
+      clearTimeout(timer);
+      reject(signal.reason ?? new Error('aborted'));
+    });
+  });
 }
 
 function harness(opts?: {
@@ -74,6 +90,10 @@ function harness(opts?: {
   ) => Promise<{ raw: string; truncated: boolean }>;
   // Observer for the ToolContext 401 hook (hosted credential invalidation).
   onUnauthorized?: () => void;
+  // Deadline seam + a server that stalls `delayMs`, so the timeout is
+  // exercised at millisecond scale instead of the real 30s.
+  defaultTimeoutMs?: number;
+  delayMs?: number;
   // Transport under the SSE reader, so a test can drive an SSE 401 through the
   // observer (injecting `streamSse` replaces the reader and bypasses it).
   sseStatus?: number;
@@ -98,14 +118,21 @@ function harness(opts?: {
   const steps = opts?.steps ? [...opts.steps] : null;
   const fakeFetch = async (
     url: string,
-    init: { method: string; headers: Record<string, string>; body?: string }
+    init: {
+      method: string;
+      headers: Record<string, string>;
+      body?: string;
+      signal?: AbortSignal;
+    }
   ) => {
     outbound.push({
       url,
       method: init.method,
       body: init.body,
       headers: init.headers,
+      signal: init.signal,
     });
+    if (opts?.delayMs) await stall(opts.delayMs, init.signal);
     const step = steps?.shift();
     const status = step?.status ?? opts?.status ?? 200;
     const jsonBody = step
@@ -141,6 +168,9 @@ function harness(opts?: {
       fetch: fakeFetch as NonNullable<
         Parameters<typeof registerTools>[2]
       >['fetch'],
+      ...(opts?.defaultTimeoutMs
+        ? { defaultTimeoutMs: opts.defaultTimeoutMs }
+        : {}),
       ...(opts?.streamSse ? { streamSse: opts.streamSse } : {}),
       ...(opts?.sseStatus
         ? {
@@ -1760,8 +1790,10 @@ describe('hosted HTTP transport clamps long-poll budgets', () => {
       typeof maxDuration === 'number',
       'vercel.json no longer declares a maxDuration — the budget below is derived from it'
     );
-    // 8s covers the credential pre-flight (4s) and the v2 probe (4s), both of
-    // which run before the tool does; the rest is serialization + cold start.
+    // The credential pre-flight (4s) runs before dispatch; the rest is
+    // serialization and cold start. The v2 probe is stdio-only startup wiring,
+    // so it is not in this path despite what an earlier version of this
+    // comment said.
     const PRE_FLIGHT_HEADROOM_MS = 8_000;
     assert.ok(
       HTTP_LONG_POLL_BUDGET_MS + PRE_FLIGHT_HEADROOM_MS <= maxDuration * 1000,
@@ -3046,6 +3078,38 @@ describe('get-job-status — queued-job worker diagnosis', () => {
     });
   });
 
+  // The diagnosis decorates a status we already have, so it is given a short
+  // deadline of its own (QUEUED_DIAGNOSIS_TIMEOUT_MS) rather than the 30s
+  // default: spending the caller's remaining budget to enrich a reply that was
+  // already ready is the wrong trade, and on http it is budget the next call
+  // needs. Whatever it costs, failing must not cost the status.
+  it('a failing diagnosis is swallowed — the status the caller asked for still comes back', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        steps: [
+          { jsonBody: queued },
+          { status: 500, text: 'workers listing unavailable' },
+        ],
+      });
+      const out = await handlers.get('get-job-status')!({
+        endpointId: 'ep',
+        jobId: 'j1',
+      });
+      assert.equal(outbound.length, 2, 'expected the diagnosis to be attempted');
+      const payload = parseText(out);
+      assert.equal(payload.status, 'IN_QUEUE');
+      assert.equal(payload.workerHealth, undefined);
+      assert.equal(payload.hint, undefined);
+    });
+  });
+
+  it('is bounded well under the ordinary request deadline', () => {
+    assert.ok(
+      QUEUED_DIAGNOSIS_TIMEOUT_MS < DEFAULT_REQUEST_TIMEOUT_MS,
+      `the diagnosis is discardable enrichment; at ${QUEUED_DIAGNOSIS_TIMEOUT_MS}ms it is no cheaper than the ${DEFAULT_REQUEST_TIMEOUT_MS}ms default it exists to undercut`
+    );
+  });
+
   it('caches the diagnosis briefly: rapid polls reuse it instead of refetching workers', async () => {
     // Agents poll get-job-status in a loop while queued; without the cache every
     // poll fired a second workers call for an answer that changes on the order
@@ -4080,5 +4144,106 @@ describe('onUnauthorized ignores the unauthenticated GraphQL path', () => {
       'expected the public GraphQL call'
     );
     assert.equal(fired, 0, 'a no-credential 401 invalidated the verdict');
+  });
+});
+
+// The deadline through the real tool wiring — including the one tool that is
+// SUPPOSED to wait a long time and must not be truncated by the default.
+describe('per-request deadline', () => {
+  it('an ordinary tool gives up on a silent server with an actionable error', async () => {
+    const { handlers } = harness({ defaultTimeoutMs: 20, delayMs: 5_000 });
+    await assert.rejects(
+      () => handlers.get('list-pods')!({}),
+      (err: unknown) => {
+        assert.equal((err as Error).name, 'RequestTimeoutError');
+        assert.match(
+          (err as Error).message,
+          /^Runpod API Error: no response after 20ms /
+        );
+        return true;
+      }
+    );
+  });
+
+  it('runsync-endpoint outlasts the default, using the wait it asked the server for', async () => {
+    // Default squeezed to 20ms against a server that takes 120ms to answer.
+    // runsync asked for wait=5000, so its own deadline is 15s and the slow
+    // answer must still land — the default would have thrown the job away.
+    const { handlers } = harness({
+      jsonBody: { id: 'job_1', status: 'COMPLETED' },
+      defaultTimeoutMs: 20,
+      delayMs: 120,
+    });
+    const out = (await handlers.get('runsync-endpoint')!({
+      endpointId: 'ep_t',
+      input: { x: 1 },
+      wait: 5000,
+    })) as { content: { text: string }[] };
+    assert.deepEqual(JSON.parse(out.content[0].text), {
+      id: 'job_1',
+      status: 'COMPLETED',
+    });
+  });
+
+  it('runsync-endpoint without an explicit wait gets the same long deadline (the server still waits its own 90s default)', async () => {
+    const { handlers } = harness({
+      jsonBody: { id: 'job_2', status: 'COMPLETED' },
+      defaultTimeoutMs: 20,
+      delayMs: 120,
+    });
+    const out = (await handlers.get('runsync-endpoint')!({
+      endpointId: 'ep_t',
+      input: { x: 1 },
+    })) as { content: { text: string }[] };
+    assert.deepEqual(JSON.parse(out.content[0].text), {
+      id: 'job_2',
+      status: 'COMPLETED',
+    });
+  });
+
+  // GraphQL is POST on the wire whatever it carries, and the retry advice keys
+  // off the method. Reporting POST for a catalog read tells the agent to "check
+  // with the matching list-/get- tool first" — which is the tool that just
+  // failed.
+  it('a timed-out GraphQL read is described as safe to retry', async () => {
+    const { handlers } = harness({ defaultTimeoutMs: 20, delayMs: 5_000 });
+    await assert.rejects(
+      () => handlers.get('list-gpu-types')!({}),
+      (err: unknown) => {
+        assert.equal((err as Error).name, 'RequestTimeoutError');
+        assert.match((err as Error).message, /for GET /);
+        assert.match((err as Error).message, /retrying is safe/);
+        assert.doesNotMatch((err as Error).message, /may have SUCCEEDED/);
+        return true;
+      }
+    );
+  });
+
+  // The write half is the saveEndpoint mutation inside set-endpoint-gpus and
+  // deploy-hub-repo, and both send a read first — so the classifier is pinned
+  // directly rather than by stalling a handler's second call.
+  it('classifies the operation shapes this file actually sends', () => {
+    assert.equal(
+      isGraphqlMutation('mutation saveEndpoint($input: EndpointInput!) { id }'),
+      true
+    );
+    assert.equal(
+      isGraphqlMutation(`
+        mutation saveEndpoint($input: EndpointInput!) {
+          saveEndpoint(input: $input) { id }
+        }
+      `),
+      true,
+      'the real call sites are indented template literals'
+    );
+    // A read must not inherit the write warning: anonymous operations and the
+    // explicit `query` keyword are both reads.
+    assert.equal(isGraphqlMutation('query { myself { endpoints { id } } }'), false);
+    assert.equal(isGraphqlMutation('{ gpuTypes { id displayName } }'), false);
+    assert.equal(
+      isGraphqlMutation('# mutation, eventually\nquery { gpuTypes { id } }'),
+      false,
+      'a comment mentioning mutation is not one'
+    );
   });
 });
