@@ -1,6 +1,8 @@
-import { describe, it } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import http from 'node:http';
+import nodeFetch from 'node-fetch';
 
 import {
   clampTimeout,
@@ -886,4 +888,82 @@ describe('stream-job poll deadline', () => {
       );
     }
   });
+});
+
+// ============== real node-fetch, real socket ==============
+// Everything above injects a fake fetch, and `defaultFetch = fetch as HttpFetch`
+// (src/tools/runtime.ts) is a CAST — nothing type-checks the init object against
+// node-fetch's own RequestInit. If node-fetch ignored the `signal` field, every
+// deadline in this release would be inert and every test above would still pass.
+// So this one drives the real client, over a real socket, against a server that
+// answers and one that never does.
+describe('createHttpClient against real node-fetch', () => {
+  let server: http.Server;
+  let baseUrl: string;
+  let stall = false;
+  const stalled: http.ServerResponse[] = [];
+
+  before(async () => {
+    server = http.createServer((_req, res) => {
+      if (stall) {
+        // Accept, send nothing. The shape node-fetch has no answer for.
+        stalled.push(res);
+        return;
+      }
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', () => resolve())
+    );
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    baseUrl = `http://127.0.0.1:${address.port}`;
+  });
+
+  after(async () => {
+    for (const res of stalled) res.destroy();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve()))
+    );
+  });
+
+  const client = () =>
+    createHttpClient({
+      apiKey: 'rpa_test',
+      // The production default, not a fake: this is the whole point.
+      fetch: nodeFetch as unknown as Parameters<
+        typeof createHttpClient
+      >[0]['fetch'],
+      tracking: () => ({}),
+      errorPrefix: 'Runpod API Error',
+    });
+
+  it('passes a normal response through untouched', async () => {
+    stall = false;
+    assert.deepEqual(await client()(`${baseUrl}/ok`), { ok: true });
+  });
+
+  // Bounded: if node-fetch ever stops honoring the signal this hangs rather
+  // than fails, and node:test has no default timeout.
+  it(
+    'aborts a wedged socket and names it, rather than hanging',
+    { timeout: 5_000 },
+    async () => {
+      stall = true;
+      const startedAt = Date.now();
+      await assert.rejects(
+        client()(`${baseUrl}/wedged`, 'GET', undefined, { timeoutMs: 150 }),
+        (error: unknown) => {
+          assert.ok(error instanceof RequestTimeoutError);
+          assert.match(error.message, /no response after 150ms for GET/);
+          return true;
+        }
+      );
+      assert.ok(
+        Date.now() - startedAt < 5_000,
+        'node-fetch did not honor the signal — the deadline is inert in production'
+      );
+    }
+  );
 });
