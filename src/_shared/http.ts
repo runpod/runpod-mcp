@@ -19,7 +19,10 @@ interface RequestInitLike {
   method: string;
   headers: Record<string, string>;
   body?: string;
-  // Required so "nothing goes out unbounded" is a compile error, not a test.
+  // Required so an unbounded request through THIS client is a compile error
+  // rather than a test. It says nothing about requests built elsewhere — the
+  // GraphQL helper (tools/runtime.ts), the flash auth calls (api/index.ts) and
+  // the install wizard each bound their own fetch.
   signal: AbortSignal;
 }
 

@@ -186,6 +186,11 @@ export interface ToolDeps {
   sseFetch?: SseFetch;
   // Test seam: shrink the deadline so a suite need not wait out the real one.
   defaultTimeoutMs?: number;
+  // Ceiling on every request's deadline, including one a tool asks to lengthen
+  // (stream-job's per-poll hold, runsync's ?wait=). The hosted transport
+  // installs the remaining invocation budget here; a test pins it low so a
+  // stalled socket aborts in milliseconds instead of seconds.
+  maxTimeoutMs?: TimeoutCeiling;
 }
 
 // A bounded Server-Sent-Events read. Returns the raw accumulated stream text
@@ -450,7 +455,9 @@ export function createToolRuntime(
   const remainingHttpBudgetMs = invocationBudget(HTTP_TRANSPORT_BUDGET_MS);
   const timeouts = {
     defaultTimeoutMs: deps.defaultTimeoutMs,
-    maxTimeoutMs: ctx.transport === 'http' ? remainingHttpBudgetMs : undefined,
+    maxTimeoutMs:
+      deps.maxTimeoutMs ??
+      (ctx.transport === 'http' ? remainingHttpBudgetMs : undefined),
   };
 
   // v1 REST client (path-relative to the v1 base).

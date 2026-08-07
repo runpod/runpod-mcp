@@ -20,7 +20,13 @@ import {
 } from '../src/tools/runtime.js';
 import {
   HTTP_LONG_POLL_BUDGET_MS,
-  RUNSYNC_TIMEOUT_SLACK_MS,
+  HTTP_STREAM_POLL_WAIT_MS,
+  MAX_CONSECUTIVE_STREAM_ERRORS,
+  MIN_STREAM_POLL_TIMEOUT_MS,
+  STDIO_STREAM_BUDGET_MS,
+  STREAM_UPSTREAM_DEFAULT_WAIT_MS,
+  streamPollTimeoutMs,
+  UPSTREAM_HOLD_SLACK_MS,
 } from '../src/tools/jobs.js';
 
 // ---- fake response/fetch builders (no network) ----
@@ -797,13 +803,87 @@ describe('the http request backstop sits between the waits it brackets', () => {
   it('clears the longest server-side wait by the slack runsync actually adds', () => {
     // runsync asks the Serverless API to hold the connection open for
     // HTTP_LONG_POLL_BUDGET_MS and sets its deadline that much plus
-    // RUNSYNC_TIMEOUT_SLACK_MS. Assert against both real constants: restating
+    // UPSTREAM_HOLD_SLACK_MS. Assert against both real constants: restating
     // a smaller literal here would let the ceiling silently clamp the slack
     // away — the deadline would land on the hold and abort a reply in flight.
     assert.ok(
       HTTP_TRANSPORT_BUDGET_MS >=
-        HTTP_LONG_POLL_BUDGET_MS + RUNSYNC_TIMEOUT_SLACK_MS,
-      `HTTP_TRANSPORT_BUDGET_MS (${HTTP_TRANSPORT_BUDGET_MS}) is below the ${HTTP_LONG_POLL_BUDGET_MS}ms hold plus its ${RUNSYNC_TIMEOUT_SLACK_MS}ms slack, so the clamp eats the slack`
+        HTTP_LONG_POLL_BUDGET_MS + UPSTREAM_HOLD_SLACK_MS,
+      `HTTP_TRANSPORT_BUDGET_MS (${HTTP_TRANSPORT_BUDGET_MS}) is below the ${HTTP_LONG_POLL_BUDGET_MS}ms hold plus its ${UPSTREAM_HOLD_SLACK_MS}ms slack, so the clamp eats the slack`
     );
+  });
+});
+
+describe('stream-job poll deadline', () => {
+  // The transports differ only in the hold each poll brackets: http caps it with
+  // ?wait=, stdio takes the server's default. Both are read from the source, so
+  // moving either constant moves these assertions with it.
+  const CASES = [
+    {
+      transport: 'http',
+      budgetMs: HTTP_LONG_POLL_BUDGET_MS,
+      holdMs: HTTP_STREAM_POLL_WAIT_MS,
+    },
+    {
+      transport: 'stdio',
+      budgetMs: STDIO_STREAM_BUDGET_MS,
+      holdMs: STREAM_UPSTREAM_DEFAULT_WAIT_MS,
+    },
+  ] as const;
+
+  for (const { transport, budgetMs, holdMs } of CASES) {
+    it(`on ${transport}: clears the hold it brackets, so a reply in flight is never aborted`, () => {
+      // A deadline at or below the hold cannot be met: the server does not
+      // answer until its wait elapses, and the reply still needs a round trip.
+      const deadline = streamPollTimeoutMs(budgetMs, holdMs);
+      assert.ok(
+        deadline > holdMs,
+        `poll deadline ${deadline}ms does not clear the ${holdMs}ms hold, so every slow poll aborts a response already on its way`
+      );
+    });
+
+    it(`on ${transport}: leaves room for the retry loop instead of spending the budget in one attempt`, () => {
+      // The regression this pins: a deadline set TO the remaining budget means
+      // one wedged socket consumes the whole run, MAX_CONSECUTIVE_STREAM_ERRORS
+      // never engages, and a stall that the loop was built to survive returns
+      // nothing. Reconnecting is the only recovery, so the budget has to fit
+      // several attempts.
+      const deadline = streamPollTimeoutMs(budgetMs, holdMs);
+      assert.ok(
+        deadline < budgetMs,
+        `poll deadline ${deadline}ms is the entire ${budgetMs}ms budget — a single wedged poll ends the run`
+      );
+      const attempts = Math.floor(budgetMs / deadline);
+      assert.ok(
+        attempts >= MAX_CONSECUTIVE_STREAM_ERRORS,
+        `a wedged socket allows only ${attempts} attempts inside the ${budgetMs}ms budget, below the ${MAX_CONSECUTIVE_STREAM_ERRORS} the error counter needs to ever fire`
+      );
+    });
+  }
+
+  it('never outlives what is left of the budget', () => {
+    // Between the hold and the budget the budget wins: overshooting it just
+    // hands the platform reaper the timeout we were trying to report.
+    // Above the floor (which is what a nearly-spent budget hits) and below the
+    // hold-derived deadline, so the budget is the only thing that can be
+    // binding here.
+    const remaining = MIN_STREAM_POLL_TIMEOUT_MS + 1;
+    assert.ok(remaining < HTTP_STREAM_POLL_WAIT_MS + UPSTREAM_HOLD_SLACK_MS);
+    assert.equal(
+      streamPollTimeoutMs(remaining, HTTP_STREAM_POLL_WAIT_MS),
+      remaining
+    );
+  });
+
+  it('floors a spent budget rather than asking for 0ms', () => {
+    // A 0ms (or negative) deadline aborts before the socket opens and reports
+    // "no response after 0ms", which reads as a server fault rather than time
+    // we had already spent. The budget check after the poll ends the loop.
+    for (const remaining of [0, -5_000]) {
+      assert.equal(
+        streamPollTimeoutMs(remaining, HTTP_STREAM_POLL_WAIT_MS),
+        MIN_STREAM_POLL_TIMEOUT_MS
+      );
+    }
   });
 });

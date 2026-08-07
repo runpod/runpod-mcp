@@ -24,9 +24,15 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerTools } from '../src/tools.js';
 import {
   clearQueuedJobDiagnosisCache,
+  collectJobStream,
   HTTP_LONG_POLL_BUDGET_MS,
+  HTTP_STREAM_POLL_WAIT_MS,
+  MAX_CONSECUTIVE_STREAM_ERRORS,
   QUEUED_DIAGNOSIS_TIMEOUT_MS,
+  STDIO_STREAM_BUDGET_MS,
   STREAM_JOB_POLL_INTERVAL_MS,
+  STREAM_UPSTREAM_DEFAULT_WAIT_MS,
+  UPSTREAM_HOLD_SLACK_MS,
 } from '../src/tools/jobs.js';
 import { isGraphqlMutation } from '../src/tools/runtime.js';
 import { DEFAULT_REQUEST_TIMEOUT_MS } from '../src/_shared/http.js';
@@ -57,6 +63,65 @@ function stall(ms: number, signal?: AbortSignal): Promise<void> {
       reject(signal.reason ?? new Error('aborted'));
     });
   });
+}
+
+// A deterministic clock for the poll loops. Two clocks matter: setTimeout (the
+// 1s sleep between polls) and Date.now (the budget check). setTimeout is mocked
+// via node:test mock timers — Node >=20.11 takes `{apis}`, Node 18 takes a bare
+// array, so try both. Date is NOT mockable on Node 18 at all, so it is stubbed
+// by hand on every version and advanced in lockstep with the ticks.
+// `t` is node:test's own TestContext, NOT a hand-rolled structural type: an
+// `enable: (o: unknown) => void` field cannot accept the real signature under
+// strictFunctionTypes (a function taking `unknown` is not assignable from one
+// taking MockTimersOptions), so that annotation compiled only while tests were
+// excluded from type-check. The Node 18 bare-array form is handled by the cast
+// in the catch below.
+function useFakeClock(t: TestContext) {
+  const enable = t.mock?.timers?.enable;
+  if (typeof enable !== 'function') {
+    throw new Error(
+      'node:test mock timers unavailable (needs Node >=18.19) — this test cannot run on this runtime'
+    );
+  }
+  // Captured before the mock replaces the global: AbortSignal.timeout runs on
+  // an internal timer the mock does not touch, so a test that waits out a REAL
+  // deadline needs a real delay to wait with.
+  const realSetTimeout = globalThis.setTimeout;
+  try {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+  } catch (err) {
+    // Node 18 takes a bare array and rejects the object form with a TypeError
+    // naming the `timers` argument. Anything else is a real failure, not a
+    // signature mismatch, so don't swallow it behind a second attempt.
+    if (!(err instanceof TypeError)) throw err;
+    (t.mock.timers.enable as unknown as (apis: string[]) => void)([
+      'setTimeout',
+    ]);
+  }
+  let fakeNow = 0;
+  const realNow = Date.now;
+  Date.now = () => fakeNow;
+  return {
+    // Move both clocks together: a pending sleep fires and the budget ages by
+    // the same amount, which is what the real runtime does.
+    advance(ms: number) {
+      fakeNow += ms;
+      t.mock.timers.tick(ms);
+    },
+    // Age the budget WITHOUT firing timers, for a test that wants the loop to
+    // notice an exhausted budget on its next check rather than poll again.
+    jump(ms: number) {
+      fakeNow += ms;
+    },
+    // setImmediate is not mocked, so this lets in-flight microtasks (the fake
+    // fetch and its json()) settle before the clock moves again.
+    settle: () => new Promise((resolve) => setImmediate(resolve)),
+    realDelay: (ms: number) =>
+      new Promise((resolve) => realSetTimeout(resolve, ms)),
+    restore() {
+      Date.now = realNow;
+    },
+  };
 }
 
 function harness(opts?: {
@@ -94,6 +159,10 @@ function harness(opts?: {
   // exercised at millisecond scale instead of the real 30s.
   defaultTimeoutMs?: number;
   delayMs?: number;
+  // Ceiling seam. Unlike defaultTimeoutMs it also binds a tool that asks for a
+  // LONGER deadline (stream-job's per-poll hold, runsync's wait), which is the
+  // only way to exercise those at millisecond scale.
+  maxTimeoutMs?: number;
   // Transport under the SSE reader, so a test can drive an SSE 401 through the
   // observer (injecting `streamSse` replaces the reader and bypasses it).
   sseStatus?: number;
@@ -171,6 +240,7 @@ function harness(opts?: {
       ...(opts?.defaultTimeoutMs
         ? { defaultTimeoutMs: opts.defaultTimeoutMs }
         : {}),
+      ...(opts?.maxTimeoutMs ? { maxTimeoutMs: opts.maxTimeoutMs } : {}),
       ...(opts?.streamSse ? { streamSse: opts.streamSse } : {}),
       ...(opts?.sseStatus
         ? {
@@ -1636,42 +1706,11 @@ describe('hosted HTTP transport clamps long-poll budgets', () => {
     assert.equal(marker.effectiveMs, HTTP_LONG_POLL_BUDGET_MS);
   });
 
-  // Drive stream-job's poll loop on a fully deterministic clock and return what
-  // it produced. Two clocks matter: setTimeout (the 1s poll sleep) and Date.now
-  // (the budget check). setTimeout is mocked via node:test mock timers — Node
-  // >=20.11 takes `{apis}`, Node 18 takes a bare array, so try both. Date is NOT
-  // mockable on Node 18 at all, so the budget clock is stubbed by hand on every
-  // version and advanced in lockstep with the ticks.
-  // `t` is node:test's own TestContext, NOT a hand-rolled structural type: an
-  // `enable: (o: unknown) => void` field cannot accept the real signature under
-  // strictFunctionTypes (a function taking `unknown` is not assignable from one
-  // taking MockTimersOptions), so that annotation compiled only while tests were
-  // excluded from type-check. The Node 18 bare-array form is handled by the cast
-  // in the catch below.
   async function driveStreamJobToBudget(
     t: TestContext,
     opts: { transport: 'stdio' | 'http'; endpointId: string; ticks: number }
   ) {
-    const enable = t.mock?.timers?.enable;
-    if (typeof enable !== 'function') {
-      throw new Error(
-        'node:test mock timers unavailable (needs Node >=18.19) — this test cannot run on this runtime'
-      );
-    }
-    try {
-      t.mock.timers.enable({ apis: ['setTimeout'] });
-    } catch (err) {
-      // Node 18 takes a bare array and rejects the object form with a TypeError
-      // naming the `timers` argument. Anything else is a real failure, not a
-      // signature mismatch, so don't swallow it behind a second attempt.
-      if (!(err instanceof TypeError)) throw err;
-      (t.mock.timers.enable as unknown as (apis: string[]) => void)([
-        'setTimeout',
-      ]);
-    }
-    let fakeNow = 0;
-    const realNow = Date.now;
-    Date.now = () => fakeNow;
+    const clock = useFakeClock(t);
     try {
       const { handlers, outbound } = harness({
         transport: opts.transport,
@@ -1687,11 +1726,10 @@ describe('hosted HTTP transport clamps long-poll budgets', () => {
       // interval — imported, not hardcoded, so halving the interval in the
       // source can't double the live request rate with these tests still green.
       for (let i = 0; i < opts.ticks; i++) {
-        await new Promise((r) => setImmediate(r));
-        fakeNow += STREAM_JOB_POLL_INTERVAL_MS;
-        t.mock.timers.tick(STREAM_JOB_POLL_INTERVAL_MS);
+        await clock.settle();
+        clock.advance(STREAM_JOB_POLL_INTERVAL_MS);
       }
-      await new Promise((r) => setImmediate(r));
+      await clock.settle();
       // The loop MUST have ended by now. If a regression widened the budget it
       // would still be polling, and a bare `await pending` would hang forever —
       // node:test has no default timeout, so that stalls this file's remaining
@@ -1717,7 +1755,7 @@ describe('hosted HTTP transport clamps long-poll budgets', () => {
         },
       };
     } finally {
-      Date.now = realNow;
+      clock.restore();
     }
   }
 
@@ -1773,6 +1811,130 @@ describe('hosted HTTP transport clamps long-poll budgets', () => {
     // No wait cap upstream: stdio has no platform deadline to race.
     for (const rec of outbound) {
       assert.equal(rec.url, 'https://api.runpod.ai/v2/ep_s/stream/jH');
+    }
+  });
+
+  it('bounds each poll by the hold it brackets, not by the whole budget', async () => {
+    // The deadline the loop actually asks for, observed rather than inferred.
+    // The regression this pins let one wedged socket spend the entire budget in
+    // a single attempt: the retry loop below never ran, and a stall returned
+    // nothing at all.
+    const asked: number[] = [];
+    const { result, chunks } = await collectJobStream({
+      budgetMs: HTTP_LONG_POLL_BUDGET_MS,
+      holdMs: HTTP_STREAM_POLL_WAIT_MS,
+      poll: async (timeoutMs) => {
+        asked.push(timeoutMs);
+        return { status: 'COMPLETED', stream: [{ chunk: 'a' }] };
+      },
+    });
+    assert.deepEqual(asked, [
+      HTTP_STREAM_POLL_WAIT_MS + UPSTREAM_HOLD_SLACK_MS,
+    ]);
+    assert.ok(
+      asked[0] < HTTP_LONG_POLL_BUDGET_MS,
+      'a poll deadline equal to the budget leaves nothing for a second attempt'
+    );
+    assert.equal(result.status, 'COMPLETED');
+    assert.deepEqual(chunks, [{ chunk: 'a' }]);
+  });
+
+  it('retries a failing poll on a fresh deadline and gives up after the error cap', async (t) => {
+    // Each attempt is bounded well inside the budget, so the counter is
+    // reachable — that is the whole point of not spending the budget on one
+    // socket. Fails immediately (no stall) so the loop, not the transport, is
+    // what this measures.
+    const clock = useFakeClock(t);
+    try {
+      const asked: number[] = [];
+      const pending = collectJobStream({
+        budgetMs: STDIO_STREAM_BUDGET_MS,
+        holdMs: STREAM_UPSTREAM_DEFAULT_WAIT_MS,
+        poll: (timeoutMs) => {
+          asked.push(timeoutMs);
+          return Promise.reject(
+            new Error('Runpod Serverless API Error: no response after 15000ms')
+          );
+        },
+      });
+      // One tick per sleep between attempts; the budget is nowhere near spent,
+      // so only the error cap can end this.
+      for (let i = 0; i < MAX_CONSECUTIVE_STREAM_ERRORS; i++) {
+        await clock.settle();
+        clock.advance(STREAM_JOB_POLL_INTERVAL_MS);
+      }
+      await clock.settle();
+      const { result, chunks } = await pending;
+      assert.equal(asked.length, MAX_CONSECUTIVE_STREAM_ERRORS);
+      for (const deadline of asked) {
+        assert.equal(
+          deadline,
+          STREAM_UPSTREAM_DEFAULT_WAIT_MS + UPSTREAM_HOLD_SLACK_MS
+        );
+      }
+      assert.match(
+        String(result.error),
+        /Polling aborted after 5 consecutive errors/
+      );
+      assert.deepEqual(chunks, []);
+    } finally {
+      clock.restore();
+    }
+  });
+
+  it('stream-job: a wedged poll aborts on its own deadline, and the run ends with pollingTimedOut + lastError', async (t) => {
+    // End to end through the real handler and the real deadline: the server
+    // accepts the connection and never answers, so only the AbortSignal the
+    // client attaches can end the poll. The ceiling seam shrinks that deadline
+    // to milliseconds; everything else (retry, budget check, reply shape) is
+    // production code.
+    const POLL_DEADLINE_MS = 40;
+    const clock = useFakeClock(t);
+    try {
+      const { handlers, outbound } = harness({
+        transport: 'http',
+        maxTimeoutMs: POLL_DEADLINE_MS,
+        // Far longer than the deadline: the abort has to be what ends it.
+        delayMs: 60_000,
+      });
+      const pending = handlers.get('stream-job')!({
+        endpointId: 'ep_h',
+        jobId: 'jW',
+      }) as Promise<{ content: Array<{ text: string }> }>;
+
+      // Real time, because AbortSignal.timeout does not run on the mocked
+      // clock. The first poll aborts, the loop finds budget left, and parks in
+      // its (mocked) sleep.
+      await clock.realDelay(POLL_DEADLINE_MS * 3);
+      // Spend the budget while it is parked, then release the sleep: the second
+      // poll still goes out — proving the loop reconnects rather than waiting a
+      // wedged socket out — and the check after it ends the run.
+      clock.jump(HTTP_LONG_POLL_BUDGET_MS);
+      clock.advance(STREAM_JOB_POLL_INTERVAL_MS);
+      await clock.realDelay(POLL_DEADLINE_MS * 3);
+      await clock.settle();
+
+      const out = await pending;
+      const result = JSON.parse(out.content[0].text) as {
+        pollingTimedOut?: boolean;
+        lastError?: string;
+        stream: unknown[];
+      };
+      assert.equal(
+        outbound.length,
+        2,
+        `polled ${outbound.length} times; a wedged socket must be abandoned and retried, not waited out`
+      );
+      assert.equal(result.pollingTimedOut, true);
+      assert.match(
+        result.lastError ?? '',
+        new RegExp(`no response after ${POLL_DEADLINE_MS}ms`),
+        'the stall must be reported as this poll’s deadline, not discarded'
+      );
+      assert.match(result.lastError ?? '', /Runpod Serverless API Error/);
+      assert.deepEqual(result.stream, []);
+    } finally {
+      clock.restore();
     }
   });
 

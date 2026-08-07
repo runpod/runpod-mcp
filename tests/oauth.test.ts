@@ -49,6 +49,11 @@ const originalApiKeyName = process.env.RUNPOD_API_KEY_NAME;
 let backend: http.Server;
 let backendRequests: string[] = [];
 let flashStatus: JsonObject;
+// When set, the backend accepts the request and never answers — the wedged
+// socket this file's timeout test exists for. Held so they can be destroyed in
+// teardown; an open response would otherwise keep server.close() waiting.
+let backendStalls = false;
+const stalledResponses: http.ServerResponse[] = [];
 
 before(async () => {
   backend = http.createServer((req, res) => {
@@ -59,6 +64,10 @@ before(async () => {
         query: string;
       };
       backendRequests.push(payload.query);
+      if (backendStalls) {
+        stalledResponses.push(res);
+        return;
+      }
       res.setHeader('content-type', 'application/json');
       if (payload.query.includes('createFlashAuthRequest')) {
         res.end(
@@ -82,6 +91,7 @@ before(async () => {
 
 beforeEach(() => {
   backendRequests = [];
+  backendStalls = false;
   flashStatus = {
     id: 'code-1',
     status: 'APPROVED',
@@ -92,6 +102,9 @@ beforeEach(() => {
 });
 
 after(async () => {
+  for (const res of stalledResponses) res.destroy();
+  stalledResponses.length = 0;
+
   if (originalGraphqlUrl === undefined) delete process.env.RUNPOD_GRAPHQL_URL;
   else process.env.RUNPOD_GRAPHQL_URL = originalGraphqlUrl;
   if (originalConsoleBaseUrl === undefined) delete process.env.CONSOLE_BASE_URL;
@@ -224,5 +237,37 @@ describe('OAuth PKCE endpoints', () => {
       access_token: 'rp_test_secret',
       token_type: 'Bearer',
     });
+  });
+
+  it('answers with a named error when the flash backend accepts and goes silent', async () => {
+    // node-fetch applies no timeout of its own, so before this deadline the
+    // poll below sat on a wedged socket until Vercel reaped the function at
+    // maxDuration: a blank 504 on the one flow with no credential yet, so the
+    // user cannot even retry into a working state.
+    backendStalls = true;
+    process.env.MCP_FLASH_TIMEOUT_MS = '150';
+    try {
+      const startedAt = Date.now();
+      const res = await token(VERIFIER);
+      const elapsed = Date.now() - startedAt;
+
+      assert.equal(res.statusCode, 500);
+      assert.equal(res.body?.error, 'server_error');
+      // Names the operation, the host and the deadline — a bare AbortError
+      // names none of them, and this string is what the client shows.
+      assert.match(
+        String(res.body?.error_description),
+        /flashAuthRequestStatus got no response from http:\/\/127\.0\.0\.1:\d+\/graphql after 150ms/
+      );
+      assert.ok(
+        elapsed < 5_000,
+        `took ${elapsed}ms — the deadline did not end the wedged poll`
+      );
+      // One attempt: a read that may have consumed the code upstream is not
+      // silently retried.
+      assert.equal(backendRequests.length, 1);
+    } finally {
+      delete process.env.MCP_FLASH_TIMEOUT_MS;
+    }
   });
 });
