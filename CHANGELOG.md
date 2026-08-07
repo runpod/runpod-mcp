@@ -1,5 +1,58 @@
 # @runpod/mcp-server
 
+## 3.3.0
+
+### Minor Changes
+
+- 7074c87: Add an `sshPublicKey` parameter to `create-pod` for full SSH access (#73), and fix v2 GPU pod creation failing without an explicit `gpuCount`.
+
+  The REST API has no SSH switch yet (the console and runpodctl set it via GraphQL `startSsh`), so Pods created through the MCP got a valid-looking port-22 mapping but no authorized key — direct SSH, SCP, SFTP, and rsync all failed. Passing `sshPublicKey` now merges the key into the `PUBLIC_KEY` environment variable and ensures `22/tcp` is exposed, which any image honoring the `PUBLIC_KEY` convention (all runpod/\* official images) turns into a running sshd with the key installed. Template deploys extend the template's ports and env rather than replacing them, and an existing `PUBLIC_KEY` is appended to rather than overwritten.
+
+  The key is validated before the Pod is created, because an unusable value would otherwise produce a Pod that looks SSH-ready and is not: `22/tcp` exposed, junk in `PUBLIC_KEY`, and a reply reporting SSH as configured. Rejected with a 400: a private key in any format (PEM in any case, or a PuTTY `.ppk`, which contains neither the words "private key" nor a public key line), a file path or SHA256 fingerprint passed instead of the `.pub` file's contents, a bare base64 blob with no key type, and an empty or whitespace-only value (omit the parameter to create a Pod without SSH). Accepted keys are normalized to one key per line with CRLF stripped, since a stray carriage return corrupts the `authorized_keys` entry it lands on. Error messages never echo the rejected value, which may itself be secret.
+
+  `create-pod` also now rejects a `gpuCount` below 1 or with a fractional part, which the v2 API answers with an opaque 422.
+
+  Separately, the v2 pod-create mapper omitted `gpu.count` when the caller passed no `gpuCount`, trusting the spec's documented server-side default of 1. In practice the scheduler matches zero machines without it and every create fails with a misleading "no instances available" error (verified live against both v2 hosts). The mapper now always emits `count`, defaulting to 1.
+
+- 9176c78: Clamp long-poll tool budgets on the hosted HTTP server, which runs behind a 60-second Vercel function limit. `runsync-endpoint` waited 90 seconds by default (300 via `wait`) and `stream-job` polled for up to 5 minutes, so for a slow job the function was reaped mid-flight: the caller got a bare 504 and every chunk collected so far was discarded.
+
+  Over HTTP, `runsync-endpoint` now sends a `wait` capped at 45000 ms — a job that outlives it comes back as a job ID plus a non-terminal status to poll with `get-job-status`. `stream-job` stops after 45 seconds over HTTP and returns what it has with `pollingTimedOut: true`; `/stream` drains what it hands out, so calling again resumes rather than replaying. Its HTTP polls also send `wait=1000`, since the server otherwise holds an empty response for 10 seconds and the budget is only checked between polls. Both tool descriptions are now written per transport, so a caller is told the one budget that applies to them and where to go for more — `run-endpoint` + `get-job-status`, or the runtime API directly. The stdio server has no deadline and is unchanged.
+
+### Patch Changes
+
+- 2b6480d: Refuse the standalone GET SSE stream with 405. The HTTP server is stateless and never sends server-initiated messages, so the GET "listen" stream has nothing to carry — but the SDK accepted it anyway and held the response open with nothing to send until the platform's maxDuration killed it, at which point every connected client immediately re-opened it. On the hosted deployment that loop was ~1.1M hung requests per day (90% of all traffic), each ending in a 60-second timeout, and it dominated the serverless bill. GET now gets the spec's answer for a server without an SSE stream: 405 Method Not Allowed with an `Allow: POST, DELETE` header and a JSON-RPC error body, before any auth work — a 401 there would send OAuth clients into a pointless re-auth flow. Clients per the MCP spec treat the 405 as "no server-initiated messages offered" and continue POST-only; tool calls are unaffected.
+- 674fa2c: Fix Claude Code detection and registration in the install wizard on Windows (#56).
+
+  Detection used the POSIX-only `command -v claude` plus three POSIX install paths, so
+  Claude Code was undetectable on a standard Windows install. Windows now probes
+  `%USERPROFILE%\.local\bin\claude.exe` (native installer) and `%APPDATA%\npm\claude.cmd`
+  (global npm), and registration resolves the real entrypoint from the installed package
+  manifest instead of running the `.cmd` shim through `cmd.exe`. Candidates are
+  canonicalized and confined to their standard install roots, a PATH result resolving into
+  the current project is rejected, and Claude Code is spawned with `PATH`, `COMSPEC`,
+  `PATHEXT`, `NODE_OPTIONS`, and `NODE_PATH` sanitized, so nothing a project directory can
+  plant receives your API key. Custom npm prefixes and redirected roaming profiles are
+  still not auto-detected; when Claude Code is not found, the wizard now prints the exact
+  `claude mcp` command to register or remove the entry yourself.
+
+  Claude Code add and remove are now verified against its own `.claude.json` rather than
+  the CLI exit code, which reports success for writes it never made. Re-running the wizard
+  over an existing entry now says the entry was left unchanged instead of printing a bare
+  success, since the CLI does not update it and a rotated API key would otherwise look
+  applied. An entry shadowed by a local-scope one is called out with the command to clear
+  it.
+
+  For the clients that own a JSON config, an edit that would leave the file unparseable —
+  or land in a duplicated server block the client does not read — now fails with the
+  original file untouched instead of reporting success, and validity is judged by the
+  parser each client actually ships (Claude Desktop is strict JSON, Cursor and VS Code
+  accept JSONC, Windsurf's tolerance is unverified and disclosed rather than assumed).
+  Claude Desktop on Linux and VS Code now honour `XDG_CONFIG_HOME` instead of writing
+  where those clients never read, an empty or relative `APPDATA`/`XDG_CONFIG_HOME` no
+  longer resolves a config path against the current directory, configs this wizard creates
+  are `0600` because they hold a plaintext API key, and a key taken from the environment is
+  trimmed.
+
 ## 3.2.0
 
 ### Minor Changes
