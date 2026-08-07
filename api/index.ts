@@ -111,34 +111,42 @@ export const DEFAULT_FLASH_GRAPHQL_TIMEOUT_MS = 10_000;
 // silent failure if maxDuration moves and this does not.
 export const TOKEN_POLL_BUDGET_MS = 45_000;
 const TOKEN_POLL_INTERVAL_MS = 2_000;
-// Floor for the REMAINING budget when clamping a call's deadline: a budget
-// down to its last milliseconds still buys one honest attempt rather than a 0ms
-// one that reads as a backend fault. It never lengthens the per-call deadline.
-const MIN_TOKEN_POLL_REMAINDER_MS = 1_000;
+// Budget below which /token stops polling instead of squeezing in one more
+// read. Reading an APPROVED request consumes the code atomically upstream, so a
+// read we abandon mid-flight can burn it — the user's retry then gets "already
+// used" rather than a key. Stopping answers authorization_pending, which is
+// retryable and consumes nothing, so it is the better trade for the last few
+// seconds of a budget.
+const MIN_TOKEN_POLL_REMAINDER_MS = 5_000;
+// AbortSignal.timeout takes a uint32: a fractional or out-of-range delay throws
+// ERR_OUT_OF_RANGE synchronously, which would 500 BOTH OAuth routes and make
+// signing in impossible. Just above int32 it does not throw at all — it warns
+// and fires immediately, turning a dial someone raised into a 1ms deadline.
+const MAX_FLASH_TIMEOUT_MS = 2_147_483_647;
 
 /**
  * Deadline for one flash-backend call. `MCP_FLASH_TIMEOUT_MS` overrides it —
  * an ops dial for a slow backend, and how the timeout tests reach this path in
- * milliseconds instead of ten real seconds. Ignored unless it parses to a
- * positive number, so a typo falls back to the default rather than disabling
- * the deadline. Exported so the test for that promise calls the real parser.
+ * milliseconds instead of ten real seconds. Anything that is not a positive
+ * integer inside the timer's range is ignored, so no value of this variable can
+ * disable the deadline or break the routes that depend on it. Exported so the
+ * test for that promise calls the real parser.
  */
 export function getFlashTimeoutMs(): number {
   const override = Number(process.env.MCP_FLASH_TIMEOUT_MS);
-  return Number.isFinite(override) && override > 0
+  return Number.isSafeInteger(override) &&
+    override > 0 &&
+    override <= MAX_FLASH_TIMEOUT_MS
     ? override
     : DEFAULT_FLASH_GRAPHQL_TIMEOUT_MS;
 }
 
 // Deadline for one /token poll: the per-call deadline, never past what is left
-// of the whole poll. The sibling of streamPollTimeoutMs in src/tools/jobs.ts,
-// and floored on the same reasoning — a stall on the last attempt must not push
-// the response past maxDuration.
+// of the whole poll. The sibling of streamPollTimeoutMs in src/tools/jobs.ts.
+// No floor is needed — the loop below will not start a read at all once the
+// budget is down to MIN_TOKEN_POLL_REMAINDER_MS.
 function tokenPollDeadlineMs(remainingMs: number): number {
-  return Math.min(
-    getFlashTimeoutMs(),
-    Math.max(remainingMs, MIN_TOKEN_POLL_REMAINDER_MS)
-  );
+  return Math.min(getFlashTimeoutMs(), remainingMs);
 }
 
 /**
@@ -520,9 +528,13 @@ async function handleToken(
     const startedAt = Date.now();
     const remainingBudgetMs = () =>
       TOKEN_POLL_BUDGET_MS - (Date.now() - startedAt);
+    // Stops on whichever comes first: the attempt count, or a budget too thin
+    // to cover a read we would rather not start (MIN_TOKEN_POLL_REMAINDER_MS).
+    // Both fall through to the authorization_pending answer below.
     for (
       let attempt = 0;
-      attempt < maxAttempts && remainingBudgetMs() > 0;
+      attempt < maxAttempts &&
+      remainingBudgetMs() >= MIN_TOKEN_POLL_REMAINDER_MS;
       attempt++
     ) {
       // Deliberately NOT wrapped in try/continue: an APPROVED read consumes
@@ -588,14 +600,10 @@ async function handleToken(
         return;
       }
 
-      // PENDING — wait and retry, unless the sleep alone would spend what is
-      // left of the budget.
-      if (
-        attempt < maxAttempts - 1 &&
-        remainingBudgetMs() > TOKEN_POLL_INTERVAL_MS
-      ) {
-        await sleep(TOKEN_POLL_INTERVAL_MS);
-      }
+      // PENDING — wait and retry. Always the full interval: skipping the sleep
+      // near the end of the budget bought the user no extra approval time and
+      // just re-read the backend back to back.
+      if (attempt < maxAttempts - 1) await sleep(TOKEN_POLL_INTERVAL_MS);
     }
 
     tokenError(

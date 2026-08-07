@@ -25,6 +25,8 @@ import { registerTools } from '../src/tools.js';
 import {
   clearQueuedJobDiagnosisCache,
   collectJobStream,
+  streamPollPlan,
+  streamPollTimeoutMs,
   HTTP_LONG_POLL_BUDGET_MS,
   HTTP_STREAM_POLL_WAIT_MS,
   MAX_CONSECUTIVE_STREAM_ERRORS,
@@ -1917,7 +1919,71 @@ describe('stream-job poll loop', () => {
       String(result.error),
       /Polling aborted after 5 consecutive errors/
     );
+    // Same resume guidance the budget exit gives: chunks collected so far are
+    // useless to an agent that is not told it can call stream-job again.
+    assert.match(String(result.note), /Call stream-job again/);
     assert.deepEqual(chunks, []);
+  });
+
+  it('picks budget, hold and ?wait= together per transport', () => {
+    // Bundled on purpose: the query and the hold have to agree, or a poll asks
+    // the server for one wait while its deadline brackets another. Because the
+    // budget travels with them, a wrong transport here also breaks the budget
+    // tests above — which is what makes those tests cover this choice.
+    const http = streamPollPlan(true);
+    assert.equal(http.budgetMs, HTTP_LONG_POLL_BUDGET_MS);
+    assert.equal(http.holdMs, HTTP_STREAM_POLL_WAIT_MS);
+    assert.equal(
+      http.query,
+      `?wait=${http.holdMs}`,
+      'the hold the deadline brackets must be the wait actually sent'
+    );
+
+    const stdio = streamPollPlan(false);
+    assert.equal(stdio.budgetMs, STDIO_STREAM_BUDGET_MS);
+    assert.equal(
+      stdio.holdMs,
+      STREAM_UPSTREAM_DEFAULT_WAIT_MS,
+      'stdio sends no wait, so it brackets the server default — not the http cap'
+    );
+    assert.equal(stdio.query, '');
+    // The regression this exists for: giving stdio the http hold shortens its
+    // deadline to 6s against a server holding 10s, so every poll aborts a
+    // reply in flight and the run dies at the error cap in ~30s.
+    assert.ok(
+      streamPollTimeoutMs(stdio.budgetMs, stdio.holdMs) >
+        streamPollTimeoutMs(http.budgetMs, http.holdMs),
+      'stdio brackets a longer hold, so its poll deadline must be longer'
+    );
+  });
+
+  it('reports only a trailing error, not one the job recovered from', async (t) => {
+    // lastError rides along to the budget exit. Left uncleared, a blip in the
+    // first second is still reported next to pollingTimedOut five minutes of
+    // healthy streaming later, and reads as the reason the run stopped.
+    const clock = useFakeClock(t);
+    let attempt = 0;
+    const pending = collectJobStream({
+      budgetMs: 4 * STREAM_JOB_POLL_INTERVAL_MS,
+      holdMs: STREAM_UPSTREAM_DEFAULT_WAIT_MS,
+      poll: () => {
+        attempt++;
+        return attempt === 1
+          ? Promise.reject(new Error('one early blip'))
+          : Promise.resolve({ status: 'IN_PROGRESS', stream: [] });
+      },
+    });
+    for (let i = 0; i < 6; i++) {
+      await clock.settle();
+      clock.advance(STREAM_JOB_POLL_INTERVAL_MS);
+    }
+    const { result } = await settled(pending, 'the stale-error poll loop');
+    assert.equal(result.pollingTimedOut, true);
+    assert.equal(
+      result.lastError,
+      undefined,
+      'an error the job recovered from must not be reported as the trailing one'
+    );
   });
 
   it('counts only CONSECUTIVE failures, so a job that recovers keeps streaming', async (t) => {
