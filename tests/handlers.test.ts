@@ -4695,3 +4695,203 @@ describe('per-request deadline', () => {
     );
   });
 });
+
+describe('CUDA constraints (2.9.0 gpu-nested fields)', () => {
+  it('create-pod v2 sends gpu.allowedCudaVersions / gpu.minCudaVersion', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'pod_1' } });
+      await handlers.get('create-pod')!({
+        name: 'p',
+        imageName: 'img',
+        gpuTypeIds: ['NVIDIA A100'],
+        allowedCudaVersions: ['12.8', '12.6'],
+      });
+      const body = JSON.parse(outbound[0].body!);
+      assert.deepEqual(body.gpu, {
+        id: 'NVIDIA A100',
+        count: 1,
+        allowedCudaVersions: ['12.8', '12.6'],
+      });
+      assert.equal('allowedCudaVersions' in body, false); // never top-level
+    });
+  });
+
+  it('create-pod v2 rejects a non-empty set combined with a floor — 400, no request', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      const out = await handlers.get('create-pod')!({
+        name: 'p',
+        imageName: 'img',
+        gpuTypeIds: ['A'],
+        allowedCudaVersions: ['12.8'],
+        minCudaVersion: '12.4',
+      });
+      assert.equal(parseText(out).status, 400);
+      assert.equal(outbound.length, 0);
+    });
+  });
+
+  it('create-pod v2 rejects a bare-major minCudaVersion with a major.minor message — 400, no request', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      const out = await handlers.get('create-pod')!({
+        name: 'p',
+        imageName: 'img',
+        gpuTypeIds: ['A'],
+        minCudaVersion: '12',
+      });
+      const reply = parseText(out);
+      assert.equal(reply.status, 400);
+      assert.match(String(reply.error), /major\.minor/);
+      assert.equal(outbound.length, 0);
+    });
+  });
+
+  it('create-pod v2 rejects CUDA constraints without a GPU — 400, no request', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      const out = await handlers.get('create-pod')!({
+        name: 'p',
+        imageName: 'img',
+        computeType: 'CPU',
+        minCudaVersion: '12.4',
+      });
+      assert.equal(parseText(out).status, 400);
+      assert.equal(outbound.length, 0);
+    });
+  });
+
+  it('create-pod v1 rejects the v2-only CUDA params — 501, no request', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    const out = await handlers.get('create-pod')!({
+      name: 'p',
+      imageName: 'img',
+      gpuTypeIds: ['A'],
+      allowedCudaVersions: ['12.8'],
+    });
+    assert.equal(parseText(out).status, 501);
+    assert.equal(outbound.length, 0);
+  });
+
+  it('create-endpoint v2 sends gpu-nested CUDA fields', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'ep_1' } });
+      await handlers.get('create-endpoint')!({
+        name: 'e',
+        imageName: 'img',
+        gpuPoolIds: ['AMPERE_80'],
+        minCudaVersion: '12.4',
+      });
+      const body = JSON.parse(outbound[0].body!);
+      assert.deepEqual(body.gpu, {
+        pools: ['AMPERE_80'],
+        minCudaVersion: '12.4',
+      });
+    });
+  });
+
+  it('create-endpoint v1 rejects the v2-only CUDA params — 501, no request', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    const out = await handlers.get('create-endpoint')!({
+      templateId: 'tpl_1',
+      allowedCudaVersions: ['12.8'],
+    });
+    assert.equal(parseText(out).status, 501);
+    assert.equal(outbound.length, 0);
+  });
+
+  it('update-endpoint v2 CUDA-only → single pools-less gpu PATCH, no pre-read', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { id: 'ep_1' } });
+      await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        allowedCudaVersions: ['12.8'],
+      });
+      assert.equal(outbound.length, 1);
+      assert.equal(outbound[0].method, 'PATCH');
+      const body = JSON.parse(outbound[0].body!);
+      assert.deepEqual(body.gpu, { allowedCudaVersions: ['12.8'] });
+    });
+  });
+
+  it('update-endpoint v2 warns when a pools update will clear existing exclusions', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        steps: [
+          {
+            jsonBody: {
+              id: 'ep_1',
+              gpu: { pools: ['ADA_24'], excludedTypes: ['NVIDIA L40'] },
+            },
+          },
+          { jsonBody: { id: 'ep_1' } },
+        ],
+      });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        gpuPoolIds: ['AMPERE_80'],
+      });
+      assert.equal(outbound.length, 2);
+      assert.equal(outbound[0].method, 'GET');
+      assert.equal(outbound[1].method, 'PATCH');
+      const reply = parseText(out);
+      assert.match(String(reply._warning), /exclusion/i);
+    });
+  });
+
+  it('update-endpoint v2 stays silent when the endpoint has no exclusions', async () => {
+    await withV2(async () => {
+      const { handlers } = harness({
+        steps: [
+          { jsonBody: { id: 'ep_1', gpu: { pools: ['ADA_24'] } } },
+          { jsonBody: { id: 'ep_1' } },
+        ],
+      });
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        gpuPoolIds: ['AMPERE_80'],
+      });
+      assert.equal('_warning' in parseText(out), false);
+    });
+  });
+
+  it('update-endpoint v1 rejects the v2-only CUDA params — 501, no request', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    const out = await handlers.get('update-endpoint')!({
+      endpointId: 'ep_1',
+      minCudaVersion: '12.4',
+    });
+    assert.equal(parseText(out).status, 501);
+    assert.equal(outbound.length, 0);
+  });
+
+  it('list-gpu-types v2 forwards the minCudaVersion availability filter', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { gpus: [] } });
+      await handlers.get('list-gpu-types')!({ minCudaVersion: '12.1' });
+      assert.match(outbound[0].url, /minCudaVersion=12\.1/);
+      assert.match(outbound[0].url, /include=AVAILABILITY/);
+    });
+  });
+
+  it('list-gpu-types v2 rejects minCudaVersion with includeAvailability:false — 400, no request', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: { gpus: [] } });
+      const out = await handlers.get('list-gpu-types')!({
+        minCudaVersion: '12.1',
+        includeAvailability: false,
+      });
+      assert.equal(parseText(out).status, 400);
+      assert.equal(outbound.length, 0);
+    });
+  });
+
+  it('list-gpu-types v1 rejects the v2-only minCudaVersion filter — 501', async () => {
+    const { handlers, outbound } = harness({ jsonBody: {} });
+    const out = await handlers.get('list-gpu-types')!({
+      minCudaVersion: '12.1',
+    });
+    assert.equal(parseText(out).status, 501);
+    assert.equal(outbound.length, 0);
+  });
+});
