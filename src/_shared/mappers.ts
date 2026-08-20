@@ -33,6 +33,10 @@ interface V1PodParams {
   env?: Record<string, string>;
   dataCenterIds?: string[];
   containerRegistryAuthId?: string;
+  // v2-only: mapped into gpu.allowedCudaVersions / gpu.minCudaVersion; the v1
+  // path never sends them.
+  allowedCudaVersions?: string[];
+  minCudaVersion?: string;
 }
 
 // Drop undefined entries so we never emit explicit `undefined`/`null` the API
@@ -93,11 +97,20 @@ function containerConfigToV2(p: {
 // always emit the documented default explicitly.
 function gpuConfigToV2(
   gpuTypeIds?: string[],
-  gpuCount?: number
+  gpuCount?: number,
+  allowedCudaVersions?: string[],
+  minCudaVersion?: string
 ): Record<string, unknown> | undefined {
   const id = gpuTypeIds?.[0];
   if (id === undefined) return undefined;
-  return { id, count: gpuCount ?? 1 };
+  // CUDA host constraints are gpu-nested since 2.9.0 (never body top-level).
+  // Passed through as given: an explicit [] is a spec-legal "no constraint".
+  return compact({
+    id,
+    count: gpuCount ?? 1,
+    allowedCudaVersions,
+    minCudaVersion,
+  });
 }
 
 export function mapPodCreateToV2(params: V1PodParams): Record<string, unknown> {
@@ -124,7 +137,12 @@ export function mapPodCreateToV2(params: V1PodParams): Record<string, unknown> {
     dataCenterIds: params.dataCenterIds?.length
       ? params.dataCenterIds
       : undefined,
-    gpu: gpuConfigToV2(params.gpuTypeIds, params.gpuCount),
+    gpu: gpuConfigToV2(
+      params.gpuTypeIds,
+      params.gpuCount,
+      params.allowedCudaVersions,
+      params.minCudaVersion
+    ),
   });
 }
 
@@ -169,6 +187,8 @@ interface V2EndpointParams {
   ports?: string[];
   env?: Record<string, string>;
   containerRegistryAuthId?: string;
+  allowedCudaVersions?: string[];
+  minCudaVersion?: string;
 }
 
 type EndpointType = 'QUEUE' | 'LOAD_BALANCER';
@@ -202,14 +222,24 @@ function endpointScaling(
     : { type: 'QUEUE_DELAY', queueDelay: value };
 }
 
-// gpu requires `pools` (minItems 1) — return undefined when no pools so the
-// handler's guard, not the API, reports the omission.
+// CREATE requires `pools` (minItems 1): without them, return undefined so the
+// handler's guard, not the API, reports the omission — CUDA/count fields never
+// ride without a pool list on create. UPDATE (2.9.0) makes every gpu field
+// optional, so a pools-less gpu (CUDA-only or count-only patch) is emitted as
+// given; an empty object is still dropped. CUDA clear sentinels pass through:
+// [] clears the set, "" clears the floor.
 function endpointGpuConfig(
-  pools?: string[],
-  count?: number
+  params: V2EndpointParams,
+  mode: 'create' | 'update'
 ): Record<string, unknown> | undefined {
-  if (!pools?.length) return undefined;
-  return compact({ pools, count });
+  const gpu = compact({
+    pools: params.gpuPoolIds?.length ? params.gpuPoolIds : undefined,
+    count: params.gpuCount,
+    allowedCudaVersions: params.allowedCudaVersions,
+    minCudaVersion: params.minCudaVersion,
+  });
+  if (mode === 'create' && !('pools' in gpu)) return undefined;
+  return Object.keys(gpu).length ? gpu : undefined;
 }
 
 // `workers` absorbed `idleTimeout` from `scaling`. Returns undefined when the caller
@@ -227,7 +257,10 @@ function endpointWorkers(
 
 // The half of the body shared by create and update: container config, compute,
 // placement and workers. Only `type` and `scaling` differ between the two.
-function endpointCommonToV2(params: V2EndpointParams): Record<string, unknown> {
+function endpointCommonToV2(
+  params: V2EndpointParams,
+  mode: 'create' | 'update'
+): Record<string, unknown> {
   return compact({
     name: params.name,
     image: params.imageName,
@@ -236,7 +269,7 @@ function endpointCommonToV2(params: V2EndpointParams): Record<string, unknown> {
     ports: params.ports,
     env: params.env,
     registry: params.containerRegistryAuthId,
-    gpu: endpointGpuConfig(params.gpuPoolIds, params.gpuCount),
+    gpu: endpointGpuConfig(params, mode),
     workers: endpointWorkers(params),
     dataCenterIds: params.dataCenterIds?.length
       ? params.dataCenterIds
@@ -255,7 +288,7 @@ export function mapEndpointCreateToV2(
 ): Record<string, unknown> {
   const endpointType = params.endpointType ?? DEFAULT_ENDPOINT_TYPE;
   return compact({
-    ...endpointCommonToV2(params),
+    ...endpointCommonToV2(params, 'create'),
     type: endpointType,
     scaling: endpointScaling(
       params.scalerType ?? defaultScalerType(endpointType),
@@ -273,7 +306,7 @@ export function mapEndpointUpdateToV2(
   params: V2EndpointParams
 ): Record<string, unknown> {
   return compact({
-    ...endpointCommonToV2(params),
+    ...endpointCommonToV2(params, 'update'),
     scaling: params.scalerType
       ? endpointScaling(
           params.scalerType,
@@ -281,6 +314,34 @@ export function mapEndpointUpdateToV2(
         )
       : undefined,
   });
+}
+
+// ---- CUDA constraint validation shared by the pod/endpoint tools ----
+// The API answers a raw 422/400; validating here names the field and the fix.
+// major.minor only — the REST body fields reject a bare major like "12" (the
+// catalog's minCudaVersion QUERY filter is the one place a bare major is legal).
+const CUDA_MAJOR_MINOR = /^\d+\.\d+$/;
+
+export function cudaConstraintError(
+  params: { allowedCudaVersions?: string[]; minCudaVersion?: string },
+  opts: { allowClear?: boolean } = {}
+): string | undefined {
+  const { allowedCudaVersions, minCudaVersion } = params;
+  if (allowedCudaVersions?.length && minCudaVersion) {
+    return 'allowedCudaVersions and minCudaVersion are mutually exclusive — pass either an exact set or an open-ended floor, not both.';
+  }
+  if (
+    minCudaVersion !== undefined &&
+    !CUDA_MAJOR_MINOR.test(minCudaVersion) &&
+    !(opts.allowClear && minCudaVersion === '')
+  ) {
+    return `minCudaVersion must be major.minor (e.g. "12.0", not "12")${opts.allowClear ? '; an empty string clears the floor' : ''}.`;
+  }
+  const bad = allowedCudaVersions?.find((v) => !CUDA_MAJOR_MINOR.test(v));
+  if (bad !== undefined) {
+    return `allowedCudaVersions entries must be major.minor (e.g. "12.8"); got "${bad}". Discover valid values via get-capacity or list-gpu-types.`;
+  }
+  return undefined;
 }
 
 // ---- Network volume: dataCenterId → dataCenter (only field change) ----

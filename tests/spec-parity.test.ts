@@ -136,7 +136,21 @@ const SPEC_OP_TO_TOOLS: Record<string, string[]> = {
 // Spec operations deliberately NOT exposed as a tool. Empty today — every operation
 // in the vendored spec maps to a registered tool. Add an entry (with the reason) if
 // an operation ships that we choose not to cover.
-const ALLOWLIST_UNMAPPED_OPS: Record<string, string> = {};
+// New in the 2.9.0-era spec refresh: whole resources the MCP has no tools for
+// yet. A to-do list, not a permanent carve-out — delete an entry when its tool
+// ships (this gate then enforces the mapping).
+const ALLOWLIST_UNMAPPED_OPS: Record<string, string> = {
+  getSshKeys: 'account SSH keys: no MCP tool yet (2.9.0 spec refresh)',
+  updateSshKeys: 'account SSH keys: no MCP tool yet (2.9.0 spec refresh)',
+  listClusters: 'Instant Clusters: no MCP tools yet (2.9.0 spec refresh)',
+  createCluster: 'Instant Clusters: no MCP tools yet (2.9.0 spec refresh)',
+  getCluster: 'Instant Clusters: no MCP tools yet (2.9.0 spec refresh)',
+  updateCluster: 'Instant Clusters: no MCP tools yet (2.9.0 spec refresh)',
+  deleteCluster: 'Instant Clusters: no MCP tools yet (2.9.0 spec refresh)',
+  listClusterPods: 'Instant Clusters: no MCP tools yet (2.9.0 spec refresh)',
+  listPublicTemplates:
+    'public template catalog: no MCP tool yet (2.9.0 spec refresh); list-templates covers the account-scoped list',
+};
 
 // Tools that will NEVER have a v2 REST spec operation: the serverless RUNTIME
 // tools target a different service (api.runpod.ai/v2 — job submission and

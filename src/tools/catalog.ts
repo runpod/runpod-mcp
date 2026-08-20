@@ -58,10 +58,23 @@ export function registerCatalogTools(server: McpServer, rt: ToolRuntime): void {
         .describe(
           'Product context for the availability lookup — the same GPU can be scarce for Pods and plentiful for Serverless. Default POD. Use SERVERLESS when picking a GPU for an endpoint, CLUSTER for Instant Clusters. Ignored when includeAvailability is false.'
         ),
+      minCudaVersion: z
+        .string()
+        .optional()
+        .describe(
+          'Scope the availability lookup to hosts at or above this CUDA version (v2 only). Integer major or major.minor — "12" means any 12.x release; unlike the create-pod/create-endpoint body fields, a bare major is accepted here because the filter only widens a read. Requires includeAvailability (the default).'
+        ),
     },
     { title: 'List GPU types', ...READ_ONLY },
     async (params) => {
       const backend = backendFor('gpus');
+      if (params.minCudaVersion !== undefined && backend.version !== 'v2') {
+        return jsonReply({
+          error:
+            'The minCudaVersion filter is only supported on the v2 REST API. Set RUNPOD_REST_VERSION=v2, or use get-capacity for per-CUDA-version availability.',
+          status: 501,
+        });
+      }
       if (backend.version === 'v2') {
         // v2 REST: GET /v2/catalog/gpus?include=AVAILABILITY&product=… →
         // { gpus: [...] }, each with an `availability` summary
@@ -76,9 +89,35 @@ export function registerCatalogTools(server: McpServer, rt: ToolRuntime): void {
         const product = GPU_PRODUCTS.has(String(params.product))
           ? String(params.product)
           : 'POD';
+        // The filter scopes the availability lookup, so it is meaningless (and
+        // rejected by the API) without include=AVAILABILITY. Bare major is
+        // legal here — this filter only widens a read. Re-validated like
+        // `product` because direct handler calls can bypass zod.
+        if (params.minCudaVersion !== undefined) {
+          if (!wantAvailability) {
+            return jsonReply({
+              error:
+                'minCudaVersion filters the availability lookup, so it requires includeAvailability (the default). Drop includeAvailability:false or the filter.',
+              status: 400,
+            });
+          }
+          if (!/^\d+(\.\d+)?$/.test(params.minCudaVersion)) {
+            return jsonReply({
+              error:
+                'minCudaVersion must be an integer major ("12") or major.minor ("12.1").',
+              status: 400,
+            });
+          }
+        }
         const raw = await callRestUrl(
           `${backend.base}${backend.list}${
-            wantAvailability ? `?include=AVAILABILITY&product=${product}` : ''
+            wantAvailability
+              ? `?include=AVAILABILITY&product=${product}${
+                  params.minCudaVersion !== undefined
+                    ? `&minCudaVersion=${encodeURIComponent(params.minCudaVersion)}`
+                    : ''
+                }`
+              : ''
           }`
         );
         let gpus = backend.unwrap(raw) as Array<Record<string, unknown>>;

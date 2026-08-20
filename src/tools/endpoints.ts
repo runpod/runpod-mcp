@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { capListResult, listPaginationParams } from '../pagination.js';
 import { READ_ONLY, WRITE, DESTRUCTIVE, type ToolRuntime } from './runtime.js';
 import { logStreamParams, streamLogsReply } from './logs.js';
+import { cudaConstraintError } from '../_shared/mappers.js';
 
 // ============== ENDPOINT MANAGEMENT TOOLS ==============
 // Serverless endpoint CRUD, version-aware via the backend adapter.
@@ -163,6 +164,18 @@ export function registerEndpointTools(
           'GPU pool names (v2, required). The `pool` field from list-gpu-types, e.g. ["AMPERE_80"]. NOT GPU type ids.'
         ),
       gpuCount: z.number().optional().describe('GPUs per worker (v2)'),
+      allowedCudaVersions: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Acceptable host CUDA versions for worker placement as major.minor, e.g. ["12.8"] (v2). Exact match — see get-capacity for which versions have stock. Mutually exclusive with minCudaVersion.'
+        ),
+      minCudaVersion: z
+        .string()
+        .optional()
+        .describe(
+          'Lowest acceptable host CUDA version as major.minor, e.g. "12.4" (v2). A bare major like "12" is rejected. Mutually exclusive with a non-empty allowedCudaVersions.'
+        ),
       args: z.string().optional().describe('Container start command/args (v2)'),
       containerDiskInGb: z
         .number()
@@ -239,6 +252,17 @@ export function registerEndpointTools(
     async (params) => {
       const backend = backendFor('endpoints');
 
+      const hasCudaParams =
+        params.allowedCudaVersions !== undefined ||
+        params.minCudaVersion !== undefined;
+      if (hasCudaParams && backend.version !== 'v2') {
+        return jsonReply({
+          error:
+            'allowedCudaVersions/minCudaVersion are only supported on the v2 REST API. Set RUNPOD_REST_VERSION=v2.',
+          status: 501,
+        });
+      }
+
       if (backend.version === 'v2') {
         // Guard the v2-required fields before calling, so the caller gets a
         // clean 400 rather than a raw 422 from the API (mirrors create-pod).
@@ -290,6 +314,10 @@ export function registerEndpointTools(
         if (scalerError) {
           return jsonReply({ error: scalerError, status: 400 });
         }
+        if (hasCudaParams) {
+          const cudaError = cudaConstraintError(params);
+          if (cudaError) return jsonReply({ error: cudaError, status: 400 });
+        }
         const body = backend.mapCreate(params) as Record<string, unknown>;
         const result = await callRestUrl(
           `${backend.base}${backend.list}`,
@@ -337,7 +365,7 @@ export function registerEndpointTools(
   // /v2/serverless body; v1 passes the flat fields through.
   server.tool(
     'update-endpoint',
-    "Update a Serverless endpoint's config. On v2 you can change image/disk/env/ports/registry/workers/scaling/networkVolumes/timeout/flashboot; on v1, scaling fields (worker min/max, idle timeout, scaler type/value, name). Only provided fields change. An endpoint's request routing (queue vs load balancer) is fixed at creation and cannot be changed here — recreate the endpoint instead.",
+    "Update a Serverless endpoint's config. On v2 you can change image/disk/env/ports/registry/workers/scaling/networkVolumes/timeout/flashboot; on v1, scaling fields (worker min/max, idle timeout, scaler type/value, name). Only provided fields change. An endpoint's request routing (queue vs load balancer) is fixed at creation and cannot be changed here — recreate the endpoint instead. Note: passing gpuPoolIds replaces the GPU selection wholesale, which clears any GPU-type exclusions set elsewhere (console or set-endpoint-gpus) — the reply carries a _warning when that happens.",
     {
       endpointId: z.string().describe('ID of the endpoint to update'),
       name: z.string().optional().describe('New name for the endpoint'),
@@ -378,6 +406,18 @@ export function registerEndpointTools(
         .optional()
         .describe('New GPU pool names (v2), e.g. ["AMPERE_80"]'),
       gpuCount: z.number().optional().describe('New GPUs per worker (v2)'),
+      allowedCudaVersions: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'New acceptable host CUDA versions as major.minor (v2). Changing only this does not require resending gpuPoolIds. An explicit [] clears the constraint. Mutually exclusive with minCudaVersion.'
+        ),
+      minCudaVersion: z
+        .string()
+        .optional()
+        .describe(
+          'New lowest acceptable host CUDA version as major.minor (v2). An empty string clears the floor; a bare major like "12" is rejected. Mutually exclusive with a non-empty allowedCudaVersions.'
+        ),
       args: z.string().optional().describe('New container args (v2)'),
       containerDiskInGb: z
         .number()
@@ -411,9 +451,42 @@ export function registerEndpointTools(
       const backend = backendFor('endpoints');
       const url = `${backend.base}${backend.get!(endpointId)}`;
 
+      const hasCudaParams =
+        updateParams.allowedCudaVersions !== undefined ||
+        updateParams.minCudaVersion !== undefined;
       if (backend.version !== 'v2') {
+        if (hasCudaParams) {
+          return jsonReply({
+            error:
+              'allowedCudaVersions/minCudaVersion are only supported on the v2 REST API. Set RUNPOD_REST_VERSION=v2.',
+            status: 501,
+          });
+        }
         const body = backend.mapUpdate(updateParams) as Record<string, unknown>;
         return jsonReply(await callRestUrl(url, 'PATCH', body));
+      }
+
+      if (hasCudaParams) {
+        // allowClear: [] clears the set, "" clears the floor (update-only
+        // sentinels — the create schema rejects both).
+        const cudaError = cudaConstraintError(updateParams, {
+          allowClear: true,
+        });
+        if (cudaError) return jsonReply({ error: cudaError, status: 400 });
+      }
+
+      // Unlike allowedCudaVersions, [] is not a clear sentinel here: the GPU
+      // selection is not clearable (gpu.pools is minItems 1 upstream), and the
+      // mapper would drop the field — a silent no-op the caller didn't ask for.
+      if (
+        updateParams.gpuPoolIds !== undefined &&
+        !updateParams.gpuPoolIds.length
+      ) {
+        return jsonReply({
+          error:
+            'gpuPoolIds cannot be empty — omit it to keep the current GPU selection.',
+          status: 400,
+        });
       }
 
       // `scaling` is a union keyed on the scaler type, so a bare "change the target
@@ -421,14 +494,26 @@ export function registerEndpointTools(
       // Rather than reject the call, read the endpoint's current scaler and keep
       // it — which is what such a request has always meant.
       let scalerType = updateParams.scalerType;
-      if (scalerType === undefined && updateParams.scalerValue !== undefined) {
+      const needScalerRead =
+        scalerType === undefined && updateParams.scalerValue !== undefined;
+      // Since 2.9.0, sending pools replaces the GPU selection wholesale, which
+      // clears any excludedTypes pinned out-of-band (console/set-endpoint-gpus).
+      // Read them first so the wipe is loud, not silent.
+      const needExclusionRead = (updateParams.gpuPoolIds?.length ?? 0) > 0;
+      let clearedExclusions: string[] = [];
+      if (needScalerRead || needExclusionRead) {
         const current = (await callRestUrl(url)) as
-          | { scaling?: { type?: string } }
+          | { scaling?: { type?: string }; gpu?: { excludedTypes?: string[] } }
           | undefined;
-        scalerType =
-          current?.scaling?.type === 'REQUEST_COUNT'
-            ? 'REQUEST_COUNT'
-            : 'QUEUE_DELAY';
+        if (needScalerRead) {
+          scalerType =
+            current?.scaling?.type === 'REQUEST_COUNT'
+              ? 'REQUEST_COUNT'
+              : 'QUEUE_DELAY';
+        }
+        if (needExclusionRead && current?.gpu?.excludedTypes?.length) {
+          clearedExclusions = current.gpu.excludedTypes;
+        }
       }
 
       // Checked against the resolved scaler, so `scalerValue` alone on an endpoint
@@ -445,7 +530,17 @@ export function registerEndpointTools(
         ...updateParams,
         scalerType,
       }) as Record<string, unknown>;
-      return jsonReply(await callRestUrl(url, 'PATCH', body));
+      const result = (await callRestUrl(url, 'PATCH', body)) as Record<
+        string,
+        unknown
+      >;
+      if (clearedExclusions.length) {
+        return jsonReply({
+          ...result,
+          _warning: `Supplying gpuPoolIds replaced the GPU selection wholesale, clearing ${clearedExclusions.length} GPU-type exclusion(s) previously set on this endpoint: ${clearedExclusions.join(', ')}. Re-apply them with set-endpoint-gpus if still wanted.`,
+        });
+      }
+      return jsonReply(result);
     }
   );
 

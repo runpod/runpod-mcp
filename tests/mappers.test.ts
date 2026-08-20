@@ -14,6 +14,7 @@ import {
   podBodyFromTemplate,
   applySshPublicKey,
   normalizeSshPublicKey,
+  cudaConstraintError,
 } from '../src/_shared/mappers.js';
 import { parseLogSse } from '../src/tools/logs.js';
 
@@ -643,6 +644,122 @@ describe('mapEndpointUpdateToV2', () => {
     });
     assert.deepEqual(out.scaling, { type: 'QUEUE_DELAY', queueDelay: 6 });
     assert.deepEqual(out.workers, { idleTimeout: 9 });
+  });
+});
+
+describe('CUDA constraints (2.9.0 gpu-nested fields)', () => {
+  it('pod create: allowedCudaVersions/minCudaVersion ride under gpu', () => {
+    const out = mapPodCreateToV2({
+      gpuTypeIds: ['A'],
+      allowedCudaVersions: ['12.8', '12.6'],
+    });
+    assert.deepEqual(out.gpu, {
+      id: 'A',
+      count: 1,
+      allowedCudaVersions: ['12.8', '12.6'],
+    });
+    const out2 = mapPodCreateToV2({
+      gpuTypeIds: ['A'],
+      minCudaVersion: '12.4',
+    });
+    assert.deepEqual(out2.gpu, { id: 'A', count: 1, minCudaVersion: '12.4' });
+    // Never at the body top level — that is the pre-2.9.0 shape the API 422s.
+    assert.equal('allowedCudaVersions' in out, false);
+    assert.equal('minCudaVersion' in out2, false);
+  });
+
+  it('pod create: CUDA fields without gpuTypeIds → still NO gpu (id required; handler guards)', () => {
+    const out = mapPodCreateToV2({ allowedCudaVersions: ['12.8'] });
+    assert.equal('gpu' in out, false);
+  });
+
+  it('pod create: no CUDA params → gpu carries no CUDA keys', () => {
+    const out = mapPodCreateToV2({ gpuTypeIds: ['A'] });
+    assert.deepEqual(out.gpu, { id: 'A', count: 1 });
+  });
+
+  it('endpoint create: CUDA fields ride under gpu beside pools', () => {
+    const out = mapEndpointCreateToV2({
+      gpuPoolIds: ['AMPERE_80'],
+      gpuCount: 2,
+      allowedCudaVersions: ['12.8'],
+    });
+    assert.deepEqual(out.gpu, {
+      pools: ['AMPERE_80'],
+      count: 2,
+      allowedCudaVersions: ['12.8'],
+    });
+  });
+
+  it('endpoint create: CUDA-only (no pools) → NO gpu (create requires pools; handler guards)', () => {
+    const out = mapEndpointCreateToV2({
+      name: 'e',
+      imageName: 'i',
+      minCudaVersion: '12.4',
+    });
+    assert.equal('gpu' in out, false);
+  });
+
+  it('endpoint update: CUDA-only patch → pools-less gpu (legal since 2.9.0)', () => {
+    const out = mapEndpointUpdateToV2({ allowedCudaVersions: ['12.8'] });
+    assert.deepEqual(out.gpu, { allowedCudaVersions: ['12.8'] });
+  });
+
+  it('endpoint update: gpuCount alone → pools-less gpu (previously silently dropped)', () => {
+    const out = mapEndpointUpdateToV2({ gpuCount: 2 });
+    assert.deepEqual(out.gpu, { count: 2 });
+  });
+
+  it('endpoint update: clear sentinels pass through — [] clears the set, "" clears the floor', () => {
+    const out = mapEndpointUpdateToV2({
+      allowedCudaVersions: [],
+      minCudaVersion: '',
+    });
+    assert.deepEqual(out.gpu, { allowedCudaVersions: [], minCudaVersion: '' });
+  });
+
+  it('endpoint update: nothing gpu-ish → NO gpu key', () => {
+    const out = mapEndpointUpdateToV2({ workersMax: 3 });
+    assert.equal('gpu' in out, false);
+  });
+});
+
+describe('cudaConstraintError', () => {
+  it('accepts major.minor, rejects a bare major with a helpful message', () => {
+    assert.equal(cudaConstraintError({ minCudaVersion: '12.4' }), undefined);
+    const err = cudaConstraintError({ minCudaVersion: '12' });
+    assert.ok(err && /major\.minor/.test(err), err);
+  });
+
+  it('rejects a non-empty set combined with a floor (server 400) client-side', () => {
+    const err = cudaConstraintError({
+      allowedCudaVersions: ['12.8'],
+      minCudaVersion: '12.4',
+    });
+    assert.ok(err && /mutually exclusive|either/i.test(err), err);
+  });
+
+  it('allows an explicit empty set beside a floor (spec-legal)', () => {
+    assert.equal(
+      cudaConstraintError({ allowedCudaVersions: [], minCudaVersion: '12.4' }),
+      undefined
+    );
+  });
+
+  it('validates each set entry against major.minor', () => {
+    assert.ok(cudaConstraintError({ allowedCudaVersions: ['12'] }));
+    assert.equal(
+      cudaConstraintError({ allowedCudaVersions: ['12.8', '13.0'] }),
+      undefined
+    );
+  });
+
+  it('update mode: "" is a legal clear sentinel for the floor', () => {
+    assert.ok(cudaConstraintError({ minCudaVersion: '' }));
+    assert.equal(
+      cudaConstraintError({ minCudaVersion: '' }, { allowClear: true }),
+      undefined
+    );
   });
 });
 
