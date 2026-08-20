@@ -168,7 +168,7 @@ export function registerEndpointTools(
         .array(z.string())
         .optional()
         .describe(
-          'Acceptable host CUDA versions for worker placement as major.minor, e.g. ["12.8"] (v2). Exact match — discover valid values with get-capacity (product SERVERLESS). Mutually exclusive with minCudaVersion.'
+          'Acceptable host CUDA versions for worker placement as major.minor, e.g. ["12.8"] (v2). Exact match — see get-capacity for which versions have stock. Mutually exclusive with minCudaVersion.'
         ),
       minCudaVersion: z
         .string()
@@ -473,6 +473,20 @@ export function registerEndpointTools(
           allowClear: true,
         });
         if (cudaError) return jsonReply({ error: cudaError, status: 400 });
+      }
+
+      // Unlike allowedCudaVersions, [] is not a clear sentinel here: the GPU
+      // selection is not clearable (gpu.pools is minItems 1 upstream), and the
+      // mapper would drop the field — a silent no-op the caller didn't ask for.
+      if (
+        updateParams.gpuPoolIds !== undefined &&
+        !updateParams.gpuPoolIds.length
+      ) {
+        return jsonReply({
+          error:
+            'gpuPoolIds cannot be empty — omit it to keep the current GPU selection.',
+          status: 400,
+        });
       }
 
       // `scaling` is a union keyed on the scaler type, so a bare "change the target

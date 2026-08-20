@@ -2692,6 +2692,24 @@ describe('endpoint routing under RUNPOD_REST_VERSION=v2', () => {
     });
   });
 
+  it('update-endpoint rejects an explicit empty gpuPoolIds instead of silently dropping it', async () => {
+    // [] is not a clear sentinel here: gpu.pools is minItems 1 upstream and the
+    // GPU selection is not clearable, so an empty array can only be a mistake.
+    await withV2(async () => {
+      const { handlers, outbound } = harness({});
+      const out = await handlers.get('update-endpoint')!({
+        endpointId: 'ep_1',
+        gpuPoolIds: [],
+      });
+      assert.equal(outbound.length, 0, 'no request should go out');
+      assert.equal(parseText(out).status, 400);
+      assert.match(
+        parseText(out).error as string,
+        /gpuPoolIds cannot be empty/
+      );
+    });
+  });
+
   it('update-endpoint treats an unrecognized current scaler as QUEUE_DELAY', async () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({

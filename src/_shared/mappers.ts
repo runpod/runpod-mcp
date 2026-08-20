@@ -33,6 +33,8 @@ interface V1PodParams {
   env?: Record<string, string>;
   dataCenterIds?: string[];
   containerRegistryAuthId?: string;
+  // v2-only: mapped into gpu.allowedCudaVersions / gpu.minCudaVersion; the v1
+  // path never sends them.
   allowedCudaVersions?: string[];
   minCudaVersion?: string;
 }
