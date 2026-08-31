@@ -288,11 +288,20 @@ function encodeBody(body: VercelRequest['body']): string {
   return '';
 }
 
+// The discovery documents are static per host and fetched by MCP clients on
+// every auth flow. s-maxage serves repeat fetches from the CDN instead of the
+// function; stale-while-revalidate revalidates expired copies in the
+// background; max-age=0 keeps clients uncached so a deploy that changes the
+// advertised endpoints propagates within the hour.
+const DISCOVERY_CACHE_CONTROL =
+  'public, max-age=0, s-maxage=3600, stale-while-revalidate=86400';
+
 function handleProtectedResourceMetadata(
   req: VercelRequest,
   res: VercelResponse
 ): void {
   const baseUrl = getBaseUrl(req);
+  res.setHeader('Cache-Control', DISCOVERY_CACHE_CONTROL);
   // Advertise THIS server as the authorization server so Claude discovers our
   // /authorize and /token routes.
   res.status(200).json({
@@ -308,6 +317,7 @@ function handleAuthorizationServerMetadata(
   res: VercelResponse
 ): void {
   const baseUrl = getBaseUrl(req);
+  res.setHeader('Cache-Control', DISCOVERY_CACHE_CONTROL);
   // This server is the full authorization server. The flow is a flash-backed
   // approval: /authorize creates a request and hands off to the console, and
   // /token exchanges the resulting code for the minted Runpod API key. There is
