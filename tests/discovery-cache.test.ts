@@ -3,11 +3,10 @@ import assert from 'node:assert/strict';
 
 import handler from '../api/index.js';
 
-// The OAuth discovery documents are static per host and fetched on every auth
-// flow, so they must carry a CDN caching directive to be served from the edge
-// instead of invoking the function. These tests pin the directive onto the two
-// discovery routes — and pin it OFF the MCP endpoint itself, whose responses
-// are per-caller and must never be cached.
+// The OAuth discovery documents are static per host, so they carry a CDN
+// caching directive and repeat fetches skip the function. These tests pin the
+// directive onto the two discovery routes and off the MCP endpoint, whose
+// responses are per-caller.
 
 function fakeReqRes(method: string, url: string) {
   const state: Record<string, string> = {};
@@ -58,16 +57,15 @@ describe('OAuth discovery responses are CDN-cacheable', () => {
       assert.ok(cacheControl, 'no Cache-Control set on the discovery response');
       assert.match(cacheControl, /\bpublic\b/);
       assert.match(cacheControl, /\bs-maxage=[1-9]\d*/);
-      // Clients must not cache locally: a deploy that changes the advertised
-      // endpoints has to propagate as soon as the CDN copy expires.
+      // max-age=0: endpoint changes propagate as soon as the CDN copy expires.
       assert.match(cacheControl, /\bmax-age=0\b/);
     });
   }
 
   it('the MCP endpoint itself is never marked cacheable', async () => {
-    // Pin the directive's absence on the catch-all route so it can never
-    // migrate into the shared prelude in api/index.ts, where the CDN would
-    // start caching per-caller MCP responses.
+    // MCP responses are per-caller; a CDN-cached copy would replay one
+    // caller's response to another. Pin the directive's absence on the
+    // catch-all route so it stays out of the shared prelude in api/index.ts.
     const { req, res, state } = fakeReqRes('POST', '/');
     await handler(req, res).catch(() => {});
     assert.equal(state['Cache-Control'], undefined);
