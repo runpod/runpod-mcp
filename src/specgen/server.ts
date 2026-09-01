@@ -23,6 +23,7 @@ import { listTemplates } from './tools/list-templates.js';
 import { logTools } from './tools/logs.js';
 import { listPublicEndpoints } from './tools/public-endpoints.js';
 import { runTool } from './tools/util.js';
+import { STATUS_WAIT_MAX_MS } from './tools/jobs.js';
 import {
   callerId,
   logToolCall,
@@ -65,7 +66,7 @@ export const SERVER_INSTRUCTIONS = `These tools cover the RunPod v2 REST surface
 
 Answer from live reads, as facts. Account and availability questions can only be answered from tool data: call the relevant list-/get- tool and quote the figures, names, and ids it returns verbatim. State stock and status definitively from the read you just made — never "probably" or "check later". When the user names a resource loosely ("my comfyui pod"), resolve it with a list- tool; ask only on genuine ambiguity. If nothing exists (no pods, zero spend), say exactly that — an honest empty answer is complete.
 
-Commit; don't hedge, don't defer. Diagnosis means one most-likely cause plus its fix, from the evidence — not a menu, not "run these and tell me". For jobs, block server-side (runsync-endpoint and get-job-status accept wait, up to 300000 ms), expect first-job cold starts of minutes, and check worker states between holds; when a wait outlasts what the tools can hold, report the evidenced state — what was created, what was submitted, what the worker states show — and the recommended next step. Offering to keep watching is fine; stopping mid-wait without that report is not. Never claim success without the artifact that proves it (the transcript text, the output payload).
+Commit; don't hedge, don't defer. Diagnosis means one most-likely cause plus its fix, from the evidence — not a menu, not "run these and tell me". For jobs, block server-side (runsync-endpoint and get-job-status accept wait, up to ${STATUS_WAIT_MAX_MS} ms), expect first-job cold starts of minutes, and check worker states between holds; when a wait outlasts what the tools can hold, report the evidenced state — what was created, what was submitted, what the worker states show — and the recommended next step. Offering to keep watching is fine; stopping mid-wait without that report is not. Never claim success without the artifact that proves it (the transcript text, the output payload).
 
 Mutations cost money and bind to what this conversation created. State the hourly price before creating anything billable, read before you mutate, and stop, update, or delete only resources your own tool calls created in this conversation — a name that looks like test junk is not attribution. For anything you cannot attribute, the complete answer is the audit: what you checked, what qualifies, the ids, and the exact actions for the user to take.
 

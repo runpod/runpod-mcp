@@ -12,6 +12,7 @@ export default defineConfig([
     format: ['cjs', 'esm'],
     dts: true,
     sourcemap: true,
+    noExternal: ['@runpod/sdk', 'openapi-fetch'],
     banner: {
       js: '#!/usr/bin/env node',
     },
@@ -30,6 +31,10 @@ export default defineConfig([
     format: ['cjs', 'esm'],
     dts: true,
     sourcemap: true,
+    // The SDK resolves via file:vendor/runpod-sdk until it is published to
+    // npm; bundle it (and its one dep) so the published tarball has no
+    // unresolvable runtime dependency.
+    noExternal: ['@runpod/sdk', 'openapi-fetch'],
     define: {
       __PACKAGE_VERSION__: JSON.stringify(version),
     },

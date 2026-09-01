@@ -1,7 +1,7 @@
-// Generates src/generated/tools.gen.ts from spec/openapi.yaml and
-// generator-config.yaml: one MCP tool per operation — name, description, and
+// Generates src/specgen/generated/tools.gen.ts from specgen/spec/openapi.yaml
+// and specgen/generator-config.yaml: one MCP tool per operation — name, description, and
 // parameter JSON Schema straight from the spec, dispatch metadata for the
-// runtime. Run with: pnpm run generate
+// runtime. Run with: pnpm generate:tools
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { parse } from 'yaml';
@@ -140,7 +140,7 @@ for (const [path, pathItem] of Object.entries<Record<string, any>>(
 
 tools.sort((a: any, b: any) => a.name.localeCompare(b.name));
 
-const header = `// Code generated from spec/openapi.yaml by generator/generate-tools.ts; DO NOT EDIT.
+const header = `// Code generated from specgen/spec/openapi.yaml by specgen/generator/generate-tools.ts; DO NOT EDIT.
 
 export interface GeneratedToolParam {
   name: string;

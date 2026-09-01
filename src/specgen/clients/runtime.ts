@@ -37,6 +37,12 @@ export function createRuntimeClient(
   const fetchImpl = options.fetchImpl ?? fetch;
 
   return async (endpointId, path, opts = {}) => {
+    if (!apiKey) {
+      throw new HttpError(
+        'No Runpod API key: the request carried no usable credential.',
+        401
+      );
+    }
     const response = await fetchImpl(`${baseUrl}/${endpointId}${path}`, {
       method: opts.method ?? 'GET',
       headers: {

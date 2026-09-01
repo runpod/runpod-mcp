@@ -54,6 +54,12 @@ const TERMINAL_STATUSES = new Set([
 const RESUME_ADVICE =
   'Call stream-job again to continue collecting output, get-job-status to check the job without streaming, or stream without a budget by calling the runtime API directly (GET https://api.runpod.ai/v2/{endpointId}/stream/{jobId} with a Bearer API key).';
 
+function formatBudget(ms: number): string {
+  return ms < 120_000
+    ? `${Math.round(ms / 1000)} seconds`
+    : `${Math.round(ms / 60_000)} minutes`;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(() => resolve(), ms);
@@ -120,7 +126,7 @@ export async function collectJobStream(deps: {
       result = {
         ...result,
         pollingTimedOut: true,
-        note: `Polling stopped after ${Math.round(budgetMs / 60_000)} minutes with the job possibly still running. ${RESUME_ADVICE}`,
+        note: `Polling stopped after ${formatBudget(budgetMs)} with the job possibly still running. ${RESUME_ADVICE}`,
         ...(lastError ? { lastError } : {}),
       };
       break;
@@ -137,7 +143,7 @@ export async function collectJobStream(deps: {
 // a row. /status returns instantly, so the hold lives here, not on the server.
 // Exported so a test can drive the loop through `fetchStatus` without a server.
 export async function pollJobStatus(deps: {
-  fetchStatus: () => Promise<Record<string, unknown>>;
+  fetchStatus: (timeoutMs: number) => Promise<Record<string, unknown>>;
   budgetMs: number;
   pollIntervalMs?: number;
 }): Promise<Record<string, unknown>> {
@@ -150,7 +156,12 @@ export async function pollJobStatus(deps: {
 
   while (true) {
     try {
-      result = await fetchStatus();
+      // One /status call may not outlive the budget: unbounded, a hung socket
+      // holds the request past the hosted 60s reaper (the client default is
+      // 30s, which a poll started at 44s of a 45s budget would exceed).
+      result = await fetchStatus(
+        Math.max(budgetMs - elapsed(), MIN_STREAM_POLL_TIMEOUT_MS)
+      );
       consecutiveErrors = 0;
       lastError = undefined;
       if (
@@ -173,7 +184,7 @@ export async function pollJobStatus(deps: {
       return {
         ...result,
         pollingTimedOut: true,
-        note: `Still not terminal after waiting ${Math.round(budgetMs / 60_000)} minute(s) — a first-job cold start (image pull + model load) can take several minutes. Call get-job-status again (with wait) to keep blocking, or check back without waiting.`,
+        note: `Still not terminal after waiting ${formatBudget(budgetMs)} — a first-job cold start (image pull + model load) can take several minutes. Call get-job-status again (with wait) to keep blocking, or check back without waiting.`,
         ...(lastError ? { lastError } : {}),
       };
     }
@@ -365,7 +376,7 @@ export const runsyncEndpoint: CuratedTool = {
       wait: {
         type: 'number',
         minimum: 1000,
-        maximum: 300000,
+        maximum: HOSTED ? HTTP_LONG_POLL_BUDGET_MS : 300000,
         description: HOSTED
           ? `How long in milliseconds the server should wait for a result (1000–${HTTP_LONG_POLL_BUDGET_MS}; higher values clamp to ${HTTP_LONG_POLL_BUDGET_MS}, the gateway ceiling).`
           : 'How long in milliseconds the server should wait for a result before returning a job ID to poll (1000–300000). Defaults to 90000 (90 seconds).',
@@ -436,10 +447,10 @@ export const getJobStatus: CuratedTool = {
       if (invalid) return badRequest(invalid);
       const endpointId = args.endpointId as string;
       const jobId = args.jobId as string;
-      const fetchStatus = () =>
-        ctx.runtime(endpointId, `/status/${jobId}`) as Promise<
-          Record<string, unknown>
-        >;
+      const fetchStatus = (timeoutMs?: number) =>
+        ctx.runtime(endpointId, `/status/${jobId}`, {
+          ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        }) as Promise<Record<string, unknown>>;
       const result =
         args.wait === undefined
           ? await fetchStatus()
@@ -450,7 +461,10 @@ export const getJobStatus: CuratedTool = {
       if (
         result &&
         typeof result === 'object' &&
-        (result as { status?: string }).status === 'IN_QUEUE'
+        (result as { status?: string }).status === 'IN_QUEUE' &&
+        // The diagnosis is another upstream round trip; once the wait budget
+        // is spent there is no time left to pay for it on the hosted path.
+        !(result as { pollingTimedOut?: boolean }).pollingTimedOut
       ) {
         const diagnosis = await diagnoseQueuedJob(ctx, endpointId);
         if (diagnosis) {
@@ -467,8 +481,7 @@ export const getJobStatus: CuratedTool = {
 
 export const streamJob: CuratedTool = {
   name: 'stream-job',
-  description:
-    'Retrieve streaming output from a Serverless job. The worker must support streaming output. Polls /stream/{jobId} and collects chunks until the status is COMPLETED, FAILED, CANCELLED, or TIMED_OUT, for up to 5 minutes. If the budget expires first, returns the chunks collected so far with pollingTimedOut: true — call stream-job again to resume where it left off, or get-job-status to check without streaming.',
+  description: `Retrieve streaming output from a Serverless job. The worker must support streaming output. Polls /stream/{jobId} and collects chunks until the status is COMPLETED, FAILED, CANCELLED, or TIMED_OUT, for up to ${formatBudget(STREAM_BUDGET_MS)}. If the budget expires first, returns the chunks collected so far with pollingTimedOut: true — call stream-job again to resume where it left off, or get-job-status to check without streaming.`,
   inputSchema: {
     type: 'object',
     properties: {

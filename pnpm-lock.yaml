@@ -14,9 +14,6 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.7.0
         version: 1.20.2
-      '@runpod/sdk':
-        specifier: file:vendor/runpod-sdk
-        version: file:vendor/runpod-sdk
       jsonc-parser:
         specifier: ^3.3.1
         version: 3.3.1
@@ -30,6 +27,9 @@ importers:
       '@changesets/cli':
         specifier: ^2.29.6
         version: 2.29.7(@types/node@20.19.24)
+      '@runpod/sdk':
+        specifier: file:vendor/runpod-sdk
+        version: file:vendor/runpod-sdk
       '@types/node':
         specifier: ^20.10.5
         version: 20.19.24

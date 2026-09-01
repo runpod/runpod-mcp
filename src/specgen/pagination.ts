@@ -51,7 +51,16 @@ export function capList(
   options: { limit?: number; cursor?: string },
   extra?: Record<string, unknown>
 ): Record<string, unknown> {
-  const limit = Math.min(options.limit ?? DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT);
+  // Coerce, floor at 1, and cap: the low-level server never validates the
+  // JSON Schema, so limit: 0 (or junk) would otherwise return an empty page
+  // whose nextCursor equals the current offset — a pager that never advances.
+  const requested = Number(options.limit);
+  const limit = Math.min(
+    Number.isFinite(requested) && requested >= 1
+      ? Math.floor(requested)
+      : DEFAULT_LIST_LIMIT,
+    MAX_LIST_LIMIT
+  );
   const offset = decodeCursorOffset(options.cursor);
   const total = items.length;
   const page = items.slice(offset, offset + limit);

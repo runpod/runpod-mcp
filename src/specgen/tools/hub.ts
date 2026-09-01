@@ -248,7 +248,7 @@ export const listHubRepos: CuratedTool = {
         listingsQuery(args.includeConfig === true)
       );
 
-      let listings = data.listings;
+      let listings = data.listings ?? [];
 
       if (args.type) {
         listings = listings.filter(
@@ -312,7 +312,7 @@ export const listHubRepos: CuratedTool = {
               tagName: l.listedRelease.tagName,
               createdAt: l.listedRelease.createdAt,
               imageName: l.listedRelease.build?.imageName,
-              ...(args.includeConfig
+              ...(args.includeConfig === true
                 ? { config: parseReleaseConfig(l.listedRelease.config) }
                 : {}),
             }
@@ -424,12 +424,12 @@ export const deployHubRepo: CuratedTool = {
       );
       let listing: HubListing | undefined;
       if (args.hubReleaseId) {
-        listing = catalog.listings.find(
+        listing = (catalog.listings ?? []).find(
           (l) => l.listedRelease?.id === args.hubReleaseId
         );
       } else {
         const repoKey = String(args.repo).toLowerCase();
-        listing = catalog.listings.find(
+        listing = (catalog.listings ?? []).find(
           (l) => `${l.repoOwner}/${l.repoName}`.toLowerCase() === repoKey
         );
       }

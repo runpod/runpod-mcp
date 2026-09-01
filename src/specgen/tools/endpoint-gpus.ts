@@ -154,7 +154,9 @@ export const setEndpointGpus: CuratedTool = {
           }
         }
       `);
-      const current = data.myself.endpoints.find(
+      // `myself` is nullable for some auth states — a dead token must come
+      // back as a tool error, not a TypeError that crashes the request.
+      const current = data.myself?.endpoints?.find(
         (e) => e.id === args.endpointId
       );
       if (!current) {

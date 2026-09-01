@@ -126,7 +126,7 @@ export const getCapacity: CuratedTool = {
             }
           }
         `);
-        let rows = data.gpuTypes
+        let rows = (data.gpuTypes ?? [])
           .filter((gpu) => gpu.id !== 'unknown' && matchesFilter(gpu))
           .map((gpu) => {
             const cuda: Record<string, string> = {};
@@ -214,7 +214,7 @@ export const getCapacity: CuratedTool = {
               : String(settled.reason);
           return;
         }
-        for (const gpu of settled.value.gpuTypes) {
+        for (const gpu of settled.value.gpuTypes ?? []) {
           if (gpu.id === 'unknown' || !matchesFilter(gpu)) continue;
           let row = byId.get(gpu.id);
           if (!row) {

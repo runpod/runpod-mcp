@@ -69,3 +69,31 @@ test('paginates past the default cap and hands back a cursor', async () => {
   assert.equal(page2.items.length, 41);
   assert.equal(page2.pagination.nextCursor, null);
 });
+
+test('capList survives limit 0, junk cursors, and out-of-range offsets', async () => {
+  const { capList, MAX_LIST_LIMIT } = await import(
+    '../src/specgen/pagination.js'
+  );
+  const items = Array.from({ length: 5 }, (_, i) => i);
+
+  const zero = capList(items, { limit: 0 });
+  assert.ok(
+    (zero.items as unknown[]).length > 0,
+    'limit 0 must not produce a stuck pager'
+  );
+
+  const junk = capList(items, { cursor: '!!not-base64!!' });
+  assert.equal((junk.items as unknown[]).length, 5);
+
+  const past = capList(items, {
+    cursor: Buffer.from('999').toString('base64'),
+  });
+  assert.equal((past.items as unknown[]).length, 0);
+  assert.equal((past.pagination as { nextCursor: unknown }).nextCursor, null);
+
+  const huge = capList(
+    Array.from({ length: 500 }, (_, i) => i),
+    { limit: 10_000 }
+  );
+  assert.equal((huge.items as unknown[]).length, MAX_LIST_LIMIT);
+});
