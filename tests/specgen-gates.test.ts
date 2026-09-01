@@ -112,3 +112,24 @@ test('offline handshake: keyless server lists 57 tools; a call 401s as a tool re
   assert.match(res.content[0].text, /API key/i);
   await client.close();
 });
+
+test('dispatch 400s a missing required argument instead of calling the API', async () => {
+  const { dispatchGeneratedTool } = await import('../src/specgen/dispatch.js');
+  const tool = generatedTools.find((t) => t.name === 'get-gpu-type')!;
+  const boom = new Proxy(
+    {},
+    {
+      get() {
+        throw new Error('API must not be called');
+      },
+    }
+  );
+  const result = await dispatchGeneratedTool(
+    boom as never,
+    tool,
+    { gpuTypeId: 'stale-arg-name' } // the old name — must not silently vanish
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 400);
+  assert.match(JSON.stringify(result.payload), /Missing required argument.*id/);
+});

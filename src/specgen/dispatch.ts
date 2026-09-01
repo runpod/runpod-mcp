@@ -16,6 +16,24 @@ export async function dispatchGeneratedTool(
   tool: GeneratedTool,
   args: Record<string, unknown>
 ): Promise<ToolResult> {
+  // Fail loudly on a missing required argument. Without this, an unresolved
+  // path placeholder reaches the API and comes back as a resource 404 ("gpu
+  // type not found"), sending the agent off to re-verify an id that was never
+  // sent. Checked from the generated schema, so it needs no per-tool code.
+  const required = (tool.inputSchema.required ?? []) as string[];
+  const missing = required.filter((name) => args[name] === undefined);
+  if (missing.length) {
+    return {
+      ok: false,
+      status: 400,
+      payload: {
+        error: `Missing required argument${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}`,
+        expected: required,
+        received: Object.keys(args),
+      },
+    };
+  }
+
   const pathParams: Record<string, unknown> = {};
   const query: Record<string, unknown> = {};
   for (const param of tool.params) {
