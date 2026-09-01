@@ -5,11 +5,15 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import {
   CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ListResourceTemplatesRequestSchema,
   ListToolsRequestSchema,
+  ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolContext } from './context.js';
 import { dispatchGeneratedTool, type ToolResult } from './dispatch.js';
 import { generatedTools } from './generated/tools.gen.js';
+import { skillDocs } from './generated/skills.gen.js';
 import { getCapacity } from './tools/capacity.js';
 import { setEndpointGpus } from './tools/endpoint-gpus.js';
 import { hubTools } from './tools/hub.js';
@@ -60,6 +64,8 @@ Mutations cost money and bind to what this conversation created. State the hourl
 
 These tools manage infrastructure only. They do not do SSH sessions, file transfer to or from pods, local image builds, or interactive terminals — say plainly when a task needs one of those and name the real path (the RunPod console, runpodctl) instead of improvising.
 
+SKILLS — READ BEFORE ACTING. This server publishes its task playbooks as MCP resources under runpod://skills/. Before the FIRST Runpod tool call of a session, read runpod://skills/runpod (the router): it maps the request to a journey skill — deploying an endpoint reads runpod://skills/serverless-deploy, diagnosing a broken pod reads runpod://skills/pod-doctor, cost questions read runpod://skills/cost-audit, and so on — and each journey skill carries the procedure, pitfalls, and report format for that task. A reply produced without the routed skill loaded is out of contract. List them all with resources/list.
+
 The tool schemas are generated from the RunPod v2 OpenAPI contract, served as a machine-readable document at https://v2-rest.runpod.dev/v2/openapi.yaml — consult it for fields beyond the tool surface.`;
 
 export interface SpecgenServerOptions {
@@ -76,7 +82,7 @@ export function createSpecgenServer(
   const caller = callerId(ctx.apiKey);
   const server = new Server(
     { name: 'Runpod API Server', version: `${version} [specgen]` },
-    { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS }
+    { capabilities: { tools: {}, resources: {} }, instructions: SERVER_INSTRUCTIONS }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -93,6 +99,46 @@ export function createSpecgenServer(
       })),
     ],
   }));
+
+  const SKILL_URI_PREFIX = 'runpod://skills/';
+
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: skillDocs.map((skill) => ({
+      uri: `${SKILL_URI_PREFIX}${skill.name}`,
+      name: skill.name,
+      title: `Runpod skill: ${skill.name}`,
+      description: skill.description,
+      mimeType: 'text/markdown',
+    })),
+  }));
+
+  // Some clients probe templates unconditionally; answer empty instead of -32601.
+  server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({
+    resourceTemplates: [],
+  }));
+
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    const name = request.params.uri.startsWith(SKILL_URI_PREFIX)
+      ? request.params.uri.slice(SKILL_URI_PREFIX.length)
+      : undefined;
+    const skill = skillDocs.find((candidate) => candidate.name === name);
+    if (!skill) {
+      throw new Error(
+        `Unknown resource ${request.params.uri}. Available: ${skillDocs
+          .map((candidate) => `${SKILL_URI_PREFIX}${candidate.name}`)
+          .join(', ')}`
+      );
+    }
+    return {
+      contents: [
+        {
+          uri: request.params.uri,
+          mimeType: 'text/markdown',
+          text: skill.text,
+        },
+      ],
+    };
+  });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
