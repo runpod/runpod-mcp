@@ -73,7 +73,7 @@ These tools manage infrastructure only. They do not do SSH sessions, file transf
 
 SKILLS — READ BEFORE ACTING. This server publishes its task playbooks as MCP resources under runpod://skills/. Before the FIRST Runpod tool call of a session, read runpod://skills/runpod (the router): it maps the request to a journey skill — deploying an endpoint reads runpod://skills/serverless-deploy, diagnosing a broken pod reads runpod://skills/pod-doctor, cost questions read runpod://skills/cost-audit, and so on — and each journey skill carries the procedure, pitfalls, and report format for that task. A reply produced without the routed skill loaded is out of contract. List them all with resources/list.
 
-The tool schemas are generated from the RunPod v2 OpenAPI contract, served as a machine-readable document at https://v2-rest.runpod.dev/v2/openapi.yaml — consult it for fields beyond the tool surface.`;
+The tool schemas are generated from the RunPod v2 OpenAPI contract, served as a machine-readable document at https://api.runpod.io/v2/openapi.json — consult it for fields beyond the tool surface.`;
 
 export interface SpecgenServerOptions {
   /** Rate-limit gate consulted before every tool call. Defaults to the no-op stub. */

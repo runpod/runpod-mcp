@@ -145,7 +145,7 @@ See [`docs/configuration.md`](docs/configuration.md) for REST v1/v2 selection an
 ## Spec-generated tool surface (hosted)
 
 The hosted deployment serves a tool surface generated from the v2 OpenAPI
-spec (40 generated + 17 curated tools) and publishes its task playbooks as
+spec (49 generated + 17 curated tools) and publishes its task playbooks as
 MCP resources under `runpod://skills/`. See [specgen/README.md](specgen/README.md)
 for the architecture, regeneration workflow, and drift gates. The stdio/npm
 path continues to serve the hand-written surface below.

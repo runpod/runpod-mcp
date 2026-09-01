@@ -9,7 +9,7 @@ surface; only hosted requests get the specgen server.
 ## Layout
 
 ```
-specgen/spec/openapi.yaml       vendored v2 OpenAPI document (44 operations)
+specgen/spec/openapi.yaml       vendored v2 OpenAPI document (production generation)
 specgen/scripts/fix_spec.py     spec patch layer, run over every fresh pull
 specgen/generator-config.yaml   exclusions / renames / description overrides
 specgen/generator/              the generator (pnpm generate:tools)
