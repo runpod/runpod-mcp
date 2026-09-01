@@ -18,6 +18,7 @@ import { listTemplates } from './tools/list-templates.js';
 import { logTools } from './tools/logs.js';
 import { listPublicEndpoints } from './tools/public-endpoints.js';
 import { runTool } from './tools/util.js';
+import { callerId, logToolCall, noopRateLimiter, type RateLimiter } from './ops.js';
 
 export interface CuratedTool {
   name: string;
@@ -61,10 +62,18 @@ These tools manage infrastructure only. They do not do SSH sessions, file transf
 
 The tool schemas are generated from the RunPod v2 OpenAPI contract, served as a machine-readable document at https://v2-rest.runpod.dev/v2/openapi.yaml — consult it for fields beyond the tool surface.`;
 
+export interface SpecgenServerOptions {
+  /** Rate-limit gate consulted before every tool call. Defaults to the no-op stub. */
+  rateLimiter?: RateLimiter;
+}
+
 export function createSpecgenServer(
   ctx: ToolContext,
-  version = '0.1.0'
+  version = '0.1.0',
+  opts: SpecgenServerOptions = {}
 ): Server {
+  const rateLimiter = opts.rateLimiter ?? noopRateLimiter;
+  const caller = callerId(ctx.apiKey);
   const server = new Server(
     { name: 'Runpod API Server', version: `${version} [specgen]` },
     { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS }
@@ -88,6 +97,26 @@ export function createSpecgenServer(
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
 
+    // Rate-limit seat: consulted before any tool work. The stub always admits;
+    // a denial comes back as a retryable tool error, not a protocol failure.
+    const verdict = await rateLimiter(caller, request.params.name);
+    if (!verdict.allowed) {
+      logToolCall({ tool: request.params.name, caller, ok: false, status: 429, durationMs: 0 });
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              error: 'Rate limited by this MCP server.',
+              hint: `Pause${verdict.retryAfterS ? ` ~${verdict.retryAfterS}s` : ' briefly'}, then retry the same call.`,
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const startedAt = Date.now();
     const curated = curatedTools.find(
       (tool) => tool.name === request.params.name
     );
@@ -100,6 +129,13 @@ export function createSpecgenServer(
         ? curated.handler(ctx, args)
         : dispatchTool(request.params.name, args)
     );
+    logToolCall({
+      tool: request.params.name,
+      caller,
+      ok: result.ok,
+      status: result.status,
+      durationMs: Date.now() - startedAt,
+    });
 
     // On errors, attach a recovery hint by status class — the bare-client
     // (no-skills) path self-corrects from these instead of dead-ending.
