@@ -19,8 +19,8 @@ interface GeneratorConfig {
 
 const HTTP_METHODS = ["get", "put", "post", "delete", "patch"] as const;
 
-const spec = parse(readFileSync("spec/openapi.yaml", "utf8"));
-const config: GeneratorConfig = parse(readFileSync("generator-config.yaml", "utf8")) ?? {};
+const spec = parse(readFileSync("specgen/spec/openapi.yaml", "utf8"));
+const config: GeneratorConfig = parse(readFileSync("specgen/generator-config.yaml", "utf8")) ?? {};
 const excluded = new Set(Object.keys(config.exclude ?? {}));
 
 // Internal component refs are rewritten to $defs so each tool's inputSchema is
@@ -144,5 +144,5 @@ export interface GeneratedTool {
 
 export const generatedTools: GeneratedTool[] = `;
 
-writeFileSync("src/generated/tools.gen.ts", header + JSON.stringify(tools, null, 2) + ";\n");
+writeFileSync("src/specgen/generated/tools.gen.ts", header + JSON.stringify(tools, null, 2) + ";\n");
 console.log(`generated ${tools.length} tools (${excluded.size} excluded by config)`);

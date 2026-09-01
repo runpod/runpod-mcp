@@ -31,7 +31,8 @@
     "changeset:version": "changeset version",
     "changeset:publish": "changeset publish",
     "smoke:crud": "tsx scripts/smoke-crud.ts",
-    "generate:skills": "tsx scripts/generate-skills.ts"
+    "generate:skills": "tsx scripts/generate-skills.ts",
+    "generate:tools": "tsx specgen/generator/generate-tools.ts"
   },
   "exports": {
     "./package.json": "./package.json",

@@ -18,6 +18,7 @@ import { getCapacity } from './tools/capacity.js';
 import { setEndpointGpus } from './tools/endpoint-gpus.js';
 import { hubTools } from './tools/hub.js';
 import { jobTools } from './tools/jobs.js';
+import { listEndpoints } from './tools/list-endpoints.js';
 import { listTemplates } from './tools/list-templates.js';
 import { logTools } from './tools/logs.js';
 import { listPublicEndpoints } from './tools/public-endpoints.js';
@@ -39,6 +40,7 @@ export interface CuratedTool {
 // tools that need shaping (list-templates) or a non-JSON transport (the SSE
 // log tools).
 export const curatedTools: CuratedTool[] = [
+  listEndpoints,
   listTemplates,
   ...jobTools,
   ...logTools,

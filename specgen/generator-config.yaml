@@ -6,6 +6,11 @@
 # reads this mapping: an exclusion with no entry here fails it, and a
 # replacedBy naming a tool the server does not serve fails it too.
 exclude:
+  listEndpoints:
+    replacedBy: list-endpoints
+    reason: trimmed, paginated output — full endpoint objects carry env maps
+      and requestUrls (six derivable URLs per endpoint) that dominate the
+      payload and blow up LLM context on accounts with many endpoints
   listTemplates:
     replacedBy: list-templates
     reason: trimmed output — full template objects blow up LLM context
