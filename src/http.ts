@@ -1,6 +1,8 @@
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { createServer } from './server.js';
-import { registerTools, type ToolContext } from './tools.js';
+import { createSpecgenServer } from './specgen/server.js';
+import { createToolContext as createSpecgenContext } from './specgen/context.js';
+import { SERVER_VERSION } from './server.js';
+import type { ToolContext } from './tools.js';
 import {
   createCredentialChecker,
   type CredentialChecker,
@@ -416,8 +418,14 @@ export async function handleMcpRequest(
     }
   }
 
-  const server = createServer(opts.serverVersion);
-  registerTools(server, buildToolContext(req, bearerToken, opts));
+  // SPEC-GENERATED SURFACE (feat/specgen-server): the tool set generated from
+  // the v2 OpenAPI spec plus its curated overlay, mounted behind this shell's
+  // existing auth/transport. Per-request context from the caller's bearer
+  // token — nothing credential-bearing lives at module scope.
+  const server = createSpecgenServer(
+    createSpecgenContext({ apiKey: bearerToken }),
+    opts.serverVersion ?? SERVER_VERSION
+  );
 
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless — no session persistence
