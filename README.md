@@ -142,6 +142,14 @@ On the v2 API (the default), endpoints are image-based — pass an image and a G
 
 See [`docs/configuration.md`](docs/configuration.md) for REST v1/v2 selection and the `templateId` migration note, private image pull (registry credentials vs ECR delegation), and large-output handling.
 
+## Spec-generated tool surface (hosted)
+
+The hosted deployment serves a tool surface generated from the v2 OpenAPI
+spec (40 generated + 17 curated tools) and publishes its task playbooks as
+MCP resources under `runpod://skills/`. See [specgen/README.md](specgen/README.md)
+for the architecture, regeneration workflow, and drift gates. The stdio/npm
+path continues to serve the hand-written surface below.
+
 ## Security
 
 This server acts with the full permissions of the supplied API key.
