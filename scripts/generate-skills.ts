@@ -19,7 +19,8 @@ const skills = readdirSync(ROOT)
     const text = readFileSync(join(ROOT, dir, 'SKILL.md'), 'utf8');
     // description: from the YAML frontmatter (block scalar or single line).
     const fm = /^---\n([\s\S]*?)\n---/.exec(text)?.[1] ?? '';
-    const desc = /description:\s*(?:>-?\n)?([\s\S]*?)(?=\n[a-z]+:|$)/.exec(fm)?.[1] ?? '';
+    const desc =
+      /description:\s*(?:>-?\n)?([\s\S]*?)(?=\n[a-z]+:|$)/.exec(fm)?.[1] ?? '';
     return {
       name: dir,
       description: desc.replace(/\s+/g, ' ').trim(),

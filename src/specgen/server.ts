@@ -23,7 +23,12 @@ import { listTemplates } from './tools/list-templates.js';
 import { logTools } from './tools/logs.js';
 import { listPublicEndpoints } from './tools/public-endpoints.js';
 import { runTool } from './tools/util.js';
-import { callerId, logToolCall, noopRateLimiter, type RateLimiter } from './ops.js';
+import {
+  callerId,
+  logToolCall,
+  noopRateLimiter,
+  type RateLimiter,
+} from './ops.js';
 
 export interface CuratedTool {
   name: string;
@@ -84,7 +89,10 @@ export function createSpecgenServer(
   const caller = callerId(ctx.apiKey);
   const server = new Server(
     { name: 'Runpod API Server', version: `${version} [specgen]` },
-    { capabilities: { tools: {}, resources: {} }, instructions: SERVER_INSTRUCTIONS }
+    {
+      capabilities: { tools: {}, resources: {} },
+      instructions: SERVER_INSTRUCTIONS,
+    }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -149,7 +157,13 @@ export function createSpecgenServer(
     // a denial comes back as a retryable tool error, not a protocol failure.
     const verdict = await rateLimiter(caller, request.params.name);
     if (!verdict.allowed) {
-      logToolCall({ tool: request.params.name, caller, ok: false, status: 429, durationMs: 0 });
+      logToolCall({
+        tool: request.params.name,
+        caller,
+        ok: false,
+        status: 429,
+        durationMs: 0,
+      });
       return {
         content: [
           {

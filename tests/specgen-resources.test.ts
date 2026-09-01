@@ -4,12 +4,18 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { createSpecgenServer, SERVER_INSTRUCTIONS } from '../src/specgen/server.js';
+import {
+  createSpecgenServer,
+  SERVER_INSTRUCTIONS,
+} from '../src/specgen/server.js';
 import { createToolContext } from '../src/specgen/context.js';
 import { skillDocs } from '../src/specgen/generated/skills.gen.js';
 
 async function connect() {
-  const server = createSpecgenServer(createToolContext({ apiKey: 'rpa_test' }), 'test');
+  const server = createSpecgenServer(
+    createToolContext({ apiKey: 'rpa_test' }),
+    'test'
+  );
   const client = new Client({ name: 'test', version: '1' });
   const [ct, st] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(st), client.connect(ct)]);
@@ -53,6 +59,10 @@ test('instructions direct agents to the router resource before acting', () => {
 test('every embedded skill matches its on-disk source', async () => {
   const { readFileSync } = await import('node:fs');
   for (const skill of skillDocs) {
-    assert.equal(skill.text, readFileSync(`specgen/skills/${skill.name}/SKILL.md`, 'utf8'), skill.name);
+    assert.equal(
+      skill.text,
+      readFileSync(`specgen/skills/${skill.name}/SKILL.md`, 'utf8'),
+      skill.name
+    );
   }
 });

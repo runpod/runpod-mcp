@@ -17,7 +17,11 @@ const SALT = randomBytes(16).toString('hex');
 
 export function callerId(token: string | undefined): string {
   if (!token) return 'anonymous';
-  return createHash('sha256').update(SALT).update(token).digest('hex').slice(0, 12);
+  return createHash('sha256')
+    .update(SALT)
+    .update(token)
+    .digest('hex')
+    .slice(0, 12);
 }
 
 // ---- rate limiting (stub) ----
@@ -28,7 +32,10 @@ export interface RateLimitVerdict {
   retryAfterS?: number;
 }
 
-export type RateLimiter = (caller: string, toolName: string) => Promise<RateLimitVerdict>;
+export type RateLimiter = (
+  caller: string,
+  toolName: string
+) => Promise<RateLimitVerdict>;
 
 // Always admits. Replace with a KV/Upstash-backed counter to enforce; the
 // http handler already turns a denial into a JSON-RPC tool error with a

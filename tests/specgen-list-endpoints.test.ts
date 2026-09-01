@@ -24,7 +24,9 @@ const fakeCtx = (count: number) =>
   ({
     sdk: {
       GET: async () => ({
-        data: { endpoints: Array.from({ length: count }, (_, i) => endpoint(i)) },
+        data: {
+          endpoints: Array.from({ length: count }, (_, i) => endpoint(i)),
+        },
         error: undefined,
         response: { status: 200 },
       }),
@@ -47,7 +49,11 @@ test('paginates past the default cap and hands back a cursor', async () => {
   const first = await listEndpoints.handler(fakeCtx(61), {});
   const page1 = first.payload as {
     items: unknown[];
-    pagination: { total: number; nextCursor: string | null; truncated: boolean };
+    pagination: {
+      total: number;
+      nextCursor: string | null;
+      truncated: boolean;
+    };
   };
   assert.equal(page1.items.length, 20);
   assert.equal(page1.pagination.total, 61);
@@ -56,7 +62,10 @@ test('paginates past the default cap and hands back a cursor', async () => {
     cursor: page1.pagination.nextCursor,
     limit: 100,
   });
-  const page2 = last.payload as { items: unknown[]; pagination: { nextCursor: string | null } };
+  const page2 = last.payload as {
+    items: unknown[];
+    pagination: { nextCursor: string | null };
+  };
   assert.equal(page2.items.length, 41);
   assert.equal(page2.pagination.nextCursor, null);
 });

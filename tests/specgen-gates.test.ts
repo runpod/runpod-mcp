@@ -67,14 +67,20 @@ test('old-MCP parity: all mapped tools are served', () => {
   const manifest = parse(readFileSync('specgen/old-mcp-tools.yaml', 'utf8'));
   assert.equal(manifest.tools.length, 54);
   for (const entry of manifest.tools as Array<{ old: string; to: string }>) {
-    assert.ok(servedNames.has(entry.to), `${entry.old} maps to unserved ${entry.to}`);
+    assert.ok(
+      servedNames.has(entry.to),
+      `${entry.old} maps to unserved ${entry.to}`
+    );
   }
 });
 
 test('every inputSchema compiles as a self-contained JSON Schema', () => {
   const ajv = new Ajv({ strict: false, validateFormats: false });
   for (const tool of [...generatedTools, ...curatedTools]) {
-    assert.doesNotThrow(() => ajv.compile(structuredClone(tool.inputSchema)), tool.name);
+    assert.doesNotThrow(
+      () => ajv.compile(structuredClone(tool.inputSchema)),
+      tool.name
+    );
     assert.ok(tool.description.length > 10, `${tool.name} has no description`);
   }
   for (const tool of generatedTools) {
@@ -96,7 +102,8 @@ test('offline handshake: keyless server lists 57 tools; a call 401s as a tool re
   const [ct, st] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(st), client.connect(ct)]);
   const { tools } = await client.listTools();
-  assert.equal(tools.length, 57);
+  assert.equal(tools.length, generatedTools.length + curatedTools.length);
+  assert.ok(tools.length >= 57, `surface shrank to ${tools.length}`);
   const res = (await client.callTool({ name: 'list-pods', arguments: {} })) as {
     isError?: boolean;
     content: Array<{ text: string }>;

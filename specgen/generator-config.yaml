@@ -63,3 +63,8 @@ descriptions:
     stopping (pod-action stop) which releases the GPU but keeps volume data.
     Verify the id with get-pod first; terminate only pods your own tool calls
     created in this conversation — a name is not attribution.
+  createCluster: >-
+    Create an instant cluster (multiple pods with high-speed interconnect).
+    BILLABLE from creation for every pod in the cluster: state the total
+    hourly price before creating. Verify GPU stock first via the catalog
+    tools; delete with delete-cluster when finished.
