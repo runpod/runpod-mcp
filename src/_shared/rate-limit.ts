@@ -271,7 +271,7 @@ function humanWait(seconds: number): string {
 // Report the LONGEST wait either header justifies. draft-11 §7 says Retry-After
 // MUST take precedence, but §6 says a server SHOULD NOT send one earlier than
 // the end of the effective window, and this API's is documented "per the
-// exceeded window" (tests/fixtures/v2-openapi.yaml) — i.e. it can be earlier.
+// exceeded window" (see the vendored spec) — i.e. it can be earlier.
 // RFC 9110 §10.2.3 defines Retry-After as how long a client "ought to wait" and
 // sets no upper bound (its "minimum time" wording is scoped to 3xx), so waiting
 // longer conforms. §7's "MAY be ignored" is permission, not obligation, and

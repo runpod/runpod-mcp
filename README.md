@@ -1,7 +1,5 @@
 # Runpod MCP server
 
-[![smithery badge](https://smithery.ai/badge/@runpod/runpod-mcp-ts)](https://smithery.ai/server/@runpod/runpod-mcp-ts)
-
 The official Runpod Model Context Protocol (MCP) server. It lets MCP clients such as Claude Code, Claude Desktop, Cursor, Windsurf, and VS Code manage your Runpod Pods, Serverless endpoints, templates, network volumes, and more.
 
 **We host it for you at [`https://mcp.getrunpod.io/`](https://mcp.getrunpod.io/)** — point your client at that URL and sign in with Runpod. Nothing to install, no API key on disk. Or run it locally from npm as [`@runpod/mcp-server`](https://www.npmjs.com/package/@runpod/mcp-server).
@@ -79,12 +77,6 @@ Run the server as a local `stdio` process with your own API key:
 
 ```bash
 RUNPOD_API_KEY=YOUR_API_KEY npx -y @runpod/mcp-server@latest
-```
-
-Or install via [Smithery](https://smithery.ai/server/@runpod/runpod-mcp-ts):
-
-```bash
-npx -y @smithery/cli install @runpod/runpod-mcp-ts --client claude
 ```
 
 ### Local client setup
