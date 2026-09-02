@@ -51,11 +51,18 @@ export function createToolContext(
       ...options.tracking,
       sessionId: randomUUID(),
     });
-    fetchImpl = (input, init) =>
-      fetch(input, {
-        ...init,
-        headers: { ...headers, ...(init?.headers as Record<string, string>) },
-      });
+    fetchImpl = (input, init) => {
+      // openapi-fetch calls fetch with a fully-built Request as `input`
+      // (headers inside it, no init); other clients pass (url, init). Fold
+      // both into one Request, then add the tracking headers only where
+      // absent — passing a headers init alongside a Request would REPLACE
+      // the request's own headers and drop Authorization.
+      const request = new Request(input, init);
+      for (const [name, value] of Object.entries(headers)) {
+        if (!request.headers.has(name)) request.headers.set(name, value);
+      }
+      return fetch(request);
+    };
   }
 
   let sdk: RunpodClient | undefined;
