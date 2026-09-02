@@ -17,13 +17,14 @@ description file.
 ## Level 1: the three boxes
 
 ```
-            AI agent (Claude, Cursor, ...)
-                      │ HTTPS + Bearer token
-                      ▼
+      AI agent (Claude, Cursor, ...)
+        │ hosted: HTTPS + Bearer     │ local: stdio + env key
+        ▼                            ▼
    ┌──────────────────────────────────────────────┐
-   │ BOX 1 — THE FRONT DOOR      (existing code)  │
-   │ api/index.ts, src/http.ts                    │
-   │ OAuth sign-in, token check, MCP-over-HTTP    │
+   │ BOX 1 — THE FRONT DOORS                      │
+   │ api/index.ts + src/http.ts   (hosted, OAuth) │
+   │ src/stdio.ts                 (local process) │
+   │ Both mount the SAME Box 2 — one surface.     │
    └──────────────────────┬───────────────────────┘
                           ▼
    ┌──────────────────────────────────────────────┐
@@ -55,7 +56,8 @@ is committed to git, and the running server just imports it like normal code.
 
 ## Level 2: the flow of one request
 
-Every request is independent (no sessions, no login state):
+The hosted flow (local stdio is the same from step 3 on, with the process
+env key instead of a bearer token). Every request is independent:
 
 ```
 1. AI sends:  POST /  { "method": "tools/call",
