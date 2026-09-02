@@ -2,9 +2,11 @@
 # API serves — the signal that `specgen/spec/openapi.yaml` needs a re-vendor
 # and `pnpm generate:tools` a re-run (see specgen/README.md).
 #
-# Runs daily, on demand, and on PRs that touch the generation inputs. The PR
-# trigger keeps a stale spec from shipping *with a specgen change*; unrelated
-# PRs are not blocked by upstream churn.
+# Runs daily, on demand, and on every PR — any PR shows at a glance whether
+# the vendored spec is current. It reports as its own check (spec-drift), so
+# whether a red result blocks merging is a branch-protection choice: leave it
+# out of the required checks and upstream churn stays visible without
+# stopping unrelated work.
 name: Spec drift
 
 on:
@@ -12,10 +14,6 @@ on:
     - cron: '17 9 * * *' # daily
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'specgen/**'
-      - 'src/specgen/generated/**'
-      - 'scripts/check-spec-drift.ts'
 
 jobs:
   spec-drift:
