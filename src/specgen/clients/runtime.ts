@@ -64,7 +64,9 @@ export function createRuntimeClient(
     if (!response.ok) {
       // 429: turn the RateLimit/Retry-After headers into a wait instruction.
       const detail =
-        response.status === 429 && typeof payload === 'object' && payload !== null
+        response.status === 429 &&
+        typeof payload === 'object' &&
+        payload !== null
           ? {
               ...(payload as Record<string, unknown>),
               hint: rateLimitHint(

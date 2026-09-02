@@ -17,19 +17,11 @@ import {
   buildTrackingHeaders,
 } from '../src/_shared/tracking.js';
 import {
-  HTTP_TRANSPORT_BUDGET_MS,
-  invocationBudget,
-} from '../src/tools/runtime.js';
-import {
+  HOSTED,
   HTTP_LONG_POLL_BUDGET_MS,
-  HTTP_STREAM_POLL_WAIT_MS,
-  MAX_CONSECUTIVE_STREAM_ERRORS,
-  MIN_STREAM_POLL_TIMEOUT_MS,
-  STDIO_STREAM_BUDGET_MS,
-  STREAM_UPSTREAM_DEFAULT_WAIT_MS,
-  streamPollTimeoutMs,
-  UPSTREAM_HOLD_SLACK_MS,
-} from '../src/tools/jobs.js';
+  STATUS_WAIT_MAX_MS,
+  STREAM_BUDGET_MS,
+} from '../src/specgen/tools/jobs.js';
 
 // ---- fake response/fetch builders (no network) ----
 interface FakeResponseOpts {
@@ -742,161 +734,46 @@ describe('createHttpClient — 429 hint wiring', () => {
 // The backstop is only correct relative to two numbers in two other files. It
 // must stay under the platform limit (or it never fires) and above any
 // server-side wait a tool asks for (or it aborts a reply that was in flight).
-describe('the http request backstop sits between the waits it brackets', () => {
+describe('hosted wait budgets sit under the platform deadline', () => {
+  // The cross-file invariant: vercel.json's maxDuration is the platform's
+  // clock, and the hosted wait ceiling must clear it with room for the
+  // credential pre-flight (4s), cold start, and serializing the reply.
+  // Moving either side without the other fails here, not in production.
   const maxDuration = (
     JSON.parse(
       readFileSync(new URL('../vercel.json', import.meta.url), 'utf8')
-    ) as { functions?: Record<string, { maxDuration?: number }> }
+    ) as {
+      functions?: Record<string, { maxDuration?: number }>;
+    }
   ).functions?.['api/index.ts']?.maxDuration;
 
-  it('leaves the platform room for the pre-flight that runs before any tool request', () => {
+  it('leaves room for pre-flight, cold start, and serialization', () => {
     assert.ok(
       typeof maxDuration === 'number',
       'vercel.json no longer declares a maxDuration for api/index.ts'
     );
-    // The platform clock starts before ours: src/http.ts awaits the credential
-    // pre-flight (4s, credential-check.ts) before dispatching the tool, and it
-    // burns that full budget in the same outage that stalls the tool call. The
-    // remainder covers cold start and serializing the error. Measuring from the
-    // request instead of the invocation is what put this at 55s originally.
     const PRE_FLIGHT_MS = 4_000;
     const SERIALIZE_AND_COLD_START_MS = 5_000;
     assert.ok(
-      HTTP_TRANSPORT_BUDGET_MS + PRE_FLIGHT_MS + SERIALIZE_AND_COLD_START_MS <=
+      HTTP_LONG_POLL_BUDGET_MS + PRE_FLIGHT_MS + SERIALIZE_AND_COLD_START_MS <=
         maxDuration * 1000,
-      `HTTP_TRANSPORT_BUDGET_MS (${HTTP_TRANSPORT_BUDGET_MS}) + pre-flight (${PRE_FLIGHT_MS}) + serialization (${SERIALIZE_AND_COLD_START_MS}) exceeds maxDuration (${maxDuration}s) — the backstop would fire after the platform already reaped the function`
+      `HTTP_LONG_POLL_BUDGET_MS (${HTTP_LONG_POLL_BUDGET_MS}) leaves no room under maxDuration (${maxDuration}s)`
     );
   });
 
-  it('the budget window is per construction, so each request starts it over', async () => {
-    // The whole scheme rests on the runtime being rebuilt per request, which on
-    // http it is (src/http.ts builds a single-use server + registerTools inside
-    // the handler). Pinned here because hoisting that out — a tempting
-    // cold-start optimization — would leave every request after the first
-    // running on the floor.
-    const first = invocationBudget(1_000);
-    const before = first();
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    const after = first();
-    assert.ok(
-      after < before,
-      'the window must decay as the invocation is spent'
-    );
-
-    const second = invocationBudget(1_000);
-    assert.ok(
-      second() > after,
-      'a freshly constructed runtime must get a fresh allowance, not the previous request’s remainder'
-    );
-  });
-
-  it('leaves a second call something to spend, since several handlers make two', () => {
-    // get-job-status, deploy-hub-repo, update-endpoint and set-endpoint-gpus all
-    // issue two requests. The shared budget is what keeps their worst case under
-    // the platform limit, but that only helps if the ceiling is bigger than one
-    // full default — otherwise the first call takes everything and the second is
-    // left on the floor, which is a timeout dressed up as a diagnosis.
-    assert.ok(
-      HTTP_TRANSPORT_BUDGET_MS > DEFAULT_REQUEST_TIMEOUT_MS,
-      `HTTP_TRANSPORT_BUDGET_MS (${HTTP_TRANSPORT_BUDGET_MS}) is not above one ${DEFAULT_REQUEST_TIMEOUT_MS}ms default, so a two-call handler's second request starts already exhausted`
-    );
-  });
-
-  it('clears the longest server-side wait by the slack runsync actually adds', () => {
-    // runsync asks the Serverless API to hold the connection open for
-    // HTTP_LONG_POLL_BUDGET_MS and sets its deadline that much plus
-    // UPSTREAM_HOLD_SLACK_MS. Assert against both real constants: restating
-    // a smaller literal here would let the ceiling silently clamp the slack
-    // away — the deadline would land on the hold and abort a reply in flight.
-    assert.ok(
-      HTTP_TRANSPORT_BUDGET_MS >=
-        HTTP_LONG_POLL_BUDGET_MS + UPSTREAM_HOLD_SLACK_MS,
-      `HTTP_TRANSPORT_BUDGET_MS (${HTTP_TRANSPORT_BUDGET_MS}) is below the ${HTTP_LONG_POLL_BUDGET_MS}ms hold plus its ${UPSTREAM_HOLD_SLACK_MS}ms slack, so the clamp eats the slack`
-    );
-  });
-});
-
-describe('stream-job poll deadline', () => {
-  // The transports differ only in the hold each poll brackets: http caps it with
-  // ?wait=, stdio takes the server's default. Both are read from the source, so
-  // moving either constant moves these assertions with it.
-  const CASES = [
-    {
-      transport: 'http',
-      budgetMs: HTTP_LONG_POLL_BUDGET_MS,
-      holdMs: HTTP_STREAM_POLL_WAIT_MS,
-    },
-    {
-      transport: 'stdio',
-      budgetMs: STDIO_STREAM_BUDGET_MS,
-      holdMs: STREAM_UPSTREAM_DEFAULT_WAIT_MS,
-    },
-  ] as const;
-
-  for (const { transport, budgetMs, holdMs } of CASES) {
-    it(`on ${transport}: clears the hold it brackets, so a reply in flight is never aborted`, () => {
-      // A deadline at or below the hold cannot be met: the server does not
-      // answer until its wait elapses, and the reply still needs a round trip.
-      const deadline = streamPollTimeoutMs(budgetMs, holdMs);
-      assert.ok(
-        deadline > holdMs,
-        `poll deadline ${deadline}ms does not clear the ${holdMs}ms hold, so every slow poll aborts a response already on its way`
-      );
-    });
-
-    it(`on ${transport}: leaves room for the retry loop instead of spending the budget in one attempt`, () => {
-      // The regression this pins: a deadline set TO the remaining budget means
-      // one wedged socket consumes the whole run, MAX_CONSECUTIVE_STREAM_ERRORS
-      // never engages, and a stall that the loop was built to survive returns
-      // nothing. Reconnecting is the only recovery, so the budget has to fit
-      // several attempts.
-      const deadline = streamPollTimeoutMs(budgetMs, holdMs);
-      assert.ok(
-        deadline < budgetMs,
-        `poll deadline ${deadline}ms is the entire ${budgetMs}ms budget — a single wedged poll ends the run`
-      );
-      const attempts = Math.floor(budgetMs / deadline);
-      assert.ok(
-        attempts >= MAX_CONSECUTIVE_STREAM_ERRORS,
-        `a wedged socket allows only ${attempts} attempts inside the ${budgetMs}ms budget, below the ${MAX_CONSECUTIVE_STREAM_ERRORS} the error counter needs to ever fire`
-      );
-    });
-  }
-
-  it('never outlives what is left of the budget', () => {
-    // Between the hold and the budget the budget wins: overshooting it just
-    // hands the platform reaper the timeout we were trying to report.
-    // Above the floor (which is what a nearly-spent budget hits) and below the
-    // hold-derived deadline, so the budget is the only thing that can be
-    // binding here.
-    const remaining = MIN_STREAM_POLL_TIMEOUT_MS + 1;
-    assert.ok(remaining < HTTP_STREAM_POLL_WAIT_MS + UPSTREAM_HOLD_SLACK_MS);
-    assert.equal(
-      streamPollTimeoutMs(remaining, HTTP_STREAM_POLL_WAIT_MS),
-      remaining
-    );
-  });
-
-  it('floors a spent budget rather than asking for 0ms', () => {
-    // A 0ms (or negative) deadline aborts before the socket opens and reports
-    // "no response after 0ms", which reads as a server fault rather than time
-    // we had already spent. The budget check after the poll ends the loop.
-    for (const remaining of [0, -5_000]) {
-      assert.equal(
-        streamPollTimeoutMs(remaining, HTTP_STREAM_POLL_WAIT_MS),
-        MIN_STREAM_POLL_TIMEOUT_MS
-      );
+  it('every hosted budget derives from the one clamp', () => {
+    // This suite runs off-Vercel, so HOSTED is false and the budgets read
+    // 5 minutes; assert the derivation rather than the ambient value.
+    if (HOSTED) {
+      assert.equal(STREAM_BUDGET_MS, HTTP_LONG_POLL_BUDGET_MS);
+      assert.equal(STATUS_WAIT_MAX_MS, HTTP_LONG_POLL_BUDGET_MS);
+    } else {
+      assert.equal(STREAM_BUDGET_MS, 300_000);
+      assert.equal(STATUS_WAIT_MAX_MS, 300_000);
     }
   });
 });
 
-// ============== real node-fetch, real socket ==============
-// Everything above injects a fake fetch, and `defaultFetch = fetch as HttpFetch`
-// (src/tools/runtime.ts) is a CAST — nothing type-checks the init object against
-// node-fetch's own RequestInit. If node-fetch ignored the `signal` field, every
-// deadline in this release would be inert and every test above would still pass.
-// So this one drives the real client, over a real socket, against a server that
-// answers and one that never does.
 describe('createHttpClient against real node-fetch', () => {
   let server: http.Server;
   let baseUrl: string;

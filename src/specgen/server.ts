@@ -24,6 +24,7 @@ import { logTools } from './tools/logs.js';
 import { listPublicEndpoints } from './tools/public-endpoints.js';
 import { runTool } from './tools/util.js';
 import { STATUS_WAIT_MAX_MS } from './tools/jobs.js';
+import { SERVER_NAME } from '../server.js';
 import {
   callerId,
   logToolCall,
@@ -79,6 +80,10 @@ The tool schemas are generated from the RunPod v2 OpenAPI contract, served as a 
 export interface SpecgenServerOptions {
   /** Rate-limit gate consulted before every tool call. Defaults to the no-op stub. */
   rateLimiter?: RateLimiter;
+  /** Called when a tool result is a 401: the hosted path uses it to drop the
+   *  cached credential verdict so the NEXT request re-checks and can emit the
+   *  HTTP 401 that makes OAuth clients re-authenticate. */
+  onUnauthorized?: () => void;
 }
 
 export function createSpecgenServer(
@@ -89,7 +94,7 @@ export function createSpecgenServer(
   const rateLimiter = opts.rateLimiter ?? noopRateLimiter;
   const caller = callerId(ctx.apiKey);
   const server = new Server(
-    { name: 'Runpod API Server', version: `${version} [specgen]` },
+    { name: SERVER_NAME, version: `${version} [specgen]` },
     {
       capabilities: { tools: {}, resources: {} },
       instructions: SERVER_INSTRUCTIONS,
@@ -199,6 +204,9 @@ export function createSpecgenServer(
       status: result.status,
       durationMs: Date.now() - startedAt,
     });
+    // A 401 from the API proves a cached "valid" credential verdict wrong
+    // before its TTL — let the shell drop it.
+    if (!result.ok && result.status === 401) opts.onUnauthorized?.();
 
     // On errors, attach a recovery hint by status class — the bare-client
     // (no-skills) path self-corrects from these instead of dead-ending.

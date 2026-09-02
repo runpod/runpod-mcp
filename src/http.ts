@@ -2,7 +2,6 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { createSpecgenServer } from './specgen/server.js';
 import { createToolContext as createSpecgenContext } from './specgen/context.js';
 import { SERVER_VERSION } from './server.js';
-import type { ToolContext } from './tools.js';
 import {
   createCredentialChecker,
   type CredentialChecker,
@@ -14,7 +13,7 @@ import {
   serverlessBase,
   authedGraphqlBase,
   type Env,
-} from './_shared/backend.js';
+} from './_shared/hosts.js';
 import { IncomingMessage, ServerResponse } from 'node:http';
 
 /**
@@ -270,31 +269,6 @@ function earlyCredentialCheckSkip(req: IncomingMessage): SkipReason | null {
   return null;
 }
 
-// The ToolContext the hosted path hands to registerTools. Exported so the
-// onUnauthorized wiring is reachable from a test.
-export function buildToolContext(
-  req: IncomingMessage,
-  bearerToken: string,
-  opts: {
-    serverVersion?: string;
-    invalidateCredential?: (token: string) => void;
-  } = {}
-): ToolContext {
-  const drop = opts.invalidateCredential ?? defaultCredentialChecker.invalidate;
-  return {
-    apiKey: bearerToken,
-    transport: 'http',
-    // A tools/call is a separate request from `initialize` in stateless HTTP, so
-    // the per-request server never sees the MCP `clientInfo`; fall back to the
-    // inbound User-Agent so caller-tracking still attributes the client.
-    clientUserAgent: req.headers['user-agent'],
-    serverVersion: opts.serverVersion,
-    // A tool call that 401s proves a cached "valid" wrong before its TTL. Drop it
-    // so the next request re-checks and can emit the 401 that triggers re-auth.
-    onUnauthorized: () => drop(bearerToken),
-  };
-}
-
 function logCredentialCheck(
   outcome: SkipReason | 'pass' | 'reject' | 'fail_open'
 ): void {
@@ -433,7 +407,15 @@ export async function handleMcpRequest(
         serverVersion: opts.serverVersion ?? SERVER_VERSION,
       },
     }),
-    opts.serverVersion ?? SERVER_VERSION
+    opts.serverVersion ?? SERVER_VERSION,
+    {
+      // A tool call that 401s proves a cached "valid" verdict wrong before
+      // its TTL — drop it so the next request re-checks and re-auths.
+      onUnauthorized: () =>
+        (opts.invalidateCredential ?? defaultCredentialChecker.invalidate)(
+          bearerToken
+        ),
+    }
   );
 
   const transport = new StreamableHTTPServerTransport({
@@ -453,6 +435,3 @@ export async function handleMcpRequest(
   // Pass the body we already resolved: readJsonBody may have consumed the stream.
   await transport.handleRequest(req, res, body);
 }
-
-export { registerTools } from './tools.js';
-export type { ToolContext } from './tools.js';

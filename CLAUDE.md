@@ -22,14 +22,14 @@ Prefer using paragraphs to bullet points unless directly asked. When using bulle
 
 ## Architecture
 
-The server communicates with two separate Runpod API backends. The REST API at `https://rest.runpod.io/v1` handles all authenticated CRUD operations for Pods, endpoints, templates, network volumes, and container registry auths. It requires a `RUNPOD_API_KEY` environment variable. The GraphQL API at `https://api.runpod.io/graphql` is reached two ways. The public, unauthenticated path serves read-only discovery queries — GPU types, GPU capacity by CUDA version, data centers, the Hub catalog, Public Endpoints. The authenticated path (`graphqlAuthed`, API key as a Bearer token) serves the handful of write operations that have no REST equivalent: `deploy-hub-repo` and `set-endpoint-gpus`, both of which call the `saveEndpoint` mutation. The two resolve their host from separate env vars on purpose — see `RUNPOD_PUBLIC_GRAPHQL_URL` and `RUNPOD_AUTHED_GRAPHQL_URL` below.
+The server communicates with two separate Runpod API backends. The REST v2 API at `https://api.runpod.io/v2` handles all authenticated CRUD operations for Pods, endpoints, templates, network volumes, clusters, SSH keys, and container registries; the tools covering it are generated from its OpenAPI spec (`pnpm generate:tools`, see `specgen/DESIGN.md`). It requires a `RUNPOD_API_KEY` environment variable. The GraphQL API at `https://api.runpod.io/graphql` is reached two ways. The public, unauthenticated path serves read-only discovery queries — GPU types, GPU capacity by CUDA version, data centers, the Hub catalog, Public Endpoints. The authenticated path (`graphqlAuthed`, API key as a Bearer token) serves the handful of write operations that have no REST equivalent: `deploy-hub-repo` and `set-endpoint-gpus`, both of which call the `saveEndpoint` mutation. The two resolve their host from separate env vars on purpose — see `RUNPOD_PUBLIC_GRAPHQL_URL` and `RUNPOD_AUTHED_GRAPHQL_URL` below.
 
 The source is split by responsibility:
 
 - `src/stdio.ts` is the local `stdio` entrypoint.
 - `src/http.ts` does bearer-token extraction and the per-request MCP session for the Streamable HTTP transport.
-- `src/tools.ts` contains all Runpod tools and API helpers.
-- `src/server.ts` owns shared server metadata and construction.
+- `src/specgen/` is the tool surface — generated from the v2 OpenAPI spec plus a curated overlay; see `specgen/DESIGN.md`. There is one surface: stdio and hosted serve the same tools and skill resources.
+- `src/server.ts` owns the server name/version constants.
 - `api/index.ts` is the Vercel adapter and hosts the OAuth authorization-server routes (`/.well-known/*`, `/register`, `/authorize`, `/token`).
 
 ### Hosted/OAuth environment variables
@@ -67,30 +67,9 @@ After making changes, rebuild with `pnpm build`. If you are in an active Claude 
 
 ## Adding tools
 
-Tools are registered with `server.tool()`. There are two signatures:
+Most tools are NOT written by hand. The surface under `src/specgen/generated/` is emitted from the vendored v2 OpenAPI spec by `pnpm generate:tools`; a new REST endpoint becomes a tool by re-vendoring the spec (`pnpm spec:pull`) and regenerating. Judgment (exclusions with reasons, description overrides for billable/destructive operations, renames) lives in `specgen/generator-config.yaml` — never edit generated files.
 
-```typescript
-// Without a description
-server.tool('tool-name', { ...zodParams }, async (params) => { ... });
-
-// With a description (recommended when LLM guidance helps)
-server.tool('tool-name', 'Description visible to the LLM', { ...zodParams }, async (params) => { ... });
-```
-
-Use kebab-case names matching the resource pattern: `list-pods`, `get-pod`, `create-pod`, `update-pod`, `delete-pod`. For REST-backed tools, use the `runpodRequest()` helper which handles auth headers, JSON parsing, and error responses. For GraphQL-backed tools, use the `graphqlRequest<T>()` helper which hits the public endpoint without authentication.
-
-Define parameters with Zod schemas, calling `.describe()` on each field and `.optional()` on non-required ones. Add a tool description string when the LLM benefits from guidance, such as recommending a default template. Keep descriptions concise and actionable.
-
-All tool handlers should return the same shape: `{ content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }`.
-
-Tools are grouped by section comments in `src/tools.ts` (infrastructure, Pod management, endpoint management, template management, network volume management, container registry auth). Add new tools in the appropriate section. If adding a new resource category, follow the same comment style.
-
-For transport regressions, use:
-
-```bash
-pnpm smoke:stdio
-pnpm smoke:http
-```
+Hand-written tools (`src/specgen/tools/`) exist only where generation cannot reach: the Serverless runtime plane, GraphQL-only capability, SSE log streams, and trimmed list views. They implement the `CuratedTool` interface (JSON Schema `inputSchema`, a handler taking the per-request `ToolContext`) and register in `curatedTools` in `src/specgen/server.ts`. The spec-parity gate fails if a spec operation is neither generated nor excluded, and the old-surface parity map (`specgen/old-mcp-tools.yaml`) fails if a mapped tool disappears.
 
 ## Known issues
 

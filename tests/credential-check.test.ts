@@ -4,7 +4,6 @@ import { IncomingMessage, ServerResponse } from 'node:http';
 
 import { createCredentialChecker } from '../src/_shared/credential-check.js';
 import {
-  buildToolContext,
   defaultCredentialChecker,
   handleMcpRequest,
   bodyIsCheckable,
@@ -1220,32 +1219,41 @@ describe('env-mismatch guard ignores cosmetic URL differences', () => {
   });
 });
 
-describe('buildToolContext (the hosted ToolContext handed to registerTools)', () => {
-  // Previously this object was inline, and deleting its onUnauthorized field left
-  // the whole suite green — the link between "a tool saw a 401" and "drop the
-  // cached verdict" could be removed without any test noticing.
-  const req = {
-    method: 'POST',
-    url: '/mcp',
-    headers: { host: 'mcp.test', 'user-agent': 'test-client/1.0' },
-  } as unknown as IncomingMessage;
-
-  it('wires onUnauthorized to invalidate THIS request token', () => {
-    const dropped: string[] = [];
-    const ctx = buildToolContext(req, 'rpa_caller', {
-      invalidateCredential: (t) => dropped.push(t),
-    });
-    assert.equal(typeof ctx.onUnauthorized, 'function');
-    ctx.onUnauthorized!();
-    assert.deepEqual(dropped, ['rpa_caller']);
-  });
-
-  it('forwards the caller identity used for tracking', () => {
-    const ctx = buildToolContext(req, 'rpa_caller', { serverVersion: '9.9.9' });
-    assert.equal(ctx.apiKey, 'rpa_caller');
-    assert.equal(ctx.transport, 'http');
-    assert.equal(ctx.clientUserAgent, 'test-client/1.0');
-    assert.equal(ctx.serverVersion, '9.9.9');
+describe('the 401 -> drop-cached-verdict wiring (specgen onUnauthorized)', () => {
+  // Previously this link lived on buildToolContext.onUnauthorized; it now
+  // rides createSpecgenServer's onUnauthorized option. Deleting it must not
+  // leave the suite green: a tool call that 401s has to drop the cached
+  // credential verdict so the NEXT request re-checks and can re-auth.
+  it('invokes onUnauthorized when a tool result is a 401', async () => {
+    const { createSpecgenServer } = await import('../src/specgen/server.js');
+    const { createToolContext } = await import('../src/specgen/context.js');
+    const { Client } = await import(
+      '@modelcontextprotocol/sdk/client/index.js'
+    );
+    const { InMemoryTransport } = await import(
+      '@modelcontextprotocol/sdk/inMemory.js'
+    );
+    let dropped = 0;
+    // A keyless context 401s on first use — the same shape as a revoked key.
+    const saved = process.env.RUNPOD_API_KEY;
+    delete process.env.RUNPOD_API_KEY;
+    try {
+      const server = createSpecgenServer(createToolContext(), 'test', {
+        onUnauthorized: () => dropped++,
+      });
+      const client = new Client({ name: 't', version: '1' });
+      const [ct, st] = InMemoryTransport.createLinkedPair();
+      await Promise.all([server.connect(st), client.connect(ct)]);
+      const res = (await client.callTool({
+        name: 'list-pods',
+        arguments: {},
+      })) as { isError?: boolean };
+      assert.equal(res.isError, true);
+      assert.equal(dropped, 1);
+      await client.close();
+    } finally {
+      if (saved !== undefined) process.env.RUNPOD_API_KEY = saved;
+    }
   });
 });
 
