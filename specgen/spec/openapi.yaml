@@ -1,7 +1,12 @@
-# Vendored from https://api.runpod.io/v2/openapi.json (the PRODUCTION spec
-# generation). The dev host v2-rest.runpod.dev serves a different generation
-# with different paths (/v2/gpu-types vs /v2/catalog/gpus) — do not pull from
-# it for a production deployment.
+# Vendored from https://api.runpod.io/v2/openapi.json
+# on 2026-09-02 by scripts/pull-spec.ts (pnpm spec:pull).
+#
+# PRODUCTION is the default source. The dev host (v2-rest.runpod.dev)
+# serves a different generation with different paths — vendor it only
+# deliberately (SPEC_URL=... pnpm spec:pull), and expect the drift check
+# against production to go red while you do.
+#
+# After pulling: pnpm generate:tools && pnpm test
 openapi: 3.1.0
 info:
   title: Runpod REST API

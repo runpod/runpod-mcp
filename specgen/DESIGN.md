@@ -157,7 +157,7 @@ EVERY PR ─ "is the repo consistent with itself?"   (pnpm test, no network)
   - a tool-call log line never contains the key or the arguments
 
 WHEN DRIFT IS RED ─ the human update loop (two commands)
-  curl api.runpod.io/v2/openapi.json > specgen/spec/openapi.yaml
+  pnpm spec:pull          re-vendor (production by default)
   pnpm generate:tools
   ...then review generator-config.yaml: does the new operation need a
   billable warning? an exclusion? That judgment is deliberately manual.
@@ -165,8 +165,18 @@ WHEN DRIFT IS RED ─ the human update loop (two commands)
 
 One trap this caught already: the spec has a DEV generation
 (`v2-rest.runpod.dev`, paths like `/v2/gpu-types`) and a PROD generation
-(`api.runpod.io`, paths like `/v2/catalog/gpus`). Always vendor from
-production — the file's header comment says so.
+(`api.runpod.io`, paths like `/v2/catalog/gpus`). Production is the
+default everywhere; to build against dev (or any host), override with an
+env var — the vendored file records its source in its header:
+
+    SPEC_URL=https://v2-rest.runpod.dev/v2/openapi.yaml pnpm spec:pull
+    SPEC_URL=... pnpm spec:check      # judge drift against that host too
+    RUNPOD_API_BASE_URL=...           # and point the RUNTIME at the same
+                                      # environment, or the tools will call
+                                      # prod paths that dev does not serve
+
+While dev-vendored, the drift check against production goes red — that
+red is correct (you are deliberately drifted), not a bug.
 
 ---
 

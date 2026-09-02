@@ -27,6 +27,8 @@ vendor/runpod-sdk/              locally built @runpod/sdk (npm publish pending)
 ## Workflows
 
 ```bash
+pnpm spec:pull         # re-vendor the spec (production; SPEC_URL=... overrides)
+pnpm spec:check        # diff the vendored spec against the live one
 pnpm generate:tools    # regenerate src/specgen/generated/tools.gen.ts
 pnpm generate:skills   # re-embed specgen/skills into skills.gen.ts
 pnpm test              # includes the specgen drift gates
