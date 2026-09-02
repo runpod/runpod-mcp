@@ -43,9 +43,14 @@ export async function dispatchGeneratedTool(
   }
 
   // openapi-fetch is typed per literal path; generated dispatch is generic by
-  // construction, so the path/verb pair is asserted.
-  const verb = tool.method as 'GET';
-  const { data, error, response } = await (client as any)[verb](tool.path, {
+  // construction, so the client is narrowed to the structural shape of a verb
+  // call rather than asserted to any.
+  type VerbCall = (
+    path: string,
+    init: Record<string, unknown>
+  ) => Promise<{ data?: unknown; error?: unknown; response: Response }>;
+  const verbs = client as unknown as Record<string, VerbCall>;
+  const { data, error, response } = await verbs[tool.method](tool.path, {
     params: { path: pathParams, query },
     ...(tool.hasBody && args.body !== undefined ? { body: args.body } : {}),
   });

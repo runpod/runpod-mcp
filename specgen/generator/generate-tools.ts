@@ -69,11 +69,28 @@ interface ToolParam {
   location: 'path' | 'query';
 }
 
-const tools: object[] = [];
+// The slice of an OpenAPI operation this generator reads. Parameters and
+// schemas stay unknown-shaped — they are copied into the output, not walked.
+interface SpecOperation {
+  operationId: string;
+  summary?: string;
+  description?: string;
+  parameters?: Array<Record<string, unknown>>;
+  requestBody?: {
+    required?: boolean;
+    content?: Record<string, { schema?: unknown }>;
+  };
+}
 
-for (const [path, pathItem] of Object.entries<Record<string, any>>(
-  spec.paths
-)) {
+type SpecPathItem = Partial<
+  Record<(typeof HTTP_METHODS)[number], SpecOperation>
+> & {
+  parameters?: Array<Record<string, unknown>>;
+};
+
+const tools: Array<{ name: string }> = [];
+
+for (const [path, pathItem] of Object.entries<SpecPathItem>(spec.paths)) {
   for (const method of HTTP_METHODS) {
     const op = pathItem[method];
     if (!op) continue;
@@ -138,7 +155,7 @@ for (const [path, pathItem] of Object.entries<Record<string, any>>(
   }
 }
 
-tools.sort((a: any, b: any) => a.name.localeCompare(b.name));
+tools.sort((a, b) => a.name.localeCompare(b.name));
 
 const header = `// Code generated from specgen/spec/openapi.yaml by specgen/generator/generate-tools.ts; DO NOT EDIT.
 
