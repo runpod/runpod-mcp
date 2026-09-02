@@ -58,10 +58,13 @@ test('instructions direct agents to the router resource before acting', () => {
 
 test('every embedded skill matches its on-disk source', async () => {
   const { readFileSync } = await import('node:fs');
+  // Normalize line endings: git checks the sources out with CRLF on Windows,
+  // while the embedded text was generated from an LF checkout.
+  const lf = (text: string) => text.replace(/\r\n/g, '\n');
   for (const skill of skillDocs) {
     assert.equal(
-      skill.text,
-      readFileSync(`specgen/skills/${skill.name}/SKILL.md`, 'utf8'),
+      lf(skill.text),
+      lf(readFileSync(`specgen/skills/${skill.name}/SKILL.md`, 'utf8')),
       skill.name
     );
   }
