@@ -423,7 +423,16 @@ export async function handleMcpRequest(
   // existing auth/transport. Per-request context from the caller's bearer
   // token — nothing credential-bearing lives at module scope.
   const server = createSpecgenServer(
-    createSpecgenContext({ apiKey: bearerToken }),
+    createSpecgenContext({
+      apiKey: bearerToken,
+      tracking: {
+        // Stateless HTTP never sees the MCP clientInfo; the inbound
+        // User-Agent is the best identity available.
+        clientName: req.headers['user-agent'],
+        transport: 'http',
+        serverVersion: opts.serverVersion ?? SERVER_VERSION,
+      },
+    }),
     opts.serverVersion ?? SERVER_VERSION
   );
 

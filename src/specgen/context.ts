@@ -7,7 +7,9 @@
 // from the caller's bearer token — nothing here may be cached at module
 // scope. The stdio path builds one context per process from RUNPOD_API_KEY.
 
+import { randomUUID } from 'node:crypto';
 import { createRunpodClient, type RunpodClient } from '@runpod/sdk';
+import { buildTrackingHeaders } from '../_shared/tracking.js';
 import { createGraphqlClient, type GraphqlClient } from './clients/graphql.js';
 import { HttpError } from './clients/http-error.js';
 import { createRuntimeClient, type RuntimeClient } from './clients/runtime.js';
@@ -25,12 +27,37 @@ export interface ToolContext {
 export interface ToolContextOptions {
   /** Per-caller credential. Falls back to RUNPOD_API_KEY (stdio path). */
   apiKey?: string;
+  /** Caller identity stamped on every outbound API call (User-Agent +
+   *  X-Runpod-Session-Id). Ported from the pre-specgen server. */
+  tracking?: {
+    clientName?: string;
+    clientVersion?: string;
+    transport: 'stdio' | 'http';
+    serverVersion: string;
+  };
 }
 
 export function createToolContext(
   options: ToolContextOptions = {}
 ): ToolContext {
   const apiKey = options.apiKey ?? process.env.RUNPOD_API_KEY;
+
+  // One wrapped fetch shared by all four clients: identifies the calling MCP
+  // client on every outbound API request. The session id is per-context —
+  // per-request on hosted, per-process on stdio.
+  let fetchImpl: typeof fetch = fetch;
+  if (options.tracking) {
+    const headers = buildTrackingHeaders({
+      ...options.tracking,
+      sessionId: randomUUID(),
+    });
+    fetchImpl = (input, init) =>
+      fetch(input, {
+        ...init,
+        headers: { ...headers, ...(init?.headers as Record<string, string>) },
+      });
+  }
+
   let sdk: RunpodClient | undefined;
 
   return {
@@ -48,12 +75,12 @@ export function createToolContext(
             401
           );
         }
-        sdk = createRunpodClient({ apiKey });
+        sdk = createRunpodClient({ apiKey, fetch: fetchImpl });
       }
       return sdk;
     },
-    runtime: createRuntimeClient({ apiKey }),
-    graphql: createGraphqlClient({ apiKey }),
-    sse: createSseReader({ apiKey }),
+    runtime: createRuntimeClient({ apiKey, fetchImpl }),
+    graphql: createGraphqlClient({ apiKey, fetchImpl }),
+    sse: createSseReader({ apiKey, fetchImpl }),
   };
 }

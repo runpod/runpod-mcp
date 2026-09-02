@@ -4,6 +4,7 @@
 
 import type { RunpodClient } from '@runpod/sdk';
 import type { GeneratedTool } from './generated/tools.gen.js';
+import { rateLimitHint } from '../_shared/rate-limit.js';
 
 export interface ToolResult {
   ok: boolean;
@@ -55,8 +56,22 @@ export async function dispatchGeneratedTool(
     ...(tool.hasBody && args.body !== undefined ? { body: args.body } : {}),
   });
 
-  if (error !== undefined)
-    return { ok: false, status: response.status, payload: error };
+  if (error !== undefined) {
+    // A 429's bare "rate limit exceeded" invites an immediate retry; turn the
+    // response's RateLimit/Retry-After headers into a concrete wait
+    // instruction (ported from the pre-specgen server).
+    const payload =
+      response.status === 429 && typeof error === 'object' && error !== null
+        ? {
+            ...(error as Record<string, unknown>),
+            hint: rateLimitHint(
+              response.headers.get('ratelimit'),
+              response.headers.get('retry-after')
+            ),
+          }
+        : error;
+    return { ok: false, status: response.status, payload };
+  }
   return {
     ok: true,
     status: response.status,
