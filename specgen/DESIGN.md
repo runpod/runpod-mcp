@@ -217,8 +217,14 @@ disagree.
 - **Stateless by design.** A fresh server object per request, discarded
   after. Nothing user-scoped may live at module scope — that is the
   tenancy rule, and it is tested.
-- **Rate limiting is a stub.** `src/specgen/ops.ts` defines the seat
-  (consulted before every call, denial → retryable error with a wait hint);
+- **Rate limiting is layered.** Unauthenticated traffic is already limited
+  outside this repo: the Vercel project firewall (WAF) enforces 60 req/min
+  per IP on POSTs to `/` that carry no Authorization header (429), logs the
+  same limit on GETs, and runs the OWASP managed rules in log mode. That
+  config is project-scoped, so it covers previews and prod alike — it is
+  not in git; see the project's Firewall tab. Authenticated per-caller
+  limiting is the stub: `src/specgen/ops.ts` defines the seat (consulted
+  before every call, denial → retryable error with a wait hint);
   enforcement is a later one-function swap to a KV-backed counter.
 - **The SDK is vendored.** `vendor/runpod-sdk` is the built TypeScript SDK,
   bundled into `dist` so the npm package and the deployment are
