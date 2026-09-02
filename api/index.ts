@@ -234,7 +234,7 @@ async function createFlashAuthRequest(codeChallenge: string): Promise<string> {
   const parts: string[] = [];
   const apiKeyName = getApiKeyName();
   if (apiKeyName) parts.push(`apiKeyName: ${JSON.stringify(apiKeyName)}`);
-  // These fields require the DR-1398 backend schema to be deployed.
+  // These fields require the PKCE-aware flash auth backend schema.
   parts.push(`codeChallenge: ${JSON.stringify(codeChallenge)}`);
   parts.push('codeChallengeMethod: "S256"');
   const args = parts.length ? `(${parts.join(', ')})` : '';
