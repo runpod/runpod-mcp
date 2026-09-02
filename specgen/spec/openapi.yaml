@@ -574,7 +574,7 @@ components:
             explicitly.
           examples:
             - /runpod-volume
-    GpuConfig:
+    BaseGpuConfig:
       type: object
       required:
         - id
@@ -591,13 +591,36 @@ components:
           description: Number of GPUs
           examples:
             - 1
+    GpuConfig:
+      allOf:
+        - $ref: "#/components/schemas/BaseGpuConfig"
+        - type: object
+          required:
+            - vcpuCount
+            - memory
+          properties:
+            vcpuCount:
+              type: number
+              format: double
+              minimum: 1
+              description: Total vCPU count allocated to the pod across all requested GPUs.
+              examples:
+                - 2
+            memory:
+              type: number
+              format: double
+              minimum: 1
+              description: Total system RAM in GB allocated to the pod across all requested
+                GPUs.
+              examples:
+                - 8
     CreateGpuConfig:
       description: |
         GPU request for a pod create. Carries the CUDA host constraints, which
         live here rather than at the body's top level so they are
         unrepresentable on a CPU pod.
       allOf:
-        - $ref: "#/components/schemas/GpuConfig"
+        - $ref: "#/components/schemas/BaseGpuConfig"
         - type: object
           properties:
             allowedCudaVersions:
@@ -633,6 +656,23 @@ components:
                 may accompany this floor.
               examples:
                 - "12.1"
+            minRamPerGpu:
+              type: integer
+              minimum: 1
+              description: Minimum host system RAM in GB per requested GPU. This is a
+                placement filter, not a resource request. The actual total
+                allocated system RAM may be higher and is returned in
+                gpu.memory.
+              examples:
+                - 8
+            minVcpuCountPerGpu:
+              type: integer
+              minimum: 1
+              description: Minimum host vCPU count per requested GPU. This is a placement
+                filter, not a resource request. The actual total allocated vCPU
+                count may be higher and is returned in gpu.vcpuCount.
+              examples:
+                - 2
       unevaluatedProperties: false
     BaseCpuConfig:
       type: object
@@ -715,54 +755,65 @@ components:
         run:
           type: string
           format: uri
-          description: URL for asynchronously submitting a queued job.
+          description: |-
+            URL for asynchronously submitting a queued job.
+            See the [/run operation reference](https://docs.runpod.io/serverless/endpoints/operation-reference#/run) for request and response bodies.
           examples:
             - https://api.runpod.ai/v2/4m7x2k9q/run
         runSync:
           type: string
           format: uri
-          description: URL for synchronously submitting a queued job. Accepts an optional
-            `?wait=x` query parameter to control how long the request waits for
-            job completion, defaulting to 90 seconds.
+          description: |-
+            URL for synchronously submitting a queued job. Accepts an optional `?wait=x` query parameter to control how long the request waits for job completion, defaulting to 90 seconds.
+            See the [/runsync operation reference](https://docs.runpod.io/serverless/endpoints/operation-reference#/runsync) for request and response bodies.
           examples:
             - https://api.runpod.ai/v2/4m7x2k9q/runsync
         status:
           type: string
           format: uri
-          description: Check the current state, execution statistics, and results of a
-            previously submitted job.
+          description: |-
+            Check the current state, execution statistics, and results of a previously submitted job.
+            See the [/status operation reference](https://docs.runpod.io/serverless/endpoints/operation-reference#/status) for request and response bodies.
           examples:
             - https://api.runpod.ai/v2/4m7x2k9q/status/{job_id}
         stream:
           type: string
           format: uri
-          description: Receive incremental results as they become available from a job
-            that generates output progressively.
+          description: |-
+            Receive incremental results as they become available from a job that generates output progressively.
+            See the [/stream operation reference](https://docs.runpod.io/serverless/endpoints/operation-reference#/stream) for request and response bodies.
           examples:
             - https://api.runpod.ai/v2/4m7x2k9q/stream/{job_id}
         cancel:
           type: string
           format: uri
-          description: Stop an in-progress job or remove a queued job before it starts.
+          description: |-
+            Stop an in-progress job or remove a queued job before it starts.
+            See the [/cancel operation reference](https://docs.runpod.io/serverless/endpoints/operation-reference#/cancel) for request and response bodies.
           examples:
             - https://api.runpod.ai/v2/4m7x2k9q/cancel/{job_id}
         retry:
           type: string
           format: uri
-          description: Requeue a failed or timed-out job without submitting a new request.
+          description: |-
+            Requeue a failed or timed-out job without submitting a new request.
+            See the [/retry operation reference](https://docs.runpod.io/serverless/endpoints/operation-reference#/retry) for request and response bodies.
           examples:
             - https://api.runpod.ai/v2/4m7x2k9q/retry/{job_id}
         purgeQueue:
           type: string
           format: uri
-          description: Remove all pending jobs from the queue. Does not affect in-progress
-            jobs.
+          description: |-
+            Remove all pending jobs from the queue. Does not affect in-progress jobs.
+            See the [/purge-queue operation reference](https://docs.runpod.io/serverless/endpoints/operation-reference#/purge-queue) for request and response bodies.
           examples:
             - https://api.runpod.ai/v2/4m7x2k9q/purge-queue
         health:
           type: string
           format: uri
-          description: Overview of an endpoint's operational status.
+          description: |-
+            Overview of an endpoint's operational status.
+            See the [/health operation reference](https://docs.runpod.io/serverless/endpoints/operation-reference#/health) for request and response bodies.
           examples:
             - https://api.runpod.ai/v2/4m7x2k9q/health
     LoadBalancingRequestUrls:
@@ -775,24 +826,30 @@ components:
         base:
           type: string
           format: uri
-          description: Base URL for worker-defined HTTP and WebSocket paths.
+          description: |-
+            Base URL for worker-defined HTTP and WebSocket paths.
+            See [Load balancing endpoints](https://docs.runpod.io/serverless/load-balancing/overview).
           examples:
             - https://4m7x2k9q.api.runpod.ai
         health:
           type: string
           format: uri
-          description: Health check endpoint the load balancer will periodically ping to
-            decide if the worker is healthy enough to receive traffic.
-            Configurable by setting the `HEALTH_CHECK_PATH` environment
-            variable. Defaults to `/ping` if the variable is not set.
+          description: |-
+            Health check endpoint the load balancer will periodically ping to decide if the worker is healthy enough to receive traffic. Configurable by setting the `HEALTH_CHECK_PATH` environment variable. Defaults to `/ping` if the variable is not set.
+            See [Health checks](https://docs.runpod.io/serverless/load-balancing/overview#health-checks) for the response codes it interprets.
           examples:
             - https://4m7x2k9q.api.runpod.ai/ping
     EndpointRequestUrls:
-      description: |
+      description: |-
         Request URLs appropriate to the endpoint's top-level `type`.
         Queue-based endpoints provide job submission and management URLs;
         load-balancing endpoints provide `base` and `health` because their
         remaining paths are worker-defined.
+
+        Request and response bodies for the queue-based URLs are documented in
+        the [serverless operation reference](https://docs.runpod.io/serverless/endpoints/operation-reference).
+        Load-balancing endpoints are documented in
+        [Load balancing endpoints](https://docs.runpod.io/serverless/load-balancing/overview).
       oneOf:
         - $ref: "#/components/schemas/QueueBasedRequestUrls"
         - $ref: "#/components/schemas/LoadBalancingRequestUrls"
@@ -1337,6 +1394,112 @@ components:
       enum:
         - GIT_BUILD
         - MANUAL
+    BuildState:
+      type: string
+      description: |
+        GitHub build lifecycle state. `COMPLETED`, `FAILED`, `CANCELLED`, and
+        `TEST_FAILED` are terminal; `PENDING`, `BUILDING`, `UPLOADING`, and
+        `TESTING` are live.
+      x-enum-varnames:
+        - BuildStatePending
+        - BuildStateBuilding
+        - BuildStateUploading
+        - BuildStateTesting
+        - BuildStateCompleted
+        - BuildStateFailed
+        - BuildStateCancelled
+        - BuildStateTestFailed
+      enum:
+        - PENDING
+        - BUILDING
+        - UPLOADING
+        - TESTING
+        - COMPLETED
+        - FAILED
+        - CANCELLED
+        - TEST_FAILED
+    Build:
+      type: object
+      required:
+        - id
+        - status
+      properties:
+        id:
+          type: string
+          examples:
+            - build_abc123
+        status:
+          $ref: "#/components/schemas/BuildState"
+        commitHash:
+          type:
+            - string
+            - "null"
+          description: Short hash of the commit that triggered the build.
+          examples:
+            - abc1234
+        commitMessage:
+          type:
+            - string
+            - "null"
+          examples:
+            - bump model
+        branch:
+          type:
+            - string
+            - "null"
+          description: Git branch the commit was pushed to.
+          examples:
+            - main
+        commitDate:
+          type:
+            - string
+            - "null"
+          format: date-time
+          description: When the triggering commit was authored.
+          examples:
+            - 2026-06-01T12:00:00Z
+        imageName:
+          type:
+            - string
+            - "null"
+          description: Fully qualified image the build produced (or will produce).
+          examples:
+            - registry.runpod.net/repo:abc1234
+        startedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+          description: When the build started. Null while the build is still pending.
+          examples:
+            - 2026-06-01T12:00:05Z
+        completedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+          description: When the build reached a terminal state. Null while the build is
+            live.
+          examples:
+            - 2026-06-01T12:04:31Z
+        error:
+          type:
+            - string
+            - "null"
+          description: Failure detail for `FAILED` / `TEST_FAILED` builds; null otherwise.
+    ListEndpointBuildsResponse:
+      type: object
+      required:
+        - builds
+      properties:
+        builds:
+          type: array
+          description: |
+            Build history, newest first. At most the 100 most recent builds
+            are returned; any older build can still be fetched by id via
+            `GET /v2/serverless/{id}/builds/{buildId}`.
+          items:
+            $ref: "#/components/schemas/Build"
     ReleaseDiffEntry:
       type: object
       required:
@@ -4113,6 +4276,8 @@ paths:
                         gpu:
                           id: NVIDIA GeForce RTX 4090
                           count: 1
+                          vcpuCount: 16
+                          memory: 64
                         cloud: SECURE
                         dataCenterId: US-KS-2
                         cudaVersion: "12.8"
@@ -4357,6 +4522,8 @@ paths:
                   gpu:
                     id: NVIDIA GeForce RTX 4090
                     count: 1
+                    minRamPerGpu: 32
+                    minVcpuCountPerGpu: 8
                   disk: 50
       responses:
         "201":
@@ -4396,6 +4563,8 @@ paths:
                     gpu:
                       id: NVIDIA GeForce RTX 4090
                       count: 1
+                      vcpuCount: 16
+                      memory: 64
                     cloud: SECURE
                     dataCenterId: US-KS-2
                     cudaVersion: "12.8"
@@ -4491,6 +4660,8 @@ paths:
                     gpu:
                       id: NVIDIA GeForce RTX 4090
                       count: 1
+                      vcpuCount: 16
+                      memory: 64
                     cloud: SECURE
                     dataCenterId: US-KS-2
                     cudaVersion: "12.8"
@@ -4609,6 +4780,8 @@ paths:
                     gpu:
                       id: NVIDIA GeForce RTX 4090
                       count: 1
+                      vcpuCount: 16
+                      memory: 64
                     cloud: SECURE
                     dataCenterId: US-KS-2
                     cudaVersion: "12.8"
@@ -4878,6 +5051,8 @@ paths:
                     gpu:
                       id: NVIDIA GeForce RTX 4090
                       count: 1
+                      vcpuCount: 16
+                      memory: 64
                     cloud: SECURE
                     dataCenterId: US-KS-2
                     cudaVersion: "12.8"
@@ -5845,6 +6020,142 @@ paths:
                           - field: workers.max
                             old: 5
                             new: 10
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
+        default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v2/serverless/{id}/builds:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Serverless endpoint identifier
+        example: ep_abc123
+    get:
+      operationId: listEndpointBuilds
+      summary: List serverless endpoint builds
+      description: |
+        Returns the endpoint's GitHub build history, newest first (RunPod
+        GitHub-build integration). At most the 100 most recent builds are
+        returned; any older build can still be fetched by id via
+        `GET /v2/serverless/{id}/builds/{buildId}`. Stream a build's logs via
+        `/v2/serverless/{id}/builds/{buildId}/logs`.
+      tags:
+        - Serverless
+      responses:
+        "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListEndpointBuildsResponse"
+              examples:
+                builds:
+                  summary: Successful response
+                  value:
+                    builds:
+                      - id: build_abc123
+                        status: COMPLETED
+                        commitHash: abc1234
+                        commitMessage: bump model
+                        branch: main
+                        commitDate: 2026-06-01T12:00:00Z
+                        imageName: registry.runpod.net/repo:abc1234
+                        startedAt: 2026-06-01T12:00:05Z
+                        completedAt: 2026-06-01T12:04:31Z
+                        error: null
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
+        default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v2/serverless/{id}/builds/{buildId}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Serverless endpoint identifier
+        example: ep_abc123
+      - name: buildId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: GitHub build identifier (from GET /v2/serverless/{id}/builds or a
+          release's `buildId`)
+        example: build_abc123
+    get:
+      operationId: getEndpointBuild
+      summary: Get a serverless endpoint build
+      description: |
+        Returns one of the endpoint's GitHub builds by id, regardless of age —
+        unlike the list, which is capped to recent history.
+      tags:
+        - Serverless
+      responses:
+        "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Build"
+              examples:
+                build:
+                  summary: Successful response
+                  value:
+                    id: build_abc123
+                    status: COMPLETED
+                    commitHash: abc1234
+                    commitMessage: bump model
+                    branch: main
+                    commitDate: 2026-06-01T12:00:00Z
+                    imageName: registry.runpod.net/repo:abc1234
+                    startedAt: 2026-06-01T12:00:05Z
+                    completedAt: 2026-06-01T12:04:31Z
+                    error: null
         "401":
           $ref: "#/components/responses/UnauthorizedError"
         "403":

@@ -814,6 +814,24 @@ export const generatedTools: GeneratedTool[] = [
             },
           },
         },
+        BaseGpuConfig: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: {
+              type: 'string',
+              description: 'GPU type identifier',
+              examples: ['NVIDIA GeForce RTX 4090'],
+            },
+            count: {
+              type: 'integer',
+              minimum: 1,
+              default: 1,
+              description: 'Number of GPUs',
+              examples: [1],
+            },
+          },
+        },
         Cloud: {
           type: 'string',
           description:
@@ -853,7 +871,7 @@ export const generatedTools: GeneratedTool[] = [
             "GPU request for a pod create. Carries the CUDA host constraints, which\nlive here rather than at the body's top level so they are\nunrepresentable on a CPU pod.\n",
           allOf: [
             {
-              $ref: '#/$defs/GpuConfig',
+              $ref: '#/$defs/BaseGpuConfig',
             },
             {
               type: 'object',
@@ -874,6 +892,20 @@ export const generatedTools: GeneratedTool[] = [
                   description:
                     'Lowest acceptable CUDA version for the host machine, as\n`major.minor`, compared numerically rather than as a decimal —\nso 12.11 is above 12.2. Use this for an open-ended floor and\nallowedCudaVersions for an exact set.\n\nMutually exclusive with a non-empty allowedCudaVersions (400 if\nboth are sent); an explicit `[]` there states no constraint and\nmay accompany this floor.\n',
                   examples: ['12.1'],
+                },
+                minRamPerGpu: {
+                  type: 'integer',
+                  minimum: 1,
+                  description:
+                    'Minimum host system RAM in GB per requested GPU. This is a placement filter, not a resource request. The actual total allocated system RAM may be higher and is returned in gpu.memory.',
+                  examples: [8],
+                },
+                minVcpuCountPerGpu: {
+                  type: 'integer',
+                  minimum: 1,
+                  description:
+                    'Minimum host vCPU count per requested GPU. This is a placement filter, not a resource request. The actual total allocated vCPU count may be higher and is returned in gpu.vcpuCount.',
+                  examples: [2],
                 },
               },
             },
@@ -962,24 +994,6 @@ export const generatedTools: GeneratedTool[] = [
           },
           then: {
             required: ['image'],
-          },
-        },
-        GpuConfig: {
-          type: 'object',
-          required: ['id'],
-          properties: {
-            id: {
-              type: 'string',
-              description: 'GPU type identifier',
-              examples: ['NVIDIA GeForce RTX 4090'],
-            },
-            count: {
-              type: 'integer',
-              minimum: 1,
-              default: 1,
-              description: 'Number of GPUs',
-              examples: [1],
-            },
           },
         },
         Mounts: {
@@ -1591,6 +1605,40 @@ export const generatedTools: GeneratedTool[] = [
         },
       },
       required: ['id'],
+    },
+  },
+  {
+    name: 'get-endpoint-build',
+    operationId: 'getEndpointBuild',
+    description:
+      "Get a serverless endpoint build. Returns one of the endpoint's GitHub builds by id, regardless of age — unlike the list, which is capped to recent history.",
+    method: 'GET',
+    path: '/v2/serverless/{id}/builds/{buildId}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+      {
+        name: 'buildId',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Serverless endpoint identifier',
+        },
+        buildId: {
+          type: 'string',
+          description:
+            "GitHub build identifier (from GET /v2/serverless/{id}/builds or a release's `buildId`)",
+        },
+      },
+      required: ['id', 'buildId'],
     },
   },
   {
@@ -2284,6 +2332,31 @@ export const generatedTools: GeneratedTool[] = [
           examples: ['day'],
         },
       },
+    },
+  },
+  {
+    name: 'list-endpoint-builds',
+    operationId: 'listEndpointBuilds',
+    description:
+      "List serverless endpoint builds. Returns the endpoint's GitHub build history, newest first (RunPod GitHub-build integration). At most the 100 most recent builds are returned; any older build can still be fetched by id via `GET /v2/serverless/{id}/builds/{buildId}`. Stream a build's logs via `/v2/serverless/{id}/builds/{buildId}/logs`.",
+    method: 'GET',
+    path: '/v2/serverless/{id}/builds',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Serverless endpoint identifier',
+        },
+      },
+      required: ['id'],
     },
   },
   {
