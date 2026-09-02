@@ -222,9 +222,12 @@ disagree.
   bundled into `dist` so the npm package and the deployment are
   self-contained. When `@runpod/sdk` is published to npm, delete the vendor
   dir and depend on it normally.
-- **stdio still serves the OLD surface.** Only the hosted HTTP path uses
-  specgen. Swapping stdio (and then deleting `src/tools.ts`) is the step
-  that completes the migration.
+- **stdio serves the OLD surface by default.** Set
+  `RUNPOD_MCP_SURFACE=specgen` in the MCP client's env to run the new
+  surface locally — identical tools and skills to hosted, with the
+  5-minute (not 45s) wait budgets since no reaper applies. Making it the
+  default and deleting `src/tools.ts` is the major-release step that
+  completes the migration.
 
 ---
 

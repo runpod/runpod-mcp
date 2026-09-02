@@ -5,8 +5,10 @@
 This directory and `src/specgen/` hold the spec-driven tool architecture
 mounted on the hosted (HTTP) path: every v2 OpenAPI operation becomes an MCP
 tool by generation, plus a curated overlay for the planes the spec does not
-cover. The stdio entrypoint still serves the pre-existing hand-written
-surface; only hosted requests get the specgen server.
+cover. The stdio entrypoint serves the pre-existing hand-written surface by
+default; set `RUNPOD_MCP_SURFACE=specgen` to run this surface locally
+(same tools and skills as hosted, 5-minute wait budgets). It becomes the
+default at the next major release.
 
 ## Layout
 

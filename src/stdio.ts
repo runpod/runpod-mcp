@@ -1,7 +1,9 @@
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import fetch from 'node-fetch';
-import { createServer } from './server.js';
+import { createServer, SERVER_VERSION } from './server.js';
 import { registerTools } from './tools.js';
+import { createSpecgenServer } from './specgen/server.js';
+import { createToolContext as createSpecgenContext } from './specgen/context.js';
 import {
   createV2Prober,
   restV2Base,
@@ -17,6 +19,18 @@ const subcommand = process.argv[2];
 const isWizardMode = WIZARD_SUBCOMMANDS.includes(subcommand);
 
 async function main(apiKey: string): Promise<void> {
+  // Opt-in to the spec-generated surface locally — the same tool set the
+  // hosted server serves (see specgen/DESIGN.md). This becomes the default
+  // (and the legacy surface below is deleted) at the next major release.
+  if (process.env.RUNPOD_MCP_SURFACE === 'specgen') {
+    const server = createSpecgenServer(
+      createSpecgenContext({ apiKey }),
+      SERVER_VERSION
+    );
+    await server.connect(new StdioServerTransport());
+    return;
+  }
+
   // `auto` mode (stdio only): probe v2 once at startup and pass the resolved
   // verdict to the tools. Explicit v1/v2 needs no probe.
   let v2Available: boolean | undefined;
