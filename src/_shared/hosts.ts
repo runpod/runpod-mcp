@@ -11,6 +11,12 @@ export function restV1Base(env: Env): string {
 export function restV2Base(env: Env): string {
   return env.RUNPOD_REST_V2_API_URL ?? 'https://api.runpod.io/v2';
 }
+// The env var the specgen SDK actually reads for its base URL (no /v2 —
+// the generated paths carry it). Watched by the wrong-environment guard
+// alongside the legacy spellings above.
+export function sdkBase(env: Env): string {
+  return env.RUNPOD_API_BASE_URL ?? 'https://api.runpod.io';
+}
 export function serverlessBase(env: Env): string {
   return env.RUNPOD_SERVERLESS_API_URL ?? 'https://api.runpod.ai/v2';
 }

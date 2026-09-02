@@ -138,17 +138,26 @@ Create a Serverless endpoint named my-endpoint with image
 runpod/test-output:0.0.1, GPU pool AMPERE_80, 0 min workers, 3 max workers.
 ```
 
-On the v2 API (the default), endpoints are image-based — pass an image and a GPU pool (a `pool` value from `list-gpu-types`), not a template.
+Endpoints are image-based — pass an image and a GPU pool (a `pool` value from `list-gpu-types`), not a template.
 
-See [`docs/configuration.md`](docs/configuration.md) for REST v1/v2 selection and the `templateId` migration note, private image pull (registry credentials vs ECR delegation), and large-output handling.
+See [`docs/configuration.md`](docs/configuration.md) for host overrides, private image pull (registry credentials vs ECR delegation), and large-output handling.
 
-## Spec-generated tool surface (hosted)
+## The tool surface
 
-The hosted deployment serves a tool surface generated from the v2 OpenAPI
-spec (49 generated + 17 curated tools) and publishes its task playbooks as
-MCP resources under `runpod://skills/`. See [specgen/README.md](specgen/README.md)
-for the architecture, regeneration workflow, and drift gates. The stdio/npm
-path continues to serve the hand-written surface below.
+Hosted and local serve the **same** surface: 66 tools generated from the v2
+OpenAPI spec (49 generated + 17 curated), plus the ten Runpod task playbooks
+served as MCP resources under `runpod://skills/`. New API endpoints become
+tools by regeneration, not by hand-writing code. Start with
+[specgen/DESIGN.md](specgen/DESIGN.md) for a progressive walkthrough, and
+[specgen/README.md](specgen/README.md) for the regeneration workflow and
+drift gates.
+
+Upgrading from 3.x: eight tools follow their spec operationIds (e.g.
+`create-container-registry-auth` → `create-registry`, `get-billing` →
+`list-billing`) and `start-pod`/`stop-pod`/`restart-pod` fold into
+`pod-action` with an `action` argument. The full old→new map is
+[`specgen/old-mcp-tools.yaml`](specgen/old-mcp-tools.yaml). The server is
+v2-only; `RUNPOD_REST_VERSION` and the v1 fallback are retired.
 
 ## Security
 

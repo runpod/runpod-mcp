@@ -10,6 +10,7 @@ import {
 import {
   restV1Base,
   restV2Base,
+  sdkBase,
   serverlessBase,
   authedGraphqlBase,
   type Env,
@@ -138,6 +139,7 @@ function credentialCheckMayBeWrongEnvironment(env = process.env): boolean {
   const restMoved =
     !sameHost(restV1Base(envWithoutEmpties), restV1Base({})) ||
     !sameHost(restV2Base(envWithoutEmpties), restV2Base({})) ||
+    !sameHost(sdkBase(envWithoutEmpties), sdkBase({})) ||
     !sameHost(serverlessBase(envWithoutEmpties), serverlessBase({}));
   const graphqlMoved = !sameHost(authGraphqlUrl(env), authGraphqlUrl({}));
   // Skip whenever REST and the auth-GraphQL host DISAGREE about whether they are
