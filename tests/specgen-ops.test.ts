@@ -76,3 +76,42 @@ test('the tracking fetch wrapper preserves Headers-instance auth headers', async
   );
   assert.match(seen[0].ua, /runpod-mcp-server\/test .*transport=stdio/);
 });
+
+test('SDK requests carry a deadline: a silent host becomes a 504 tool result, not a hang', async () => {
+  const { createToolContext } = await import('../src/specgen/context.js');
+  const { runTool } = await import('../src/specgen/tools/util.js');
+  const realFetch = globalThis.fetch;
+  // A host that accepts the request and never answers: resolve only when the
+  // request's signal aborts. Without a deadline this promise never settles —
+  // the exact leak PR #83 fixed on the old surface.
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const signal =
+      init?.signal ?? (input instanceof Request ? input.signal : undefined);
+    return new Promise((_, reject) => {
+      assert.ok(signal, 'SDK fetch must carry an AbortSignal');
+      signal.addEventListener('abort', () => reject(signal.reason), {
+        once: true,
+      });
+    });
+  }) as typeof fetch;
+  try {
+    const ctx = createToolContext({
+      apiKey: 'rpa_test',
+      tracking: { transport: 'stdio', serverVersion: 'test' },
+      sdkTimeoutMs: 50,
+    });
+    const started = Date.now();
+    const result = await runTool(async () => {
+      await ctx.sdk.GET('/v2/pods');
+      return { ok: true, status: 200, payload: {} };
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 504);
+    assert.ok(
+      Date.now() - started < 5_000,
+      'must fail by the deadline, not the platform reaper'
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

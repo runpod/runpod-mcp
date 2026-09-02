@@ -35,7 +35,17 @@ export interface ToolContextOptions {
     transport: 'stdio' | 'http';
     serverVersion: string;
   };
+  /** Test seam: deadline for one SDK (generated-tool) request. */
+  sdkTimeoutMs?: number;
 }
+
+// Deadline for one SDK request. The generated tools are plain CRUD calls —
+// nothing on that surface legitimately takes longer, and without a signal a
+// host that accepts the connection then goes silent parks the invocation
+// until the platform reaper (the leak PR #83 fixed on the old surface). The
+// long-hold paths (job waits, SSE streams) do NOT go through the SDK; their
+// clients carry their own bounded signals.
+const SDK_TIMEOUT_MS = 30_000;
 
 export function createToolContext(
   options: ToolContextOptions = {}
@@ -65,6 +75,31 @@ export function createToolContext(
     };
   }
 
+  // SDK-only fetch: fetchImpl plus the request deadline. openapi-fetch never
+  // sets a signal of its own, so the timeout is authoritative here. An
+  // explicit controller + ref'd timer rather than AbortSignal.timeout, whose
+  // unref'd timer does not keep the event loop alive — on an otherwise-idle
+  // loop the deadline never fires and the request hangs anyway.
+  const sdkTimeoutMs = options.sdkTimeoutMs ?? SDK_TIMEOUT_MS;
+  const sdkFetch: typeof fetch = async (input, init) => {
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () =>
+        controller.abort(
+          new DOMException(
+            `Runpod API request exceeded ${sdkTimeoutMs}ms`,
+            'TimeoutError'
+          )
+        ),
+      sdkTimeoutMs
+    );
+    try {
+      return await fetchImpl(input, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   let sdk: RunpodClient | undefined;
 
   return {
@@ -82,7 +117,7 @@ export function createToolContext(
             401
           );
         }
-        sdk = createRunpodClient({ apiKey, fetch: fetchImpl });
+        sdk = createRunpodClient({ apiKey, fetch: sdkFetch });
       }
       return sdk;
     },
