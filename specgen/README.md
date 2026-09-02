@@ -1,5 +1,7 @@
 # Spec-generated tool surface (specgen)
 
+> New here? Read [DESIGN.md](DESIGN.md) — a progressive walkthrough of the architecture, data flow, and update loop.
+
 This directory and `src/specgen/` hold the spec-driven tool architecture
 mounted on the hosted (HTTP) path: every v2 OpenAPI operation becomes an MCP
 tool by generation, plus a curated overlay for the planes the spec does not
