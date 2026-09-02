@@ -31,8 +31,8 @@
     "changeset:version": "changeset version",
     "changeset:publish": "changeset publish",
     "smoke:crud": "tsx scripts/smoke-crud.ts",
-    "generate:skills": "tsx scripts/generate-skills.ts",
-    "generate:tools": "tsx specgen/generator/generate-tools.ts"
+    "generate:skills": "tsx scripts/generate-skills.ts && prettier --write src/specgen/generated/skills.gen.ts",
+    "generate:tools": "tsx specgen/generator/generate-tools.ts && prettier --write src/specgen/generated/tools.gen.ts"
   },
   "exports": {
     "./package.json": "./package.json",
