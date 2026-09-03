@@ -69,6 +69,8 @@ claude mcp add --transport http runpod -s user https://mcp.getrunpod.io/
 
 An OAuth-capable client starts the "Sign in with Runpod" flow automatically on first connect: it opens a browser, you log in to the Runpod console and approve, and the server obtains a Runpod API key scoped to your session. Nothing is stored on disk.
 
+> **Which account does OAuth pick?** The key is minted for whichever account or team profile your browser's console session has selected when you approve. If you belong to multiple teams, switch to the right profile in the [console](https://console.runpod.io) first (or check afterwards — the resources the tools return are that profile's). To change it later, switch profiles in the console and re-authenticate from your MCP client.
+
 > Prefer your own API key over OAuth? Append `--header "Authorization: Bearer YOUR_API_KEY"` to the `claude mcp add` command (or add a `headers` block in the JSON). The server forwards that key to the Runpod API directly.
 
 ## Run locally with `npx`
