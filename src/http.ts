@@ -78,18 +78,12 @@ function writeUnauthorized(
 // repointable OAuth flash-auth var (RUNPOD_GRAPHQL_URL): repointing that one
 // must never redirect every caller's key to an arbitrary host. One resolver so
 // the checker and the environment guard below cannot disagree about defaults.
-function authGraphqlUrl(
-  env: NodeJS.ProcessEnv | Record<string, string | undefined>
-): string {
-  return authedGraphqlBase(env as Env);
-}
-
 // Shared across requests so the verdict cache helps on a warm instance. Uses the
 // global fetch (Node >= 18) — this runs before any MCP/tool wiring exists.
 export const defaultCredentialChecker: CredentialCheckerHandle =
   createCredentialChecker({
     fetch: (url, init) => fetch(url, init),
-    url: () => authGraphqlUrl(process.env),
+    url: () => authedGraphqlBase(process.env as Env),
   });
 
 const sameHost = (a: string, b: string) => normalizeUrl(a) === normalizeUrl(b);
@@ -131,8 +125,10 @@ function normalizeUrl(raw: string): string {
 // right now. Run `vercel env ls production` to settle it.
 function credentialCheckMayBeWrongEnvironment(env = process.env): boolean {
   // Normalised, not byte-exact: a trailing slash, host casing or an empty string
-  // is not a different environment. Empty is treated as unset, matching how the
-  // base URLs resolve.
+  // is not a different environment. Empty is treated as unset HERE, because the
+  // ??-based resolvers in _shared/hosts.ts do NOT fall through on '' — so every
+  // resolver below must read envWithoutEmpties, or an empty var on one side
+  // makes restMoved and graphqlMoved disagree and silently disables the gate.
   const envWithoutEmpties = Object.fromEntries(
     Object.entries(env).filter(([, v]) => v !== '')
   ) as Record<string, string | undefined>;
@@ -141,7 +137,10 @@ function credentialCheckMayBeWrongEnvironment(env = process.env): boolean {
     !sameHost(restV2Base(envWithoutEmpties), restV2Base({})) ||
     !sameHost(sdkBase(envWithoutEmpties), sdkBase({})) ||
     !sameHost(serverlessBase(envWithoutEmpties), serverlessBase({}));
-  const graphqlMoved = !sameHost(authGraphqlUrl(env), authGraphqlUrl({}));
+  const graphqlMoved = !sameHost(
+    authedGraphqlBase(envWithoutEmpties as Env),
+    authedGraphqlBase({})
+  );
   // Skip whenever REST and the auth-GraphQL host DISAGREE about whether they are
   // on the default (prod) environment — in EITHER direction. Validating a key
   // against an auth backend from a different environment than the tools use
