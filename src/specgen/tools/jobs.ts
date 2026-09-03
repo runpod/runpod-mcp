@@ -81,61 +81,83 @@ export function streamPollTimeoutMs(
   );
 }
 
-// Poll until the job reaches a terminal status, the budget runs out, or the
-// API fails MAX_CONSECUTIVE_STREAM_ERRORS times in a row. Exported so a test
-// can drive the loop through `poll` without a server around it.
-export async function collectJobStream(deps: {
+// One polling driver for both wait loops (/stream and /status): poll until a
+// terminal status, the budget runs out, or the API fails
+// MAX_CONSECUTIVE_STREAM_ERRORS times IN A ROW. Only consecutive failures end
+// the run, and the error reported at the end is one still happening at the
+// end. The callers differ only in how each poll's deadline derives from the
+// remaining budget, the cadence, and the advice attached to a non-terminal
+// exit.
+async function pollUntilTerminal(deps: {
   poll: (timeoutMs: number) => Promise<Record<string, unknown>>;
   budgetMs: number;
-  holdMs: number;
-  pollIntervalMs?: number;
-}): Promise<{ result: Record<string, unknown>; chunks: unknown[] }> {
-  const { poll, budgetMs, holdMs } = deps;
+  // Deadline for ONE poll, derived from the budget's remaining ms.
+  timeoutFor: (remainingMs: number) => number;
+  pollIntervalMs: number;
+  // Advice strings for the two non-terminal exits.
+  abortedNote: string;
+  timedOutNote: string;
+  // Chunk collection seam (/stream); called on every successful reply.
+  onReply?: (reply: Record<string, unknown>) => void;
+}): Promise<Record<string, unknown>> {
   const startedAt = Date.now();
   const elapsed = () => Date.now() - startedAt;
-  const chunks: unknown[] = [];
   let result: Record<string, unknown> = {};
   let consecutiveErrors = 0;
   let lastError: string | undefined;
 
   while (true) {
     try {
-      const reply = await poll(
-        streamPollTimeoutMs(budgetMs - elapsed(), holdMs)
-      );
-      // Only CONSECUTIVE failures end the run, and the error reported at the
-      // end is one that was still happening at the end.
+      const reply = await deps.poll(deps.timeoutFor(deps.budgetMs - elapsed()));
       consecutiveErrors = 0;
       lastError = undefined;
-      if (Array.isArray(reply.stream)) chunks.push(...reply.stream);
+      deps.onReply?.(reply);
       result = reply;
-      if (TERMINAL_STATUSES.has(reply.status as string)) break;
+      if (TERMINAL_STATUSES.has(reply.status as string)) return result;
     } catch (error) {
       consecutiveErrors++;
       lastError = error instanceof Error ? error.message : String(error);
       if (consecutiveErrors >= MAX_CONSECUTIVE_STREAM_ERRORS) {
-        result = {
+        return {
           ...result,
           error: `Polling aborted after ${MAX_CONSECUTIVE_STREAM_ERRORS} consecutive errors: ${lastError}`,
-          note: `Polling stopped after ${MAX_CONSECUTIVE_STREAM_ERRORS} consecutive errors with the job possibly still running. ${RESUME_ADVICE}`,
+          note: deps.abortedNote,
         };
-        break;
       }
     }
 
-    if (elapsed() > budgetMs) {
-      result = {
+    if (elapsed() > deps.budgetMs) {
+      return {
         ...result,
         pollingTimedOut: true,
-        note: `Polling stopped after ${formatBudget(budgetMs)} with the job possibly still running. ${RESUME_ADVICE}`,
+        note: deps.timedOutNote,
         ...(lastError ? { lastError } : {}),
       };
-      break;
     }
 
-    await sleep(deps.pollIntervalMs ?? STREAM_JOB_POLL_INTERVAL_MS);
+    await sleep(deps.pollIntervalMs);
   }
+}
 
+// Exported so a test can drive the loop through `poll` without a server.
+export async function collectJobStream(deps: {
+  poll: (timeoutMs: number) => Promise<Record<string, unknown>>;
+  budgetMs: number;
+  holdMs: number;
+  pollIntervalMs?: number;
+}): Promise<{ result: Record<string, unknown>; chunks: unknown[] }> {
+  const chunks: unknown[] = [];
+  const result = await pollUntilTerminal({
+    poll: deps.poll,
+    budgetMs: deps.budgetMs,
+    timeoutFor: (remainingMs) => streamPollTimeoutMs(remainingMs, deps.holdMs),
+    pollIntervalMs: deps.pollIntervalMs ?? STREAM_JOB_POLL_INTERVAL_MS,
+    abortedNote: `Polling stopped after ${MAX_CONSECUTIVE_STREAM_ERRORS} consecutive errors with the job possibly still running. ${RESUME_ADVICE}`,
+    timedOutNote: `Polling stopped after ${formatBudget(deps.budgetMs)} with the job possibly still running. ${RESUME_ADVICE}`,
+    onReply: (reply) => {
+      if (Array.isArray(reply.stream)) chunks.push(...reply.stream);
+    },
+  });
   return { result, chunks };
 }
 
@@ -148,50 +170,21 @@ export async function pollJobStatus(deps: {
   budgetMs: number;
   pollIntervalMs?: number;
 }): Promise<Record<string, unknown>> {
-  const { fetchStatus, budgetMs } = deps;
-  const startedAt = Date.now();
-  const elapsed = () => Date.now() - startedAt;
-  let result: Record<string, unknown> = {};
-  let consecutiveErrors = 0;
-  let lastError: string | undefined;
-
-  while (true) {
-    try {
-      // One /status call may not outlive the budget: unbounded, a hung socket
-      // holds the request past the hosted 60s reaper (the client default is
-      // 30s, which a poll started at 44s of a 45s budget would exceed).
-      result = await fetchStatus(
-        Math.max(budgetMs - elapsed(), MIN_STREAM_POLL_TIMEOUT_MS)
-      );
-      consecutiveErrors = 0;
-      lastError = undefined;
-      if (
-        TERMINAL_STATUSES.has((result as { status?: string }).status as string)
-      )
-        return result;
-    } catch (error) {
-      consecutiveErrors++;
-      lastError = error instanceof Error ? error.message : String(error);
-      if (consecutiveErrors >= MAX_CONSECUTIVE_STREAM_ERRORS) {
-        return {
-          ...result,
-          error: `Polling aborted after ${MAX_CONSECUTIVE_STREAM_ERRORS} consecutive errors: ${lastError}`,
-          note: 'Polling stopped after repeated errors with the job possibly still running. Call get-job-status again to keep checking.',
-        };
-      }
-    }
-
-    if (elapsed() > budgetMs) {
-      return {
-        ...result,
-        pollingTimedOut: true,
-        note: `Still not terminal after waiting ${formatBudget(budgetMs)} — a first-job cold start (image pull + model load) can take several minutes. Call get-job-status again (with wait) to keep blocking, or check back without waiting.`,
-        ...(lastError ? { lastError } : {}),
-      };
-    }
-
-    await sleep(deps.pollIntervalMs ?? STATUS_POLL_INTERVAL_MS);
-  }
+  return pollUntilTerminal({
+    poll: deps.fetchStatus,
+    budgetMs: deps.budgetMs,
+    // One /status call may not outlive the budget: unbounded, a hung socket
+    // holds the request past the hosted 60s reaper (the client default is
+    // 30s, which a poll started at 44s of a 45s budget would exceed) — but
+    // never below the floor, so the last poll of a nearly-spent budget can
+    // still answer.
+    timeoutFor: (remainingMs) =>
+      Math.max(remainingMs, MIN_STREAM_POLL_TIMEOUT_MS),
+    pollIntervalMs: deps.pollIntervalMs ?? STATUS_POLL_INTERVAL_MS,
+    abortedNote:
+      'Polling stopped after repeated errors with the job possibly still running. Call get-job-status again to keep checking.',
+    timedOutNote: `Still not terminal after waiting ${formatBudget(deps.budgetMs)} — a first-job cold start (image pull + model load) can take several minutes. Call get-job-status again (with wait) to keep blocking, or check back without waiting.`,
+  });
 }
 
 // A job stuck IN_QUEUE has two very different causes its status alone cannot
