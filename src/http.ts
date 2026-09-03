@@ -446,6 +446,22 @@ export async function handleMcpRequest(
               accountId,
             },
           }),
+      // ALP write tools: advertised only when this deployment can actually
+      // store submissions (the sink is configured). The ingest endpoint is
+      // this deployment's own /api/alp/submit — one write path, both
+      // transports (docs/agent-learning-protocol.md).
+      ...(process.env.ALP_SINK_URL && process.env.ALP_SINK_SECRET
+        ? {
+            alp: {
+              ingestUrl: `${getBaseUrl(req)}/api/alp/submit`,
+              transport: 'http' as const,
+              harness: sanitizeUaToken(
+                String(req.headers['user-agent'] ?? 'unknown')
+              ),
+              harnessSource: 'user_agent' as const,
+            },
+          }
+        : {}),
       // A tool call that 401s proves a cached "valid" verdict wrong before
       // its TTL — drop it so the next request re-checks and re-auths.
       onUnauthorized: () =>

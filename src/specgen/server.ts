@@ -26,6 +26,7 @@ import { runTool } from './tools/util.js';
 import { STATUS_WAIT_MAX_MS } from './tools/jobs.js';
 import { SERVER_NAME } from '../server.js';
 import { captureToolCall } from './analytics.js';
+import { createAlpTools, type AlpToolsOptions } from './tools/alp.js';
 import {
   callerId,
   logToolCall,
@@ -78,6 +79,11 @@ SKILLS — READ BEFORE ACTING. This server publishes its task playbooks as MCP r
 
 The tool schemas are generated from the RunPod v2 OpenAPI contract, served as a machine-readable document at https://api.runpod.io/v2/openapi.json — consult it for fields beyond the tool surface.`;
 
+// Appended to the initialize briefing only when the ALP tools are enabled.
+const ALP_INSTRUCTIONS = `
+
+CONTRIBUTE WHAT YOU LEARN. Three write-only tools feed Runpod's agent-learning pipeline: report_feedback (something misbehaved or surprised you), save_to_journal (a reusable lesson about using Runpod), ask_question (you were stuck and the tools/skills/docs had no answer). Use them at the moment the observation happens, not at the end. They store data for Runpod to review — nothing is returned or answered today, and ask_question in particular NEVER produces an answer, so never wait on it. Never include API keys or secrets in submissions.`;
+
 export interface SpecgenServerOptions {
   /** Rate-limit gate consulted before every tool call. Defaults to the no-op stub. */
   rateLimiter?: RateLimiter;
@@ -97,6 +103,10 @@ export interface SpecgenServerOptions {
    *  cached credential verdict so the NEXT request re-checks and can emit the
    *  HTTP 401 that makes OAuth clients re-authenticate. */
   onUnauthorized?: () => void;
+  /** ALP write tools (report_feedback / save_to_journal / ask_question).
+   *  Enablement follows configuration: when absent, the tools do not appear
+   *  in tools/list at all. See docs/agent-learning-protocol.md. */
+  alp?: AlpToolsOptions;
 }
 
 export function createSpecgenServer(
@@ -106,11 +116,19 @@ export function createSpecgenServer(
 ): Server {
   const rateLimiter = opts.rateLimiter ?? noopRateLimiter;
   const caller = callerId(ctx.apiKey);
+  // The served curated set: the static surface plus the config-gated ALP
+  // write tools. Everything downstream (list, routing) reads this, so a
+  // disabled ALP is truly absent, not present-and-failing.
+  const servedCuratedTools = opts.alp
+    ? [...curatedTools, ...createAlpTools(opts.alp)]
+    : curatedTools;
   const server = new Server(
     { name: SERVER_NAME, version: `${version} [specgen]` },
     {
       capabilities: { tools: {}, resources: {} },
-      instructions: SERVER_INSTRUCTIONS,
+      instructions: opts.alp
+        ? SERVER_INSTRUCTIONS + ALP_INSTRUCTIONS
+        : SERVER_INSTRUCTIONS,
     }
   );
 
@@ -119,13 +137,23 @@ export function createSpecgenServer(
   // (the hosted path already resolves identity from the inbound UA).
   server.oninitialized = () => {
     const clientInfo = server.getClientVersion();
-    if (clientInfo?.name)
+    if (clientInfo?.name) {
       ctx.setClientInfo?.(clientInfo.name, clientInfo.version);
+      // ALP submissions attribute the harness the same way the tracking UA
+      // does; the ALP tools read opts.alp at call time, so this late bind
+      // reaches them.
+      if (opts.alp) {
+        opts.alp.harness = clientInfo.version
+          ? `${clientInfo.name}/${clientInfo.version}`
+          : clientInfo.name;
+        opts.alp.harnessSource = 'client_info';
+      }
+    }
   };
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
-      ...curatedTools.map(({ name, description, inputSchema }) => ({
+      ...servedCuratedTools.map(({ name, description, inputSchema }) => ({
         name,
         description,
         inputSchema,
@@ -207,7 +235,7 @@ export function createSpecgenServer(
     }
 
     const startedAt = Date.now();
-    const curated = curatedTools.find(
+    const curated = servedCuratedTools.find(
       (tool) => tool.name === request.params.name
     );
     // runTool here as well as inside the curated handlers: it maps an HttpError
