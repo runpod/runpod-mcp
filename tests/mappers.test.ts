@@ -50,6 +50,34 @@ describe('mapPodCreateToV2', () => {
     );
   });
 
+  it('networkVolumeId/volumeMountPath → mounts.network[{volumeId,path}]', () => {
+    const out = mapPodCreateToV2({
+      networkVolumeId: 'nv_1',
+      volumeMountPath: '/workspace',
+    });
+    assert.deepEqual(out.mounts, {
+      network: [{ volumeId: 'nv_1', path: '/workspace' }],
+    });
+  });
+
+  it('networkVolumeId without volumeMountPath → NO mounts', () => {
+    assert.equal(
+      'mounts' in mapPodCreateToV2({ networkVolumeId: 'nv_1' }),
+      false
+    );
+  });
+
+  it('an explicit network mount replaces the persistent mapper output', () => {
+    const out = mapPodCreateToV2({
+      volumeInGb: 30,
+      networkVolumeId: 'nv_1',
+      volumeMountPath: '/workspace',
+    });
+    assert.deepEqual(out.mounts, {
+      network: [{ volumeId: 'nv_1', path: '/workspace' }],
+    });
+  });
+
   it('gpuTypeIds[] → gpu.id (array→scalar) + gpuCount → gpu.count', () => {
     const out = mapPodCreateToV2({ gpuTypeIds: ['A', 'B'], gpuCount: 4 });
     assert.deepEqual(out.gpu, { id: 'A', count: 4 });

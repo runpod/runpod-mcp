@@ -29,6 +29,7 @@ interface V1PodParams {
   containerDiskInGb?: number;
   volumeInGb?: number;
   volumeMountPath?: string;
+  networkVolumeId?: string;
   ports?: string[];
   env?: Record<string, string>;
   dataCenterIds?: string[];
@@ -101,8 +102,30 @@ function gpuConfigToV2(
 }
 
 export function mapPodCreateToV2(params: V1PodParams): Record<string, unknown> {
+  const container = containerConfigToV2(params);
+
+  // An existing Network Volume uses the v2 network-mount shape. Keep this
+  // create-only: templates support persistent mounts only, and pod updates have
+  // stricter mount-kind/volume-id immutability rules. The create-pod handler
+  // rejects a missing path or a simultaneous volumeInGb before this mapper runs.
+  // Assigning the whole mounts object also makes an explicit Network Volume
+  // replace a persistent mount inherited from a template during the later merge.
+  if (
+    params.networkVolumeId !== undefined &&
+    params.volumeMountPath !== undefined
+  ) {
+    container.mounts = {
+      network: [
+        {
+          volumeId: params.networkVolumeId,
+          path: params.volumeMountPath,
+        },
+      ],
+    };
+  }
+
   return compact({
-    ...containerConfigToV2(params),
+    ...container,
     name: params.name,
     // Private-image registry credential (v2 ContainerConfig `registry`). When
     // deploying from a template, this spreads over the template's registry, so

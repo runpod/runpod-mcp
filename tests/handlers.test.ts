@@ -772,6 +772,59 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
     });
   });
 
+  it('create-pod v2 maps an existing Network Volume to mounts.network', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      await handlers.get('create-pod')!({
+        name: 'p',
+        imageName: 'i',
+        gpuTypeIds: ['A100'],
+        networkVolumeId: 'nv_1',
+        volumeMountPath: '/workspace',
+      });
+      const body = JSON.parse(outbound[0].body!);
+      assert.deepEqual(body.mounts, {
+        network: [{ volumeId: 'nv_1', path: '/workspace' }],
+      });
+      assert.equal('networkVolumeId' in body, false);
+      assert.equal('volumeMountPath' in body, false);
+    });
+  });
+
+  it('create-pod rejects networkVolumeId without volumeMountPath before any request', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      const out = (await handlers.get('create-pod')!({
+        name: 'p',
+        imageName: 'i',
+        gpuTypeIds: ['A100'],
+        networkVolumeId: 'nv_1',
+      })) as { content: Array<{ text: string }> };
+      assert.equal(outbound.length, 0);
+      const payload = JSON.parse(out.content[0].text);
+      assert.equal(payload.status, 400);
+      assert.match(payload.error, /requires volumeMountPath/);
+    });
+  });
+
+  it('create-pod rejects simultaneous persistent and Network Volumes before any request', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({ jsonBody: {} });
+      const out = (await handlers.get('create-pod')!({
+        name: 'p',
+        imageName: 'i',
+        gpuTypeIds: ['A100'],
+        volumeInGb: 40,
+        networkVolumeId: 'nv_1',
+        volumeMountPath: '/workspace',
+      })) as { content: Array<{ text: string }> };
+      assert.equal(outbound.length, 0);
+      const payload = JSON.parse(out.content[0].text);
+      assert.equal(payload.status, 400);
+      assert.match(payload.error, /not both/);
+    });
+  });
+
   it('create-pod v2 CPU pod (computeType:"CPU") transparently routes to v1 + flags it', async () => {
     await withV2(async () => {
       const { handlers, outbound } = harness({ jsonBody: { id: 'pod_cpu' } });
@@ -984,6 +1037,30 @@ describe('pod routing under RUNPOD_REST_VERSION=v2', () => {
       assert.equal(body.disk, 100); // caller disk wins
       assert.equal(body.registry, 'cra_override'); // caller registry overrides template's cra_9
       assert.equal(body.args, 'python -u handler.py'); // untouched template field stays
+    });
+  });
+
+  it('create-pod v2 Network Volume replaces a persistent mount inherited from a template', async () => {
+    await withV2(async () => {
+      const { handlers, outbound } = harness({
+        jsonBodies: [
+          {
+            ...TEMPLATE_JSON,
+            mounts: { persistent: { size: 40, path: '/template-data' } },
+          },
+          { id: 'pod_new' },
+        ],
+      });
+      await handlers.get('create-pod')!({
+        templateId: 'tpl_1',
+        gpuTypeIds: ['A100'],
+        networkVolumeId: 'nv_1',
+        volumeMountPath: '/workspace',
+      });
+      const body = JSON.parse(outbound[1].body!);
+      assert.deepEqual(body.mounts, {
+        network: [{ volumeId: 'nv_1', path: '/workspace' }],
+      });
     });
   });
 

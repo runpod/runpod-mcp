@@ -141,7 +141,7 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
   // Create Pod
   server.tool(
     'create-pod',
-    'Create a new GPU/CPU pod on Runpod. Pass gpuTypeIds for a GPU pod, or computeType:"CPU" for a CPU pod (CPU pods are served by the v1 API for now). Pass either imageName or templateId (templateId deploys from an existing template — its name, image, start command, ports, env, disk, volume, and registry credential are used as defaults, and any field you also pass explicitly replaces the template value for that field, e.g. passing env replaces the whole env set rather than merging; pass containerRegistryAuthId to override or supply a private-image credential, or an empty string to deploy with none). For full SSH access (including SCP/SFTP/rsync), pass sshPublicKey — it sets the PUBLIC_KEY env var and exposes 22/tcp, which official Runpod images turn into a running sshd with the key authorized. If the user specifies neither an image nor a template, recommend the "Runpod Pytorch 2.8.0" image (runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404) as the default — it has the most up-to-date CUDA and PyTorch versions.',
+    'Create a new GPU/CPU pod on Runpod. Pass gpuTypeIds for a GPU pod, or computeType:"CPU" for a CPU pod (CPU pods are served by the v1 API for now). Pass either imageName or templateId (templateId deploys from an existing template — its name, image, start command, ports, env, disk, volume, and registry credential are used as defaults, and any field you also pass explicitly replaces the template value for that field, e.g. passing env replaces the whole env set rather than merging; pass containerRegistryAuthId to override or supply a private-image credential, or an empty string to deploy with none). To attach an existing Network Volume, pass networkVolumeId together with volumeMountPath; do not also pass volumeInGb. An explicit Network Volume replaces a persistent mount inherited from a template. For full SSH access (including SCP/SFTP/rsync), pass sshPublicKey — it sets the PUBLIC_KEY env var and exposes 22/tcp, which official Runpod images turn into a running sshd with the key authorized. If the user specifies neither an image nor a template, recommend the "Runpod Pytorch 2.8.0" image (runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404) as the default — it has the most up-to-date CUDA and PyTorch versions.',
     {
       name: z
         .string()
@@ -191,6 +191,13 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
         .string()
         .optional()
         .describe('Path to mount the volume'),
+      networkVolumeId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          'ID of an existing Network Volume to attach. Requires volumeMountPath and cannot be combined with volumeInGb. On a template deploy, this replaces an inherited persistent mount.'
+        ),
       ports: z
         .array(z.string())
         .optional()
@@ -221,6 +228,25 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
       // the params that become the request body (v1 mapCreate is identity, so it
       // would leak through) and fold it into the FINAL body via applySshPublicKey.
       const { sshPublicKey, ...podParams } = params;
+
+      // A pod may have a newly allocated persistent mount OR an existing
+      // Network Volume, never both. Network mounts also have no default path in
+      // v2, so fail before any template fetch or pod create request.
+      if (params.networkVolumeId !== undefined) {
+        if (params.volumeInGb !== undefined) {
+          return jsonReply({
+            error:
+              'Pass either volumeInGb for a new persistent volume or networkVolumeId for an existing Network Volume, not both.',
+            status: 400,
+          });
+        }
+        if (!params.volumeMountPath) {
+          return jsonReply({
+            error: 'networkVolumeId requires volumeMountPath.',
+            status: 400,
+          });
+        }
+      }
 
       // Validate and normalize BEFORE any pod exists. Refuses a PRIVATE key
       // before it can reach a pod's env (and every process listing inside the
