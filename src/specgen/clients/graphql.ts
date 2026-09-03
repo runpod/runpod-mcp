@@ -11,6 +11,7 @@
 // Separate env vars despite the identical default, so the credential-free
 // path can be pointed at a stub without the key following it.
 
+import { boundedFetch } from './bounded-fetch.js';
 import { HttpError, missingKeyError } from './http-error.js';
 
 export const DEFAULT_GRAPHQL_URL = 'https://api.runpod.io/graphql';
@@ -48,14 +49,13 @@ export function createGraphqlClient(
     variables?: Record<string, unknown>,
     bearer?: string
   ): Promise<T> {
-    const response = await fetchImpl(url, {
+    const response = await boundedFetch(fetchImpl, DEFAULT_TIMEOUT_MS)(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
       },
       body: JSON.stringify(variables ? { query, variables } : { query }),
-      signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
     });
 
     if (!response.ok) {

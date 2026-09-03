@@ -36,8 +36,8 @@ export async function runTool(
         payload: { error: error.message, detail: error.payload },
       };
     }
-    // A request deadline firing (AbortSignal.timeout on the SDK fetch, or a
-    // client's own bounded signal) must come back as a retryable tool error,
+    // A request deadline firing (boundedFetch on the SDK/GraphQL/runtime paths,
+    // or the SSE reader's own controller) must come back as a retryable tool error,
     // not a protocol-level crash. undici surfaces it either as the abort
     // reason itself (TimeoutError) or wrapped as `fetch failed` with a cause.
     if (isTimeout(error)) {

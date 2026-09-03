@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { createRunpodClient, type RunpodClient } from '@runpod/sdk';
 import { buildTrackingHeaders } from '../_shared/tracking.js';
 import { createGraphqlClient, type GraphqlClient } from './clients/graphql.js';
+import { boundedFetch } from './clients/bounded-fetch.js';
 import { missingKeyError } from './clients/http-error.js';
 import { createRuntimeClient, type RuntimeClient } from './clients/runtime.js';
 import { createSseReader, type SseReader } from './clients/sse.js';
@@ -76,29 +77,11 @@ export function createToolContext(
   }
 
   // SDK-only fetch: fetchImpl plus the request deadline. openapi-fetch never
-  // sets a signal of its own, so the timeout is authoritative here. An
-  // explicit controller + ref'd timer rather than AbortSignal.timeout, whose
-  // unref'd timer does not keep the event loop alive — on an otherwise-idle
-  // loop the deadline never fires and the request hangs anyway.
-  const sdkTimeoutMs = options.sdkTimeoutMs ?? SDK_TIMEOUT_MS;
-  const sdkFetch: typeof fetch = async (input, init) => {
-    const controller = new AbortController();
-    const timer = setTimeout(
-      () =>
-        controller.abort(
-          new DOMException(
-            `Runpod API request exceeded ${sdkTimeoutMs}ms`,
-            'TimeoutError'
-          )
-        ),
-      sdkTimeoutMs
-    );
-    try {
-      return await fetchImpl(input, { ...init, signal: controller.signal });
-    } finally {
-      clearTimeout(timer);
-    }
-  };
+  // sets a signal of its own, so the timeout is authoritative here.
+  const sdkFetch = boundedFetch(
+    fetchImpl,
+    options.sdkTimeoutMs ?? SDK_TIMEOUT_MS
+  );
 
   let sdk: RunpodClient | undefined;
 

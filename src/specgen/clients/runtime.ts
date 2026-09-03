@@ -3,6 +3,7 @@
 // management spec the generated tools cover — RunPod publishes no OpenAPI
 // document for it, so the tools that use it are curated (src/specgen/tools/jobs.ts).
 
+import { boundedFetch } from './bounded-fetch.js';
 import { HttpError, missingKeyError } from './http-error.js';
 import { withRateLimitHint } from '../../_shared/rate-limit.js';
 
@@ -39,14 +40,16 @@ export function createRuntimeClient(
 
   return async (endpointId, path, opts = {}) => {
     if (!apiKey) throw missingKeyError();
-    const response = await fetchImpl(`${baseUrl}/${endpointId}${path}`, {
+    const response = await boundedFetch(
+      fetchImpl,
+      opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
+    )(`${baseUrl}/${endpointId}${path}`, {
       method: opts.method ?? 'GET',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
       ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
-      signal: AbortSignal.timeout(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
     });
 
     const text = await response.text();
