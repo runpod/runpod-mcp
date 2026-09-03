@@ -251,9 +251,10 @@ export const listHubRepos: CuratedTool = {
       let listings = data.listings ?? [];
 
       if (args.type) {
-        listings = listings.filter(
-          (l) => (l.type ?? '').toUpperCase() === args.type
-        );
+        // Normalize the arg too: the server never validates inputSchema, so a
+        // lowercase "serverless" must match, not return a silent empty page.
+        const term = String(args.type).toUpperCase();
+        listings = listings.filter((l) => (l.type ?? '').toUpperCase() === term);
       }
       if (args.category) {
         const term = String(args.category).toLowerCase();
