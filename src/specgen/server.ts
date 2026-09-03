@@ -25,6 +25,7 @@ import { listPublicEndpoints } from './tools/public-endpoints.js';
 import { runTool } from './tools/util.js';
 import { STATUS_WAIT_MAX_MS } from './tools/jobs.js';
 import { SERVER_NAME } from '../server.js';
+import { captureToolCall } from './analytics.js';
 import {
   callerId,
   logToolCall,
@@ -80,6 +81,15 @@ The tool schemas are generated from the RunPod v2 OpenAPI contract, served as a 
 export interface SpecgenServerOptions {
   /** Rate-limit gate consulted before every tool call. Defaults to the no-op stub. */
   rateLimiter?: RateLimiter;
+  /** Anonymous per-tool-call analytics (hosted path only — stdio never sets
+   *  this, and captureToolCall itself is a no-op without POSTHOG_API_KEY).
+   *  See src/specgen/analytics.ts for the privacy contract. */
+  analytics?: {
+    transport: 'stdio' | 'http';
+    serverVersion: string;
+    /** Sanitized client token (never a raw header). */
+    clientName?: string;
+  };
   /** Called when a tool result is a 401: the hosted path uses it to drop the
    *  cached credential verdict so the NEXT request re-checks and can emit the
    *  HTTP 401 that makes OAuth clients re-authenticate. */
@@ -204,6 +214,15 @@ export function createSpecgenServer(
       status: result.status,
       durationMs: Date.now() - startedAt,
     });
+    if (opts.analytics) {
+      captureToolCall(ctx.apiKey, {
+        tool: request.params.name,
+        ok: result.ok,
+        status: result.status,
+        durationMs: Date.now() - startedAt,
+        ...opts.analytics,
+      });
+    }
     // A 401 from the API proves a cached "valid" credential verdict wrong
     // before its TTL — let the shell drop it.
     if (!result.ok && result.status === 401) opts.onUnauthorized?.();

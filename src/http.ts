@@ -2,6 +2,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { createSpecgenServer } from './specgen/server.js';
 import { createToolContext as createSpecgenContext } from './specgen/context.js';
 import { SERVER_VERSION } from './server.js';
+import { sanitizeUaToken } from './_shared/tracking.js';
 import {
   createCredentialChecker,
   type CredentialChecker,
@@ -27,6 +28,16 @@ function extractBearerToken(req: IncomingMessage): string | null {
   const parts = authHeader.split(' ');
   if (parts.length !== 2 || parts[0].toLowerCase() !== 'bearer') return null;
   return parts[1];
+}
+
+// Per-request analytics opt-out: any client can send
+// `X-Runpod-Analytics: off` (or 0/false) and no usage event is captured for
+// its calls. Checked case-insensitively; absence means opted in (the capture
+// itself is still a no-op unless the deployment sets POSTHOG_API_KEY).
+function analyticsOptedOut(req: IncomingMessage): boolean {
+  const raw = req.headers['x-runpod-analytics'];
+  const value = (Array.isArray(raw) ? raw[0] : raw)?.trim().toLowerCase();
+  return value === 'off' || value === '0' || value === 'false';
 }
 
 // Structural request type so the Vercel adapter (api/index.ts) can share this
@@ -415,6 +426,20 @@ export async function handleMcpRequest(
     }),
     opts.serverVersion ?? SERVER_VERSION,
     {
+      // Anonymous usage analytics: hosted-only, no-op unless POSTHOG_API_KEY
+      // is set on the deployment, and any client can opt out per request
+      // with the X-Runpod-Analytics: off header.
+      ...(analyticsOptedOut(req)
+        ? {}
+        : {
+            analytics: {
+              transport: 'http' as const,
+              serverVersion: opts.serverVersion ?? SERVER_VERSION,
+              clientName: sanitizeUaToken(
+                String(req.headers['user-agent'] ?? 'unknown')
+              ),
+            },
+          }),
       // A tool call that 401s proves a cached "valid" verdict wrong before
       // its TTL — drop it so the next request re-checks and re-auths.
       onUnauthorized: () =>

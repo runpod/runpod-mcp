@@ -73,6 +73,10 @@ An OAuth-capable client starts the "Sign in with Runpod" flow automatically on f
 
 > Prefer your own API key over OAuth? Append `--header "Authorization: Bearer YOUR_API_KEY"` to the `claude mcp add` command (or add a `headers` block in the JSON). The server forwards that key to the Runpod API directly.
 
+### Usage analytics
+
+The hosted server records one anonymous event per tool call (tool name, status, duration, transport — never your API key, arguments, or any resource data; your identity is an irreversible salted hash). To opt out, send the header `X-Runpod-Analytics: off` — e.g. append `--header "X-Runpod-Analytics: off"` to the `claude mcp add` command. Running locally, nothing is ever sent.
+
 ## Run locally with `npx`
 
 Run the server as a local `stdio` process with your own API key:
@@ -138,8 +142,8 @@ See [`docs/configuration.md`](docs/configuration.md) for host overrides, private
 
 ## The tool surface
 
-Hosted and local serve the **same** surface: 66 tools generated from the v2
-OpenAPI spec (49 generated + 17 curated), plus the ten Runpod task playbooks
+Hosted and local serve the **same** surface: 68 tools generated from the v2
+OpenAPI spec (51 generated + 17 curated), plus the ten Runpod task playbooks
 served as MCP resources under `runpod://skills/`. New API endpoints become
 tools by regeneration, not by hand-writing code. Start with
 [specgen/DESIGN.md](specgen/DESIGN.md) for a progressive walkthrough, and
