@@ -1,7 +1,7 @@
 {
   "name": "@runpod/sdk",
   "version": "0.1.0",
-  "description": "TypeScript SDK for the RunPod v2 REST API, generated from the OpenAPI spec",
+  "description": "TypeScript SDK for the Runpod v2 REST API, generated from the OpenAPI spec",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.cjs",

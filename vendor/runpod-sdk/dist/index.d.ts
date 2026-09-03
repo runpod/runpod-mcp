@@ -4683,7 +4683,7 @@ interface RetryOptions {
     sleep?: (ms: number) => Promise<void>;
 }
 declare function parseRetryAfter(header: string | null): number | undefined;
-/** Wraps a fetch implementation with the RunPod retry policy. */
+/** Wraps a fetch implementation with the Runpod retry policy. */
 declare function createRetryFetch(options?: RetryOptions): typeof fetch;
 
 declare const DEFAULT_BASE_URL = "https://api.runpod.io";
@@ -4699,7 +4699,7 @@ interface RunpodClientOptions {
 }
 type RunpodClient = Client<paths>;
 /**
- * Creates a typed RunPod API client with the shared retry policy wired in.
+ * Creates a typed Runpod API client with the shared retry policy wired in.
  *
  * The API key comes from `options.apiKey` or `RUNPOD_API_KEY`; without either,
  * this throws. A blank `baseUrl` or `RUNPOD_API_BASE_URL` is treated as unset
