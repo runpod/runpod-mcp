@@ -115,3 +115,15 @@ test('SDK requests carry a deadline: a silent host becomes a 504 tool result, no
     globalThis.fetch = realFetch;
   }
 });
+
+test('a header-derived 429 hint is not clobbered by the generic status hint', async () => {
+  const { withRateLimitHint } = await import('../src/_shared/rate-limit.js');
+  const headers = new Headers({ 'retry-after': '1724' });
+  const enriched = withRateLimitHint({ error: 'rate limit exceeded' }, headers) as {
+    hint?: string;
+  };
+  assert.match(enriched.hint ?? '', /1724s/);
+  // The server-side merge must keep it (payload.hint ?? errorHint(status)).
+  const merged = { ...enriched, hint: enriched.hint ?? 'generic' };
+  assert.match(merged.hint, /1724s/);
+});

@@ -351,3 +351,22 @@ export function rateLimitHint(
   const wait = `wait ${hedge}${humanWait(waitS)} before retrying, and pace bulk operations`;
   return `rate limited — ${namedClause ? `${namedClause}; ` : ''}${wait}`;
 }
+
+// The one 429-enrichment used by both the generated-tool dispatcher and the
+// runtime client: spread the upstream error payload and attach the concrete
+// wait instruction derived from the response headers. Kept here so a change
+// to hint precedence lands in every consumer at once.
+export function withRateLimitHint(
+  payload: unknown,
+  headers: { get(name: string): string | null }
+): unknown {
+  return typeof payload === 'object' && payload !== null
+    ? {
+        ...(payload as Record<string, unknown>),
+        hint: rateLimitHint(
+          headers.get('ratelimit'),
+          headers.get('retry-after')
+        ),
+      }
+    : payload;
+}

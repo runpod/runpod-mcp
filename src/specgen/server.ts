@@ -209,14 +209,19 @@ export function createSpecgenServer(
     if (!result.ok && result.status === 401) opts.onUnauthorized?.();
 
     // On errors, attach a recovery hint by status class — the bare-client
-    // (no-skills) path self-corrects from these instead of dead-ending.
+    // (no-skills) path self-corrects from these instead of dead-ending. A hint
+    // already on the payload wins: dispatch/runtime derive precise 429 wait
+    // instructions from the response headers, and the generic "pause briefly"
+    // text must not clobber them.
     const payload =
       !result.ok &&
       typeof result.payload === 'object' &&
       result.payload !== null
         ? {
             ...(result.payload as Record<string, unknown>),
-            hint: errorHint(result.status),
+            hint:
+              (result.payload as Record<string, unknown>).hint ??
+              errorHint(result.status),
           }
         : result.payload;
     return {

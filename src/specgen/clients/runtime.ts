@@ -4,7 +4,7 @@
 // document for it, so the tools that use it are curated (src/tools/jobs.ts).
 
 import { HttpError } from './http-error.js';
-import { rateLimitHint } from '../../_shared/rate-limit.js';
+import { withRateLimitHint } from '../../_shared/rate-limit.js';
 
 export const DEFAULT_SERVERLESS_BASE_URL = 'https://api.runpod.ai/v2';
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -64,16 +64,8 @@ export function createRuntimeClient(
     if (!response.ok) {
       // 429: turn the RateLimit/Retry-After headers into a wait instruction.
       const detail =
-        response.status === 429 &&
-        typeof payload === 'object' &&
-        payload !== null
-          ? {
-              ...(payload as Record<string, unknown>),
-              hint: rateLimitHint(
-                response.headers.get('ratelimit'),
-                response.headers.get('retry-after')
-              ),
-            }
+        response.status === 429
+          ? withRateLimitHint(payload, response.headers)
           : payload;
       throw new HttpError(
         `Runpod runtime API error (${response.status})`,
