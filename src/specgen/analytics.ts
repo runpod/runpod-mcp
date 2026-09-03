@@ -77,7 +77,7 @@ export function captureToolCall(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       api_key: posthogKey,
-      event: 'mcp_tool_call',
+      event: 'runpod_mcp_tool_call',
       distinct_id: analyticsCallerId(apiKey, event.accountId),
       timestamp: new Date().toISOString(),
       properties: {

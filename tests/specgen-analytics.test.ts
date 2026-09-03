@@ -50,7 +50,7 @@ test('the captured payload never contains the API key, and the id is a stable HM
     distinct_id: string;
     properties: Record<string, unknown>;
   };
-  assert.equal(parsed.event, 'mcp_tool_call');
+  assert.equal(parsed.event, 'runpod_mcp_tool_call');
   assert.equal(parsed.distinct_id, analyticsCallerId('rpa_SECRETKEY'));
   assert.match(parsed.distinct_id, /^k:[0-9a-f]{16}$/);
   assert.equal(parsed.properties.$process_person_profile, false);
