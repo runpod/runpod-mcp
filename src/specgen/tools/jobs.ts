@@ -202,13 +202,53 @@ interface WorkerSummary {
   unhealthy?: number;
 }
 
+// Cost controls ported from the official server (runpod/runpod-mcp): a stuck
+// job is polled repeatedly against the SAME endpoint, so a short TTL cache
+// makes the extra round trip effectively free across a poll loop, and a
+// dedicated timeout stops a slow /workers call from eating into the caller's
+// budget. Together these are what make diagnosing on every IN_QUEUE — v1's
+// behavior — affordable on the hosted path.
+const DIAGNOSIS_TTL_MS = 15_000;
+const MAX_DIAGNOSIS_ENTRIES = 500;
+export const QUEUED_DIAGNOSIS_TIMEOUT_MS = 5_000;
+
+interface CachedDiagnosis {
+  value: { workerHealth: WorkerSummary; hint: string };
+  expiresAt: number;
+}
+const diagnosisCache = new Map<string, CachedDiagnosis>();
+
 async function diagnoseQueuedJob(
   ctx: ToolContext,
   endpointId: string
 ): Promise<{ workerHealth: WorkerSummary; hint: string } | null> {
+  const cached = diagnosisCache.get(endpointId);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  diagnosisCache.delete(endpointId);
+
+  const remember = (value: { workerHealth: WorkerSummary; hint: string }) => {
+    if (diagnosisCache.size >= MAX_DIAGNOSIS_ENTRIES) {
+      const oldest = diagnosisCache.keys().next().value;
+      if (oldest !== undefined) diagnosisCache.delete(oldest);
+    }
+    diagnosisCache.set(endpointId, {
+      value,
+      expiresAt: Date.now() + DIAGNOSIS_TTL_MS,
+    });
+    return value;
+  };
+
+  // Explicit controller + ref'd timer, not AbortSignal.timeout: that timer is
+  // unref'd and never fires on an otherwise idle loop (see bounded-fetch.ts).
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(),
+    QUEUED_DIAGNOSIS_TIMEOUT_MS
+  );
   try {
     const { data, error } = await ctx.sdk.GET('/v2/serverless/{id}/workers', {
       params: { path: { id: endpointId } },
+      signal: controller.signal,
     });
     if (error !== undefined || !data) return null;
     const summary = (data as { summary?: WorkerSummary }).summary;
@@ -222,32 +262,34 @@ async function diagnoseQueuedJob(
         .filter((w) => w.status === 'UNHEALTHY')
         .map((w) => w.id)
         .join(', ');
-      return {
+      return remember({
         workerHealth: summary,
         hint: `${summary.unhealthy} of ${summary.total} worker(s) on this endpoint are UNHEALTHY — the container is likely crash-looping (repeated starts that exit before the handler runs). The job can stay IN_QUEUE indefinitely; this is a worker failure, NOT a capacity shortage. Inspect the logs with stream-worker-logs${badIds ? ` (workerId: ${badIds})` : ''}.`,
-      };
+      });
     }
     if ((summary.total ?? 0) === 0) {
-      return {
+      return remember({
         workerHealth: summary,
         hint: 'No workers are scheduled for this endpoint yet — it may simply be scaling up from zero (normal for the first seconds of a cold start), or it is waiting for GPU capacity / its GPU-CUDA constraints exclude the currently-available hosts. If this persists, check availability with get-capacity or widen the GPU/CUDA settings.',
-      };
+      });
     }
     if ((summary.throttled ?? 0) > 0 && (summary.running ?? 0) === 0) {
-      return {
+      return remember({
         workerHealth: summary,
         hint: 'Workers exist but are throttled — the hosts are at capacity right now; the job should start when capacity frees up.',
-      };
+      });
     }
     if ((summary.initializing ?? 0) > 0) {
-      return {
+      return remember({
         workerHealth: summary,
         hint: 'A worker is initializing — likely a cold start (image pull / model load); the job should start soon.',
-      };
+      });
     }
-    return { workerHealth: summary, hint: '' };
+    return remember({ workerHealth: summary, hint: '' });
   } catch {
     return null; // diagnosis is best-effort — never break the status call
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -455,10 +497,7 @@ export const getJobStatus: CuratedTool = {
       if (
         result &&
         typeof result === 'object' &&
-        (result as { status?: string }).status === 'IN_QUEUE' &&
-        // The diagnosis is another upstream round trip; once the wait budget
-        // is spent there is no time left to pay for it on the hosted path.
-        !(result as { pollingTimedOut?: boolean }).pollingTimedOut
+        (result as { status?: string }).status === 'IN_QUEUE'
       ) {
         const diagnosis = await diagnoseQueuedJob(ctx, endpointId);
         if (diagnosis) {
@@ -562,7 +601,7 @@ export const retryJob: CuratedTool = {
 export const endpointHealth: CuratedTool = {
   name: 'endpoint-health',
   description:
-    'Get the health and operational status of a Serverless endpoint, including worker counts and job statistics. Use this when jobs are stuck IN_QUEUE: unhealthy workers mean a crash-looping container (a worker failure — inspect with stream-worker-logs), while zero workers means the endpoint is waiting for GPU capacity.',
+    'Get the endpoint-level health rollup for a Serverless endpoint: worker counts by state plus job queue statistics. This is the runtime plane\'s own /health view and it can lag or disagree with the per-worker truth — when a job is stuck IN_QUEUE, treat list-endpoint-workers as the authority on whether a worker is UNHEALTHY (crash-looping container; read it with stream-worker-logs), and note that get-job-status already attaches that worker summary and a hint on every IN_QUEUE result. Zero workers here means the endpoint is waiting for GPU capacity.',
   inputSchema: {
     type: 'object',
     properties: {

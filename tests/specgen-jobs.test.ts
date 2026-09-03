@@ -10,6 +10,7 @@ import {
   STREAM_BUDGET_MS,
   HTTP_LONG_POLL_BUDGET_MS,
   HOSTED,
+  getJobStatus,
 } from '../src/specgen/tools/jobs.js';
 
 test('hosted budgets stay under the 60s gateway deadline', () => {
@@ -120,4 +121,55 @@ test('the hosted budget clears vercel.json maxDuration with slack', () => {
       maxDuration * 1000,
     `HTTP_LONG_POLL_BUDGET_MS (${HTTP_LONG_POLL_BUDGET_MS}) leaves no room under maxDuration (${maxDuration}s)`
   );
+});
+
+// Regression: the crash-loop diagnosis must survive a spent wait budget.
+// v1 (runpod/runpod-mcp) had no `wait` on get-job-status, so it attached the
+// worker summary on EVERY IN_QUEUE. v2 added server-side blocking and, to
+// protect the hosted deadline, skipped the diagnosis whenever pollingTimedOut
+// was set — which is exactly what a `wait` that rides out a cold start
+// produces, so the hint became unreachable on the path the tool recommends.
+// A TTL cache (ported from v1) makes the extra round trip affordable instead.
+test('get-job-status attaches workerHealth even when the wait budget is spent', async () => {
+  let workerCalls = 0;
+  const ctx = {
+    runtime: async () => ({ status: 'IN_QUEUE' }),
+    sdk: {
+      GET: async () => {
+        workerCalls++;
+        return {
+          data: {
+            summary: { total: 3, unhealthy: 1, initializing: 1, running: 1 },
+            workers: [{ id: 'w-bad', status: 'UNHEALTHY' }],
+          },
+        };
+      },
+    },
+  } as unknown as Parameters<typeof getJobStatus.handler>[0];
+
+  const result = await getJobStatus.handler(ctx, {
+    endpointId: 'ep-diag-1',
+    jobId: 'job-1',
+    wait: 1000,
+  });
+  const payload = result.payload as Record<string, unknown>;
+
+  assert.equal(payload.pollingTimedOut, true, 'budget should be spent');
+  assert.deepEqual(payload.workerHealth, {
+    total: 3,
+    unhealthy: 1,
+    initializing: 1,
+    running: 1,
+  });
+  assert.match(String(payload.hint), /UNHEALTHY/);
+  assert.match(String(payload.hint), /w-bad/);
+
+  // Second call on the same endpoint is served from the TTL cache — the
+  // diagnosis costs one upstream round trip per endpoint, not one per poll.
+  await getJobStatus.handler(ctx, {
+    endpointId: 'ep-diag-1',
+    jobId: 'job-1',
+    wait: 1000,
+  });
+  assert.equal(workerCalls, 1, 'diagnosis should be cached per endpoint');
 });
