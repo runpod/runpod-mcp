@@ -34,6 +34,67 @@ interface CapacityResponse {
 
 const stockPriority: Record<string, number> = { High: 3, Medium: 2, Low: 1 };
 
+// The arguments both modes share, re-validated at runtime (the low-level
+// server never validates inputSchema): gpuCount coerced to an int in [1,8],
+// secureCloud a literal, blank filter entries dropped (a schema-bypassed [""]
+// must not match the whole catalog).
+interface CapacityQuery {
+  gpuCount: number;
+  secureArg: string;
+  includeUnavailable: boolean;
+  matchesFilter: (gpu: CapacityGpu) => boolean;
+  pageOpts: { limit: number | undefined; cursor: string | undefined };
+}
+
+function parseCapacityArgs(args: Record<string, unknown>): CapacityQuery {
+  const filterTerms = ((args.gpuTypeIds as string[] | undefined) ?? [])
+    .filter((t) => typeof t === 'string' && t.trim().length > 0)
+    .map((t) => t.toLowerCase());
+  return {
+    gpuCount: Math.min(8, Math.max(1, Math.floor(Number(args.gpuCount)) || 1)),
+    secureArg: args.secureCloudOnly ? ', secureCloud: true' : '',
+    includeUnavailable: args.includeUnavailable !== false,
+    matchesFilter: (gpu) => {
+      if (filterTerms.length === 0) return true;
+      const id = gpu.id.toLowerCase();
+      const name = gpu.displayName.toLowerCase();
+      return filterTerms.some(
+        (term) => id.includes(term) || name.includes(term)
+      );
+    },
+    pageOpts: {
+      limit: args.limit as number | undefined,
+      cursor: args.cursor as string | undefined,
+    },
+  };
+}
+
+// The one ranking both modes share: most versions in stock first, then the
+// strongest stock grade, then memory; drop no-stock rows unless the caller
+// asked to keep them (they sort last either way).
+function rankByStock<T>(
+  rows: T[],
+  stats: (row: T) => {
+    inStock: number;
+    bestPriority: number;
+    memoryGb: number;
+  },
+  includeUnavailable: boolean
+): T[] {
+  const kept = includeUnavailable
+    ? rows
+    : rows.filter((row) => stats(row).inStock > 0);
+  return kept.sort((a, b) => {
+    const sa = stats(a);
+    const sb = stats(b);
+    return (
+      sb.inStock - sa.inStock ||
+      sb.bestPriority - sa.bestPriority ||
+      sb.memoryGb - sa.memoryGb
+    );
+  });
+}
+
 export const getCapacity: CuratedTool = {
   name: 'get-capacity',
   description:
@@ -74,198 +135,174 @@ export const getCapacity: CuratedTool = {
     },
   },
   handler: (ctx, args) =>
-    runTool(async () => {
-      // The public GraphQL path takes no variables, so arguments are inlined.
-      // Every inlined value is re-validated at runtime, not just in the schema:
-      // gpuCount coerced to an int in [1,8], cudaVersions regex-checked below,
-      // secureCloud a literal.
-      const gpuCount = Math.min(
-        8,
-        Math.max(1, Math.floor(Number(args.gpuCount)) || 1)
-      );
-      const secureArg = args.secureCloudOnly ? ', secureCloud: true' : '';
-
-      // Blank/non-string filter entries are ignored (an all-blank list means
-      // "no filter") — a schema-bypassed [""] must not match the whole catalog.
-      const filterTerms = ((args.gpuTypeIds as string[] | undefined) ?? [])
-        .filter((t) => typeof t === 'string' && t.trim().length > 0)
-        .map((t) => t.toLowerCase());
-      const matchesFilter = (gpu: CapacityGpu) => {
-        if (filterTerms.length === 0) return true;
-        const id = gpu.id.toLowerCase();
-        const name = gpu.displayName.toLowerCase();
-        return filterTerms.some(
-          (term) => id.includes(term) || name.includes(term)
-        );
-      };
-
+    runTool(() => {
+      const query = parseCapacityArgs(args);
       const cudaVersions = args.cudaVersions as string[] | undefined;
-      const pageOpts = {
-        limit: args.limit as number | undefined,
-        cursor: args.cursor as string | undefined,
-      };
-
-      // Matrix mode: one query, per-version availability from the fleet.
-      if (!cudaVersions?.length) {
-        const data = await ctx.graphql.public<CapacityResponse>(`
-          query {
-            gpuTypes {
-              id
-              displayName
-              memoryInGb
-              secureCloud
-              communityCloud
-              lowestPrice(input: { gpuCount: ${gpuCount}${secureArg} }) {
-                stockStatus
-                uninterruptablePrice
-                gpuTypeCudaVersions {
-                  cudaVersion
-                  availability
-                }
-              }
-            }
-          }
-        `);
-        let rows = (data.gpuTypes ?? [])
-          .filter((gpu) => gpu.id !== 'unknown' && matchesFilter(gpu))
-          .map((gpu) => {
-            const cuda: Record<string, string> = {};
-            for (const c of gpu.lowestPrice?.gpuTypeCudaVersions ?? []) {
-              cuda[c.cudaVersion] = c.availability;
-            }
-            return {
-              id: gpu.id,
-              displayName: gpu.displayName,
-              memoryGb: gpu.memoryInGb,
-              secureCloud: gpu.secureCloud,
-              communityCloud: gpu.communityCloud,
-              stockStatus: gpu.lowestPrice?.stockStatus || 'unavailable',
-              pricePerHr: gpu.lowestPrice?.uninterruptablePrice ?? null,
-              cudaVersions: cuda,
-            };
-          });
-        const availableCount = (r: (typeof rows)[number]) =>
-          Object.values(r.cudaVersions).filter((a) => a === 'AVAILABLE').length;
-        if (args.includeUnavailable === false)
-          rows = rows.filter((r) => availableCount(r) > 0);
-        rows.sort((a, b) => {
-          const diff = availableCount(b) - availableCount(a);
-          if (diff !== 0) return diff;
-          const stockDiff =
-            (stockPriority[b.stockStatus] || 0) -
-            (stockPriority[a.stockStatus] || 0);
-          if (stockDiff !== 0) return stockDiff;
-          return b.memoryGb - a.memoryGb;
-        });
-        return ok(capList(rows, pageOpts));
-      }
-
-      // Probe mode: one stock lookup per requested version, merged per GPU.
-      // The schema caps at 12, but the cap is re-enforced here because direct
-      // handler calls can bypass schema validation.
-      const versions = [...new Set(cudaVersions)].slice(0, MAX_PROBE_VERSIONS);
-      const invalid = versions.filter((v) => !CUDA_VERSION_REGEX.test(v));
-      if (invalid.length > 0) {
-        return badRequest(
-          `Invalid CUDA version format: ${invalid.join(', ')}. Use "major.minor" strings like "12.8".`
-        );
-      }
-      // allSettled, not all: a transient failure on one probe must not discard
-      // the other versions' results — failures land in probeErrors instead.
-      const perVersion = await Promise.allSettled(
-        versions.map((v) =>
-          ctx.graphql.public<CapacityResponse>(`
-            query {
-              gpuTypes {
-                id
-                displayName
-                memoryInGb
-                secureCloud
-                communityCloud
-                lowestPrice(input: { gpuCount: ${gpuCount}, allowedCudaVersions: ["${v}"]${secureArg} }) {
-                  stockStatus
-                  uninterruptablePrice
-                }
-              }
-            }
-          `)
-        )
-      );
-
-      const probeErrors: Record<string, string> = {};
-      interface ProbeRow {
-        id: string;
-        displayName: string;
-        memoryGb: number;
-        secureCloud: boolean;
-        communityCloud: boolean;
-        cudaVersions: Record<
-          string,
-          { stock: string; pricePerHr: number | null }
-        >;
-      }
-      const byId = new Map<string, ProbeRow>();
-      versions.forEach((v, i) => {
-        const settled = perVersion[i];
-        if (settled.status === 'rejected') {
-          probeErrors[v] =
-            settled.reason instanceof Error
-              ? settled.reason.message
-              : String(settled.reason);
-          return;
-        }
-        for (const gpu of settled.value.gpuTypes ?? []) {
-          if (gpu.id === 'unknown' || !matchesFilter(gpu)) continue;
-          let row = byId.get(gpu.id);
-          if (!row) {
-            row = {
-              id: gpu.id,
-              displayName: gpu.displayName,
-              memoryGb: gpu.memoryInGb,
-              secureCloud: gpu.secureCloud,
-              communityCloud: gpu.communityCloud,
-              cudaVersions: {},
-            };
-            byId.set(gpu.id, row);
-          }
-          const stock = gpu.lowestPrice?.stockStatus;
-          // No stockStatus means no hosts match this version at all — record
-          // an explicit "Out" cell so starvation is visible rather than an
-          // absence the agent has to infer.
-          row.cudaVersions[v] =
-            !stock || stock === 'Out'
-              ? { stock: 'Out', pricePerHr: null }
-              : {
-                  stock,
-                  pricePerHr: gpu.lowestPrice?.uninterruptablePrice ?? null,
-                };
-        }
-      });
-
-      let rows = [...byId.values()];
-      const inStockCount = (r: ProbeRow) =>
-        Object.values(r.cudaVersions).filter((c) => c.stock !== 'Out').length;
-      if (args.includeUnavailable === false)
-        rows = rows.filter((r) => inStockCount(r) > 0);
-      rows.sort((a, b) => {
-        const diff = inStockCount(b) - inStockCount(a);
-        if (diff !== 0) return diff;
-        const best = (r: ProbeRow) =>
-          Math.max(
-            0,
-            ...Object.values(r.cudaVersions).map(
-              (c) => stockPriority[c.stock] || 0
-            )
-          );
-        const bestDiff = best(b) - best(a);
-        if (bestDiff !== 0) return bestDiff;
-        return b.memoryGb - a.memoryGb;
-      });
-      return ok(
-        capList(rows, pageOpts, {
-          probedCudaVersions: versions,
-          ...(Object.keys(probeErrors).length > 0 ? { probeErrors } : {}),
-        })
-      );
+      return cudaVersions?.length
+        ? probeMode(ctx, query, cudaVersions)
+        : matrixMode(ctx, query);
     }),
 };
+
+// Matrix mode: one query, per-version AVAILABLE/UNAVAILABLE from the fleet.
+async function matrixMode(
+  ctx: Parameters<CuratedTool['handler']>[0],
+  query: CapacityQuery
+) {
+  // The public GraphQL path takes no variables, so arguments are inlined —
+  // every inlined value was re-validated in parseCapacityArgs.
+  const data = await ctx.graphql.public<CapacityResponse>(`
+    query {
+      gpuTypes {
+        id
+        displayName
+        memoryInGb
+        secureCloud
+        communityCloud
+        lowestPrice(input: { gpuCount: ${query.gpuCount}${query.secureArg} }) {
+          stockStatus
+          uninterruptablePrice
+          gpuTypeCudaVersions {
+            cudaVersion
+            availability
+          }
+        }
+      }
+    }
+  `);
+  const rows = (data.gpuTypes ?? [])
+    .filter((gpu) => gpu.id !== 'unknown' && query.matchesFilter(gpu))
+    .map((gpu) => {
+      const cuda: Record<string, string> = {};
+      for (const c of gpu.lowestPrice?.gpuTypeCudaVersions ?? []) {
+        cuda[c.cudaVersion] = c.availability;
+      }
+      return {
+        id: gpu.id,
+        displayName: gpu.displayName,
+        memoryGb: gpu.memoryInGb,
+        secureCloud: gpu.secureCloud,
+        communityCloud: gpu.communityCloud,
+        stockStatus: gpu.lowestPrice?.stockStatus || 'unavailable',
+        pricePerHr: gpu.lowestPrice?.uninterruptablePrice ?? null,
+        cudaVersions: cuda,
+      };
+    });
+  const ranked = rankByStock(
+    rows,
+    (r) => ({
+      inStock: Object.values(r.cudaVersions).filter((a) => a === 'AVAILABLE')
+        .length,
+      bestPriority: stockPriority[r.stockStatus] || 0,
+      memoryGb: r.memoryGb,
+    }),
+    query.includeUnavailable
+  );
+  return ok(capList(ranked, query.pageOpts));
+}
+
+interface ProbeRow {
+  id: string;
+  displayName: string;
+  memoryGb: number;
+  secureCloud: boolean;
+  communityCloud: boolean;
+  cudaVersions: Record<string, { stock: string; pricePerHr: number | null }>;
+}
+
+// Probe mode: one stock lookup per requested version, merged per GPU. The
+// schema caps at 12, but the cap is re-enforced here because direct handler
+// calls can bypass schema validation.
+async function probeMode(
+  ctx: Parameters<CuratedTool['handler']>[0],
+  query: CapacityQuery,
+  cudaVersions: string[]
+) {
+  const versions = [...new Set(cudaVersions)].slice(0, MAX_PROBE_VERSIONS);
+  const invalid = versions.filter((v) => !CUDA_VERSION_REGEX.test(v));
+  if (invalid.length > 0) {
+    return badRequest(
+      `Invalid CUDA version format: ${invalid.join(', ')}. Use "major.minor" strings like "12.8".`
+    );
+  }
+  // allSettled, not all: a transient failure on one probe must not discard
+  // the other versions' results — failures land in probeErrors instead.
+  const perVersion = await Promise.allSettled(
+    versions.map((v) =>
+      ctx.graphql.public<CapacityResponse>(`
+        query {
+          gpuTypes {
+            id
+            displayName
+            memoryInGb
+            secureCloud
+            communityCloud
+            lowestPrice(input: { gpuCount: ${query.gpuCount}, allowedCudaVersions: ["${v}"]${query.secureArg} }) {
+              stockStatus
+              uninterruptablePrice
+            }
+          }
+        }
+      `)
+    )
+  );
+
+  const probeErrors: Record<string, string> = {};
+  const byId = new Map<string, ProbeRow>();
+  versions.forEach((v, i) => {
+    const settled = perVersion[i];
+    if (settled.status === 'rejected') {
+      probeErrors[v] =
+        settled.reason instanceof Error
+          ? settled.reason.message
+          : String(settled.reason);
+      return;
+    }
+    for (const gpu of settled.value.gpuTypes ?? []) {
+      if (gpu.id === 'unknown' || !query.matchesFilter(gpu)) continue;
+      let row = byId.get(gpu.id);
+      if (!row) {
+        row = {
+          id: gpu.id,
+          displayName: gpu.displayName,
+          memoryGb: gpu.memoryInGb,
+          secureCloud: gpu.secureCloud,
+          communityCloud: gpu.communityCloud,
+          cudaVersions: {},
+        };
+        byId.set(gpu.id, row);
+      }
+      const stock = gpu.lowestPrice?.stockStatus;
+      // No stockStatus means no hosts match this version at all — record
+      // an explicit "Out" cell so starvation is visible rather than an
+      // absence the agent has to infer.
+      row.cudaVersions[v] =
+        !stock || stock === 'Out'
+          ? { stock: 'Out', pricePerHr: null }
+          : {
+              stock,
+              pricePerHr: gpu.lowestPrice?.uninterruptablePrice ?? null,
+            };
+    }
+  });
+
+  const ranked = rankByStock(
+    [...byId.values()],
+    (r) => ({
+      inStock: Object.values(r.cudaVersions).filter((c) => c.stock !== 'Out')
+        .length,
+      bestPriority: Math.max(
+        0,
+        ...Object.values(r.cudaVersions).map((c) => stockPriority[c.stock] || 0)
+      ),
+      memoryGb: r.memoryGb,
+    }),
+    query.includeUnavailable
+  );
+  return ok(
+    capList(ranked, query.pageOpts, {
+      probedCudaVersions: versions,
+      ...(Object.keys(probeErrors).length > 0 ? { probeErrors } : {}),
+    })
+  );
+}
