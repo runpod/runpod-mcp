@@ -369,6 +369,10 @@ export async function handleMcpRequest(
   // skipped request `body` stays whatever the host pre-parsed (undefined on plain
   // node:http, where the SDK then reads the stream itself).
   let body: unknown = (req as { body?: unknown }).body;
+  // Stable account identity from the pre-flight's `myself { id }` probe —
+  // carried into anonymous analytics so a user keeps one identity across key
+  // rotations. Absent when the check is skipped or fails open.
+  let accountId: string | undefined;
   const early = earlyCredentialCheckSkip(req);
   if (early) {
     logCredentialCheck(early);
@@ -387,6 +391,7 @@ export async function handleMcpRequest(
     } else {
       const verify = opts.verifyCredential ?? defaultCredentialChecker.verify;
       const verdict = await verify(bearerToken);
+      if (verdict.status === 'valid') accountId = verdict.accountId;
       // 'unknown' is logged distinctly from 'pass': both let the request through,
       // but one is an answer and the other a guess made because the auth backend
       // could not be reached. Silently merging them hides an outage upstream.
@@ -438,6 +443,7 @@ export async function handleMcpRequest(
               clientName: sanitizeUaToken(
                 String(req.headers['user-agent'] ?? 'unknown')
               ),
+              accountId,
             },
           }),
       // A tool call that 401s proves a cached "valid" verdict wrong before

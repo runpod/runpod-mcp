@@ -89,6 +89,9 @@ export interface SpecgenServerOptions {
     serverVersion: string;
     /** Sanitized client token (never a raw header). */
     clientName?: string;
+    /** Stable account id from the credential pre-flight (myself.id) — the
+     *  preferred identity source; hashed before it leaves the process. */
+    accountId?: string;
   };
   /** Called when a tool result is a 401: the hosted path uses it to drop the
    *  cached credential verdict so the NEXT request re-checks and can emit the

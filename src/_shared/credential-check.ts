@@ -34,7 +34,11 @@ import { createHash } from 'node:crypto';
 // never cached — caching one lets a revoked credential skip the 401 for a full
 // TTL, which is the behaviour this module exists to remove.
 export type CredentialVerdict =
-  | { status: 'valid' }
+  // accountId is the probe's `myself.id` — the stable account identity behind
+  // the token. Carried so consumers (anonymous analytics) can identify a USER
+  // across key rotations without any additional API call; may be absent when
+  // the check was skipped or failed open.
+  | { status: 'valid'; accountId?: string }
   | { status: 'invalid'; reason: string }
   | { status: 'unknown' };
 
@@ -158,7 +162,8 @@ export function createCredentialChecker(deps: {
         data?: { myself?: { id?: string } | null };
         errors?: unknown[];
       };
-      if (result?.data?.myself?.id) return { status: 'valid' };
+      if (result?.data?.myself?.id)
+        return { status: 'valid', accountId: result.data.myself.id };
       // A GraphQL response that carries errors is NOT authoritative about the
       // credential. Per the GraphQL spec a resolver failure on the nullable
       // `myself` field answers HTTP 200 with `myself: null` AND an `errors`

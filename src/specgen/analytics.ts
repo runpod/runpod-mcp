@@ -25,6 +25,10 @@ export interface ToolCallEvent {
   serverVersion: string;
   /** Sanitized client token from the User-Agent (never the raw header). */
   clientName?: string;
+  /** Stable account id (the pre-flight's myself.id). Preferred identity:
+   *  keys rotate on every OAuth sign-in, the account does not. Hashed like
+   *  the key — the raw id never leaves the process. */
+  accountId?: string;
 }
 
 const CAPTURE_TIMEOUT_MS = 3_000;
@@ -33,15 +37,25 @@ function posthogHost(): string {
   return process.env.POSTHOG_HOST || 'https://us.i.posthog.com';
 }
 
-// Stable anonymous caller id. Without MCP_ANALYTICS_SALT the HMAC key falls
-// back to the PostHog key — still server-side and secret, so the id stays
-// non-reversible; set the salt to rotate identities independently of the
-// PostHog project.
-export function analyticsCallerId(apiKey: string | undefined): string {
-  if (!apiKey) return 'anonymous';
+// Stable anonymous caller id. Identity source, best first: the account id
+// (stable across key rotations and OAuth re-auths), then the API key (a
+// per-key identity is better than none when the pre-flight was skipped).
+// Without MCP_ANALYTICS_SALT the HMAC key falls back to the PostHog key —
+// still server-side and secret, so the id stays non-reversible; set the salt
+// to rotate identities independently of the PostHog project.
+export function analyticsCallerId(
+  apiKey: string | undefined,
+  accountId?: string
+): string {
+  const identity = accountId ?? apiKey;
+  if (!identity) return 'anonymous';
   const salt =
     process.env.MCP_ANALYTICS_SALT || process.env.POSTHOG_API_KEY || '';
-  return createHmac('sha256', salt).update(apiKey).digest('hex').slice(0, 16);
+  const prefix = accountId ? 'a:' : 'k:';
+  return (
+    prefix +
+    createHmac('sha256', salt).update(identity).digest('hex').slice(0, 16)
+  );
 }
 
 // Fire-and-forget: never throws, never blocks the tool response. A lost
@@ -58,7 +72,7 @@ export function captureToolCall(
     body: JSON.stringify({
       api_key: posthogKey,
       event: 'mcp_tool_call',
-      distinct_id: analyticsCallerId(apiKey),
+      distinct_id: analyticsCallerId(apiKey, event.accountId),
       timestamp: new Date().toISOString(),
       properties: {
         tool: event.tool,

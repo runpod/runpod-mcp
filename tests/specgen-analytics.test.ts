@@ -52,7 +52,7 @@ test('the captured payload never contains the API key, and the id is a stable HM
   };
   assert.equal(parsed.event, 'mcp_tool_call');
   assert.equal(parsed.distinct_id, analyticsCallerId('rpa_SECRETKEY'));
-  assert.equal(parsed.distinct_id.length, 16);
+  assert.match(parsed.distinct_id, /^k:[0-9a-f]{16}$/);
   assert.equal(parsed.properties.$process_person_profile, false);
   assert.equal(parsed.properties.tool, 'get-pod');
   // Stability: the same key maps to the same id (per-user frequency), and a
@@ -85,4 +85,21 @@ test('a capture failure never propagates', () => {
     throw new Error('network down');
   }) as typeof fetch;
   assert.doesNotThrow(() => captureToolCall('rpa_k', EVENT));
+});
+
+test('the account id is the preferred identity and survives key rotation', () => {
+  process.env.POSTHOG_API_KEY = 'phc_test';
+  process.env.MCP_ANALYTICS_SALT = 'salt-1';
+  const beforeRotation = analyticsCallerId('rpa_OLDKEY', 'user_123');
+  const afterRotation = analyticsCallerId('rpa_NEWKEY', 'user_123');
+  assert.equal(beforeRotation, afterRotation, 'same account must keep one id');
+  assert.match(beforeRotation, /^a:[0-9a-f]{16}$/);
+  assert.ok(!beforeRotation.includes('user_123'), 'raw account id leaked');
+  // And the raw account id never appears in a captured payload either.
+  captureToolCall('rpa_NEWKEY', { ...EVENT, accountId: 'user_123' });
+  assert.ok(!captured[0].body.includes('user_123'));
+  assert.equal(
+    (JSON.parse(captured[0].body) as { distinct_id: string }).distinct_id,
+    afterRotation
+  );
 });
