@@ -144,7 +144,11 @@ async function sweepByPrefix(
 ): Promise<void> {
   const items = await listAll(client, listTool);
   for (const item of items) {
-    if (typeof item.name === 'string' && item.name.startsWith(PREFIX) && item.id) {
+    if (
+      typeof item.name === 'string' &&
+      item.name.startsWith(PREFIX) &&
+      item.id
+    ) {
       await call(client, deleteTool, { [idArg]: item.id });
     }
   }
@@ -158,12 +162,7 @@ async function runSmoke(): Promise<void> {
 
   try {
     // Pre-sweep orphans from a prior crashed run.
-    await sweepByPrefix(
-      client,
-      'list-registries',
-      'delete-registry',
-      'id'
-    );
+    await sweepByPrefix(client, 'list-registries', 'delete-registry', 'id');
     await sweepByPrefix(client, 'list-templates', 'delete-template', 'id');
 
     // --- container registry auth: create → delete ---

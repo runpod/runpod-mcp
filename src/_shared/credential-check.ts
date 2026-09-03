@@ -76,7 +76,7 @@ const INVALID_TTL_MS = 30_000;
 // The pre-flight blocks the MCP request, so a slow auth backend must not be
 // able to hold it open. Without this the request hangs until the platform's own
 // limit (Vercel maxDuration 60s) turns it into a 504 — failing OPEN covers an
-// erroring backend but not a slow one. Matches PROBE_TIMEOUT_MS in backend.ts.
+// erroring backend but not a slow one. Mirrors the old backend resolver's probe deadline.
 const REQUEST_TIMEOUT_MS = 4000;
 // Cap so a stream of one-off tokens cannot grow the map without bound: entries
 // expire lazily (only on a repeat lookup of the same token), and an unauthed

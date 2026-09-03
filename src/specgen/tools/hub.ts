@@ -438,7 +438,7 @@ export const deployHubRepo: CuratedTool = {
           repo: `${listing.repoOwner}/${listing.repoName}`,
           release: release.tagName,
           hubReleaseId: release.id,
-          imageName: release.build!.imageName,
+          imageName: release.build.imageName,
         },
         note: `Endpoint created. Submit jobs with run-endpoint/runsync-endpoint using endpointId "${data.saveEndpoint.id}".`,
       });
@@ -449,7 +449,10 @@ export const deployHubRepo: CuratedTool = {
 // (discriminated by the `payload` key, which only ToolResult carries) so the
 // handler reads as the sequence of steps it is.
 
-type DeployListedRelease = NonNullable<HubListing['listedRelease']>;
+// Narrowed by checkDeployable: a deployable release has a built image.
+type DeployListedRelease = NonNullable<HubListing['listedRelease']> & {
+  build: { imageName: string };
+};
 
 // Resolve the listing from the public catalog. The catalog only exposes each
 // repo's currently LISTED release, so a hubReleaseId must match one of those
@@ -495,7 +498,7 @@ function checkDeployable(
       `Hub repo ${listing.repoOwner}/${listing.repoName} is a ${listing.type} listing — only SERVERLESS listings deploy as endpoints.`
     );
   }
-  return release;
+  return release as DeployListedRelease;
 }
 
 function buildEndpointInput(
@@ -553,7 +556,7 @@ function buildEndpointInput(
         : {}),
       template: {
         name: `${endpointName}__template__${randomSuffix()}`,
-        imageName: release.build!.imageName,
+        imageName: release.build.imageName,
         containerDiskInGb:
           (args.containerDiskInGb as number | undefined) ??
           config.containerDiskInGb ??

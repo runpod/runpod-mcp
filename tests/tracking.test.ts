@@ -62,6 +62,3 @@ describe('tracking headers', () => {
     );
   });
 });
-
-// A 429 reaches the client's error through the shared hint builder; these pin
-// the wiring (which headers are read), not the hint's own wording.

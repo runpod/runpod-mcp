@@ -45,8 +45,7 @@ export async function runTool(
         ok: false,
         status: 504,
         payload: {
-          error:
-            'The Runpod API did not respond before the request deadline.',
+          error: 'The Runpod API did not respond before the request deadline.',
           hint: 'Transient upstream stall: retry the same call once; if it persists, check https://uptime.runpod.io.',
         },
       };

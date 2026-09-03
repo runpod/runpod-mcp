@@ -536,27 +536,24 @@ describe('handleMcpRequest — gate self-disables on environment skew', () => {
     });
   }
 
-  it("treats an empty-string RUNPOD_AUTHED_GRAPHQL_URL as unset (gate stays on)", async () => {
+  it('treats an empty-string RUNPOD_AUTHED_GRAPHQL_URL as unset (gate stays on)', async () => {
     // The ??-based resolver does not fall through on '' — only the guard's
     // envWithoutEmpties normalization keeps '' from reading as a moved host
     // and silently disabling the pre-flight.
-    await withEnv(
-      { RUNPOD_AUTHED_GRAPHQL_URL: '' },
-      async () => {
-        let checkerCalls = 0;
-        const { req, res, written } = fakeReqRes({
-          authorization: 'Bearer rpa_dead',
-        });
-        await handleMcpRequest(req, res, {
-          verifyCredential: async () => {
-            checkerCalls++;
-            return { status: 'invalid' as const, reason: 'dead' };
-          },
-        });
-        assert.equal(checkerCalls, 1, 'empty string must not skip the gate');
-        assert.equal(written.statusCode, 401);
-      }
-    );
+    await withEnv({ RUNPOD_AUTHED_GRAPHQL_URL: '' }, async () => {
+      let checkerCalls = 0;
+      const { req, res, written } = fakeReqRes({
+        authorization: 'Bearer rpa_dead',
+      });
+      await handleMcpRequest(req, res, {
+        verifyCredential: async () => {
+          checkerCalls++;
+          return { status: 'invalid' as const, reason: 'dead' };
+        },
+      });
+      assert.equal(checkerCalls, 1, 'empty string must not skip the gate');
+      assert.equal(written.statusCode, 401);
+    });
   });
 
   it('still checks when BOTH are overridden (they agree — no skew)', async () => {

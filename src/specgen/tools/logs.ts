@@ -5,7 +5,7 @@
 // text/event-stream, so both operations are excluded in generator-config.yaml
 // and served here as bounded snapshots instead.
 
-import { DEFAULT_BASE_URL } from '@runpod/sdk';
+import { sdkBase } from '../../_shared/hosts.js';
 import type { CuratedTool } from '../server.js';
 import { collectLogSnapshot, type LogSnapshotParams } from '../clients/sse.js';
 import { ok, runTool } from './util.js';
@@ -37,7 +37,7 @@ const logStreamProperties = {
 } as const;
 
 function baseUrl(): string {
-  return process.env.RUNPOD_API_BASE_URL ?? DEFAULT_BASE_URL;
+  return sdkBase(process.env);
 }
 
 // The low-level MCP server never validates inputSchema, so the schema bounds
@@ -56,7 +56,7 @@ function clampInt(
   return Math.min(max, Math.max(min, Math.trunc(n)));
 }
 
-const LOG_SOURCES = ['container', 'system', 'both'] as const;
+const LOG_SOURCES = logStreamProperties.source.enum;
 
 function logParams(args: Record<string, unknown>): LogSnapshotParams {
   return {

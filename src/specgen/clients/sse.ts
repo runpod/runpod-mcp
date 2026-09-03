@@ -141,10 +141,11 @@ export async function collectLogSnapshot(
     maxBytes: LOG_STREAM_MAX_BYTES,
   });
   const items = parseLogSse(raw);
-  // A byte-cap truncation almost always slices the final frame mid-line, so
-  // the last parsed entry is a partial. Drop it when truncated — the flag
-  // already signals output was cut, so over-trimming one boundary line is
-  // acceptable and never misleading.
-  if (truncated) items.pop();
+  // Any abort-ended read (byte cap sets `truncated`; the timeout is the
+  // NORMAL end of a live tail) can slice the final frame mid-line. A complete
+  // SSE frame ends with a newline — when the raw tail lacks one, the last
+  // parsed entry is a partial: drop it. On a byte-cap cut the flag already
+  // signals output was lost; on a clean timeout end nothing real is lost.
+  if (truncated || (raw.length > 0 && !raw.endsWith('\n'))) items.pop();
   return { items, count: items.length, truncated };
 }

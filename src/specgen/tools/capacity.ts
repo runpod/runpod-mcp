@@ -5,6 +5,7 @@
 // spec. Ported from the official MCP server (Apache-2.0, runpod/runpod-mcp).
 // Credential-free: served by the public GraphQL endpoint.
 
+import type { ToolContext } from '../context.js';
 import type { CuratedTool } from '../server.js';
 import { listPaginationProperties, capList } from '../pagination.js';
 import { badRequest, ok, runTool } from './util.js';
@@ -145,10 +146,7 @@ export const getCapacity: CuratedTool = {
 };
 
 // Matrix mode: one query, per-version AVAILABLE/UNAVAILABLE from the fleet.
-async function matrixMode(
-  ctx: Parameters<CuratedTool['handler']>[0],
-  query: CapacityQuery
-) {
+async function matrixMode(ctx: ToolContext, query: CapacityQuery) {
   // The public GraphQL path takes no variables, so arguments are inlined —
   // every inlined value was re-validated in parseCapacityArgs.
   const data = await ctx.graphql.public<CapacityResponse>(`
@@ -214,7 +212,7 @@ interface ProbeRow {
 // schema caps at 12, but the cap is re-enforced here because direct handler
 // calls can bypass schema validation.
 async function probeMode(
-  ctx: Parameters<CuratedTool['handler']>[0],
+  ctx: ToolContext,
   query: CapacityQuery,
   cudaVersions: string[]
 ) {

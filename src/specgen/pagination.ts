@@ -28,10 +28,12 @@ export const listPaginationProperties = {
 export function decodeCursorOffset(cursor: string | undefined): number {
   if (!cursor) return 0;
   try {
-    const offset = Number.parseInt(
-      Buffer.from(cursor, 'base64').toString('utf8'),
-      10
-    );
+    // Strict digits-only: parseInt would accept "20junk" (and Node's base64
+    // decoder silently strips non-alphabet bytes first), silently paginating
+    // mid-list from a mangled cursor instead of restarting.
+    const decoded = Buffer.from(cursor, 'base64').toString('utf8');
+    if (!/^\d+$/.test(decoded)) return 0;
+    const offset = Number.parseInt(decoded, 10);
     return Number.isFinite(offset) && offset >= 0 ? offset : 0;
   } catch {
     return 0;

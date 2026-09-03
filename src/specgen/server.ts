@@ -190,7 +190,7 @@ export function createSpecgenServer(
     );
     // runTool here as well as inside the curated handlers: it maps an HttpError
     // raised outside a handler body — a missing API key when the SDK client is
-    // first built (src/context.ts) — onto a 401 tool result instead of a
+    // first built (src/specgen/context.ts) — onto a 401 tool result instead of a
     // protocol-level crash.
     const result = await runTool(() =>
       curated

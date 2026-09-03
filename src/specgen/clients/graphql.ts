@@ -11,10 +11,10 @@
 // Separate env vars despite the identical default, so the credential-free
 // path can be pointed at a stub without the key following it.
 
+import { authedGraphqlBase, publicGraphqlBase } from '../../_shared/hosts.js';
 import { boundedFetch } from './bounded-fetch.js';
 import { HttpError, missingKeyError } from './http-error.js';
 
-export const DEFAULT_GRAPHQL_URL = 'https://api.runpod.io/graphql';
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 export interface GraphqlClient {
@@ -33,14 +33,10 @@ export function createGraphqlClient(
   options: GraphqlClientOptions = {}
 ): GraphqlClient {
   const apiKey = options.apiKey ?? process.env.RUNPOD_API_KEY;
-  const publicUrl =
-    options.publicUrl ??
-    process.env.RUNPOD_PUBLIC_GRAPHQL_URL ??
-    DEFAULT_GRAPHQL_URL;
-  const authedUrl =
-    options.authedUrl ??
-    process.env.RUNPOD_AUTHED_GRAPHQL_URL ??
-    DEFAULT_GRAPHQL_URL;
+  // Resolved through _shared/hosts.ts so '' reads as unset here exactly like
+  // it does in the hosted wrong-environment guard.
+  const publicUrl = options.publicUrl ?? publicGraphqlBase(process.env);
+  const authedUrl = options.authedUrl ?? authedGraphqlBase(process.env);
   const fetchImpl = options.fetchImpl ?? fetch;
 
   async function request<T>(
@@ -86,10 +82,12 @@ export function createGraphqlClient(
 
   return {
     public: (query) => request(publicUrl, query),
-    authed: (query, variables) => {
+    authed: async (query, variables) => {
       // A key-less authed call must 401 up front, not go out unauthenticated
       // and come back as an opaque gateway error that never trips
-      // onUnauthorized.
+      // onUnauthorized. async so the 401 is a rejection, matching the
+      // Promise-returning signature (a sync throw escapes Promise.race/
+      // fire-then-await callers).
       if (!apiKey) throw missingKeyError();
       return request(authedUrl, query, variables, apiKey);
     },

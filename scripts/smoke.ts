@@ -44,10 +44,8 @@ async function createTransport(mode: Mode) {
 
   const target = process.argv[3] ?? 'dist/stdio.mjs';
 
-  // Forward the API key AND the REST routing env to the spawned server, so
-  // `smoke:stdio` can target dev/v2 the same way the HTTP path does. Without
-  // this passthrough the child booted with prod-v1 defaults regardless of the
-  // caller's env. Pass through every host override the specgen surface reads
+  // StdioClientTransport REPLACES (does not merge) the child env: forward the
+  // API key plus every host override the specgen surface reads
   // (_shared/hosts.ts) — miss one and "smoke against dev" silently tests prod.
   const childEnv: Record<string, string> = { RUNPOD_API_KEY: apiKey };
   for (const key of [
