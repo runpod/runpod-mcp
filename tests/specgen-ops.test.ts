@@ -127,3 +127,42 @@ test('a header-derived 429 hint is not clobbered by the generic status hint', as
   const merged = { ...enriched, hint: enriched.hint ?? 'generic' };
   assert.match(merged.hint, /1724s/);
 });
+
+test('boundedFetch deadline covers the body read, not just the headers', async () => {
+  const { boundedFetch } = await import(
+    '../src/specgen/clients/bounded-fetch.js'
+  );
+  // A backend that sends headers plus a partial body, then stalls forever:
+  // the regression cleared the timer when headers arrived, leaving .text()
+  // unbounded until the platform reaper.
+  let sourceController: ReadableStreamDefaultController<Uint8Array>;
+  const stalled = new ReadableStream<Uint8Array>({
+    start(controller) {
+      sourceController = controller;
+      controller.enqueue(new TextEncoder().encode('{"partial":'));
+      // never closes
+    },
+  });
+  const stubFetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const signal = init?.signal;
+    // Tie the stream's fate to the abort signal like a real socket: the
+    // source errors when the request is aborted.
+    signal?.addEventListener('abort', () => {
+      sourceController.error(signal.reason);
+    });
+    return new Response(stalled, {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as typeof fetch;
+  const started = Date.now();
+  const response = await boundedFetch(stubFetch, 50)('https://x.test/');
+  await assert.rejects(
+    () => response.text(),
+    (err: unknown) =>
+      err instanceof Error &&
+      (err.name === 'TimeoutError' || err.name === 'AbortError'),
+    'the mid-body stall must abort at the deadline'
+  );
+  assert.ok(Date.now() - started < 5_000);
+});
