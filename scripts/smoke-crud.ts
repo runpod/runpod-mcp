@@ -17,6 +17,13 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { randomUUID } from 'node:crypto';
 
+const ENV_PASSTHROUGH = [
+  'RUNPOD_API_BASE_URL',
+  'RUNPOD_SERVERLESS_API_URL',
+  'RUNPOD_PUBLIC_GRAPHQL_URL',
+  'RUNPOD_AUTHED_GRAPHQL_URL',
+];
+
 const PREFIX = 'mcp-smoke';
 const runId = `${PREFIX}-${randomUUID().slice(0, 8)}`;
 
@@ -34,15 +41,9 @@ async function connect(): Promise<Client> {
   const childEnv: Record<string, string> = {
     RUNPOD_API_KEY: apiKey(),
   };
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value === undefined) continue;
-    if (
-      key === 'RUNPOD_API_BASE_URL' ||
-      key === 'RUNPOD_SERVERLESS_API_URL' ||
-      key === 'RUNPOD_PUBLIC_GRAPHQL_URL'
-    ) {
-      childEnv[key] = value;
-    }
+  for (const key of ENV_PASSTHROUGH) {
+    const value = process.env[key];
+    if (value !== undefined) childEnv[key] = value;
   }
   const transport = new StdioClientTransport({
     command: 'node',
@@ -71,7 +72,15 @@ async function call(
   name: string,
   args: Record<string, unknown>
 ) {
-  return parse(await client.callTool({ name, arguments: args }));
+  // The server reports tool failures as successful protocol results with
+  // isError: true — callTool does not throw on those. Without this check a
+  // failing delete "succeeds" silently and the teardown guarantee is fiction.
+  const result = await client.callTool({ name, arguments: args });
+  const parsed = parse(result);
+  if ((result as { isError?: boolean }).isError) {
+    throw new Error(`${name} failed: ${JSON.stringify(parsed)}`);
+  }
+  return parsed;
 }
 
 // List a tool's FULL result, paging through the MCP cap envelope until
@@ -215,7 +224,7 @@ async function runSmoke(): Promise<void> {
       const tplItems = await listAll(client, 'list-templates');
       leaked = [...regItems, ...tplItems].filter(
         (x) =>
-          typeof x.name === 'string' && (x.name as string).startsWith(runId)
+          typeof x.name === 'string' && (x.name as string).startsWith(PREFIX)
       );
     } catch (e) {
       verifyError = e;
@@ -233,7 +242,7 @@ async function runSmoke(): Promise<void> {
     }
     if (leaked.length > 0) {
       throw new Error(
-        `LEAK: ${leaked.length} ${runId}-* resource(s) remain after teardown`
+        `LEAK: ${leaked.length} ${PREFIX}-* resource(s) remain after teardown`
       );
     }
     console.error('  ✓ teardown verified clean');
