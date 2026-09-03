@@ -116,16 +116,68 @@ test('SDK requests carry a deadline: a silent host becomes a 504 tool result, no
   }
 });
 
-test('a header-derived 429 hint is not clobbered by the generic status hint', async () => {
+test('a WAF-style empty-body 429 surfaces as a failed call with the header wait, end to end', async () => {
+  const { createSpecgenServer } = await import('../src/specgen/server.js');
+  const { createToolContext } = await import('../src/specgen/context.js');
+  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+  const { InMemoryTransport } = await import(
+    '@modelcontextprotocol/sdk/inMemory.js'
+  );
+  const realFetch = globalThis.fetch;
+  // Empty body + Content-Length: 0 — openapi-fetch returns error: undefined
+  // for this, and Retry-After is the only usable signal.
+  globalThis.fetch = (async () =>
+    new Response(null, {
+      status: 429,
+      headers: { 'content-length': '0', 'retry-after': '1724' },
+    })) as typeof fetch;
+  try {
+    const server = createSpecgenServer(
+      // Retries off: this pins the un-retried surface behavior; retry tuning
+      // has its own bound in context.ts (SDK_RETRY).
+      createToolContext({ apiKey: 'rpa_test', sdkRetry: false }),
+      'test'
+    );
+    const client = new Client({ name: 'test', version: '1' });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(st), client.connect(ct)]);
+    const res = (await client.callTool({
+      name: 'list-pods',
+      arguments: {},
+    })) as { isError?: boolean; content: Array<{ text: string }> };
+    assert.equal(
+      res.isError,
+      true,
+      'an empty-body 429 must not read as success'
+    );
+    const body = JSON.parse(res.content[0].text) as { hint?: string };
+    // The TOP-LEVEL hint (the recovery channel bare clients read) must carry
+    // the header-derived wait, not the generic "pause briefly" text.
+    assert.match(body.hint ?? '', /1724s/);
+    await client.close();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('a runtime-plane 429 hint survives runTool nesting to the top-level hint', async () => {
+  const { runTool } = await import('../src/specgen/tools/util.js');
+  const { HttpError } = await import('../src/specgen/clients/http-error.js');
   const { withRateLimitHint } = await import('../src/_shared/rate-limit.js');
-  const headers = new Headers({ 'retry-after': '1724' });
-  const enriched = withRateLimitHint({ error: 'rate limit exceeded' }, headers) as {
-    hint?: string;
-  };
-  assert.match(enriched.hint ?? '', /1724s/);
-  // The server-side merge must keep it (payload.hint ?? errorHint(status)).
-  const merged = { ...enriched, hint: enriched.hint ?? 'generic' };
-  assert.match(merged.hint, /1724s/);
+  // The runtime client throws HttpError with the enriched payload; runTool
+  // nests it under `detail`. The server merge must find detail.hint.
+  const headers = new Headers({ 'retry-after': '90' });
+  const result = await runTool(async () => {
+    throw new HttpError(
+      'Runpod runtime API error (429)',
+      429,
+      withRateLimitHint({ error: 'rate limit exceeded' }, headers)
+    );
+  });
+  const payload = result.payload as { detail?: { hint?: string } };
+  const topLevelHint =
+    (payload as { hint?: string }).hint ?? payload.detail?.hint;
+  assert.match(topLevelHint ?? '', /90s/);
 });
 
 test('boundedFetch deadline covers the body read, not just the headers', async () => {

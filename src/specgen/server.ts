@@ -221,6 +221,10 @@ export function createSpecgenServer(
             ...(result.payload as Record<string, unknown>),
             hint:
               (result.payload as Record<string, unknown>).hint ??
+              // runTool nests an HttpError's payload under `detail` — the
+              // runtime client's header-derived 429 hint lives there.
+              ((result.payload as { detail?: { hint?: string } }).detail ?? {})
+                .hint ??
               errorHint(result.status),
           }
         : result.payload;

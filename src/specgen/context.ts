@@ -8,7 +8,11 @@
 // scope. The stdio path builds one context per process from RUNPOD_API_KEY.
 
 import { randomUUID } from 'node:crypto';
-import { createRunpodClient, type RunpodClient } from '@runpod/sdk';
+import {
+  createRunpodClient,
+  type RetryOptions,
+  type RunpodClient,
+} from '@runpod/sdk';
 import { buildTrackingHeaders } from '../_shared/tracking.js';
 import { createGraphqlClient, type GraphqlClient } from './clients/graphql.js';
 import { boundedFetch } from './clients/bounded-fetch.js';
@@ -38,6 +42,8 @@ export interface ToolContextOptions {
   };
   /** Test seam: deadline for one SDK (generated-tool) request. */
   sdkTimeoutMs?: number;
+  /** Test seam: SDK retry tuning (false disables the retry layer). */
+  sdkRetry?: RetryOptions | false;
 }
 
 // Deadline for one SDK request. The generated tools are plain CRUD calls —
@@ -47,6 +53,18 @@ export interface ToolContextOptions {
 // long-hold paths (job waits, SSE streams) do NOT go through the SDK; their
 // clients carry their own bounded signals.
 const SDK_TIMEOUT_MS = 30_000;
+
+// Bound the SDK's retry layer: its defaults honor Retry-After up to 60s per
+// sleep across 4 attempts, which alone can outlive the hosted invocation's
+// 45s budget. Retries here are for transient blips only — a real 429 must
+// come back to the agent quickly, carrying the header-derived wait hint, so
+// the AGENT decides how long to pause (dispatch enriches it; a server-side
+// sleep would just burn the budget silently).
+const SDK_RETRY: RetryOptions = {
+  maxAttempts: 3,
+  maxBackoffMs: 2_000,
+  maxRetryAfterMs: 5_000,
+};
 
 export function createToolContext(
   options: ToolContextOptions = {}
@@ -95,7 +113,11 @@ export function createToolContext(
     get sdk(): RunpodClient {
       if (!sdk) {
         if (!apiKey) throw missingKeyError();
-        sdk = createRunpodClient({ apiKey, fetch: sdkFetch });
+        sdk = createRunpodClient({
+          apiKey,
+          fetch: sdkFetch,
+          retry: options.sdkRetry ?? SDK_RETRY,
+        });
       }
       return sdk;
     },
