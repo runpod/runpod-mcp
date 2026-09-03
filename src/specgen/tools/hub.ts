@@ -5,6 +5,7 @@
 
 import type { CuratedTool } from '../server.js';
 import { listPaginationProperties, capList } from '../pagination.js';
+import type { ToolResult } from '../dispatch.js';
 import { badRequest, ok, runTool } from './util.js';
 
 interface HubBuild {
@@ -254,7 +255,9 @@ export const listHubRepos: CuratedTool = {
         // Normalize the arg too: the server never validates inputSchema, so a
         // lowercase "serverless" must match, not return a silent empty page.
         const term = String(args.type).toUpperCase();
-        listings = listings.filter((l) => (l.type ?? '').toUpperCase() === term);
+        listings = listings.filter(
+          (l) => (l.type ?? '').toUpperCase() === term
+        );
       }
       if (args.category) {
         const term = String(args.category).toLowerCase();
@@ -416,157 +419,187 @@ export const deployHubRepo: CuratedTool = {
           'Provide either repo ("owner/name") or hubReleaseId. Use list-hub-repos to discover both.'
         );
       }
-
-      // Resolve the listing + release from the public catalog. The catalog
-      // only exposes each repo's currently LISTED release, so a hubReleaseId
-      // must match one of those (also the only state the console deploys).
       const catalog = await ctx.graphql.public<ListingsResponse>(
         listingsQuery(true)
       );
-      let listing: HubListing | undefined;
-      if (args.hubReleaseId) {
-        listing = (catalog.listings ?? []).find(
-          (l) => l.listedRelease?.id === args.hubReleaseId
-        );
-      } else {
-        const repoKey = String(args.repo).toLowerCase();
-        listing = (catalog.listings ?? []).find(
-          (l) => `${l.repoOwner}/${l.repoName}`.toLowerCase() === repoKey
-        );
-      }
-      if (!listing) {
-        return badRequest(
-          `No Hub listing found for ${
-            args.hubReleaseId
-              ? `hubReleaseId "${args.hubReleaseId}" (only each repo's currently listed release is deployable)`
-              : `repo "${args.repo}"`
-          }. Use list-hub-repos to see the catalog.`
-        );
-      }
-      const release = listing.listedRelease;
-      if (!release?.build?.imageName) {
-        return badRequest(
-          `Hub repo ${listing.repoOwner}/${listing.repoName} has no listed release with a built image, so it cannot be deployed.`
-        );
-      }
-      if ((listing.type ?? '').toUpperCase() !== 'SERVERLESS') {
-        return badRequest(
-          `Hub repo ${listing.repoOwner}/${listing.repoName} is a ${listing.type} listing — only SERVERLESS listings deploy as endpoints.`
-        );
-      }
-
-      const config = (parseReleaseConfig(release.config) ??
-        {}) as HubReleaseConfig;
-
-      const gpuIds = (args.gpuIds as string | undefined) ?? config.gpuIds;
-      if (!gpuIds) {
-        return badRequest(
-          'This release does not specify a GPU pool — pass gpuIds (comma-separated pool names, e.g. "ADA_80_PRO,AMPERE_80"; see the pool field on list-gpu-types).'
-        );
-      }
-
-      const { env, missingRequired } = buildHubEnv(
-        config,
-        (args.env as Record<string, string> | undefined) ?? {}
-      );
-      if (missingRequired.length > 0) {
-        return badRequest(
-          `Missing required environment variables for this release: ${missingRequired.join(', ')}. Pass them via the env parameter.`
-        );
-      }
-
-      const endpointName =
-        (args.name as string | undefined) ??
-        `${listing.title} ${release.tagName}`;
-      const minCuda = minCudaVersion(config.allowedCudaVersions);
-
-      const input: Record<string, unknown> = {
-        name: endpointName,
-        hubReleaseId: release.id,
-        type: 'QB',
-        gpuIds,
-        gpuCount: (args.gpuCount as number | undefined) ?? config.gpuCount ?? 1,
-        workersMin: (args.workersMin as number | undefined) ?? 0,
-        workersMax: (args.workersMax as number | undefined) ?? null,
-        idleTimeout: (args.idleTimeout as number | undefined) ?? 5,
-        scalerType: (args.scalerType as string | undefined) ?? 'QUEUE_DELAY',
-        scalerValue: (args.scalerValue as number | undefined) ?? 4,
-        executionTimeoutMs:
-          (args.executionTimeoutMs as number | undefined) ?? 600000,
-        flashBootType: (args.flashboot as string | undefined) ?? 'FLASHBOOT',
-        locations: null,
-        networkVolumeIds: null,
-        compliance: [],
-        modelReferences: [],
-        ...(minCuda
-          ? {
-              minCudaVersion: minCuda,
-              allowedCudaVersions: config.allowedCudaVersions!.join(','),
-            }
-          : {}),
-        template: {
-          name: `${endpointName}__template__${randomSuffix()}`,
-          imageName: release.build.imageName,
-          containerDiskInGb:
-            (args.containerDiskInGb as number | undefined) ??
-            config.containerDiskInGb ??
-            20,
-          containerRegistryAuthId: '',
-          dockerArgs: '',
-          startScript: '',
-          ports: '',
-          env,
-        },
-      };
-
-      interface SaveEndpointResponse {
-        saveEndpoint: {
-          id: string;
-          name: string;
-          gpuIds: string;
-          gpuCount: number;
-          workersMin: number;
-          workersMax: number | null;
-          idleTimeout: number;
-          scalerType: string;
-          scalerValue: number;
-          flashBootType: string;
-          templateId: string;
-        };
-      }
-
+      const listing = resolveListing(catalog, args);
+      if ('payload' in listing) return listing;
+      const release = checkDeployable(listing);
+      if ('payload' in release) return release;
+      const built = buildEndpointInput(listing, release, args);
+      if ('payload' in built) return built;
       const data = await ctx.graphql.authed<SaveEndpointResponse>(
-        `
-          mutation saveEndpoint($input: EndpointInput!) {
-            saveEndpoint(input: $input) {
-              id
-              name
-              gpuIds
-              gpuCount
-              workersMin
-              workersMax
-              idleTimeout
-              scalerType
-              scalerValue
-              flashBootType
-              templateId
-            }
-          }
-        `,
-        { input }
+        SAVE_ENDPOINT_MUTATION,
+        { input: built.input }
       );
-
       return ok({
         endpoint: data.saveEndpoint,
         deployed: {
           repo: `${listing.repoOwner}/${listing.repoName}`,
           release: release.tagName,
           hubReleaseId: release.id,
-          imageName: release.build.imageName,
+          imageName: release.build!.imageName,
         },
         note: `Endpoint created. Submit jobs with run-endpoint/runsync-endpoint using endpointId "${data.saveEndpoint.id}".`,
       });
     }),
 };
+
+// ---- deploy-hub-repo helpers. Each returns its value or a ToolResult error
+// (discriminated by the `payload` key, which only ToolResult carries) so the
+// handler reads as the sequence of steps it is.
+
+type DeployListedRelease = NonNullable<HubListing['listedRelease']>;
+
+// Resolve the listing from the public catalog. The catalog only exposes each
+// repo's currently LISTED release, so a hubReleaseId must match one of those
+// (also the only state the console deploys).
+function resolveListing(
+  catalog: ListingsResponse,
+  args: Record<string, unknown>
+): HubListing | ToolResult {
+  let listing: HubListing | undefined;
+  if (args.hubReleaseId) {
+    listing = (catalog.listings ?? []).find(
+      (l) => l.listedRelease?.id === args.hubReleaseId
+    );
+  } else {
+    const repoKey = String(args.repo).toLowerCase();
+    listing = (catalog.listings ?? []).find(
+      (l) => `${l.repoOwner}/${l.repoName}`.toLowerCase() === repoKey
+    );
+  }
+  if (!listing) {
+    return badRequest(
+      `No Hub listing found for ${
+        args.hubReleaseId
+          ? `hubReleaseId "${args.hubReleaseId}" (only each repo's currently listed release is deployable)`
+          : `repo "${args.repo}"`
+      }. Use list-hub-repos to see the catalog.`
+    );
+  }
+  return listing;
+}
+
+function checkDeployable(
+  listing: HubListing
+): DeployListedRelease | ToolResult {
+  const release = listing.listedRelease;
+  if (!release?.build?.imageName) {
+    return badRequest(
+      `Hub repo ${listing.repoOwner}/${listing.repoName} has no listed release with a built image, so it cannot be deployed.`
+    );
+  }
+  if ((listing.type ?? '').toUpperCase() !== 'SERVERLESS') {
+    return badRequest(
+      `Hub repo ${listing.repoOwner}/${listing.repoName} is a ${listing.type} listing — only SERVERLESS listings deploy as endpoints.`
+    );
+  }
+  return release;
+}
+
+function buildEndpointInput(
+  listing: HubListing,
+  release: DeployListedRelease,
+  args: Record<string, unknown>
+): { input: Record<string, unknown> } | ToolResult {
+  const config = (parseReleaseConfig(release.config) ?? {}) as HubReleaseConfig;
+
+  const gpuIds = (args.gpuIds as string | undefined) ?? config.gpuIds;
+  if (!gpuIds) {
+    return badRequest(
+      'This release does not specify a GPU pool — pass gpuIds (comma-separated pool names, e.g. "ADA_80_PRO,AMPERE_80"; see the pool field on list-gpu-types).'
+    );
+  }
+
+  const { env, missingRequired } = buildHubEnv(
+    config,
+    (args.env as Record<string, string> | undefined) ?? {}
+  );
+  if (missingRequired.length > 0) {
+    return badRequest(
+      `Missing required environment variables for this release: ${missingRequired.join(', ')}. Pass them via the env parameter.`
+    );
+  }
+
+  const endpointName =
+    (args.name as string | undefined) ?? `${listing.title} ${release.tagName}`;
+  const minCuda = minCudaVersion(config.allowedCudaVersions);
+
+  return {
+    input: {
+      name: endpointName,
+      hubReleaseId: release.id,
+      type: 'QB',
+      gpuIds,
+      gpuCount: (args.gpuCount as number | undefined) ?? config.gpuCount ?? 1,
+      workersMin: (args.workersMin as number | undefined) ?? 0,
+      workersMax: (args.workersMax as number | undefined) ?? null,
+      idleTimeout: (args.idleTimeout as number | undefined) ?? 5,
+      scalerType: (args.scalerType as string | undefined) ?? 'QUEUE_DELAY',
+      scalerValue: (args.scalerValue as number | undefined) ?? 4,
+      executionTimeoutMs:
+        (args.executionTimeoutMs as number | undefined) ?? 600000,
+      flashBootType: (args.flashboot as string | undefined) ?? 'FLASHBOOT',
+      locations: null,
+      networkVolumeIds: null,
+      compliance: [],
+      modelReferences: [],
+      ...(minCuda
+        ? {
+            minCudaVersion: minCuda,
+            allowedCudaVersions: config.allowedCudaVersions!.join(','),
+          }
+        : {}),
+      template: {
+        name: `${endpointName}__template__${randomSuffix()}`,
+        imageName: release.build!.imageName,
+        containerDiskInGb:
+          (args.containerDiskInGb as number | undefined) ??
+          config.containerDiskInGb ??
+          20,
+        containerRegistryAuthId: '',
+        dockerArgs: '',
+        startScript: '',
+        ports: '',
+        env,
+      },
+    },
+  };
+}
+
+interface SaveEndpointResponse {
+  saveEndpoint: {
+    id: string;
+    name: string;
+    gpuIds: string;
+    gpuCount: number;
+    workersMin: number;
+    workersMax: number | null;
+    idleTimeout: number;
+    scalerType: string;
+    scalerValue: number;
+    flashBootType: string;
+    templateId: string;
+  };
+}
+
+const SAVE_ENDPOINT_MUTATION = `
+  mutation saveEndpoint($input: EndpointInput!) {
+    saveEndpoint(input: $input) {
+      id
+      name
+      gpuIds
+      gpuCount
+      workersMin
+      workersMax
+      idleTimeout
+      scalerType
+      scalerValue
+      flashBootType
+      templateId
+    }
+  }
+`;
 
 export const hubTools: CuratedTool[] = [listHubRepos, deployHubRepo];
