@@ -48,9 +48,9 @@ export interface CredentialCheckerHandle {
   invalidate: (token: string) => void;
 }
 
-// Named AuthProbeFetch/AuthProbeResponse, not FetchLike: _shared/http.ts already
-// owns that name for a stricter, incompatible shape, and backend.ts documents the
-// same convention for its own ProbeFetch.
+// Named AuthProbeFetch/AuthProbeResponse, not FetchLike: kept distinct from
+// the fetch-shaped types the specgen clients use, since this probe needs only
+// this narrow shape.
 interface AuthProbeResponse {
   ok: boolean;
   status: number;

@@ -2,8 +2,9 @@
 // lifecycle at api.runpod.ai/v2/{endpointId}/...). RunPod publishes no OpenAPI
 // document for this plane, so these cannot be generated from the v2 spec;
 // behavior is ported from the official MCP server (Apache-2.0,
-// runpod/runpod-mcp), minus its hosted-HTTP transport branches — this server
-// is stdio-only, so the stdio budgets apply.
+// runpod/runpod-mcp). Two transports serve these tools: local stdio
+// (5-minute wait budgets) and the hosted Vercel path, where the 60s gateway
+// reaper clamps every hold to HTTP_LONG_POLL_BUDGET_MS (see HOSTED below).
 
 import type { CuratedTool } from '../server.js';
 import type { ToolContext } from '../context.js';

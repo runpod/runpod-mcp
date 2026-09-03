@@ -2,6 +2,7 @@
 // exported seams (no server, no network).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   pollJobStatus,
   streamPollTimeoutMs,
@@ -95,4 +96,28 @@ test('streamPollTimeoutMs never exceeds remaining budget (above its floor)', () 
   assert.equal(streamPollTimeoutMs(3_000, 10_000), 3_000);
   assert.equal(streamPollTimeoutMs(500, 10_000), 2_000); // floor
   assert.equal(streamPollTimeoutMs(60_000, 10_000), 15_000); // hold + slack
+});
+
+test('the hosted budget clears vercel.json maxDuration with slack', () => {
+  // The cross-file invariant (re-homed from the deleted tests/http.test.ts):
+  // vercel.json's maxDuration is the platform clock, and the hosted wait
+  // ceiling must clear it with room for the credential pre-flight (4s), cold
+  // start, and serializing the reply. Moving either side without the other
+  // fails here, not in production.
+  const maxDuration = (
+    JSON.parse(
+      readFileSync(new URL('../vercel.json', import.meta.url), 'utf8')
+    ) as { functions?: Record<string, { maxDuration?: number }> }
+  ).functions?.['api/index.ts']?.maxDuration;
+  assert.ok(
+    typeof maxDuration === 'number',
+    'vercel.json no longer declares a maxDuration for api/index.ts'
+  );
+  const PRE_FLIGHT_MS = 4_000;
+  const SERIALIZE_AND_COLD_START_MS = 5_000;
+  assert.ok(
+    HTTP_LONG_POLL_BUDGET_MS + PRE_FLIGHT_MS + SERIALIZE_AND_COLD_START_MS <=
+      maxDuration * 1000,
+    `HTTP_LONG_POLL_BUDGET_MS (${HTTP_LONG_POLL_BUDGET_MS}) leaves no room under maxDuration (${maxDuration}s)`
+  );
 });

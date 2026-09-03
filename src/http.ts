@@ -29,15 +29,20 @@ function extractBearerToken(req: IncomingMessage): string | null {
   return parts[1];
 }
 
-function getBaseUrl(req: IncomingMessage): string {
+// Structural request type so the Vercel adapter (api/index.ts) can share this
+// proxy-header parsing instead of keeping a second copy.
+export function getBaseUrl(req: {
+  headers: { host?: string; 'x-forwarded-proto'?: string | string[] };
+}): string {
+  const protoHeader = req.headers['x-forwarded-proto'];
   const proto =
-    (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0] ??
-    'https';
+    (Array.isArray(protoHeader) ? protoHeader[0] : protoHeader)?.split(
+      ','
+    )[0] ?? 'https';
   const host = req.headers.host;
   if (!host) {
     throw new Error('Missing Host header');
   }
-
   return `${proto}://${host}`;
 }
 

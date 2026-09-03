@@ -1,7 +1,7 @@
 // Client for the Serverless runtime plane (job submission and lifecycle at
 // api.runpod.ai/v2/{endpointId}/...). This is a separate API from the v2
 // management spec the generated tools cover — RunPod publishes no OpenAPI
-// document for it, so the tools that use it are curated (src/tools/jobs.ts).
+// document for it, so the tools that use it are curated (src/specgen/tools/jobs.ts).
 
 import { HttpError, missingKeyError } from './http-error.js';
 import { withRateLimitHint } from '../../_shared/rate-limit.js';
