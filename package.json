@@ -74,7 +74,8 @@
     "tsx": "^4.7.0",
     "typescript": "^5.3.3",
     "yaml": "^2.9.0",
-    "@runpod/sdk": "file:vendor/runpod-sdk"
+    "@runpod/sdk": "file:vendor/runpod-sdk",
+    "convex": "^1.16.0"
   },
   "engines": {
     "node": ">=18",

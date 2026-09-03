@@ -171,7 +171,16 @@ release to reach local users.
 environment: production deployment -> prod Convex, preview/dev -> dev Convex. The
 stdio client never knows which; it only knows the ingest URL.
 
-### The discriminator is configuration, not transport
+### The discriminator is configuration, not transport — SUPERSEDED
+
+Decision (2026-09-03): **ALP is hosted-only.** The stdio entrypoint never
+registers the tools, so `npx` users cannot enable them; only a deployment that
+configures its sink (`ALP_SINK_URL` + `ALP_SINK_SECRET`) serves them. The
+original reasoning below is kept for history — the npx-users-are-good-signal
+argument may reopen this later, and the code structure (tools gated on a
+server option) makes that a one-line change in `src/stdio.ts`.
+
+### Original reasoning (historical)
 
 Making ALP hosted-only would be a mistake. A public user running
 `npx @runpod/mcp-server` with their own key and hitting a real bug is better
@@ -409,7 +418,15 @@ Two distinct leak surfaces, with different rules.
    makes the _architecture_ visible, which is fine and not a leak. What must never
    be visible is any _value_: deployment URLs, tokens, project ids, secrets.
 
-### Rule 0 — the Convex side lives in a private repo
+### Rule 0 — the Convex side lives in a private repo — SUPERSEDED
+
+Decision (2026-09-03): the Convex side lives in THIS repo, under `convex/` —
+one repo for the whole feature. It holds no values (the shared secret and
+deploy keys are env-only, and `convex/` is in neither the npm `files` list nor
+the Vercel build). Accepted consequence: the scrub ruleset is public, so it
+stays a best-effort pattern pass rather than a secret defense.
+
+### Original reasoning (historical)
 
 Public contributors work on the MCP tools. The Convex side is internal-only, and
 Convex deploys from its own directory independently of Vercel, so it does not need

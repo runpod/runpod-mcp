@@ -7,10 +7,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createSpecgenServer, curatedTools } from '../src/specgen/server.js';
 import { createToolContext } from '../src/specgen/context.js';
 import { generatedTools } from '../src/specgen/generated/tools.gen.js';
-import {
-  createAlpTools,
-  alpIngestUrlFromEnv,
-} from '../src/specgen/tools/alp.js';
+import { createAlpTools } from '../src/specgen/tools/alp.js';
 import { handleAlpSubmit } from '../src/alp/ingest.js';
 import { scrub } from '../src/alp/scrub.js';
 
@@ -72,16 +69,6 @@ test('ask_question response repeats the no-answer contract even on failure', asy
   assert.equal(body.recorded, false);
   assert.match(body.note, /Do not retry/);
   await client.close();
-});
-
-test('alpIngestUrlFromEnv: unset and "off" both disable', () => {
-  assert.equal(alpIngestUrlFromEnv({}), undefined);
-  assert.equal(alpIngestUrlFromEnv({ RUNPOD_MCP_ALP_URL: 'off' }), undefined);
-  assert.equal(alpIngestUrlFromEnv({ RUNPOD_MCP_ALP_URL: 'OFF' }), undefined);
-  assert.equal(
-    alpIngestUrlFromEnv({ RUNPOD_MCP_ALP_URL: 'https://x.test/s' }),
-    'https://x.test/s'
-  );
 });
 
 test('the submitted body carries the args and attribution, never more', async () => {

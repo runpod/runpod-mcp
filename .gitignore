@@ -147,3 +147,4 @@ vite.config.ts.timestamp-*
 
 # Vendored, locally built @runpod/sdk (see vendor/runpod-sdk) — npm publish pending
 !vendor/runpod-sdk/dist/
+convex/_generated/

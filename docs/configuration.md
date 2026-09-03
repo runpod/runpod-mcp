@@ -13,7 +13,7 @@ The server is v2-only (the v1 REST API and `RUNPOD_REST_VERSION` are retired). A
 | `RUNPOD_PUBLIC_GRAPHQL_URL` | `https://api.runpod.io/graphql` | Credential-free discovery (capacity, Hub, public endpoints) |
 | `RUNPOD_AUTHED_GRAPHQL_URL` | `https://api.runpod.io/graphql` | GraphQL writes that carry the caller's key — point only at a trusted host |
 
-ALP (Agent Learning Protocol) write tools are config-gated: on local stdio, set `RUNPOD_MCP_ALP_URL` to an ingest endpoint to enable `report_feedback` / `save_to_journal` / `ask_question` (`off` disables explicitly; unset = absent). On the hosted server they appear only when the deployment configures its sink (`ALP_SINK_URL` + `ALP_SINK_SECRET`). See `docs/agent-learning-protocol.md`.
+ALP (Agent Learning Protocol) write tools — `report_feedback` / `save_to_journal` / `ask_question` — are **hosted-only**: they appear only when the deployment configures its storage sink (`ALP_SINK_URL` + `ALP_SINK_SECRET`), and never on local stdio. See `docs/agent-learning-protocol.md`.
 
 To develop against a non-production API, pair the runtime override with the matching spec: `SPEC_URL=... pnpm spec:pull && pnpm generate:tools` (see `specgen/README.md`).
 

@@ -17,23 +17,11 @@ import type { ToolContext } from '../context.js';
 import type { CuratedTool } from '../server.js';
 import { ok } from './util.js';
 
-// Enablement follows configuration, not transport (design doc): the tools are
-// registered only when an ingest URL is configured, and absent from
-// tools/list otherwise — absent is unambiguous and free, present-but-failing
-// costs context and invites retries.
-//
-// - hosted: src/http.ts passes the deployment's own /api/alp/submit whenever
-//   ALP_SINK_URL is configured there (the endpoint answers "not recorded"
-//   without a sink, so don't advertise the tools).
-// - stdio: RUNPOD_MCP_ALP_URL opts in explicitly. Once the production
-//   endpoint serves ALP, this flips to default-on with `off` as the opt-out.
-export function alpIngestUrlFromEnv(
-  env: Record<string, string | undefined> = process.env
-): string | undefined {
-  const url = env.RUNPOD_MCP_ALP_URL?.trim();
-  if (!url || url.toLowerCase() === 'off') return undefined;
-  return url;
-}
+// HOSTED-ONLY by decision (2026-09-03): src/http.ts registers these tools
+// whenever the deployment configures its sink (ALP_SINK_URL + ALP_SINK_SECRET);
+// the stdio entrypoint never does, so local users cannot enable them. Absent
+// from tools/list is the disabled state — absent is unambiguous and free,
+// present-but-failing costs context and invites retries.
 
 const NOT_RECORDED =
   'The entry was NOT recorded. Do not retry — continue your task.';

@@ -2,7 +2,6 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { SERVER_VERSION } from './server.js';
 import { createSpecgenServer } from './specgen/server.js';
 import { createToolContext } from './specgen/context.js';
-import { alpIngestUrlFromEnv } from './specgen/tools/alp.js';
 
 // Detect the install wizard subcommand (`add` / `remove`). In this mode we run
 // the interactive installer instead of starting the stdio server, and the API
@@ -15,17 +14,14 @@ async function main(apiKey: string): Promise<void> {
   // One surface everywhere: stdio serves the same spec-generated tool set
   // and skill resources the hosted path serves (see specgen/DESIGN.md).
   // stdio keeps the 5-minute wait budgets — no gateway reaper applies here.
-  // ALP write tools: opt-in via RUNPOD_MCP_ALP_URL for now (`off` disables
-  // explicitly). Flips to a production default once the hosted endpoint
-  // serves ALP — see docs/agent-learning-protocol.md.
-  const alpUrl = alpIngestUrlFromEnv();
+  // ALP write tools are hosted-only by decision (docs/agent-learning-protocol.md):
+  // the stdio path never registers them, so local users cannot enable them.
   const server = createSpecgenServer(
     createToolContext({
       apiKey,
       tracking: { transport: 'stdio', serverVersion: SERVER_VERSION },
     }),
-    SERVER_VERSION,
-    alpUrl ? { alp: { ingestUrl: alpUrl, transport: 'stdio' } } : {}
+    SERVER_VERSION
   );
   await server.connect(new StdioServerTransport());
 }
