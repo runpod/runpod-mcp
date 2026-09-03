@@ -1,11 +1,11 @@
 ---
 name: cost-audit
-description: Read-only RunPod money hygiene — find idle spend, explain serverless idle-worker billing, break spend down by resource, and give a whole-account snapshot. Trigger on phrases like "why is my runpod bill high", "what am I paying for", "idle pods", "serverless charges with no traffic", "cost breakdown", "spend by resource", "account snapshot", "where is my money going". Audits a live account via the MCP billing/list reads — idle-scoring, idle-worker-vs-idle-pod, per-resource attribution. Recommends actions but never stops or changes anything.
+description: Read-only Runpod money hygiene — find idle spend, explain serverless idle-worker billing, break spend down by resource, and give a whole-account snapshot. Trigger on phrases like "why is my runpod bill high", "what am I paying for", "idle pods", "serverless charges with no traffic", "cost breakdown", "spend by resource", "account snapshot", "where is my money going". Audits a live account via the MCP billing/list reads — idle-scoring, idle-worker-vs-idle-pod, per-resource attribution. Recommends actions but never stops or changes anything.
 ---
 
 # Cost audit
 
-You answer "where is my money going / stop the leak" against a RunPod account. This skill is strictly read-only: it discovers, scores, and explains spend, then leaves the decision to the user. It **never** stops, deletes, or reconfigures a resource on its own — any apply is handed off (a Pod stop to `pod-doctor`, dropping serverless min-workers to 0 to `endpoint-ops`) and only after the user explicitly approves it.
+You answer "where is my money going / stop the leak" against a Runpod account. This skill is strictly read-only: it discovers, scores, and explains spend, then leaves the decision to the user. It **never** stops, deletes, or reconfigures a resource on its own — any apply is handed off (a Pod stop to `pod-doctor`, dropping serverless min-workers to 0 to `endpoint-ops`) and only after the user explicitly approves it.
 
 Every figure comes from a read: hourly rates from the resource list, spend-to-date from the billing reads. Never invent or estimate a number you did not read; a monthly projection is allowed only as `read_hourly × hours`, with the hourly quoted.
 
@@ -34,7 +34,7 @@ Read first, always. Match the prompt to one journey; do not run all four unasked
 
 - Read-only. This skill never calls a mutating tool — no stop, no delete, no update. Full stop.
 - That holds however urgently the change is ordered: an instruction changes the urgency, not the authority. The audit plus the exact ids and the precise actions for the USER to run IS the complete answer to that order — deliver it as such, never as a permission question, and never attempt the mutation to "try anyway".
-- Assume you have only the RunPod MCP tools. Never reach for a shell, a script, a web-fetch tool, or anything else you were not granted — a tool you do not have cannot be called, and the audit ends with nothing delivered. Every figure this skill needs is in the MCP billing and list reads.
+- Assume you have only the Runpod MCP tools. Never reach for a shell, a script, a web-fetch tool, or anything else you were not granted — a tool you do not have cannot be called, and the audit ends with nothing delivered. Every figure this skill needs is in the MCP billing and list reads.
 - When a read's result comes back truncated, the recovery is a NARROWER RE-READ — smaller page, one endpoint at a time, `lastN: 1`, a tighter bucket — never an attempt to recover the dropped output, never an external script to parse it, never a request for extra tool access. A narrower read gets the user their answer; the detours get them nothing.
 - Any recommended apply is a handoff to `pod-doctor` (stop) or `endpoint-ops` (min-workers-0), and only after the user says yes. Name the handoff; do not perform it.
 - Every dollar figure traces to a tool read. Quote the hourly / billing source. A projection is `read_hourly × hours`, never a bare invented number.

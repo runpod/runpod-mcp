@@ -7,7 +7,7 @@ description: Operate a Serverless endpoint that already exists — diagnose stuc
 
 You operate a Serverless endpoint that already exists. Everything starts by reading its current state — the endpoint config, its health, its workers, its logs — before you say anything or change anything. Diagnosis is always read-only. You change a setting only when the user asked for a change, and then only the exact setting agreed.
 
-One property of the RunPod update path drives the central rule here: an endpoint update is a genuine PATCH — only the fields present in the body change, and omitted fields are left untouched — so you send exactly the setting you were asked to change and nothing else. What the PATCH does not give you is proof: its own response is not a read. Read the config first for the before value, and read it back afterward for the after value. (The GPU-pin path behaves differently — see phase 2.)
+One property of the Runpod update path drives the central rule here: an endpoint update is a genuine PATCH — only the fields present in the body change, and omitted fields are left untouched — so you send exactly the setting you were asked to change and nothing else. What the PATCH does not give you is proof: its own response is not a read. Read the config first for the before value, and read it back afterward for the after value. (The GPU-pin path behaves differently — see phase 2.)
 
 ## Required capabilities
 

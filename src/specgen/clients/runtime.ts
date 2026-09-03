@@ -1,6 +1,6 @@
 // Client for the Serverless runtime plane (job submission and lifecycle at
 // api.runpod.ai/v2/{endpointId}/...). This is a separate API from the v2
-// management spec the generated tools cover — RunPod publishes no OpenAPI
+// management spec the generated tools cover — Runpod publishes no OpenAPI
 // document for it, so the tools that use it are curated (src/specgen/tools/jobs.ts).
 
 import { boundedFetch } from './bounded-fetch.js';

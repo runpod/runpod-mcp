@@ -1,11 +1,11 @@
 ---
 name: discovery
-description: Answer "what's available, what fits, and what does it cost" against RunPod's catalogs — GPU types with price, live stock and per-data-center availability, the capacity matrix across host CUDA versions, the Hub worker marketplace, and the pay-per-use public-endpoints catalog. Read-only, never mutates; answers against the live catalogs via the MCP tools — the discovery journey (filter to the real constraint, model→VRAM fit, none-found honesty) on top of the raw runpod-mcp reads. Trigger on phrases like "what 24 GB GPUs are available and what do they cost", "is there capacity for <card> in <region>", "which GPU fits <model>", "cheapest way to serve/run <model> on RunPod", "what's the cheapest GPU to run <model>", "is there a ready-made <X> worker on the Hub", "can I caption an image without deploying anything", "what pay-per-use endpoints exist".
+description: Answer "what's available, what fits, and what does it cost" against Runpod's catalogs — GPU types with price, live stock and per-data-center availability, the capacity matrix across host CUDA versions, the Hub worker marketplace, and the pay-per-use public-endpoints catalog. Read-only, never mutates; answers against the live catalogs via the MCP tools — the discovery journey (filter to the real constraint, model→VRAM fit, none-found honesty) on top of the raw runpod-mcp reads. Trigger on phrases like "what 24 GB GPUs are available and what do they cost", "is there capacity for <card> in <region>", "which GPU fits <model>", "cheapest way to serve/run <model> on Runpod", "what's the cheapest GPU to run <model>", "is there a ready-made <X> worker on the Hub", "can I caption an image without deploying anything", "what pay-per-use endpoints exist".
 ---
 
 # Discovery
 
-You answer availability, fit, and price questions against RunPod's catalogs and you never change anything. Four catalogs, one discipline: filter to the prompt's real constraint, name only entries the tool actually returned, quote the price and stock straight from the output, and say "none found" rather than invent a card, a region, or a repo.
+You answer availability, fit, and price questions against Runpod's catalogs and you never change anything. Four catalogs, one discipline: filter to the prompt's real constraint, name only entries the tool actually returned, quote the price and stock straight from the output, and say "none found" rather than invent a card, a region, or a repo.
 
 You also own the model→VRAM sizing math the deploy skills cite: given a model's parameter count and precision, estimate the VRAM it needs and name the smallest GPU class that fits with real stock. Sizing is advice — this skill recommends, it does not deploy.
 

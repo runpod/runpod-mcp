@@ -1,4 +1,4 @@
-// Client for the RunPod GraphQL API, used by the curated tools whose
+// Client for the Runpod GraphQL API, used by the curated tools whose
 // capability has no REST v2 home yet (Hub, capacity matrix, public endpoints,
 // endpoint GPU pinning). Two deliberately separate seams, mirroring the
 // official MCP server:

@@ -65,7 +65,7 @@ export const curatedTools: CuratedTool[] = [
 // This block is the maintained EXCERPT of the answer contract; the canonical
 // full text lives in skills/runpod/SKILL.md (the router skill). The rules the
 // two must state alike are pinned by tests/instructions.test.ts.
-export const SERVER_INSTRUCTIONS = `These tools cover the RunPod v2 REST surface: compute catalog (GPUs, CPUs, data centers, capacity), pods, serverless endpoints and jobs, templates, network volumes, container registries, billing, public endpoints, and the Hub.
+export const SERVER_INSTRUCTIONS = `These tools cover the Runpod v2 REST surface: compute catalog (GPUs, CPUs, data centers, capacity), pods, serverless endpoints and jobs, templates, network volumes, container registries, billing, public endpoints, and the Hub.
 
 Answer from live reads, as facts. Account and availability questions can only be answered from tool data: call the relevant list-/get- tool and quote the figures, names, and ids it returns verbatim. State stock and status definitively from the read you just made — never "probably" or "check later". When the user names a resource loosely ("my comfyui pod"), resolve it with a list- tool; ask only on genuine ambiguity. If nothing exists (no pods, zero spend), say exactly that — an honest empty answer is complete.
 
@@ -73,11 +73,11 @@ Commit; don't hedge, don't defer. Diagnosis means one most-likely cause plus its
 
 Mutations cost money and bind to what this conversation created. State the hourly price before creating anything billable, read before you mutate, and stop, update, or delete only resources your own tool calls created in this conversation — a name that looks like test junk is not attribution. For anything you cannot attribute, the complete answer is the audit: what you checked, what qualifies, the ids, and the exact actions for the user to take.
 
-These tools manage infrastructure only. They do not do SSH sessions, file transfer to or from pods, local image builds, or interactive terminals — say plainly when a task needs one of those and name the real path (the RunPod console, runpodctl) instead of improvising.
+These tools manage infrastructure only. They do not do SSH sessions, file transfer to or from pods, local image builds, or interactive terminals — say plainly when a task needs one of those and name the real path (the Runpod console, runpodctl) instead of improvising.
 
 SKILLS — READ BEFORE ACTING. This server publishes its task playbooks as MCP resources under runpod://skills/. Before the FIRST Runpod tool call of a session, read runpod://skills/runpod (the router): it maps the request to a journey skill — deploying an endpoint reads runpod://skills/serverless-deploy, diagnosing a broken pod reads runpod://skills/pod-doctor, cost questions read runpod://skills/cost-audit, and so on — and each journey skill carries the procedure, pitfalls, and report format for that task. A reply produced without the routed skill loaded is out of contract. List them all with resources/list.
 
-The tool schemas are generated from the RunPod v2 OpenAPI contract, served as a machine-readable document at https://api.runpod.io/v2/openapi.json — consult it for fields beyond the tool surface.`;
+The tool schemas are generated from the Runpod v2 OpenAPI contract, served as a machine-readable document at https://api.runpod.io/v2/openapi.json — consult it for fields beyond the tool surface.`;
 
 // Appended to the initialize briefing only when the ALP tools are enabled.
 const ALP_INSTRUCTIONS = `
@@ -296,7 +296,7 @@ export function createSpecgenServer(
   function errorHint(status: number): string | undefined {
     if (status === 400 || status === 422)
       return "Input shape mismatch: check this tool's schema for required fields. For job payloads, the worker's release config defines the expected input object — fix the payload and retry; don't abandon the task.";
-    if (status === 401) return 'The RunPod API key is missing or invalid.';
+    if (status === 401) return 'The Runpod API key is missing or invalid.';
     if (status === 402 || status === 403)
       return "Account balance or permissions: check get-billing / the account's balance before retrying billable operations.";
     if (status === 404)
@@ -304,7 +304,7 @@ export function createSpecgenServer(
     if (status === 429)
       return 'Rate limited: pause briefly, then retry the same call.';
     if (status >= 500)
-      return 'Upstream RunPod error: retry once; if it persists, report it as an API-side failure.';
+      return 'Upstream Runpod error: retry once; if it persists, report it as an API-side failure.';
     return undefined;
   }
 

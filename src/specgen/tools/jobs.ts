@@ -1,5 +1,5 @@
 // Curated tools for the Serverless runtime plane (job submission and
-// lifecycle at api.runpod.ai/v2/{endpointId}/...). RunPod publishes no OpenAPI
+// lifecycle at api.runpod.ai/v2/{endpointId}/...). Runpod publishes no OpenAPI
 // document for this plane, so these cannot be generated from the v2 spec;
 // behavior is ported from the official MCP server (Apache-2.0,
 // runpod/runpod-mcp). Two transports serve these tools: local stdio

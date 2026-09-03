@@ -1,4 +1,4 @@
-# Parity manifest against the official RunPod MCP server
+# Parity manifest against the official Runpod MCP server
 # (github.com/runpod/runpod-mcp at f20d987, 54 tools). Every tool the official
 # server exposes maps to a tool this server exposes; tests/old-mcp-parity.test.ts
 # enforces that each `to` target exists in the served surface.

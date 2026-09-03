@@ -1,19 +1,19 @@
 ---
 name: runpod
 description: >-
-  Start here for any RunPod task — running GPU/CPU pods, deploying serverless
+  Start here for any Runpod task — running GPU/CPU pods, deploying serverless
   endpoints, templates, network volumes, catalog and cost questions. Routes the
-  request to the right RunPod journey skill and defines the answer contract
-  every RunPod reply follows. All work happens through the connected RunPod
+  request to the right Runpod journey skill and defines the answer contract
+  every Runpod reply follows. All work happens through the connected Runpod
   MCP tools.
 ---
 
-# RunPod (router)
+# Runpod (router)
 
-The entrypoint for the RunPod skills. This skill does no infra work itself — it
+The entrypoint for the Runpod skills. This skill does no infra work itself — it
 picks the task skill for the request and it owns the **answer contract** below,
 which every reply follows. Every capability here is a structured MCP tool call
-against the connected RunPod server.
+against the connected Runpod server.
 
 ## Route by intent
 
@@ -31,16 +31,16 @@ against the connected RunPod server.
 
 ## Capability boundaries — state them, never fake them
 
-This interface manages infra through the RunPod MCP tools. It does NOT do:
+This interface manages infra through the Runpod MCP tools. It does NOT do:
 SSH sessions, file transfer to/from pods, local image builds, model downloads
 to volumes, or interactive terminals. When a task needs one of those, say
 plainly that it is not available through this interface and name what the user
-can do instead (e.g. the RunPod console or CLI tooling) — never improvise a
+can do instead (e.g. the Runpod console or CLI tooling) — never improvise a
 fake capability, never silently drop that part of the task.
 
 ## The answer contract
 
-Every RunPod reply follows these rules. Journey skills add journey-specific
+Every Runpod reply follows these rules. Journey skills add journey-specific
 rules and report templates; they never weaken these.
 
 **Facts come from tool reads, stated as facts.**

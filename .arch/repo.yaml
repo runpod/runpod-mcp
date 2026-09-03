@@ -115,7 +115,7 @@ failure_modes:
     detection: Unexpected tool responses
 
   - trigger: HTTP error (4xx/5xx) from Runpod API
-    impact: "Tool throws RunPod API Error with status and text"
+    impact: "Tool throws Runpod API Error with status and text"
     detection: MCP error response to client
 
 key_files:

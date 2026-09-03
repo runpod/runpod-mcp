@@ -1,4 +1,4 @@
-// Curated list-public-endpoints tool. RunPod Public Endpoints (managed
+// Curated list-public-endpoints tool. Runpod Public Endpoints (managed
 // pay-per-use model APIs) have no REST home — the catalog is the public
 // GraphQL query allAiApiPublicConfigs, served unauthenticated. Ported from
 // the official MCP server (Apache-2.0, runpod/runpod-mcp).
@@ -50,7 +50,7 @@ function parseMetadata(
 export const listPublicEndpoints: CuratedTool = {
   name: 'list-public-endpoints',
   description:
-    'List RunPod Public Endpoints — managed, pay-per-use model APIs (text, image, video, audio) that require no deployment. Public catalog, no auth required. Each result includes the endpointId to call with run-endpoint/runsync-endpoint (or via https://api.runpod.ai/v2/{endpointId}), the model name, modality, owner, and pricing. Only live endpoints are returned by default; set includeOffline:true to also list ones that are not currently live.',
+    'List Runpod Public Endpoints — managed, pay-per-use model APIs (text, image, video, audio) that require no deployment. Public catalog, no auth required. Each result includes the endpointId to call with run-endpoint/runsync-endpoint (or via https://api.runpod.ai/v2/{endpointId}), the model name, modality, owner, and pricing. Only live endpoints are returned by default; set includeOffline:true to also list ones that are not currently live.',
   inputSchema: {
     type: 'object',
     properties: {

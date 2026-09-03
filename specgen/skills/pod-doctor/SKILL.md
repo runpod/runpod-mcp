@@ -1,6 +1,6 @@
 ---
 name: pod-doctor
-description: Diagnose a RunPod Pod that is unreachable, GPU-blind, or stuck, then perform a recovery action only if the user authorizes one. Trigger on phrases like "pod 502", "can't reach my pod", "torch can't see the GPU", "cuda not available", "pod came back with no gpu", "did my model load", "read my pod logs", "is anything stuck on my account", "stop vs terminate my pod".
+description: Diagnose a Runpod Pod that is unreachable, GPU-blind, or stuck, then perform a recovery action only if the user authorizes one. Trigger on phrases like "pod 502", "can't reach my pod", "torch can't see the GPU", "cuda not available", "pod came back with no gpu", "did my model load", "read my pod logs", "is anything stuck on my account", "stop vs terminate my pod".
 ---
 
 # Pod doctor

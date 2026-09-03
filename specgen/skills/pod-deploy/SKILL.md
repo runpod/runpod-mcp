@@ -1,11 +1,11 @@
 ---
 name: pod-deploy
-description: Provision a RunPod Pod for interactive, dev, or training use and tell the user exactly how to connect to it. Checks stock before creating, picks a sensible image and GPU class, exposes the right ports, returns the working proxy URL, and for training co-locates a network volume so checkpoints survive the Pod. Also covers create-then-pause — stopping a fresh Pod so it stops billing without losing its disk. Trigger on phrases like "spin up a pod", "give me a GPU box", "interactive ComfyUI on a pod", "I need a pod with Jupyter", "a training pod for a fine-tune", "my first pod, deployed and reachable", "an SSH-able GPU machine", "pause it so it stops billing", "I'll continue tomorrow, don't lose anything".
+description: Provision a Runpod Pod for interactive, dev, or training use and tell the user exactly how to connect to it. Checks stock before creating, picks a sensible image and GPU class, exposes the right ports, returns the working proxy URL, and for training co-locates a network volume so checkpoints survive the Pod. Also covers create-then-pause — stopping a fresh Pod so it stops billing without losing its disk. Trigger on phrases like "spin up a pod", "give me a GPU box", "interactive ComfyUI on a pod", "I need a pod with Jupyter", "a training pod for a fine-tune", "my first pod, deployed and reachable", "an SSH-able GPU machine", "pause it so it stops billing", "I'll continue tomorrow, don't lose anything".
 ---
 
 # Pod deploy
 
-You provision one Pod the user asked for and hand back exactly how to reach it. Before creating anything you confirm the GPU class has real stock — a blind create into an out-of-stock class produces a Pod that never leaves provisioning. You pick a sensible image and the ports the workload actually needs (an app UI, Jupyter, SSH), and you return the RunPod proxy URL in its working form. For a training Pod you co-locate a network volume so checkpoints outlive the Pod's container disk.
+You provision one Pod the user asked for and hand back exactly how to reach it. Before creating anything you confirm the GPU class has real stock — a blind create into an out-of-stock class produces a Pod that never leaves provisioning. You pick a sensible image and the ports the workload actually needs (an app UI, Jupyter, SSH), and you return the Runpod proxy URL in its working form. For a training Pod you co-locate a network volume so checkpoints outlive the Pod's container disk.
 
 Creating a Pod is billable. State the hourly cost before you create it. Diagnosing or recovering a Pod that already exists is a different job — that is `pod-doctor`.
 
@@ -53,7 +53,7 @@ Named as capabilities; the tool serving each one on this server is in the per-se
 ## Error handling
 
 - Create returns `no gpu available` / a stock error → the class ran out between the read and the create; surface it and offer another class or region rather than retrying the same one.
-- The Pod reaches running but `publicIp`/`portMappings` are still empty → it is still initializing; poll `get-pod` until they populate before handing back a URL. This is RunPod API behavior, not a failure.
+- The Pod reaches running but `publicIp`/`portMappings` are still empty → it is still initializing; poll `get-pod` until they populate before handing back a URL. This is Runpod API behavior, not a failure.
 - The proxy URL 502s right after create → the app inside has not bound to the port yet, or bound to `127.0.0.1` instead of `0.0.0.0`; read the boot log to confirm before declaring the Pod broken (deeper diagnosis is `pod-doctor`).
 - `create-network-volume` returns a quota error → the account is at its volume quota; tell the user and stop.
 - A create call fails → report it and stop; do not retry blindly or create a second Pod.

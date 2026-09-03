@@ -1,11 +1,11 @@
 ---
 name: lifecycle-crud
-description: Create, verify (read-back), and manage the lifecycle of RunPod's reusable plumbing resources — templates, network volumes, and container registry credentials — plus caching model weights on a volume and diagnosing a private-registry pull failure. Trigger on phrases like "create a template", "reusable template", "make a network volume", "persistent storage", "cache weights on a volume", "add registry credentials", "private image won't pull", "clean up my template/volume".
+description: Create, verify (read-back), and manage the lifecycle of Runpod's reusable plumbing resources — templates, network volumes, and container registry credentials — plus caching model weights on a volume and diagnosing a private-registry pull failure. Trigger on phrases like "create a template", "reusable template", "make a network volume", "persistent storage", "cache weights on a volume", "add registry credentials", "private image won't pull", "clean up my template/volume".
 ---
 
 # Lifecycle CRUD
 
-You own the lifecycle of RunPod's reusable resources: templates, network volumes, and container registry credentials. The goal is a correctly provisioned resource the user can rely on: provision cleanly, confirm by reading the resource back, and leave it standing — tear down only when the user asked for a create-then-clean-up demo or explicit cleanup. Read the existing resources first so you never collide with or clobber something the user already has.
+You own the lifecycle of Runpod's reusable resources: templates, network volumes, and container registry credentials. The goal is a correctly provisioned resource the user can rely on: provision cleanly, confirm by reading the resource back, and leave it standing — tear down only when the user asked for a create-then-clean-up demo or explicit cleanup. Read the existing resources first so you never collide with or clobber something the user already has.
 
 ## Required capabilities
 
