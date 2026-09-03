@@ -19,7 +19,35 @@ interface GeneratorConfig {
 
 const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'patch'] as const;
 
-const spec = parse(readFileSync('specgen/spec/openapi.yaml', 'utf8'));
+// House style is "Runpod"; the upstream spec writes "RunPod" in a handful of
+// prose descriptions. The vendored spec is a verbatim copy of the live
+// production document (scripts/pull-spec.ts overwrites it wholesale, so a
+// local edit there is silently lost on the next re-vendor) — normalize on the
+// way INTO generation instead, which survives every spec:pull and keeps the
+// vendored file byte-identical to upstream. Only prose is touched: operation
+// ids, paths, and property names are never rewritten. Remove this once the
+// spelling is fixed upstream in rphttp2.
+function houseStyle<T>(node: T): T {
+  if (typeof node === 'string') return node.replaceAll('RunPod', 'Runpod') as T;
+  if (Array.isArray(node)) return node.map(houseStyle) as T;
+  if (node && typeof node === 'object') {
+    return Object.fromEntries(
+      Object.entries(node).map(([key, value]) => [
+        key,
+        key === 'description' || key === 'summary'
+          ? houseStyle(value)
+          : value && typeof value === 'object'
+            ? houseStyle(value)
+            : value,
+      ])
+    ) as T;
+  }
+  return node;
+}
+
+const spec = houseStyle(
+  parse(readFileSync('specgen/spec/openapi.yaml', 'utf8'))
+);
 const config: GeneratorConfig =
   parse(readFileSync('specgen/generator-config.yaml', 'utf8')) ?? {};
 const excluded = new Set(Object.keys(config.exclude ?? {}));

@@ -966,14 +966,14 @@ export const generatedTools: GeneratedTool[] = [
                   type: 'boolean',
                   default: false,
                   description:
-                    "Create-time flag telling the provisioner to start JupyterLab:\ninjects a generated `JUPYTER_PASSWORD` environment variable,\nunless the request already sets one. Only images that honor\nthe convention start Jupyter from it (RunPod official images\ndo); expose `8888/http` in `ports` to reach it.\n\nNot part of the pod's readable config — never returned by\nGET and not changeable by PATCH.\n",
+                    "Create-time flag telling the provisioner to start JupyterLab:\ninjects a generated `JUPYTER_PASSWORD` environment variable,\nunless the request already sets one. Only images that honor\nthe convention start Jupyter from it (Runpod official images\ndo); expose `8888/http` in `ports` to reach it.\n\nNot part of the pod's readable config — never returned by\nGET and not changeable by PATCH.\n",
                   examples: [true],
                 },
                 startSsh: {
                   type: 'boolean',
                   default: false,
                   description:
-                    "Create-time flag telling the provisioner to set up SSH\naccess: injects a `PUBLIC_KEY` environment variable carrying\nyour account's registered SSH public keys, unless the request\nalready sets one. **Requires registered keys** (`PUT\n/v2/account/ssh-keys`) — with none registered the flag does\nnothing and the pod has no SSH access. Only images that honor\nthe convention start sshd from it (all RunPod official images\ndo). Connect using the pod's `ssh` block; the `ssh.direct`\nvariant additionally needs a `22/tcp` entry in `ports`.\n\nNot part of the pod's readable config — never returned by\nGET and not changeable by PATCH.\n",
+                    "Create-time flag telling the provisioner to set up SSH\naccess: injects a `PUBLIC_KEY` environment variable carrying\nyour account's registered SSH public keys, unless the request\nalready sets one. **Requires registered keys** (`PUT\n/v2/account/ssh-keys`) — with none registered the flag does\nnothing and the pod has no SSH access. Only images that honor\nthe convention start sshd from it (all Runpod official images\ndo). Connect using the pod's `ssh` block; the `ssh.direct`\nvariant additionally needs a `22/tcp` entry in `ports`.\n\nNot part of the pod's readable config — never returned by\nGET and not changeable by PATCH.\n",
                   examples: [true],
                 },
                 templateId: {
@@ -1234,14 +1234,14 @@ export const generatedTools: GeneratedTool[] = [
                   type: 'boolean',
                   default: true,
                   description:
-                    'Start JupyterLab in containers created from this template:\ninjects a generated `JUPYTER_PASSWORD` environment variable,\nunless `env` already sets one. Only images that honor the\nconvention start Jupyter from it (RunPod official images do);\nexpose `8888/http` in `ports` to reach it. Defaults to `true`\nwhen omitted, matching console-created templates.\n',
+                    'Start JupyterLab in containers created from this template:\ninjects a generated `JUPYTER_PASSWORD` environment variable,\nunless `env` already sets one. Only images that honor the\nconvention start Jupyter from it (Runpod official images do);\nexpose `8888/http` in `ports` to reach it. Defaults to `true`\nwhen omitted, matching console-created templates.\n',
                   examples: [false],
                 },
                 startSsh: {
                   type: 'boolean',
                   default: true,
                   description:
-                    "Provision SSH access in containers created from this template:\ninjects a `PUBLIC_KEY` environment variable carrying the\ndeployer's registered SSH public keys (`PUT\n/v2/account/ssh-keys` — with none registered the flag does\nnothing), unless `env` already sets one. Only images that\nhonor the convention start sshd from it (all RunPod official\nimages do); direct SSH also needs a `22/tcp` entry in\n`ports`. Defaults to `true` when omitted, matching\nconsole-created templates.\n",
+                    "Provision SSH access in containers created from this template:\ninjects a `PUBLIC_KEY` environment variable carrying the\ndeployer's registered SSH public keys (`PUT\n/v2/account/ssh-keys` — with none registered the flag does\nnothing), unless `env` already sets one. Only images that\nhonor the convention start sshd from it (all Runpod official\nimages do); direct SSH also needs a `22/tcp` entry in\n`ports`. Defaults to `true` when omitted, matching\nconsole-created templates.\n",
                   examples: [true],
                 },
               },
@@ -2338,7 +2338,7 @@ export const generatedTools: GeneratedTool[] = [
     name: 'list-endpoint-builds',
     operationId: 'listEndpointBuilds',
     description:
-      "List serverless endpoint builds. Returns the endpoint's GitHub build history, newest first (RunPod GitHub-build integration). At most the 100 most recent builds are returned; any older build can still be fetched by id via `GET /v2/serverless/{id}/builds/{buildId}`. Stream a build's logs via `/v2/serverless/{id}/builds/{buildId}/logs`.",
+      "List serverless endpoint builds. Returns the endpoint's GitHub build history, newest first (Runpod GitHub-build integration). At most the 100 most recent builds are returned; any older build can still be fetched by id via `GET /v2/serverless/{id}/builds/{buildId}`. Stream a build's logs via `/v2/serverless/{id}/builds/{buildId}/logs`.",
     method: 'GET',
     path: '/v2/serverless/{id}/builds',
     params: [
