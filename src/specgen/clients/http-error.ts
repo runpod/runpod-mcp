@@ -12,3 +12,13 @@ export class HttpError extends Error {
     this.name = 'HttpError';
   }
 }
+
+// The one message for a credential-less call on a credentialed surface. Every
+// client throws this instead of sending `Bearer undefined` or a silently
+// unauthenticated request — runTool maps it onto a 401 tool result.
+export function missingKeyError(): HttpError {
+  return new HttpError(
+    'No Runpod API key: the request carried no usable credential.',
+    401
+  );
+}

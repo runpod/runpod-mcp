@@ -40,6 +40,35 @@ function baseUrl(): string {
   return process.env.RUNPOD_API_BASE_URL ?? DEFAULT_BASE_URL;
 }
 
+// The low-level MCP server never validates inputSchema, so the schema bounds
+// above are advisory. Re-derive the params here — otherwise a hostile
+// maxWaitMs holds the SSE socket open arbitrarily and a non-numeric tail goes
+// to the wire as ?tail=garbage.
+function clampInt(
+  value: unknown,
+  min: number,
+  max: number,
+  fallback: number | undefined
+): number | undefined {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (value === undefined || value === null || !Number.isFinite(n))
+    return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(n)));
+}
+
+const LOG_SOURCES = ['container', 'system', 'both'] as const;
+
+function logParams(args: Record<string, unknown>): LogSnapshotParams {
+  return {
+    source: LOG_SOURCES.includes(args.source as (typeof LOG_SOURCES)[number])
+      ? (args.source as LogSnapshotParams['source'])
+      : undefined,
+    tail: clampInt(args.tail, 0, 5000, undefined),
+    since: typeof args.since === 'string' ? args.since : undefined,
+    maxWaitMs: clampInt(args.maxWaitMs, 500, 30_000, undefined),
+  };
+}
+
 export const streamPodLogs: CuratedTool = {
   name: 'stream-pod-logs',
   description:
@@ -58,7 +87,7 @@ export const streamPodLogs: CuratedTool = {
         await collectLogSnapshot(
           ctx.sse,
           `${baseUrl()}/v2/pods/${encodeURIComponent(args.podId as string)}/logs`,
-          args as LogSnapshotParams
+          logParams(args)
         )
       )
     ),
@@ -89,7 +118,7 @@ export const streamWorkerLogs: CuratedTool = {
         await collectLogSnapshot(
           ctx.sse,
           `${baseUrl()}/v2/serverless/${encodeURIComponent(args.endpointId as string)}/workers/${encodeURIComponent(args.workerId as string)}/logs`,
-          args as LogSnapshotParams
+          logParams(args)
         )
       )
     ),

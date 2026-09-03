@@ -11,7 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { createRunpodClient, type RunpodClient } from '@runpod/sdk';
 import { buildTrackingHeaders } from '../_shared/tracking.js';
 import { createGraphqlClient, type GraphqlClient } from './clients/graphql.js';
-import { HttpError } from './clients/http-error.js';
+import { missingKeyError } from './clients/http-error.js';
 import { createRuntimeClient, type RuntimeClient } from './clients/runtime.js';
 import { createSseReader, type SseReader } from './clients/sse.js';
 
@@ -111,12 +111,7 @@ export function createToolContext(
     // tool result instead of killing the process.
     get sdk(): RunpodClient {
       if (!sdk) {
-        if (!apiKey) {
-          throw new HttpError(
-            'No Runpod API key: the request carried no usable credential.',
-            401
-          );
-        }
+        if (!apiKey) throw missingKeyError();
         sdk = createRunpodClient({ apiKey, fetch: sdkFetch });
       }
       return sdk;

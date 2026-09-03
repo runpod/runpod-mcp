@@ -5,7 +5,7 @@
 // time- and byte-bounded snapshot instead. Ported from the official MCP
 // server's reader (Apache-2.0, runpod/runpod-mcp).
 
-import { HttpError } from './http-error.js';
+import { HttpError, missingKeyError } from './http-error.js';
 
 // One parsed log frame. A payload that isn't a JSON object is kept verbatim
 // under `raw`.
@@ -64,6 +64,7 @@ export function createSseReader(
   const fetchImpl = options.fetchImpl ?? fetch;
 
   return async (url, opts) => {
+    if (!apiKey) throw missingKeyError();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), opts.maxWaitMs);
     const chunks: Uint8Array[] = [];

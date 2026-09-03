@@ -3,7 +3,7 @@
 // management spec the generated tools cover — RunPod publishes no OpenAPI
 // document for it, so the tools that use it are curated (src/tools/jobs.ts).
 
-import { HttpError } from './http-error.js';
+import { HttpError, missingKeyError } from './http-error.js';
 import { withRateLimitHint } from '../../_shared/rate-limit.js';
 
 export const DEFAULT_SERVERLESS_BASE_URL = 'https://api.runpod.ai/v2';
@@ -38,12 +38,7 @@ export function createRuntimeClient(
   const fetchImpl = options.fetchImpl ?? fetch;
 
   return async (endpointId, path, opts = {}) => {
-    if (!apiKey) {
-      throw new HttpError(
-        'No Runpod API key: the request carried no usable credential.',
-        401
-      );
-    }
+    if (!apiKey) throw missingKeyError();
     const response = await fetchImpl(`${baseUrl}/${endpointId}${path}`, {
       method: opts.method ?? 'GET',
       headers: {

@@ -11,7 +11,7 @@
 // Separate env vars despite the identical default, so the credential-free
 // path can be pointed at a stub without the key following it.
 
-import { HttpError } from './http-error.js';
+import { HttpError, missingKeyError } from './http-error.js';
 
 export const DEFAULT_GRAPHQL_URL = 'https://api.runpod.io/graphql';
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -86,6 +86,12 @@ export function createGraphqlClient(
 
   return {
     public: (query) => request(publicUrl, query),
-    authed: (query, variables) => request(authedUrl, query, variables, apiKey),
+    authed: (query, variables) => {
+      // A key-less authed call must 401 up front, not go out unauthenticated
+      // and come back as an opaque gateway error that never trips
+      // onUnauthorized.
+      if (!apiKey) throw missingKeyError();
+      return request(authedUrl, query, variables, apiKey);
+    },
   };
 }
