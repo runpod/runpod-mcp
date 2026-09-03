@@ -33,6 +33,12 @@ export interface ToolCallEvent {
 
 const CAPTURE_TIMEOUT_MS = 3_000;
 
+// Durable generation marker for v1-vs-v2 attribution, independent of the npm
+// package version: '2' is the spec-generated surface (v1 was the hand-written
+// tool set). Bump on surface generations ('3') or notable revisions ('2.1').
+// Keep in sync with the `surface=` User-Agent token in _shared/tracking.ts.
+export const SURFACE_VERSION = '2';
+
 function posthogHost(): string {
   return process.env.POSTHOG_HOST || 'https://us.i.posthog.com';
 }
@@ -81,6 +87,7 @@ export function captureToolCall(
         duration_ms: event.durationMs,
         transport: event.transport,
         server_version: event.serverVersion,
+        surface_version: SURFACE_VERSION,
         ...(event.clientName ? { client_name: event.clientName } : {}),
         $process_person_profile: false,
       },

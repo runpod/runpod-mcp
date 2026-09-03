@@ -45,7 +45,7 @@ describe('tracking headers', () => {
     });
     assert.equal(
       h['User-Agent'],
-      'runpod-mcp-server/1.3.0 (caller=mcp; client=Cursor; client_version=1.2.3; transport=stdio)'
+      'runpod-mcp-server/1.3.0 (caller=mcp; surface=v2; client=Cursor; client_version=1.2.3; transport=stdio)'
     );
     assert.equal(h['X-Runpod-Session-Id'], 'sid-1');
   });

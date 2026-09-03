@@ -114,6 +114,15 @@ export function createSpecgenServer(
     }
   );
 
+  // The stdio transport only learns which client is driving from the MCP
+  // initialize handshake — feed it into the outbound tracking User-Agent
+  // (the hosted path already resolves identity from the inbound UA).
+  server.oninitialized = () => {
+    const clientInfo = server.getClientVersion();
+    if (clientInfo?.name)
+      ctx.setClientInfo?.(clientInfo.name, clientInfo.version);
+  };
+
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       ...curatedTools.map(({ name, description, inputSchema }) => ({

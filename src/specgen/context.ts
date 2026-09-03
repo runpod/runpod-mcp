@@ -27,6 +27,10 @@ export interface ToolContext {
   sse: SseReader;
   /** The key this context authenticates with (hosted: the caller's bearer token). */
   apiKey: string | undefined;
+  /** Late-bind the calling client's identity into the tracking User-Agent.
+   *  The stdio transport only learns it from the MCP initialize handshake,
+   *  which happens after this context is built. No-op without tracking. */
+  setClientInfo?: (name: string, version?: string) => void;
 }
 
 export interface ToolContextOptions {
@@ -75,11 +79,17 @@ export function createToolContext(
   // client on every outbound API request. The session id is per-context —
   // per-request on hosted, per-process on stdio.
   let fetchImpl: typeof fetch = fetch;
+  let setClientInfo: ToolContext['setClientInfo'];
   if (options.tracking) {
-    const headers = buildTrackingHeaders({
-      ...options.tracking,
-      sessionId: randomUUID(),
-    });
+    // Mutable so the stdio handshake can late-bind clientInfo; headers are
+    // rebuilt only when it changes.
+    const tracking = { ...options.tracking, sessionId: randomUUID() };
+    let headers = buildTrackingHeaders(tracking);
+    setClientInfo = (name, version) => {
+      tracking.clientName = name;
+      tracking.clientVersion = version;
+      headers = buildTrackingHeaders(tracking);
+    };
     fetchImpl = (input, init) => {
       // openapi-fetch calls fetch with a fully-built Request as `input`
       // (headers inside it, no init); other clients pass (url, init). Fold
@@ -105,6 +115,7 @@ export function createToolContext(
 
   return {
     apiKey,
+    setClientInfo,
     // Built on first use, not at startup. The SDK client constructor throws
     // when no API key is present, and the MCP handshake plus tools/list are a
     // credential-free surface — a client must be able to start the server and

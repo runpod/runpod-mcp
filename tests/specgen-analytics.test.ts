@@ -74,6 +74,7 @@ test('the event schema is the closed allowlist — no argument-shaped fields', (
     'ok',
     'server_version',
     'status',
+    'surface_version',
     'tool',
     'transport',
   ]);

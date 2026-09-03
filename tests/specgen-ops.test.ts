@@ -218,3 +218,43 @@ test('boundedFetch deadline covers the body read, not just the headers', async (
   );
   assert.ok(Date.now() - started < 5_000);
 });
+
+test('the stdio handshake clientInfo lands in the outbound User-Agent', async () => {
+  const { createSpecgenServer } = await import('../src/specgen/server.js');
+  const { createToolContext } = await import('../src/specgen/context.js');
+  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+  const { InMemoryTransport } = await import(
+    '@modelcontextprotocol/sdk/inMemory.js'
+  );
+  const realFetch = globalThis.fetch;
+  const agents: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const h =
+      input instanceof Request ? input.headers : new Headers(init?.headers);
+    agents.push(h.get('user-agent') ?? '');
+    return new Response('{}', {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as typeof fetch;
+  try {
+    const server = createSpecgenServer(
+      createToolContext({
+        apiKey: 'rpa_test',
+        tracking: { transport: 'stdio', serverVersion: 'test' },
+        sdkRetry: false,
+      }),
+      'test'
+    );
+    const client = new Client({ name: 'claude-code', version: '9.9.9' });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(st), client.connect(ct)]);
+    await client.callTool({ name: 'list-pods', arguments: {} });
+    await client.close();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(agents.length, 1);
+  assert.match(agents[0], /client=claude-code; client_version=9\.9\.9/);
+  assert.match(agents[0], /surface=v2/);
+});
