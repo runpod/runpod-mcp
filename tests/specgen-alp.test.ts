@@ -148,7 +148,9 @@ test('ingest keys the row on the resolved account id and forwards the secret', a
         headers: init?.headers as Record<string, string>,
         body: JSON.parse(String(init?.body)) as Record<string, unknown>,
       });
-      return new Response('{}', { status: 200 });
+      return new Response(JSON.stringify({ ok: true, id: 'row_1' }), {
+        status: 200,
+      });
     }) as typeof fetch,
     env: { ALP_SINK_URL: 'https://sink.test', ALP_SINK_SECRET: 's3cret' },
   });
@@ -176,6 +178,28 @@ test('ingest is honest when no sink is configured', async () => {
   assert.equal(written.statusCode, 200);
   const body = JSON.parse(written.body!);
   assert.equal(body.recorded, false);
+  assert.match(body.note, /Do not retry/);
+});
+
+// Regression: a wrong ALP_SINK_URL answering 200 without the sink's own
+// { ok, id } body must NOT be reported as recorded. Observed live on the
+// preview deployment (2026-09-03): three acked submissions, zero stored rows.
+test('a 200 from the wrong host is not a stored write', async () => {
+  const { req, res, written } = fakeReqRes(
+    { authorization: 'Bearer rpa_live' },
+    { route: 'feedback', content: 'went to the void' }
+  );
+  await handleAlpSubmit(req, res, {
+    verify: async () => ({ status: 'valid', accountId: 'user_42' }),
+    // A static page: 200, but nothing resembling the sink's contract.
+    sinkFetch: (async () =>
+      new Response('<html>hello</html>', { status: 200 })) as typeof fetch,
+    env: { ALP_SINK_URL: 'https://wrong.test', ALP_SINK_SECRET: 's3cret' },
+  });
+  assert.equal(written.statusCode, 200);
+  const body = JSON.parse(written.body!);
+  assert.equal(body.recorded, false);
+  assert.match(body.note, /did not confirm/);
   assert.match(body.note, /Do not retry/);
 });
 

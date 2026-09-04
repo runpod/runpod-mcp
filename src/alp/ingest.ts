@@ -163,6 +163,22 @@ export async function handleAlpSubmit(
       send(200, notRecorded('the store did not accept the write'));
       return;
     }
+    // A 200 is not enough. Any misconfigured sink host answers 200 to a POST
+    // (a static page, a redirect target, another app's root), and treating
+    // that as success reports recorded: true while nothing is stored — a
+    // silent data loss that no log line and no ack can distinguish from a
+    // real write. Verified once by a wrong ALP_SINK_URL on the preview
+    // deployment (2026-09-03): three submissions acked, zero rows. Require
+    // the sink's own contract instead: { ok: true, id }.
+    const sinkBody = (await response.json().catch(() => null)) as {
+      ok?: boolean;
+      id?: string;
+    } | null;
+    if (sinkBody?.ok !== true || typeof sinkBody.id !== 'string') {
+      console.warn('alp_sink_unrecognized', { status: response.status });
+      send(200, notRecorded('the store did not confirm the write'));
+      return;
+    }
   } catch {
     console.warn('alp_sink_unreachable');
     send(200, notRecorded('the store is unreachable right now'));
