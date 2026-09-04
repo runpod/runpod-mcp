@@ -8,7 +8,7 @@ import { createSpecgenServer, curatedTools } from '../src/specgen/server.js';
 import { createToolContext } from '../src/specgen/context.js';
 import { generatedTools } from '../src/specgen/generated/tools.gen.js';
 import { createAlpTools } from '../src/specgen/tools/alp.js';
-import { handleAlpSubmit } from '../src/alp/ingest.js';
+import { handleAlpSubmit, isSinkUrl } from '../src/alp/ingest.js';
 import { scrub } from '../src/alp/scrub.js';
 
 const ALP_NAMES = ['report_feedback', 'save_to_journal', 'ask_question'];
@@ -152,7 +152,10 @@ test('ingest keys the row on the resolved account id and forwards the secret', a
         status: 200,
       });
     }) as typeof fetch,
-    env: { ALP_SINK_URL: 'https://sink.test', ALP_SINK_SECRET: 's3cret' },
+    env: {
+      ALP_SINK_URL: 'https://sink-test-1.convex.site/alp/submit',
+      ALP_SINK_SECRET: 's3cret',
+    },
   });
   assert.equal(written.statusCode, 200);
   assert.equal(JSON.parse(written.body!).recorded, true);
@@ -194,13 +197,48 @@ test('a 200 from the wrong host is not a stored write', async () => {
     // A static page: 200, but nothing resembling the sink's contract.
     sinkFetch: (async () =>
       new Response('<html>hello</html>', { status: 200 })) as typeof fetch,
-    env: { ALP_SINK_URL: 'https://wrong.test', ALP_SINK_SECRET: 's3cret' },
+    env: {
+      ALP_SINK_URL: 'https://sink-test-1.convex.site/alp/submit',
+      ALP_SINK_SECRET: 's3cret',
+    },
   });
   assert.equal(written.statusCode, 200);
   const body = JSON.parse(written.body!);
   assert.equal(body.recorded, false);
   assert.match(body.note, /did not confirm/);
   assert.match(body.note, /Do not retry/);
+});
+
+// A sink URL that is not shaped like the sink is a config error, not a write.
+test('a sink URL that is not the sink is refused before any request', async () => {
+  let called = false;
+  const { req, res, written } = fakeReqRes(
+    { authorization: 'Bearer rpa_live' },
+    { route: 'feedback', content: 'nowhere to go' }
+  );
+  await handleAlpSubmit(req, res, {
+    verify: async () => ({ status: 'valid', accountId: 'user_42' }),
+    sinkFetch: (async () => {
+      called = true;
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch,
+    env: {
+      ALP_SINK_URL: 'https://example.com/alp/submit',
+      ALP_SINK_SECRET: 's3cret',
+    },
+  });
+  assert.equal(JSON.parse(written.body!).recorded, false);
+  assert.match(JSON.parse(written.body!).note, /misconfigured/);
+  assert.equal(called, false, 'no request should leave for a bad sink URL');
+});
+
+test('isSinkUrl accepts only a Convex ingest action', () => {
+  assert.ok(isSinkUrl('https://cautious-mallard-692.convex.site/alp/submit'));
+  assert.ok(!isSinkUrl('http://a.convex.site/alp/submit'), 'http');
+  assert.ok(!isSinkUrl('https://a.convex.site/'), 'wrong path');
+  assert.ok(!isSinkUrl('https://a.convex.cloud/alp/submit'), 'wrong host');
+  assert.ok(!isSinkUrl('https://evil.test/alp/submit'), 'wrong host');
+  assert.ok(!isSinkUrl('not a url'), 'unparseable');
 });
 
 test('scrub catches the obvious credential shapes', () => {

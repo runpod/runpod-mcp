@@ -50,6 +50,20 @@ export interface AlpIngestOptions {
   env?: Record<string, string | undefined>;
 }
 
+/** The sink is a Convex HTTP action, always. Anything else is a typo. */
+export function isSinkUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === 'https:' &&
+      url.hostname.endsWith('.convex.site') &&
+      url.pathname === '/alp/submit'
+    );
+  } catch {
+    return false;
+  }
+}
+
 function notRecorded(reason: string): Record<string, unknown> {
   return {
     recorded: false,
@@ -118,6 +132,16 @@ export async function handleAlpSubmit(
     send(200, notRecorded('ingest is not configured on this deployment'));
     return;
   }
+  // Refuse a sink URL that is not shaped like the sink. Vercel stores these as
+  // Secret-type values, which cannot be read back — so a wrong one is invisible
+  // to inspection and only shows up as missing rows. The sink is always a
+  // Convex HTTP action; anything else is a config error, and saying so in the
+  // log beats discovering it from an empty table later.
+  if (!isSinkUrl(sinkUrl)) {
+    console.warn('alp_sink_misconfigured');
+    send(200, notRecorded('ingest is misconfigured on this deployment'));
+    return;
+  }
 
   const content = scrub(body.content.slice(0, MAX_CONTENT_CHARS));
   const intention =
@@ -147,6 +171,7 @@ export async function handleAlpSubmit(
 
   // Awaited, not fire-and-forget: Vercel can freeze the function the moment
   // the response returns, so an unawaited write may silently vanish.
+  let storedId: string;
   try {
     const sinkFetch = opts.sinkFetch ?? fetch;
     const response = await sinkFetch(sinkUrl, {
@@ -179,6 +204,7 @@ export async function handleAlpSubmit(
       send(200, notRecorded('the store did not confirm the write'));
       return;
     }
+    storedId = sinkBody.id;
   } catch {
     console.warn('alp_sink_unreachable');
     send(200, notRecorded('the store is unreachable right now'));
@@ -186,12 +212,17 @@ export async function handleAlpSubmit(
   }
 
   // One log line, same privacy rules as tool_call: never the content.
+  // `row` is the sink's own document id: the one field here that cannot exist
+  // unless a write actually happened. Everything else was known before the
+  // request went out, which is why the old log line looked healthy while
+  // nothing was being stored.
   console.log(
     'alp_submit',
     JSON.stringify({
       route: body.route,
       transport: body.transport,
       redactions: row.redactions,
+      row: storedId,
     })
   );
   send(200, { recorded: true });
