@@ -601,7 +601,7 @@ export const retryJob: CuratedTool = {
 export const endpointHealth: CuratedTool = {
   name: 'endpoint-health',
   description:
-    'Get the endpoint-level health rollup for a Serverless endpoint: worker counts by state plus job queue statistics. This is the runtime plane\'s own /health view and it can lag or disagree with the per-worker truth — when a job is stuck IN_QUEUE, treat list-endpoint-workers as the authority on whether a worker is UNHEALTHY (crash-looping container; read it with stream-worker-logs), and note that get-job-status already attaches that worker summary and a hint on every IN_QUEUE result. Zero workers here means the endpoint is waiting for GPU capacity.',
+    "Get the endpoint-level health rollup for a Serverless endpoint: worker counts by state plus job queue statistics. This is the runtime plane's own /health view and it can lag or disagree with the per-worker truth — when a job is stuck IN_QUEUE, treat list-endpoint-workers as the authority on whether a worker is UNHEALTHY (crash-looping container; read it with stream-worker-logs), and note that get-job-status already attaches that worker summary and a hint on every IN_QUEUE result. Zero workers here means the endpoint is waiting for GPU capacity.",
   inputSchema: {
     type: 'object',
     properties: {

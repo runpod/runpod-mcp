@@ -10,6 +10,14 @@ env var on both the Convex deployment (`npx convex env set`) and Vercel; the
 ingest action rejects any request that does not present it, which makes the
 Vercel server the only caller.
 
+The deployment name is deliberately not written down here (Rule 1: no
+infrastructure values in a public repo). Resolve it from the linked Convex
+project when you need it, then inspect what the sink stored:
+
+```bash
+npx convex data submissions --deployment <name>
+```
+
 Deploy (per environment, using that environment's deploy key):
 
 ```bash
