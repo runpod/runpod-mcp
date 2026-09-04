@@ -34,7 +34,11 @@ import { createHash } from 'node:crypto';
 // never cached — caching one lets a revoked credential skip the 401 for a full
 // TTL, which is the behaviour this module exists to remove.
 export type CredentialVerdict =
-  | { status: 'valid' }
+  // accountId is the probe's `myself.id` — the stable account identity behind
+  // the token. Carried so consumers (anonymous analytics) can identify a USER
+  // across key rotations without any additional API call; may be absent when
+  // the check was skipped or failed open.
+  | { status: 'valid'; accountId?: string }
   | { status: 'invalid'; reason: string }
   | { status: 'unknown' };
 
@@ -48,9 +52,9 @@ export interface CredentialCheckerHandle {
   invalidate: (token: string) => void;
 }
 
-// Named AuthProbeFetch/AuthProbeResponse, not FetchLike: _shared/http.ts already
-// owns that name for a stricter, incompatible shape, and backend.ts documents the
-// same convention for its own ProbeFetch.
+// Named AuthProbeFetch/AuthProbeResponse, not FetchLike: kept distinct from
+// the fetch-shaped types the specgen clients use, since this probe needs only
+// this narrow shape.
 interface AuthProbeResponse {
   ok: boolean;
   status: number;
@@ -76,7 +80,7 @@ const INVALID_TTL_MS = 30_000;
 // The pre-flight blocks the MCP request, so a slow auth backend must not be
 // able to hold it open. Without this the request hangs until the platform's own
 // limit (Vercel maxDuration 60s) turns it into a 504 — failing OPEN covers an
-// erroring backend but not a slow one. Matches PROBE_TIMEOUT_MS in backend.ts.
+// erroring backend but not a slow one. Mirrors the old backend resolver's probe deadline.
 const REQUEST_TIMEOUT_MS = 4000;
 // Cap so a stream of one-off tokens cannot grow the map without bound: entries
 // expire lazily (only on a repeat lookup of the same token), and an unauthed
@@ -158,7 +162,8 @@ export function createCredentialChecker(deps: {
         data?: { myself?: { id?: string } | null };
         errors?: unknown[];
       };
-      if (result?.data?.myself?.id) return { status: 'valid' };
+      if (result?.data?.myself?.id)
+        return { status: 'valid', accountId: result.data.myself.id };
       // A GraphQL response that carries errors is NOT authoritative about the
       // credential. Per the GraphQL spec a resolver failure on the nullable
       // `myself` field answers HTTP 200 with `myself: null` AND an `errors`

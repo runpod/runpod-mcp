@@ -2,7 +2,8 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import fetch from 'node-fetch';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { handleMcpRequest } from '../src/http.js';
+import { getBaseUrl, handleMcpRequest } from '../src/http.js';
+import { handleAlpSubmit } from '../src/alp/ingest.js';
 import {
   isLoopbackHost,
   validatePkceAuthorization,
@@ -27,17 +28,6 @@ const PACKAGE_VERSION: string = (() => {
 // Verbose logging gate. The authorize/token flows log request ids (which are
 // live, single-use auth codes) only when MCP_VERBOSE_LOGS=true.
 const VERBOSE = process.env.MCP_VERBOSE_LOGS === 'true';
-
-function getBaseUrl(req: VercelRequest): string {
-  const proto =
-    (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0] ??
-    'https';
-  const host = req.headers.host;
-  if (!host) {
-    throw new Error('Missing Host header');
-  }
-  return `${proto}://${host}`;
-}
 
 /**
  * Runpod GraphQL endpoint used by the OAuth authorize flow (the flash backend).
@@ -98,8 +88,8 @@ function sleep(ms: number): Promise<void> {
 // vercel.json's 60s maxDuration for api/index.ts. A flash backend that accepts
 // the connection and goes quiet would otherwise hang the OAuth handshake until
 // the platform reaps it — a blank 504 on the one flow the user cannot retry
-// their way out of, since they have no credential yet. Tool requests get the
-// same treatment through createHttpClient (src/_shared/http.ts); these calls
+// their way out of, since they have no credential yet. Tool requests carry
+// their own deadlines (src/specgen/context.ts and clients/); these calls
 // build their own request, so they are bounded here.
 // Exported so the parsing test asserts the real fallback, not a copy of it.
 export const DEFAULT_FLASH_GRAPHQL_TIMEOUT_MS = 10_000;
@@ -142,7 +132,7 @@ export function getFlashTimeoutMs(): number {
 }
 
 // Deadline for one /token poll: the per-call deadline, never past what is left
-// of the whole poll. The sibling of streamPollTimeoutMs in src/tools/jobs.ts.
+// of the whole poll. The sibling of streamPollTimeoutMs in src/specgen/tools/jobs.ts.
 // No floor is needed — the loop below will not start a read at all once the
 // budget is down to MIN_TOKEN_POLL_REMAINDER_MS.
 function tokenPollDeadlineMs(remainingMs: number): number {
@@ -234,7 +224,7 @@ async function createFlashAuthRequest(codeChallenge: string): Promise<string> {
   const parts: string[] = [];
   const apiKeyName = getApiKeyName();
   if (apiKeyName) parts.push(`apiKeyName: ${JSON.stringify(apiKeyName)}`);
-  // These fields require the DR-1398 backend schema to be deployed.
+  // These fields require the PKCE-aware flash auth backend schema.
   parts.push(`codeChallenge: ${JSON.stringify(codeChallenge)}`);
   parts.push('codeChallengeMethod: "S256"');
   const args = parts.length ? `(${parts.join(', ')})` : '';
@@ -676,6 +666,16 @@ export default async function handler(
 
   if (req.method === 'GET' && pathname === '/authorize') {
     await handleAuthorize(req, res);
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/alp/submit') {
+    await handleAlpSubmit(
+      req as unknown as import('node:http').IncomingMessage & {
+        body?: unknown;
+      },
+      res as unknown as import('node:http').ServerResponse
+    );
     return;
   }
 

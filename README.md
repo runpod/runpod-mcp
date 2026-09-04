@@ -1,7 +1,5 @@
 # Runpod MCP server
 
-[![smithery badge](https://smithery.ai/badge/@runpod/runpod-mcp-ts)](https://smithery.ai/server/@runpod/runpod-mcp-ts)
-
 The official Runpod Model Context Protocol (MCP) server. It lets MCP clients such as Claude Code, Claude Desktop, Cursor, Windsurf, and VS Code manage your Runpod Pods, Serverless endpoints, templates, network volumes, and more.
 
 **We host it for you at [`https://mcp.getrunpod.io/`](https://mcp.getrunpod.io/)** — point your client at that URL and sign in with Runpod. Nothing to install, no API key on disk. Or run it locally from npm as [`@runpod/mcp-server`](https://www.npmjs.com/package/@runpod/mcp-server).
@@ -71,7 +69,13 @@ claude mcp add --transport http runpod -s user https://mcp.getrunpod.io/
 
 An OAuth-capable client starts the "Sign in with Runpod" flow automatically on first connect: it opens a browser, you log in to the Runpod console and approve, and the server obtains a Runpod API key scoped to your session. Nothing is stored on disk.
 
+> **Which account does OAuth pick?** The key is minted for whichever account or team profile your browser's console session has selected when you approve. If you belong to multiple teams, switch to the right profile in the [console](https://console.runpod.io) first (or check afterwards — the resources the tools return are that profile's). To change it later, switch profiles in the console and re-authenticate from your MCP client.
+
 > Prefer your own API key over OAuth? Append `--header "Authorization: Bearer YOUR_API_KEY"` to the `claude mcp add` command (or add a `headers` block in the JSON). The server forwards that key to the Runpod API directly.
+
+### Usage analytics
+
+The hosted server records one anonymous event per tool call (tool name, status, duration, transport — never your API key, arguments, or any resource data; your identity is an irreversible salted hash). To opt out, send the header `X-Runpod-Analytics: off` — e.g. append `--header "X-Runpod-Analytics: off"` to the `claude mcp add` command. Running locally, nothing is ever sent.
 
 ## Run locally with `npx`
 
@@ -79,12 +83,6 @@ Run the server as a local `stdio` process with your own API key:
 
 ```bash
 RUNPOD_API_KEY=YOUR_API_KEY npx -y @runpod/mcp-server@latest
-```
-
-Or install via [Smithery](https://smithery.ai/server/@runpod/runpod-mcp-ts):
-
-```bash
-npx -y @smithery/cli install @runpod/runpod-mcp-ts --client claude
 ```
 
 ### Local client setup
@@ -138,9 +136,26 @@ Create a Serverless endpoint named my-endpoint with image
 runpod/test-output:0.0.1, GPU pool AMPERE_80, 0 min workers, 3 max workers.
 ```
 
-On the v2 API (the default), endpoints are image-based — pass an image and a GPU pool (a `pool` value from `list-gpu-types`), not a template.
+Endpoints are image-based — pass an image and a GPU pool (a `pool` value from `list-gpu-types`), not a template.
 
-See [`docs/configuration.md`](docs/configuration.md) for REST v1/v2 selection and the `templateId` migration note, private image pull (registry credentials vs ECR delegation), and large-output handling.
+See [`docs/configuration.md`](docs/configuration.md) for host overrides, private image pull (registry credentials vs ECR delegation), and large-output handling.
+
+## The tool surface
+
+Hosted and local serve the **same** surface: 68 tools generated from the v2
+OpenAPI spec (51 generated + 17 curated), plus the ten Runpod task playbooks
+served as MCP resources under `runpod://skills/`. New API endpoints become
+tools by regeneration, not by hand-writing code. Start with
+[specgen/DESIGN.md](specgen/DESIGN.md) for a progressive walkthrough, and
+[specgen/README.md](specgen/README.md) for the regeneration workflow and
+drift gates.
+
+Upgrading from 3.x: eight tools follow their spec operationIds (e.g.
+`create-container-registry-auth` → `create-registry`, `get-billing` →
+`list-billing`) and `start-pod`/`stop-pod`/`restart-pod` fold into
+`pod-action` with an `action` argument. The full old→new map is
+[`specgen/old-mcp-tools.yaml`](specgen/old-mcp-tools.yaml). The server is
+v2-only; `RUNPOD_REST_VERSION` and the v1 fallback are retired.
 
 ## Security
 

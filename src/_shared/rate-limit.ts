@@ -271,7 +271,7 @@ function humanWait(seconds: number): string {
 // Report the LONGEST wait either header justifies. draft-11 §7 says Retry-After
 // MUST take precedence, but §6 says a server SHOULD NOT send one earlier than
 // the end of the effective window, and this API's is documented "per the
-// exceeded window" (tests/fixtures/v2-openapi.yaml) — i.e. it can be earlier.
+// exceeded window" (see the vendored spec) — i.e. it can be earlier.
 // RFC 9110 §10.2.3 defines Retry-After as how long a client "ought to wait" and
 // sets no upper bound (its "minimum time" wording is scoped to 3xx), so waiting
 // longer conforms. §7's "MAY be ignored" is permission, not obligation, and
@@ -350,4 +350,23 @@ export function rateLimitHint(
       : '';
   const wait = `wait ${hedge}${humanWait(waitS)} before retrying, and pace bulk operations`;
   return `rate limited — ${namedClause ? `${namedClause}; ` : ''}${wait}`;
+}
+
+// The one 429-enrichment used by both the generated-tool dispatcher and the
+// runtime client: spread the upstream error payload and attach the concrete
+// wait instruction derived from the response headers. Kept here so a change
+// to hint precedence lands in every consumer at once.
+export function withRateLimitHint(
+  payload: unknown,
+  headers: { get(name: string): string | null }
+): unknown {
+  return typeof payload === 'object' && payload !== null
+    ? {
+        ...(payload as Record<string, unknown>),
+        hint: rateLimitHint(
+          headers.get('ratelimit'),
+          headers.get('retry-after')
+        ),
+      }
+    : payload;
 }

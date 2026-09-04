@@ -56,6 +56,23 @@ jobs:
       - name: Test
         run: pnpm test
 
+      # A drifted vendored spec must not merge: fail the required job on real
+      # drift (exit 1), but only warn when the live spec is unreachable
+      # (exit 2) — a network blip is not a drift verdict. Linux/node-22 only;
+      # drift is platform-independent.
+      - name: Check spec drift against the live production spec
+        if: matrix.os == 'ubuntu-latest' && matrix.node-version == 22
+        shell: bash
+        run: |
+          set +e
+          pnpm spec:check
+          rc=$?
+          if [ "$rc" -eq 2 ]; then
+            echo "::warning::spec-drift: live spec unreachable — drift not judged this run."
+            exit 0
+          fi
+          exit $rc
+
       # Linux only. On windows-latest tsup emits every bundle successfully and then
       # the process dies with 0xC0000374 (STATUS_HEAP_CORRUPTION) — a crash in the
       # bundler after its work is done, not a problem with the source. The package

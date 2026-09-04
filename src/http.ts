@@ -1,6 +1,8 @@
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { createServer } from './server.js';
-import { registerTools, type ToolContext } from './tools.js';
+import { createSpecgenServer } from './specgen/server.js';
+import { createToolContext as createSpecgenContext } from './specgen/context.js';
+import { SERVER_VERSION } from './server.js';
+import { sanitizeUaToken } from './_shared/tracking.js';
 import {
   createCredentialChecker,
   type CredentialChecker,
@@ -9,10 +11,11 @@ import {
 import {
   restV1Base,
   restV2Base,
+  sdkBase,
   serverlessBase,
   authedGraphqlBase,
   type Env,
-} from './_shared/backend.js';
+} from './_shared/hosts.js';
 import { IncomingMessage, ServerResponse } from 'node:http';
 
 /**
@@ -27,15 +30,30 @@ function extractBearerToken(req: IncomingMessage): string | null {
   return parts[1];
 }
 
-function getBaseUrl(req: IncomingMessage): string {
+// Per-request analytics opt-out: any client can send
+// `X-Runpod-Analytics: off` (or 0/false) and no usage event is captured for
+// its calls. Checked case-insensitively; absence means opted in (the capture
+// itself is still a no-op unless the deployment sets POSTHOG_API_KEY).
+function analyticsOptedOut(req: IncomingMessage): boolean {
+  const raw = req.headers['x-runpod-analytics'];
+  const value = (Array.isArray(raw) ? raw[0] : raw)?.trim().toLowerCase();
+  return value === 'off' || value === '0' || value === 'false';
+}
+
+// Structural request type so the Vercel adapter (api/index.ts) can share this
+// proxy-header parsing instead of keeping a second copy.
+export function getBaseUrl(req: {
+  headers: { host?: string; 'x-forwarded-proto'?: string | string[] };
+}): string {
+  const protoHeader = req.headers['x-forwarded-proto'];
   const proto =
-    (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0] ??
-    'https';
+    (Array.isArray(protoHeader) ? protoHeader[0] : protoHeader)?.split(
+      ','
+    )[0] ?? 'https';
   const host = req.headers.host;
   if (!host) {
     throw new Error('Missing Host header');
   }
-
   return `${proto}://${host}`;
 }
 
@@ -76,18 +94,12 @@ function writeUnauthorized(
 // repointable OAuth flash-auth var (RUNPOD_GRAPHQL_URL): repointing that one
 // must never redirect every caller's key to an arbitrary host. One resolver so
 // the checker and the environment guard below cannot disagree about defaults.
-function authGraphqlUrl(
-  env: NodeJS.ProcessEnv | Record<string, string | undefined>
-): string {
-  return authedGraphqlBase(env as Env);
-}
-
 // Shared across requests so the verdict cache helps on a warm instance. Uses the
 // global fetch (Node >= 18) — this runs before any MCP/tool wiring exists.
 export const defaultCredentialChecker: CredentialCheckerHandle =
   createCredentialChecker({
     fetch: (url, init) => fetch(url, init),
-    url: () => authGraphqlUrl(process.env),
+    url: () => authedGraphqlBase(process.env as Env),
   });
 
 const sameHost = (a: string, b: string) => normalizeUrl(a) === normalizeUrl(b);
@@ -129,16 +141,22 @@ function normalizeUrl(raw: string): string {
 // right now. Run `vercel env ls production` to settle it.
 function credentialCheckMayBeWrongEnvironment(env = process.env): boolean {
   // Normalised, not byte-exact: a trailing slash, host casing or an empty string
-  // is not a different environment. Empty is treated as unset, matching how the
-  // base URLs resolve.
+  // is not a different environment. Empty is treated as unset HERE, because the
+  // ??-based resolvers in _shared/hosts.ts do NOT fall through on '' — so every
+  // resolver below must read envWithoutEmpties, or an empty var on one side
+  // makes restMoved and graphqlMoved disagree and silently disables the gate.
   const envWithoutEmpties = Object.fromEntries(
     Object.entries(env).filter(([, v]) => v !== '')
   ) as Record<string, string | undefined>;
   const restMoved =
     !sameHost(restV1Base(envWithoutEmpties), restV1Base({})) ||
     !sameHost(restV2Base(envWithoutEmpties), restV2Base({})) ||
+    !sameHost(sdkBase(envWithoutEmpties), sdkBase({})) ||
     !sameHost(serverlessBase(envWithoutEmpties), serverlessBase({}));
-  const graphqlMoved = !sameHost(authGraphqlUrl(env), authGraphqlUrl({}));
+  const graphqlMoved = !sameHost(
+    authedGraphqlBase(envWithoutEmpties as Env),
+    authedGraphqlBase({})
+  );
   // Skip whenever REST and the auth-GraphQL host DISAGREE about whether they are
   // on the default (prod) environment — in EITHER direction. Validating a key
   // against an auth backend from a different environment than the tools use
@@ -268,31 +286,6 @@ function earlyCredentialCheckSkip(req: IncomingMessage): SkipReason | null {
   return null;
 }
 
-// The ToolContext the hosted path hands to registerTools. Exported so the
-// onUnauthorized wiring is reachable from a test.
-export function buildToolContext(
-  req: IncomingMessage,
-  bearerToken: string,
-  opts: {
-    serverVersion?: string;
-    invalidateCredential?: (token: string) => void;
-  } = {}
-): ToolContext {
-  const drop = opts.invalidateCredential ?? defaultCredentialChecker.invalidate;
-  return {
-    apiKey: bearerToken,
-    transport: 'http',
-    // A tools/call is a separate request from `initialize` in stateless HTTP, so
-    // the per-request server never sees the MCP `clientInfo`; fall back to the
-    // inbound User-Agent so caller-tracking still attributes the client.
-    clientUserAgent: req.headers['user-agent'],
-    serverVersion: opts.serverVersion,
-    // A tool call that 401s proves a cached "valid" wrong before its TTL. Drop it
-    // so the next request re-checks and can emit the 401 that triggers re-auth.
-    onUnauthorized: () => drop(bearerToken),
-  };
-}
-
 function logCredentialCheck(
   outcome: SkipReason | 'pass' | 'reject' | 'fail_open'
 ): void {
@@ -376,6 +369,10 @@ export async function handleMcpRequest(
   // skipped request `body` stays whatever the host pre-parsed (undefined on plain
   // node:http, where the SDK then reads the stream itself).
   let body: unknown = (req as { body?: unknown }).body;
+  // Stable account identity from the pre-flight's `myself { id }` probe —
+  // carried into anonymous analytics so a user keeps one identity across key
+  // rotations. Absent when the check is skipped or fails open.
+  let accountId: string | undefined;
   const early = earlyCredentialCheckSkip(req);
   if (early) {
     logCredentialCheck(early);
@@ -394,6 +391,7 @@ export async function handleMcpRequest(
     } else {
       const verify = opts.verifyCredential ?? defaultCredentialChecker.verify;
       const verdict = await verify(bearerToken);
+      if (verdict.status === 'valid') accountId = verdict.accountId;
       // 'unknown' is logged distinctly from 'pass': both let the request through,
       // but one is an answer and the other a guess made because the auth backend
       // could not be reached. Silently merging them hides an outage upstream.
@@ -416,8 +414,62 @@ export async function handleMcpRequest(
     }
   }
 
-  const server = createServer(opts.serverVersion);
-  registerTools(server, buildToolContext(req, bearerToken, opts));
+  // SPEC-GENERATED SURFACE (feat/specgen-server): the tool set generated from
+  // the v2 OpenAPI spec plus its curated overlay, mounted behind this shell's
+  // existing auth/transport. Per-request context from the caller's bearer
+  // token — nothing credential-bearing lives at module scope.
+  const server = createSpecgenServer(
+    createSpecgenContext({
+      apiKey: bearerToken,
+      tracking: {
+        // Stateless HTTP never sees the MCP clientInfo; the inbound
+        // User-Agent is the best identity available.
+        clientName: req.headers['user-agent'],
+        transport: 'http',
+        serverVersion: opts.serverVersion ?? SERVER_VERSION,
+      },
+    }),
+    opts.serverVersion ?? SERVER_VERSION,
+    {
+      // Anonymous usage analytics: hosted-only, no-op unless POSTHOG_API_KEY
+      // is set on the deployment, and any client can opt out per request
+      // with the X-Runpod-Analytics: off header.
+      ...(analyticsOptedOut(req)
+        ? {}
+        : {
+            analytics: {
+              transport: 'http' as const,
+              serverVersion: opts.serverVersion ?? SERVER_VERSION,
+              clientName: sanitizeUaToken(
+                String(req.headers['user-agent'] ?? 'unknown')
+              ),
+              accountId,
+            },
+          }),
+      // ALP write tools: advertised only when this deployment can actually
+      // store submissions (the sink is configured). The ingest endpoint is
+      // this deployment's own /api/alp/submit — one write path, both
+      // transports (docs/agent-learning-protocol.md).
+      ...(process.env.ALP_SINK_URL && process.env.ALP_SINK_SECRET
+        ? {
+            alp: {
+              ingestUrl: `${getBaseUrl(req)}/api/alp/submit`,
+              transport: 'http' as const,
+              harness: sanitizeUaToken(
+                String(req.headers['user-agent'] ?? 'unknown')
+              ),
+              harnessSource: 'user_agent' as const,
+            },
+          }
+        : {}),
+      // A tool call that 401s proves a cached "valid" verdict wrong before
+      // its TTL — drop it so the next request re-checks and re-auths.
+      onUnauthorized: () =>
+        (opts.invalidateCredential ?? defaultCredentialChecker.invalidate)(
+          bearerToken
+        ),
+    }
+  );
 
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless — no session persistence
@@ -436,6 +488,3 @@ export async function handleMcpRequest(
   // Pass the body we already resolved: readJsonBody may have consumed the stream.
   await transport.handleRequest(req, res, body);
 }
-
-export { registerTools } from './tools.js';
-export type { ToolContext } from './tools.js';

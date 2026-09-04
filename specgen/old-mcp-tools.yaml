@@ -1,0 +1,70 @@
+# Parity manifest against the official Runpod MCP server
+# (github.com/runpod/runpod-mcp at f20d987, 54 tools). Every tool the official
+# server exposes maps to a tool this server exposes; tests/old-mcp-parity.test.ts
+# enforces that each `to` target exists in the served surface.
+#
+# how: generated   — emitted from the v2 OpenAPI spec by the generator
+#      curated     — hand-written in src/tools/ (plane not covered by the spec,
+#                    or the transport/output needs shaping)
+# args (optional)  — fixed arguments that select the old tool's behavior on the
+#                    mapped tool.
+#
+# Not tool-surface items, deliberately not ported: the hosted HTTP/OAuth
+# transport, caller-tracking headers, the v1 REST fallback (this server is
+# v2-only), and the install wizard's credential pre-flight.
+
+tools:
+  - { old: cancel-job, to: cancel-job, how: curated }
+  - { old: create-container-registry-auth, to: create-registry, how: generated }
+  - { old: create-endpoint, to: create-endpoint, how: generated }
+  - { old: create-network-volume, to: create-network-volume, how: generated }
+  - { old: create-pod, to: create-pod, how: generated }
+  - { old: create-registry-delegation, to: create-delegation, how: generated }
+  - { old: create-template, to: create-template, how: generated }
+  - { old: delete-container-registry-auth, to: delete-registry, how: generated }
+  - { old: delete-endpoint, to: delete-endpoint, how: generated }
+  - { old: delete-network-volume, to: delete-network-volume, how: generated }
+  - { old: delete-pod, to: delete-pod, how: generated }
+  - { old: delete-registry-delegation, to: revoke-delegation, how: generated }
+  - { old: delete-template, to: delete-template, how: generated }
+  - { old: deploy-hub-repo, to: deploy-hub-repo, how: curated }
+  - { old: endpoint-health, to: endpoint-health, how: curated }
+  - { old: get-billing, to: list-billing, how: generated }
+  - { old: get-capacity, to: get-capacity, how: curated }
+  - { old: get-container-registry-auth, to: get-registry, how: generated }
+  - { old: get-cpu-type, to: get-cpu-type, how: generated }
+  - { old: get-data-center, to: get-data-center, how: generated }
+  - { old: get-endpoint, to: get-endpoint, how: generated }
+  - { old: get-gpu-type, to: get-gpu-type, how: generated }
+  - { old: get-job-status, to: get-job-status, how: curated }
+  - { old: get-network-volume, to: get-network-volume, how: generated }
+  - { old: get-pod, to: get-pod, how: generated }
+  - { old: get-template, to: get-template, how: generated }
+  - { old: list-container-registry-auths, to: list-registries, how: generated }
+  - { old: list-cpu-types, to: list-cpu-types, how: generated }
+  - { old: list-data-centers, to: list-data-centers, how: generated }
+  - { old: list-endpoint-releases, to: list-endpoint-releases, how: generated }
+  - { old: list-endpoint-workers, to: list-endpoint-workers, how: generated }
+  - { old: list-endpoints, to: list-endpoints, how: generated }
+  - { old: list-gpu-types, to: list-gpu-types, how: generated }
+  - { old: list-hub-repos, to: list-hub-repos, how: curated }
+  - { old: list-network-volumes, to: list-network-volumes, how: generated }
+  - { old: list-pods, to: list-pods, how: generated }
+  - { old: list-public-endpoints, to: list-public-endpoints, how: curated }
+  - { old: list-registry-delegations, to: list-delegations, how: generated }
+  - { old: list-templates, to: list-templates, how: curated }
+  - { old: purge-endpoint-queue, to: purge-endpoint-queue, how: curated }
+  - { old: restart-pod, to: pod-action, how: generated, args: { action: restart } }
+  - { old: retry-job, to: retry-job, how: curated }
+  - { old: run-endpoint, to: run-endpoint, how: curated }
+  - { old: runsync-endpoint, to: runsync-endpoint, how: curated }
+  - { old: set-endpoint-gpus, to: set-endpoint-gpus, how: curated }
+  - { old: start-pod, to: pod-action, how: generated, args: { action: start } }
+  - { old: stop-pod, to: pod-action, how: generated, args: { action: stop } }
+  - { old: stream-job, to: stream-job, how: curated }
+  - { old: stream-pod-logs, to: stream-pod-logs, how: curated }
+  - { old: stream-worker-logs, to: stream-worker-logs, how: curated }
+  - { old: update-endpoint, to: update-endpoint, how: generated }
+  - { old: update-network-volume, to: update-network-volume, how: generated }
+  - { old: update-pod, to: update-pod, how: generated }
+  - { old: update-template, to: update-template, how: generated }

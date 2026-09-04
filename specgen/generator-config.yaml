@@ -1,0 +1,70 @@
+# Controls the spec-to-tools generation. Every operation in spec/openapi.yaml
+# becomes a tool unless excluded here; the parity test enforces exactly that.
+
+# Operations excluded from generation, each with its reason and — where one
+# exists — the curated tool in src/tools/ that replaces it. The parity test
+# reads this mapping: an exclusion with no entry here fails it, and a
+# replacedBy naming a tool the server does not serve fails it too.
+exclude:
+  listEndpoints:
+    replacedBy: list-endpoints
+    reason: trimmed, paginated output — full endpoint objects carry env maps
+      and requestUrls (six derivable URLs per endpoint) that dominate the
+      payload and blow up LLM context on accounts with many endpoints
+  listTemplates:
+    replacedBy: list-templates
+    reason: trimmed output — full template objects blow up LLM context
+  getPodLogs:
+    replacedBy: stream-pod-logs
+    reason: text/event-stream, held open to tail live output — the generated
+      JSON dispatch cannot consume it
+  getWorkerLogs:
+    replacedBy: stream-worker-logs
+    reason: text/event-stream, held open to tail live output — the generated
+      JSON dispatch cannot consume it
+
+# operationId -> tool name overrides; default is the kebab-cased operationId.
+rename: {}
+
+# operationId -> description overrides; default is the spec summary+description.
+# The mutation-tool overrides carry the critical gotchas inline so the
+# BARE-CLIENT path (no skills installed) still sees them at tool-choice time.
+descriptions:
+  listServerlessBilling: >-
+    Get serverless billing history, split into time buckets. SIZE WARNING: with
+    defaults this emits one record per endpoint PER BUCKET — on an account with
+    many endpoints the response overflows the tool-result limit and becomes
+    unusable. Always pass lastN: 1 (or a bucketSize spanning the whole window)
+    for one record per endpoint, and serverlessId when you need one endpoint.
+    Distinct from pod billing, which covers standalone pods.
+  createEndpoint: >-
+    Create a serverless endpoint. BILLABLE: state the GPU class's hourly price
+    (from the catalog tools) before creating. GPU selection is the required
+    gpu object: gpu.pools takes serverless pool ids from the catalog (e.g.
+    ADA_24), never display names, and gpu.count sets GPUs per worker. type and
+    scaling are required and fix the request-routing model. Workers cold-start
+    on the first job: expect minutes, poll with get-job-status wait.
+  createPod: >-
+    Rent a GPU/CPU pod. BILLABLE from creation until stop/terminate: state the
+    hourly price before creating. GPU selection is the gpu object: gpu.id takes
+    a catalog GPU type id (e.g. "NVIDIA GeForce RTX 4090"), verified via
+    list-gpu-types, and gpu.count sets the GPU count; cloud/data-center choice
+    constrains stock.
+  deleteEndpoint: >-
+    Delete a serverless endpoint permanently and immediately. Verify the id
+    belongs to the intended endpoint (get-endpoint) before deleting; delete
+    only endpoints your own tool calls created in this conversation — a name
+    is not attribution.
+  deleteTemplate: >-
+    Delete a template permanently. Verify with get-template first; a template
+    referenced by a live endpoint should not be deleted.
+  deletePod: >-
+    Terminate a pod permanently — its container disk is lost. Distinguish from
+    stopping (pod-action stop) which releases the GPU but keeps volume data.
+    Verify the id with get-pod first; terminate only pods your own tool calls
+    created in this conversation — a name is not attribution.
+  createCluster: >-
+    Create an instant cluster (multiple pods with high-speed interconnect).
+    BILLABLE from creation for every pod in the cluster: state the total
+    hourly price before creating. Verify GPU stock first via the catalog
+    tools; delete with delete-cluster when finished.
