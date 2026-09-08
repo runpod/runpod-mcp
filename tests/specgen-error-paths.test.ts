@@ -229,3 +229,31 @@ test('plain-text runtime and primitive JSON SDK errors retain Retry-After throug
     await server.close();
   }
 });
+
+test('stream errors retain earlier output and upstream recovery hints through MCP', async () => {
+  const ctx = createToolContext({ apiKey: 'fake' });
+  let polls = 0;
+  ctx.runtime = async () => {
+    if (++polls === 1)
+      return { status: 'IN_PROGRESS', stream: [{ output: 'first chunk' }] };
+    throw new HttpError('Rate limited', 429, { hint: 'Wait 60 seconds' });
+  };
+  const server = createSpecgenServer(ctx, 'test');
+  const client = new Client({ name: 'test', version: '1' });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  try {
+    await Promise.all([server.connect(st), client.connect(ct)]);
+    const result = await client.callTool({
+      name: 'stream-job',
+      arguments: { endpointId: 'ep', jobId: 'job' },
+    });
+    assert.equal(result.isError, true);
+    const content = result.content as Array<{ text: string }>;
+    const payload = JSON.parse(content[0].text);
+    assert.deepEqual(payload.detail.stream, [{ output: 'first chunk' }]);
+    assert.equal(payload.hint, 'Wait 60 seconds');
+    assert.equal(polls, 2);
+  } finally {
+    await Promise.all([client.close(), server.close()]);
+  }
+});

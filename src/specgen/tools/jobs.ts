@@ -159,17 +159,31 @@ export async function collectJobStream(deps: {
   pollIntervalMs?: number;
 }): Promise<{ result: Record<string, unknown>; chunks: unknown[] }> {
   const chunks: unknown[] = [];
-  const result = await pollUntilTerminal({
-    poll: deps.poll,
-    budgetMs: deps.budgetMs,
-    timeoutFor: (remainingMs) => streamPollTimeoutMs(remainingMs, deps.holdMs),
-    pollIntervalMs: deps.pollIntervalMs ?? STREAM_JOB_POLL_INTERVAL_MS,
-    abortedNote: `Polling stopped after ${MAX_CONSECUTIVE_STREAM_ERRORS} consecutive errors with the job possibly still running. ${RESUME_ADVICE}`,
-    timedOutNote: `Polling stopped after ${formatBudget(deps.budgetMs)} with the job possibly still running. ${RESUME_ADVICE}`,
-    onReply: (reply) => {
-      if (Array.isArray(reply.stream)) chunks.push(...reply.stream);
-    },
-  });
+  let result: Record<string, unknown>;
+  try {
+    result = await pollUntilTerminal({
+      poll: deps.poll,
+      budgetMs: deps.budgetMs,
+      timeoutFor: (remainingMs) =>
+        streamPollTimeoutMs(remainingMs, deps.holdMs),
+      pollIntervalMs: deps.pollIntervalMs ?? STREAM_JOB_POLL_INTERVAL_MS,
+      abortedNote: `Polling stopped after ${MAX_CONSECUTIVE_STREAM_ERRORS} consecutive errors with the job possibly still running. ${RESUME_ADVICE}`,
+      timedOutNote: `Polling stopped after ${formatBudget(deps.budgetMs)} with the job possibly still running. ${RESUME_ADVICE}`,
+      onReply: (reply) => {
+        if (Array.isArray(reply.stream)) chunks.push(...reply.stream);
+      },
+    });
+  } catch (error) {
+    if (error instanceof HttpError) {
+      throw new HttpError(error.message, error.status, {
+        ...(error.payload && typeof error.payload === 'object'
+          ? error.payload
+          : { error: error.payload }),
+        stream: chunks,
+      });
+    }
+    throw error;
+  }
   return { result, chunks };
 }
 
