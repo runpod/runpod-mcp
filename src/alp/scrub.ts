@@ -1,8 +1,36 @@
 // Best-effort secret redaction before forwarding to storage and again at the
 // Convex write boundary. This catches recognizable tokens and sensitive config
 // assignments; arbitrary unlabeled secrets cannot reliably be identified.
+//
+// Three stages, run in this order, each a pure function with its own table
+// of rules and its own tests:
+//
+//   A. anchored credentials  — shapes recognizable on their own (rpa_, JWT...)
+//   B. sensitive headers     — the WHOLE value of Authorization/Cookie/...
+//   C. config assignments    — `key = value` / `key: value` by key name
+//
+// Specific before broad is the invariant. Several stage-A rules identify a
+// credential by the word in front of it (`Bearer <opaque>`), and stage C stops
+// an unquoted value at the first space or semicolon — so run in the other
+// order, C consumes "Bearer", destroys the anchor, and leaves the secret in
+// plaintext looking redacted. Stage B exists because header values are
+// DEFINED by containing spaces and semicolons (`Basic <cred>`, `a=1; b=2`),
+// which is exactly the shape the token-level matcher cannot hold whole.
 
-const PATTERNS: Array<{ name: string; re: RegExp }> = [
+export interface ScrubResult {
+  text: string;
+  /** How many redactions fired — a redaction rate is itself a metric. */
+  redactions: number;
+}
+
+// Bump when any stage's rules change so stored rows record which pass they got.
+export const SCRUB_VERSION = 3;
+
+const MARKER = /^["']?\[redacted:[a-z_]+\]["']?$/;
+
+// ---- Stage A: anchored credential shapes --------------------------------
+
+const CREDENTIAL_PATTERNS: Array<{ name: string; re: RegExp }> = [
   // Runpod API keys.
   { name: 'runpod_key', re: /\brpa_[A-Za-z0-9]{16,}\b/g },
   // Bearer credentials pasted with their header.
@@ -21,19 +49,46 @@ const PATTERNS: Array<{ name: string; re: RegExp }> = [
   },
 ];
 
-// Bump when PATTERNS changes so stored rows record which pass they got.
-export const SCRUB_VERSION = 2;
-
-export interface ScrubResult {
-  text: string;
-  /** How many redactions fired — a redaction rate is itself a metric. */
-  redactions: number;
+export function redactAnchoredCredentials(text: string): ScrubResult {
+  let redactions = 0;
+  let out = text;
+  for (const { name, re } of CREDENTIAL_PATTERNS) {
+    out = out.replace(re, () => {
+      redactions++;
+      return `[redacted:${name}]`;
+    });
+  }
+  return { text: out, redactions };
 }
 
-// Assignment keys are compared segment by segment, not by substring: a
-// substring test redacts `tokenizer: llama-3` because it contains "token".
-// `key` on its own is too common to treat as sensitive, so it counts only
-// when qualified (api_key, access_key, private_key, apikey).
+// ---- Stage B: sensitive headers, whole value ----------------------------
+
+// One header per line, value taken to end of line. `Authorization: Basic x`,
+// `Authorization: Token x` and `Cookie: a=1; b=2; c=3` each collapse to one
+// marker. Header names are case-insensitive on the wire and in pastes.
+const SENSITIVE_HEADER =
+  /^([ \t]*)((?:proxy-)?authorization|cookie|set-cookie|x-api-key|x-auth-token|x-runpod-token)([ \t]*:[ \t]*)(.+?)[ \t]*$/gim;
+
+export function redactHeaderValues(text: string): ScrubResult {
+  let redactions = 0;
+  const out = text.replace(
+    SENSITIVE_HEADER,
+    (match, indent: string, name: string, sep: string, value: string) => {
+      // Stage A may already have replaced the whole value; keep its marker.
+      if (MARKER.test(value)) return match;
+      redactions++;
+      return `${indent}${name}${sep}[redacted:header]`;
+    }
+  );
+  return { text: out, redactions };
+}
+
+// ---- Stage C: config assignments, by key name ---------------------------
+
+// Keys are compared segment by segment, never by substring: a substring test
+// redacts `tokenizer: llama-3` because it contains "token". Split on
+// separators AND camelCase, so `databasePassword` and `clientSecret` become
+// segment lists rather than one opaque word.
 const SENSITIVE_SEGMENTS = new Set([
   'password',
   'passwd',
@@ -45,52 +100,77 @@ const SENSITIVE_SEGMENTS = new Set([
   'credentials',
 ]);
 
-function isSensitiveKey(key: string): boolean {
-  // Split on separators AND camelCase boundaries, so `databasePassword` and
-  // `clientSecret` are seen as segment lists rather than one opaque word.
-  const segments = key
+// `key` alone is too common to be sensitive (primary_key, cache_key). It
+// counts when the segment right before it qualifies it — anywhere in the
+// name, so SERVICE_API_KEY and STRIPE_ACCESS_KEY match, not only api_key.
+const KEY_QUALIFIERS = new Set([
+  'api',
+  'access',
+  'private',
+  'signing',
+  'secret',
+  'client',
+]);
+
+export function splitKey(key: string): string[] {
+  return key
     .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
     .toLowerCase()
-    .split(/[_\-.]+/);
-  if (segments.some((segment) => SENSITIVE_SEGMENTS.has(segment))) return true;
-  // `key` alone is too common; it counts only when qualified.
-  return /^(?:api|access|private|signing)[_-]?key$/i.test(segments.join('_'));
+    .split(/[_\-.]+/)
+    .filter(Boolean);
 }
 
-export function scrub(text: string): ScrubResult {
+export function isSensitiveKey(key: string): boolean {
+  const segments = splitKey(key);
+  if (segments.some((segment) => SENSITIVE_SEGMENTS.has(segment))) return true;
+  return segments.some(
+    (segment, i) =>
+      (segment === 'key' && i > 0 && KEY_QUALIFIERS.has(segments[i - 1])) ||
+      // No separator at all: `apikey`, `accesskey`.
+      (segment.endsWith('key') && KEY_QUALIFIERS.has(segment.slice(0, -3)))
+  );
+}
+
+// Covers JSON, YAML and shell env assignments, including quoted values with
+// spaces or escaped quotes. The field name is kept for diagnostic context.
+const ASSIGNMENT =
+  /(?<![A-Za-z0-9_.-])(["']?[A-Za-z_][A-Za-z0-9_.-]*["']?\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;{}"']+)(?=\s|[,;}]|$)/g;
+
+export function redactAssignments(text: string): ScrubResult {
   let redactions = 0;
-  // The anchored patterns run FIRST, and the order is the whole point. Several
-  // of them recognize a credential by the token that precedes it — `bearer`
-  // matches `Bearer <opaque>`, not the opaque part alone. The assignment pass
-  // below stops an unquoted value at the first space, so running it first
-  // rewrote `Authorization: Bearer <opaque>` to `[redacted:config] <opaque>`:
-  // it consumed the word "Bearer", destroyed the anchor, and left the secret
-  // in plaintext. Redacting the specific shapes first leaves nothing for the
-  // broad pass to half-match.
-  let out = text;
-  for (const { name, re } of PATTERNS) {
-    out = out.replace(re, () => {
+  const out = text.replace(
+    ASSIGNMENT,
+    (match, prefix: string, value: string) => {
+      const key = prefix.replace(/["'\s:=]/g, '');
+      if (!isSensitiveKey(key)) return match;
+      // Already handled by an earlier stage — do not count it twice.
+      if (MARKER.test(value)) return match;
       redactions++;
-      return `[redacted:${name}]`;
-    });
+      const quote = value.startsWith('"')
+        ? '"'
+        : value.startsWith("'")
+          ? "'"
+          : '';
+      return `${prefix}${quote}[redacted:config]${quote}`;
+    }
+  );
+  return { text: out, redactions };
+}
+
+// ---- Composition ---------------------------------------------------------
+
+export function scrub(text: string): ScrubResult {
+  let out = text;
+  let redactions = 0;
+  for (const stage of [
+    redactAnchoredCredentials,
+    redactHeaderValues,
+    redactAssignments,
+  ]) {
+    const result = stage(out);
+    out = result.text;
+    redactions += result.redactions;
   }
-  // Covers JSON, YAML and shell env assignments, including quoted values
-  // with spaces or escaped quotes. Keep the field name for diagnostic context.
-  const assignment =
-    /(?<![A-Za-z0-9_.-])(["']?[A-Za-z_][A-Za-z0-9_.-]*["']?\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;{}"']+)(?=\s|[,;}]|$)/g;
-  out = out.replace(assignment, (match, prefix: string, value: string) => {
-    const key = prefix.replace(/["'\s:=]/g, '');
-    if (!isSensitiveKey(key)) return match;
-    // Already handled by the anchored pass above — do not count it twice.
-    if (/^["']?\[redacted:[a-z_]+\]["']?$/.test(value)) return match;
-    redactions++;
-    const quote = value.startsWith('"')
-      ? '"'
-      : value.startsWith("'")
-        ? "'"
-        : '';
-    return `${prefix}${quote}[redacted:config]${quote}`;
-  });
   return { text: out, redactions };
 }
 

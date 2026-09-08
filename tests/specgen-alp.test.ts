@@ -361,3 +361,61 @@ test('config redaction keys match by segment, not substring', () => {
     assert.match(text, /\[redacted:config\]/);
   }
 });
+
+// Stage B. Header values are DEFINED by containing spaces and semicolons
+// (`Basic <cred>`, `a=1; b=2`), which is exactly what the token-level
+// assignment matcher cannot hold whole — it redacted the word "Basic" and
+// left the credential, and took only the first cookie of three. Found by
+// review after the Bearer fix: that fix closed one instance of this class.
+test('sensitive header values are redacted whole, not tokenized', () => {
+  const cred = 'QWxhZGRpbjpvcGVuIHNlc2FtZQ==';
+  for (const input of [
+    `Authorization: Basic ${cred}`,
+    `Proxy-Authorization: Basic ${cred}`,
+    `Authorization: Token ${cred}`,
+    `  authorization:   Basic ${cred}  `,
+    'cookie: session=abc123secretvalue; csrf=def456othervalue; theme=dark',
+    'Set-Cookie: sid=abc123secretvalue; Path=/; HttpOnly',
+  ]) {
+    const { text, redactions } = scrub(input);
+    assert.ok(!text.includes(cred), `leaked credential: ${text}`);
+    assert.ok(!/abc123|def456/.test(text), `leaked cookie: ${text}`);
+    assert.match(text, /\[redacted:(header|bearer)\]/);
+    assert.equal(redactions, 1, `should be one whole-value redaction: ${text}`);
+    const again = scrub(text);
+    assert.equal(again.text, text);
+    assert.equal(again.redactions, 0);
+  }
+  // A Bearer value is already taken by stage A; stage B must not double-count.
+  const bearer = scrub(
+    'Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456'
+  );
+  assert.equal(bearer.text, 'Authorization: [redacted:bearer]');
+  assert.equal(bearer.redactions, 1);
+});
+
+// Stage C. `key` qualifies by the segment right before it, anywhere in the
+// name. The previous check anchored `^api_key$` on the joined segments, so
+// any service prefix defeated it and SERVICE_API_KEY passed through intact.
+test('qualified key names are sensitive with any prefix, plain key is not', () => {
+  for (const input of [
+    'SERVICE_API_KEY=fake-opaque-credential',
+    'STRIPE_API_KEY=fake-opaque-credential',
+    'MY_ACCESS_KEY=fake-opaque-credential',
+    'aws.secretKey = fake-opaque-credential',
+    'apikey=fake-opaque-credential',
+    'clientKey: fake-opaque-credential',
+  ]) {
+    const { text, redactions } = scrub(input);
+    assert.ok(!text.includes('fake-opaque-credential'), `missed: ${input}`);
+    assert.equal(redactions, 1);
+  }
+  for (const benign of [
+    'primary_key: id',
+    'cache_key = users',
+    'key: value',
+    'keyboard: qwerty',
+  ]) {
+    assert.equal(scrub(benign).text, benign, `false positive: ${benign}`);
+  }
+});
