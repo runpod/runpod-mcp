@@ -106,6 +106,7 @@ async function pollUntilTerminal(deps: {
   let result: Record<string, unknown> = {};
   let consecutiveErrors = 0;
   let lastError: string | undefined;
+  let lastErrorStatus = 502;
 
   while (true) {
     try {
@@ -129,16 +130,33 @@ async function pollUntilTerminal(deps: {
       }
       consecutiveErrors++;
       lastError = error instanceof Error ? error.message : String(error);
+      lastErrorStatus =
+        error instanceof HttpError
+          ? error.status
+          : error instanceof Error &&
+              ['TimeoutError', 'AbortError'].includes(error.name)
+            ? 504
+            : 502;
       if (consecutiveErrors >= MAX_CONSECUTIVE_STREAM_ERRORS) {
         throw new HttpError(
           `Polling aborted after ${MAX_CONSECUTIVE_STREAM_ERRORS} consecutive errors: ${lastError}`,
-          error instanceof HttpError ? error.status : 502,
+          lastErrorStatus,
           { ...result, note: deps.abortedNote }
         );
       }
     }
 
     if (elapsed() > deps.budgetMs) {
+      if (lastError !== undefined) {
+        throw new HttpError(
+          `Polling budget expired after an upstream error: ${lastError}`,
+          lastErrorStatus,
+          {
+            ...result,
+            note: 'The latest job status could not be retrieved. Retry after addressing the upstream error.',
+          }
+        );
+      }
       return {
         ...result,
         pollingTimedOut: true,

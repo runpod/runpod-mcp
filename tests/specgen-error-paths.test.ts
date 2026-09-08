@@ -308,3 +308,47 @@ test('exhausted streaming polls produce an MCP tool error and preserve collected
     await Promise.all([client.close(), server.close()]);
   }
 });
+
+test('a first-poll timeout is a tool error, not a successful cold-start report', async () => {
+  const ctx = createToolContext({ apiKey: 'fake' });
+  ctx.runtime = async (_endpoint, _path, opts) => {
+    await new Promise((resolve) => setTimeout(resolve, opts!.timeoutMs));
+    throw new DOMException('Timed out', 'TimeoutError');
+  };
+  const { getJobStatus } = await import('../src/specgen/tools/jobs.js');
+  const result = await getJobStatus.handler(ctx, {
+    endpointId: 'ep',
+    jobId: 'job',
+    wait: 1000,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 504);
+  assert.match(JSON.stringify(result.payload), /Polling budget expired/);
+  assert.doesNotMatch(JSON.stringify(result.payload), /cold start/);
+});
+
+test('budget-expiring stream failures retain earlier chunks and upstream status', async () => {
+  const { collectJobStream } = await import('../src/specgen/tools/jobs.js');
+  let polls = 0;
+  await assert.rejects(
+    collectJobStream({
+      budgetMs: 10,
+      holdMs: 10,
+      pollIntervalMs: 0,
+      poll: async () => {
+        if (++polls === 1)
+          return { status: 'IN_PROGRESS', stream: ['saved chunk'] };
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        throw new HttpError('Unavailable', 503, {});
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof HttpError);
+      assert.equal(error.status, 503);
+      assert.deepEqual((error.payload as { stream: string[] }).stream, [
+        'saved chunk',
+      ]);
+      return true;
+    }
+  );
+});
