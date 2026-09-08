@@ -352,3 +352,31 @@ test('budget-expiring stream failures retain earlier chunks and upstream status'
     }
   );
 });
+
+test('billing and permission failures give actionable guidance through MCP', async () => {
+  for (const status of [402, 403]) {
+    const ctx = createToolContext({ apiKey: 'fake' });
+    ctx.runtime = async () => {
+      throw new HttpError('Request rejected', status, {});
+    };
+    const server = createSpecgenServer(ctx, 'test');
+    const client = new Client({ name: 'test', version: '1' });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    try {
+      await Promise.all([server.connect(st), client.connect(ct)]);
+      const result = await client.callTool({
+        name: 'cancel-job',
+        arguments: { endpointId: 'ep', jobId: 'job' },
+      });
+      assert.equal(result.isError, true);
+      const payload = JSON.parse(
+        (result.content as Array<{ text: string }>)[0].text
+      );
+      assert.match(payload.hint, /Runpod console/);
+      assert.match(payload.hint, status === 402 ? /balance/ : /permission/);
+      assert.doesNotMatch(payload.hint, /get-billing/);
+    } finally {
+      await Promise.all([client.close(), server.close()]);
+    }
+  }
+});

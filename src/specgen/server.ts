@@ -297,8 +297,10 @@ export function createSpecgenServer(
     if (status === 400 || status === 422)
       return "Input shape mismatch: check this tool's schema for required fields. For job payloads, the worker's release config defines the expected input object — fix the payload and retry; don't abandon the task.";
     if (status === 401) return 'The Runpod API key is missing or invalid.';
-    if (status === 402 || status === 403)
-      return "Account balance or permissions: check get-billing / the account's balance before retrying billable operations.";
+    if (status === 402)
+      return 'Check your account balance in the Runpod console before retrying billable operations.';
+    if (status === 403)
+      return 'Check that this API key has permission for the requested resource and operation. Review its permissions in the Runpod console before retrying.';
     if (status === 404)
       return 'No such resource on this account: verify the id with the matching list- tool before retrying.';
     if (status === 429)
