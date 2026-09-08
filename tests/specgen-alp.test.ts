@@ -248,3 +248,116 @@ test('scrub catches the obvious credential shapes', () => {
   assert.ok(!text.includes('AKIAABCDEFGHIJKLMNOP'));
   assert.ok(redactions >= 2, `expected >=2 redactions, got ${redactions}`);
 });
+
+test('scrub redacts config values in JSON, shell and YAML while preserving useful context', () => {
+  for (const input of [
+    '{"env":{"DATABASE_PASSWORD":"fake password with spaces","PORT":"8080"}}',
+    'AWS_SECRET_ACCESS_KEY=fake-secret\nPORT=8080',
+    "databasePassword: 'fake password with spaces'\nPORT: 8080",
+    '{"clientSecret":"fake\\\"quoted-password","PORT":8080}',
+  ]) {
+    const result = scrub(input);
+    assert.ok(!result.text.includes('fake'), result.text);
+    assert.match(result.text, /8080/);
+    assert.equal(result.redactions, 1);
+    assert.deepEqual(scrub(result.text), { text: result.text, redactions: 0 });
+  }
+});
+
+test('ingest scrubs config and metadata before the storage boundary', async () => {
+  let row: Record<string, unknown> = {};
+  const { req, res, written } = fakeReqRes(
+    { authorization: 'Bearer fake' },
+    {
+      route: 'feedback',
+      content: '{"env":{"DATABASE_PASSWORD":"fake-db-password"}}',
+      intention: 'API_TOKEN=fake-token',
+      modelType: 'rpa_abcdefghijklmnop1234',
+      harness: 'password=fake-password',
+    }
+  );
+  await handleAlpSubmit(req, res, {
+    verify: async () => ({ status: 'valid', accountId: 'account' }),
+    env: {
+      ALP_SINK_URL: 'https://test.convex.site/alp/submit',
+      ALP_SINK_SECRET: 'fake',
+    },
+    sinkFetch: (async (_u: RequestInfo | URL, init?: RequestInit) => {
+      row = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ ok: true, id: 'row' }));
+    }) as typeof fetch,
+  });
+  assert.equal(JSON.parse(written.body!).recorded, true);
+  assert.ok(!JSON.stringify(row).includes('fake-'));
+  assert.ok(!JSON.stringify(row).includes('rpa_abcdefghijklmnop1234'));
+  assert.equal(row.redactions, 4);
+  // The sink repeats the same pass before insertion; no double counting.
+  const { scrubSubmission } = await import('../src/alp/scrub.js');
+  const input = {
+    content: 'DATABASE_PASSWORD=fake-secret',
+    redactions: 0,
+    scrubVersion: 1,
+  };
+  const stored = scrubSubmission(input);
+  assert.ok(!stored.content.includes('fake-secret'));
+  assert.deepEqual(scrubSubmission(stored), stored);
+});
+
+// Pass ORDER is the security property here, so it gets its own test.
+// Several anchored patterns recognize a credential by the token in front of
+// it: `bearer` matches `Bearer <opaque>`, never the opaque part alone. The
+// assignment pass stops an unquoted value at the first space, so when it ran
+// first it rewrote `Authorization: Bearer <opaque>` to
+// `Authorization: [redacted:config] <opaque>` — consuming the word "Bearer",
+// destroying the anchor, and leaving the credential in plaintext. It read as
+// a redaction while being a leak, which is the only reason it survived
+// review: every other value in the fixtures was independently matched by a
+// pattern (jwt, rpa_, sk_), so nothing noticed.
+test('an unquoted Bearer credential is redacted, anchor and all', () => {
+  const opaque = 'abcdefghijklmnopqrstuvwxyz123456';
+  for (const input of [
+    `Authorization: Bearer ${opaque}`,
+    `cookie: Bearer ${opaque}`,
+    `authorization = "Bearer ${opaque}"`,
+    `{"authorization": "Bearer ${opaque}"}`,
+  ]) {
+    const { text, redactions } = scrub(input);
+    assert.ok(!text.includes(opaque), `leaked the credential: ${text}`);
+    assert.match(text, /\[redacted:bearer\]/, `lost the anchor: ${text}`);
+    assert.equal(redactions, 1, `double-counted: ${text}`);
+    // Re-scrubbing at the sink must not change it or inflate the count.
+    const again = scrub(text);
+    assert.equal(again.text, text);
+    assert.equal(again.redactions, 0);
+  }
+});
+
+// Sensitive key names are matched by segment, not substring. Over-redaction
+// has a real cost here: the corpus exists to be read.
+test('config redaction keys match by segment, not substring', () => {
+  for (const benign of [
+    'tokenizer: llama-3',
+    'model: gpt-4o',
+    'const timeout = 5000;',
+    'the ratio is 3:1 at 10:30',
+  ]) {
+    assert.equal(scrub(benign).redactions, 0, `false positive: ${benign}`);
+    assert.equal(scrub(benign).text, benign);
+  }
+  // camelCase has no separator to split on, so the segment split has to
+  // break on case boundaries too — otherwise `clientSecret` reads as one
+  // opaque word and sails through.
+  for (const secret of [
+    'access_token: xyzsecretvalue',
+    'apikey=abcdefgvalue',
+    'apiKey=abcdefgvalue',
+    'DB_PASSWORD=letmein',
+    'export ALP_SINK_SECRET=s3cr3tvalue',
+    "databasePassword: 'fake password with spaces'",
+    '{"clientSecret":"fakevalue"}',
+  ]) {
+    const { text, redactions } = scrub(secret);
+    assert.ok(redactions > 0, `missed a secret: ${secret}`);
+    assert.match(text, /\[redacted:config\]/);
+  }
+});

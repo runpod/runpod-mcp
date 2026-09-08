@@ -258,3 +258,55 @@ test('the stdio handshake clientInfo lands in the outbound User-Agent', async ()
   assert.match(agents[0], /client=claude-code; client_version=9\.9\.9/);
   assert.match(agents[0], /surface=v2/);
 });
+
+test('SDK preserves the caller deadline through Request and tracking wrappers', async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  const reason = new DOMException('diagnosis deadline', 'TimeoutError');
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const signal =
+      init?.signal ?? (input instanceof Request ? input.signal : undefined);
+    assert.ok(signal);
+    return new Promise<Response>((_resolve, reject) => {
+      if (signal.aborted) reject(signal.reason);
+      else
+        signal.addEventListener('abort', () => reject(signal.reason), {
+          once: true,
+        });
+      controller.abort(reason);
+    });
+  }) as typeof fetch;
+  try {
+    const ctx = createToolContext({
+      apiKey: 'fake',
+      sdkTimeoutMs: 100,
+      tracking: { transport: 'http', serverVersion: 'test' },
+    });
+    await assert.rejects(
+      ctx.sdk.GET('/v2/serverless/{id}/workers', {
+        params: { path: { id: 'fake' } },
+        signal: controller.signal,
+      }),
+      (error: unknown) => error === reason
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('boundedFetch honors an already aborted init signal', async () => {
+  const { boundedFetch } = await import(
+    '../src/specgen/clients/bounded-fetch.js'
+  );
+  const reason = new DOMException('cancelled', 'AbortError');
+  const stub = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    assert.equal(init?.signal?.aborted, true);
+    throw init?.signal?.reason;
+  }) as typeof fetch;
+  await assert.rejects(
+    boundedFetch(stub, 100)('https://example.invalid', {
+      signal: AbortSignal.abort(reason),
+    }),
+    (error: unknown) => error === reason
+  );
+});

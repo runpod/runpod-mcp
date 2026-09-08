@@ -1,3 +1,4 @@
+import { scrubSubmission } from '../src/alp/scrub';
 import { internalMutation } from './_generated/server';
 import { v } from 'convex/values';
 
@@ -21,7 +22,7 @@ export const create = internalMutation({
   },
   handler: async (ctx, args) => {
     return await ctx.db.insert('submissions', {
-      ...args,
+      ...scrubSubmission(args),
       status: 'stored',
       verified: false,
       visibility: 'private',

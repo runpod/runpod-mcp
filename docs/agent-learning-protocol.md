@@ -1,3 +1,11 @@
+> Current redaction implementation: `src/alp/scrub.ts` is shared by the
+> Vercel ingest handler and the Convex write mutation. Both apply the same
+> best-effort pass to all user-authored text, including metadata, before storage.
+> It catches known credential formats and sensitive JSON/YAML/env assignments.
+> There is no separate private or authoritative scrubber; historical references
+> to one below are superseded. Unlabeled arbitrary secrets may still evade
+> detection, so agents must continue to omit credentials from submissions.
+
 # Agent Learning Protocol — Phase 1 architecture
 
 Working design doc for the three agent-feedback tool calls described in the

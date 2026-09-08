@@ -200,3 +200,12 @@ This project uses [changesets](https://github.com/changesets/changesets) for ver
 ## License
 
 Apache-2.0
+
+### JavaScript API migration
+
+This major release removes the `@runpod/mcp-server/tools` package export and
+its `registerTools` API. The legacy registration API is not compatible with
+the new generated surface. Applications should connect to the server through
+MCP using the `runpod-mcp` CLI, or use `handleMcpRequest` from
+`@runpod/mcp-server/http` when embedding the HTTP handler. The HTTP entry point
+also no longer re-exports the legacy `registerTools` or `ToolContext`.
