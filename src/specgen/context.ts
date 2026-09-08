@@ -9,6 +9,7 @@
 
 import { randomUUID } from 'node:crypto';
 import {
+  createRetryFetch,
   createRunpodClient,
   type RetryOptions,
   type RunpodClient,
@@ -104,10 +105,21 @@ export function createToolContext(
     };
   }
 
-  // SDK-only fetch: fetchImpl plus the request deadline. openapi-fetch never
-  // sets a signal of its own, so the timeout is authoritative here.
+  // SDK-only fetch: retries INSIDE one deadline. The SDK would normally wrap
+  // our fetch in its retry layer, so every attempt got a fresh timer and three
+  // slow 503s ran ~77s against a 60s reap (measured 2.58x the per-attempt
+  // budget). Composing it ourselves puts the retry layer under the deadline:
+  // one timer, armed once, covering all attempts and the sleeps between them.
+  // openapi-fetch never sets a signal of its own, so this timeout is
+  // authoritative. An abort that lands during a backoff sleep is noticed at
+  // the next attempt, so overrun is bounded by one sleep (maxBackoffMs).
+  const retry = options.sdkRetry ?? SDK_RETRY;
+  const retryingFetch =
+    retry === false
+      ? fetchImpl
+      : createRetryFetch({ fetch: fetchImpl, ...retry });
   const sdkFetch = boundedFetch(
-    fetchImpl,
+    retryingFetch,
     options.sdkTimeoutMs ?? SDK_TIMEOUT_MS
   );
 
@@ -127,7 +139,8 @@ export function createToolContext(
         sdk = createRunpodClient({
           apiKey,
           fetch: sdkFetch,
-          retry: options.sdkRetry ?? SDK_RETRY,
+          // Already applied inside sdkFetch, under the deadline (see above).
+          retry: false,
         });
       }
       return sdk;

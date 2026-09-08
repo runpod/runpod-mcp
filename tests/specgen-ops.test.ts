@@ -310,3 +310,72 @@ test('boundedFetch honors an already aborted init signal', async () => {
     (error: unknown) => error === reason
   );
 });
+
+// The deadline must cover the whole operation, retries included. The SDK's
+// retry layer used to wrap our bounded fetch, so every attempt got a fresh
+// timer: three attempts that each stalled just under the deadline took 2.58x
+// the budget (~77s at the real 30s, against a 60s reap). Retries now run
+// UNDER one timer. Sized so the retried path would need ~3x to finish.
+test('the SDK deadline spans all retry attempts, not one attempt each', async () => {
+  const { createToolContext } = await import('../src/specgen/context.js');
+  const realFetch = globalThis.fetch;
+  const BUDGET = 120;
+  let attempts = 0;
+  // Each attempt stalls for most of the budget, then returns a retryable 503.
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    attempts++;
+    const signal =
+      init?.signal ?? (input instanceof Request ? input.signal : undefined);
+    await new Promise<void>((resolve, reject) => {
+      const t = setTimeout(resolve, BUDGET - 30);
+      signal?.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(t);
+          reject(signal.reason);
+        },
+        { once: true }
+      );
+    });
+    return new Response('{"detail":"busy"}', {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+  try {
+    const ctx = createToolContext({
+      apiKey: 'rpa_test',
+      sdkTimeoutMs: BUDGET,
+      sdkRetry: {
+        maxAttempts: 3,
+        minBackoffMs: 1,
+        maxBackoffMs: 2,
+        maxRetryAfterMs: 2,
+      },
+    });
+    const started = Date.now();
+    let outcome: 'threw' | 'returned' = 'returned';
+    try {
+      await ctx.sdk.GET('/v2/pods');
+    } catch {
+      outcome = 'threw';
+    }
+    const elapsed = Date.now() - started;
+    // One shared deadline: aborted on the SECOND attempt, well under 2 budgets.
+    assert.ok(
+      elapsed < BUDGET * 1.75,
+      `took ${elapsed}ms for a ${BUDGET}ms deadline (${(elapsed / BUDGET).toFixed(2)}x) — retries are escaping the deadline`
+    );
+    assert.equal(outcome, 'threw', 'the operation must fail at the deadline');
+    assert.ok(
+      attempts >= 2,
+      `retry layer must still be active (attempts=${attempts})`
+    );
+    assert.ok(
+      attempts < 3,
+      `a third attempt started past the deadline (attempts=${attempts})`
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
