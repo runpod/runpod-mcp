@@ -19,7 +19,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { defaultCredentialChecker } from '../http.js';
-import { scrub, SCRUB_VERSION } from './scrub.js';
+import { scrubSubmission, SCRUB_VERSION } from './scrub.js';
 
 export const ALP_ROUTES = ['feedback', 'journal', 'question'] as const;
 export type AlpRoute = (typeof ALP_ROUTES)[number];
@@ -144,29 +144,28 @@ export async function handleAlpSubmit(
     return;
   }
 
-  const content = scrub(body.content.slice(0, MAX_CONTENT_CHARS));
-  const intention =
-    typeof body.intention === 'string'
-      ? scrub(body.intention.slice(0, MAX_FIELD_CHARS))
-      : undefined;
-
-  const row = {
-    route: body.route,
-    content: content.text,
-    intention: intention?.text,
-    modelType:
-      typeof body.modelType === 'string'
-        ? body.modelType.slice(0, MAX_FIELD_CHARS)
-        : undefined,
-    identity: verdict.accountId,
-    harness:
-      typeof body.harness === 'string'
-        ? body.harness.slice(0, MAX_FIELD_CHARS)
-        : undefined,
-    harnessSource: body.harnessSource,
-    transport: body.transport,
-    redactions: content.redactions + (intention?.redactions ?? 0),
+  // Scrub before truncation so cutting a token cannot hide its shape.
+  const clean = scrubSubmission({
+    content: body.content,
+    intention: typeof body.intention === 'string' ? body.intention : undefined,
+    modelType: typeof body.modelType === 'string' ? body.modelType : undefined,
+    harness: typeof body.harness === 'string' ? body.harness : undefined,
+    harnessSource:
+      typeof body.harnessSource === 'string' ? body.harnessSource : undefined,
+    transport: typeof body.transport === 'string' ? body.transport : undefined,
+    redactions: 0,
     scrubVersion: SCRUB_VERSION,
+  });
+  const row = {
+    ...clean,
+    route: body.route,
+    content: clean.content.slice(0, MAX_CONTENT_CHARS),
+    intention: clean.intention?.slice(0, MAX_FIELD_CHARS),
+    modelType: clean.modelType?.slice(0, MAX_FIELD_CHARS),
+    harness: clean.harness?.slice(0, MAX_FIELD_CHARS),
+    harnessSource: clean.harnessSource?.slice(0, MAX_FIELD_CHARS),
+    transport: clean.transport?.slice(0, MAX_FIELD_CHARS),
+    identity: verdict.accountId,
     receivedAt: new Date().toISOString(),
   };
 

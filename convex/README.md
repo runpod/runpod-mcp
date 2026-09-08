@@ -37,3 +37,7 @@ Deploy (per environment, using that environment's deploy key):
 CONVEX_DEPLOY_KEY=<key> npx convex deploy -y
 CONVEX_DEPLOY_KEY=<key> npx convex env set ALP_SINK_SECRET <same value as Vercel>
 ```
+
+The write mutation imports the shared redactor from `src/alp/scrub.ts` and
+reapplies it before insertion. Deploy both Convex environments when that shared
+module or the mutation changes; a Vercel deploy alone does not update the sink.

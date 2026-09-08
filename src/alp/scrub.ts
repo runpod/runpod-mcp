@@ -1,10 +1,6 @@
-// Courtesy secret scrub for ALP submissions, applied in the public ingest
-// path before anything is stored or forwarded. This is deliberately the
-// SHALLOW pass: well-known, high-confidence credential shapes only. The
-// authoritative ruleset runs on the private sink side (see
-// docs/agent-learning-protocol.md — publishing a thorough ruleset tells
-// anyone exactly what evades it), so this file only needs to catch the
-// obvious pastes, not win an arms race.
+// Best-effort secret redaction before forwarding to storage and again at the
+// Convex write boundary. This catches recognizable tokens and sensitive config
+// assignments; arbitrary unlabeled secrets cannot reliably be identified.
 
 const PATTERNS: Array<{ name: string; re: RegExp }> = [
   // Runpod API keys.
@@ -26,7 +22,7 @@ const PATTERNS: Array<{ name: string; re: RegExp }> = [
 ];
 
 // Bump when PATTERNS changes so stored rows record which pass they got.
-export const SCRUB_VERSION = 1;
+export const SCRUB_VERSION = 2;
 
 export interface ScrubResult {
   text: string;
@@ -36,7 +32,27 @@ export interface ScrubResult {
 
 export function scrub(text: string): ScrubResult {
   let redactions = 0;
-  let out = text;
+  // Covers JSON, YAML and shell env assignments, including quoted values
+  // with spaces or escaped quotes. Keep the field name for diagnostic context.
+  const assignment =
+    /(?<![A-Za-z0-9_.-])(["']?[A-Za-z_][A-Za-z0-9_.-]*["']?\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;{}"']+)(?=\s|[,;}]|$)/g;
+  let out = text.replace(assignment, (match, prefix: string, value: string) => {
+    const key = prefix.replace(/["'\s:=]/g, '');
+    if (
+      !/(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|cookie)/i.test(
+        key
+      )
+    )
+      return match;
+    if (/^["']?\[redacted:[a-z_]+\]["']?$/.test(value)) return match;
+    redactions++;
+    const quote = value.startsWith('"')
+      ? '"'
+      : value.startsWith("'")
+        ? "'"
+        : '';
+    return `${prefix}${quote}[redacted:config]${quote}`;
+  });
   for (const { name, re } of PATTERNS) {
     out = out.replace(re, () => {
       redactions++;
@@ -44,4 +60,37 @@ export function scrub(text: string): ScrubResult {
     });
   }
   return { text: out, redactions };
+}
+
+// Only user-authored text is scrubbed; resolved identity and server timestamps
+// remain authoritative. Reapplying this at the sink is safe and idempotent.
+export function scrubSubmission<
+  T extends {
+    content: string;
+    intention?: string;
+    modelType?: string;
+    harness?: string;
+    harnessSource?: string;
+    transport?: string;
+    redactions: number;
+    scrubVersion: number;
+  },
+>(row: T): T {
+  const clean = { ...row };
+  for (const field of [
+    'content',
+    'intention',
+    'modelType',
+    'harness',
+    'harnessSource',
+    'transport',
+  ] as const) {
+    const value = clean[field];
+    if (typeof value !== 'string') continue;
+    const result = scrub(value);
+    clean[field] = result.text;
+    clean.redactions += result.redactions;
+  }
+  clean.scrubVersion = SCRUB_VERSION;
+  return clean;
 }

@@ -29,6 +29,19 @@ export function boundedFetch(
         ),
       timeoutMs
     );
+    // Match Request's signal precedence, preserving deadlines supplied by callers.
+    const incoming =
+      init?.signal ?? (input instanceof Request ? input.signal : undefined);
+    const cleanup = () => {
+      clearTimeout(timer);
+      incoming?.removeEventListener('abort', abort);
+    };
+    const abort = () => {
+      controller.abort(incoming?.reason);
+      cleanup();
+    };
+    if (incoming?.aborted) abort();
+    else incoming?.addEventListener('abort', abort, { once: true });
     let response: Response;
     try {
       response = await fetchImpl(input, {
@@ -36,21 +49,33 @@ export function boundedFetch(
         signal: controller.signal,
       });
     } catch (error) {
-      clearTimeout(timer);
+      cleanup();
       throw error;
     }
     if (!response.body) {
       // 204 / HEAD: no body to stall on.
-      clearTimeout(timer);
+      cleanup();
       return response;
     }
-    const bounded = response.body.pipeThrough(
-      new TransformStream({
-        flush() {
-          clearTimeout(timer);
-        },
-      })
-    );
+    const reader = response.body.getReader();
+    const bounded = new ReadableStream<Uint8Array>({
+      async pull(stream) {
+        try {
+          const { done, value } = await reader.read();
+          if (done) {
+            cleanup();
+            stream.close();
+          } else stream.enqueue(value);
+        } catch (error) {
+          cleanup();
+          stream.error(error);
+        }
+      },
+      async cancel(reason) {
+        cleanup();
+        await reader.cancel(reason);
+      },
+    });
     return new Response(bounded, {
       status: response.status,
       statusText: response.statusText,

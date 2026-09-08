@@ -248,3 +248,57 @@ test('scrub catches the obvious credential shapes', () => {
   assert.ok(!text.includes('AKIAABCDEFGHIJKLMNOP'));
   assert.ok(redactions >= 2, `expected >=2 redactions, got ${redactions}`);
 });
+
+test('scrub redacts config values in JSON, shell and YAML while preserving useful context', () => {
+  for (const input of [
+    '{"env":{"DATABASE_PASSWORD":"fake password with spaces","PORT":"8080"}}',
+    'AWS_SECRET_ACCESS_KEY=fake-secret\nPORT=8080',
+    "databasePassword: 'fake password with spaces'\nPORT: 8080",
+    '{"clientSecret":"fake\\\"quoted-password","PORT":8080}',
+  ]) {
+    const result = scrub(input);
+    assert.ok(!result.text.includes('fake'), result.text);
+    assert.match(result.text, /8080/);
+    assert.equal(result.redactions, 1);
+    assert.deepEqual(scrub(result.text), { text: result.text, redactions: 0 });
+  }
+});
+
+test('ingest scrubs config and metadata before the storage boundary', async () => {
+  let row: Record<string, unknown> = {};
+  const { req, res, written } = fakeReqRes(
+    { authorization: 'Bearer fake' },
+    {
+      route: 'feedback',
+      content: '{"env":{"DATABASE_PASSWORD":"fake-db-password"}}',
+      intention: 'API_TOKEN=fake-token',
+      modelType: 'rpa_abcdefghijklmnop1234',
+      harness: 'password=fake-password',
+    }
+  );
+  await handleAlpSubmit(req, res, {
+    verify: async () => ({ status: 'valid', accountId: 'account' }),
+    env: {
+      ALP_SINK_URL: 'https://test.convex.site/alp/submit',
+      ALP_SINK_SECRET: 'fake',
+    },
+    sinkFetch: (async (_u: RequestInfo | URL, init?: RequestInit) => {
+      row = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ ok: true, id: 'row' }));
+    }) as typeof fetch,
+  });
+  assert.equal(JSON.parse(written.body!).recorded, true);
+  assert.ok(!JSON.stringify(row).includes('fake-'));
+  assert.ok(!JSON.stringify(row).includes('rpa_abcdefghijklmnop1234'));
+  assert.equal(row.redactions, 4);
+  // The sink repeats the same pass before insertion; no double counting.
+  const { scrubSubmission } = await import('../src/alp/scrub.js');
+  const input = {
+    content: 'DATABASE_PASSWORD=fake-secret',
+    redactions: 0,
+    scrubVersion: 1,
+  };
+  const stored = scrubSubmission(input);
+  assert.ok(!stored.content.includes('fake-secret'));
+  assert.deepEqual(scrubSubmission(stored), stored);
+});
