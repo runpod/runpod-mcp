@@ -302,12 +302,6 @@ async function diagnoseQueuedJob(
         hint: 'No workers are scheduled for this endpoint yet — it may simply be scaling up from zero (normal for the first seconds of a cold start), or it is waiting for GPU capacity / its GPU-CUDA constraints exclude the currently-available hosts. If this persists, check availability with get-capacity or widen the GPU/CUDA settings.',
       });
     }
-    if ((summary.throttled ?? 0) > 0 && (summary.running ?? 0) === 0) {
-      return remember({
-        workerHealth: summary,
-        hint: 'Workers exist but are throttled — the hosts are at capacity right now; the job should start when capacity frees up.',
-      });
-    }
     if ((summary.initializing ?? 0) > 0) {
       return remember({
         workerHealth: summary,

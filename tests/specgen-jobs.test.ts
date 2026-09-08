@@ -214,3 +214,35 @@ test('workers look healthy but the job is queued: the hint points at the logs', 
   assert.match(hint, /2 throttled/);
   assert.match(hint, /RUNNING worker/);
 });
+
+test('queued jobs with only throttled workers still direct callers to logs', async () => {
+  const summary = {
+    total: 2,
+    throttled: 2,
+    running: 0,
+    initializing: 0,
+    unhealthy: 0,
+  };
+  const ctx = {
+    runtime: async () => ({ status: 'IN_QUEUE' }),
+    sdk: {
+      GET: async () => ({
+        data: {
+          summary,
+          workers: [{ id: 'w-throttled', status: 'THROTTLED' }],
+        },
+      }),
+    },
+  } as unknown as Parameters<typeof getJobStatus.handler>[0];
+  const result = await getJobStatus.handler(ctx, {
+    endpointId: 'ep-all-throttled',
+    jobId: 'job',
+  });
+  const payload = result.payload as Record<string, unknown>;
+  assert.equal(result.ok, true);
+  assert.deepEqual(payload.workerHealth, summary);
+  assert.match(String(payload.hint), /stream-worker-logs/);
+  assert.match(String(payload.hint), /2 throttled/);
+  assert.match(String(payload.hint), /any worker/);
+  assert.doesNotMatch(String(payload.hint), /the hosts are at capacity/);
+});
