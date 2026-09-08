@@ -11,6 +11,19 @@
     "declarationMap": false,
     "composite": false
   },
-  "include": ["src/**/*", "api/**/*", "scripts/**/*", "tests/**/*"],
+  // convex/ is likewise outside the main tsconfig, and it stopped being
+  // self-contained when submissions.ts began importing scrub from src/: a
+  // signature change there type-checks clean across all of src/ while
+  // silently breaking the Convex caller, which nothing else here compiles.
+  // Its generated bindings are committed — per Convex's own `codegen --help`,
+  // they "should be committed to the repo (your code won't typecheck without
+  // it!)" — so this needs neither network nor deploy credentials in CI.
+  "include": [
+    "src/**/*",
+    "api/**/*",
+    "scripts/**/*",
+    "tests/**/*",
+    "convex/**/*"
+  ],
   "exclude": ["dist", "build", "node_modules"]
 }
