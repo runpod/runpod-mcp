@@ -109,16 +109,19 @@ export function registerCatalogTools(server: McpServer, rt: ToolRuntime): void {
             });
           }
         }
+        // Built as params rather than nested template ternaries: the query is
+        // all-or-nothing on availability, and minCudaVersion only rides along
+        // with it (guarded above).
+        const query = new URLSearchParams();
+        if (wantAvailability) {
+          query.set('include', 'AVAILABILITY');
+          query.set('product', product);
+          if (params.minCudaVersion !== undefined) {
+            query.set('minCudaVersion', params.minCudaVersion);
+          }
+        }
         const raw = await callRestUrl(
-          `${backend.base}${backend.list}${
-            wantAvailability
-              ? `?include=AVAILABILITY&product=${product}${
-                  params.minCudaVersion !== undefined
-                    ? `&minCudaVersion=${encodeURIComponent(params.minCudaVersion)}`
-                    : ''
-                }`
-              : ''
-          }`
+          `${backend.base}${backend.list}${query.size ? `?${query}` : ''}`
         );
         let gpus = backend.unwrap(raw) as Array<Record<string, unknown>>;
         // Drop the "unknown" sentinel (matches the v1 path). It's a NONE-stock

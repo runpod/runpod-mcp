@@ -133,12 +133,10 @@ const SPEC_OP_TO_TOOLS: Record<string, string[]> = {
   listClusterBilling: ['get-billing'],
 };
 
-// Spec operations deliberately NOT exposed as a tool. Empty today — every operation
-// in the vendored spec maps to a registered tool. Add an entry (with the reason) if
-// an operation ships that we choose not to cover.
-// New in the 2.9.0-era spec refresh: whole resources the MCP has no tools for
-// yet. A to-do list, not a permanent carve-out — delete an entry when its tool
-// ships (this gate then enforces the mapping).
+// Spec operations deliberately NOT exposed as a tool, each with its reason.
+// Populated by the 2.9.0-era spec refresh, which added whole resources the MCP
+// has no tools for yet. A to-do list, not a permanent carve-out — delete an
+// entry when its tool ships (this gate then enforces the mapping).
 const ALLOWLIST_UNMAPPED_OPS: Record<string, string> = {
   getSshKeys: 'account SSH keys: no MCP tool yet (2.9.0 spec refresh)',
   updateSshKeys: 'account SSH keys: no MCP tool yet (2.9.0 spec refresh)',

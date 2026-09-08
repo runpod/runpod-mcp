@@ -41,7 +41,10 @@ interface V1PodParams {
 
 // Drop undefined entries so we never emit explicit `undefined`/`null` the API
 // would reject; keeps the body minimal and the fixtures clean.
-function compact<T extends Record<string, unknown>>(obj: T): Partial<T> {
+// `T extends object`, not Record<string, unknown>: an interface has no index
+// signature, so the named wire shapes below would not satisfy the stricter
+// constraint. Widening it only accepts more callers; the body is unchanged.
+function compact<T extends object>(obj: T): Partial<T> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(obj)) {
     if (v !== undefined) out[k] = v;
@@ -222,6 +225,22 @@ function endpointScaling(
     : { type: 'QUEUE_DELAY', queueDelay: value };
 }
 
+// The two nested objects in a v2 endpoint body, named so the wire shape is
+// checked at compile time rather than asserted by the fixtures alone. Both are
+// emitted through compact(), so every field is optional in practice.
+interface V2GpuConfig {
+  pools?: string[];
+  count?: number;
+  allowedCudaVersions?: string[];
+  minCudaVersion?: string;
+}
+
+interface V2Workers {
+  min?: number;
+  max?: number;
+  idleTimeout?: number;
+}
+
 // CREATE requires `pools` (minItems 1): without them, return undefined so the
 // handler's guard, not the API, reports the omission — CUDA/count fields never
 // ride without a pool list on create. UPDATE (2.9.0) makes every gpu field
@@ -231,8 +250,8 @@ function endpointScaling(
 function endpointGpuConfig(
   params: V2EndpointParams,
   mode: 'create' | 'update'
-): Record<string, unknown> | undefined {
-  const gpu = compact({
+): Partial<V2GpuConfig> | undefined {
+  const gpu = compact<V2GpuConfig>({
     pools: params.gpuPoolIds?.length ? params.gpuPoolIds : undefined,
     count: params.gpuCount,
     allowedCudaVersions: params.allowedCudaVersions,
@@ -246,8 +265,8 @@ function endpointGpuConfig(
 // set none of the three, so we never send an empty `workers: {}`.
 function endpointWorkers(
   params: V2EndpointParams
-): Record<string, unknown> | undefined {
-  const workers = compact({
+): Partial<V2Workers> | undefined {
+  const workers = compact<V2Workers>({
     min: params.workersMin,
     max: params.workersMax,
     idleTimeout: params.idleTimeout,

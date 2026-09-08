@@ -21,6 +21,11 @@ import { cudaConstraintError } from '../_shared/mappers.js';
 // the resolved scaler type.
 const MIN_QUEUE_DELAY = 0.5;
 const MIN_REQUEST_COUNT = 1;
+
+/** Narrows the scaler type the API reports back to the one value we branch on. */
+function isRequestCountScaler(type: string | undefined): boolean {
+  return type === 'REQUEST_COUNT';
+}
 const MIN_IDLE_TIMEOUT = 1;
 const MAX_IDLE_TIMEOUT = 3600;
 
@@ -365,7 +370,7 @@ export function registerEndpointTools(
   // /v2/serverless body; v1 passes the flat fields through.
   server.tool(
     'update-endpoint',
-    "Update a Serverless endpoint's config. On v2 you can change image/disk/env/ports/registry/workers/scaling/networkVolumes/timeout/flashboot; on v1, scaling fields (worker min/max, idle timeout, scaler type/value, name). Only provided fields change. An endpoint's request routing (queue vs load balancer) is fixed at creation and cannot be changed here — recreate the endpoint instead. Note: passing gpuPoolIds replaces the GPU selection wholesale, which clears any GPU-type exclusions set elsewhere (console or set-endpoint-gpus) — the reply carries a _warning when that happens.",
+    "Update a Serverless endpoint's config. On v2 you can change image/disk/env/ports/registry/workers/scaling/networkVolumes/timeout/flashboot, plus the GPU selection (gpuPoolIds/gpuCount) and its CUDA constraints (allowedCudaVersions/minCudaVersion) — CUDA-only or count-only changes do not require resending gpuPoolIds; on v1, scaling fields (worker min/max, idle timeout, scaler type/value, name). Only provided fields change. An endpoint's request routing (queue vs load balancer) is fixed at creation and cannot be changed here — recreate the endpoint instead. Note: passing gpuPoolIds replaces the GPU selection wholesale, which clears any GPU-type exclusions set elsewhere (console or set-endpoint-gpus) — the reply carries a _warning when that happens.",
     {
       endpointId: z.string().describe('ID of the endpoint to update'),
       name: z.string().optional().describe('New name for the endpoint'),
@@ -506,10 +511,12 @@ export function registerEndpointTools(
           | { scaling?: { type?: string }; gpu?: { excludedTypes?: string[] } }
           | undefined;
         if (needScalerRead) {
-          scalerType =
-            current?.scaling?.type === 'REQUEST_COUNT'
-              ? 'REQUEST_COUNT'
-              : 'QUEUE_DELAY';
+          // Anything the API reports other than REQUEST_COUNT is treated as
+          // QUEUE_DELAY, the server-side default for queue endpoints, so an
+          // unknown future scaler type fails closed onto the stricter bound.
+          scalerType = isRequestCountScaler(current?.scaling?.type)
+            ? 'REQUEST_COUNT'
+            : 'QUEUE_DELAY';
         }
         if (needExclusionRead && current?.gpu?.excludedTypes?.length) {
           clearedExclusions = current.gpu.excludedTypes;
