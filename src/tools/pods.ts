@@ -7,6 +7,7 @@ import {
   applySshPublicKey,
   normalizeSshPublicKey,
   podBodyFromTemplate,
+  cudaConstraintError,
 } from '../_shared/mappers.js';
 import { READ_ONLY, WRITE, DESTRUCTIVE, type ToolRuntime } from './runtime.js';
 import { logStreamParams, streamLogsReply } from './logs.js';
@@ -212,6 +213,18 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
         .array(z.string())
         .optional()
         .describe('List of data centers'),
+      allowedCudaVersions: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Acceptable host CUDA versions as major.minor, e.g. ["12.8","12.6"] (v2, GPU pods only). Exact match — discover valid values per GPU type with get-capacity. Mutually exclusive with minCudaVersion.'
+        ),
+      minCudaVersion: z
+        .string()
+        .optional()
+        .describe(
+          'Lowest acceptable host CUDA version as major.minor, e.g. "12.4" (v2, GPU pods only). A bare major like "12" is rejected. Open-ended floor; mutually exclusive with a non-empty allowedCudaVersions.'
+        ),
     },
     { title: 'Create pod', ...WRITE },
     async (params) => {
@@ -244,6 +257,16 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
       // Template deploy is v2-only: v2 CreatePodRequest has no templateId, so we
       // fetch the template and spread its container config into the body below.
       // Only v2 templates are ContainerConfig-shaped.
+      const hasCudaParams =
+        params.allowedCudaVersions !== undefined ||
+        params.minCudaVersion !== undefined;
+      if (hasCudaParams && backend.version !== 'v2') {
+        return jsonReply({
+          error:
+            'allowedCudaVersions/minCudaVersion are only supported on the v2 REST API. Set RUNPOD_REST_VERSION=v2.',
+          status: 501,
+        });
+      }
       if (params.templateId && backend.version !== 'v2') {
         return jsonReply({
           error:
@@ -291,6 +314,19 @@ export function registerPodTools(server: McpServer, rt: ToolRuntime): void {
               'A GPU pod needs gpuTypeIds (see list-gpu-types); gpuCount or computeType alone is under-specified.',
             status: 400,
           });
+        }
+        // CUDA constraints live under gpu since 2.9.0 and are unrepresentable
+        // on a CPU pod — validate here so the caller gets the reason, not a 422.
+        if (hasCudaParams && !wantsGpu) {
+          return jsonReply({
+            error:
+              'allowedCudaVersions/minCudaVersion apply to GPU pods only — pass gpuTypeIds (see list-gpu-types).',
+            status: 400,
+          });
+        }
+        if (hasCudaParams) {
+          const cudaError = cudaConstraintError(params);
+          if (cudaError) return jsonReply({ error: cudaError, status: 400 });
         }
         // v2 CreatePodRequest requires `name`. Guard the direct-image path so
         // the caller gets a clean 400 instead of the API's raw 422; a
