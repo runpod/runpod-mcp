@@ -242,3 +242,44 @@ test('the body argument is not mistaken for an unknown one', async () => {
   assert.equal(result.ok, true, JSON.stringify(result.payload));
   assert.equal(seen.length, 1);
 });
+
+// Some MCP clients hand a nested object argument over as a JSON string. That
+// used to reach upstream verbatim and come back as "$: got string, want
+// object", which never says the body was stringified — so the agent re-reads
+// the schema it already followed. Found by hand: it blocked every
+// body-carrying tool from the Claude Code client during the write-tier pass.
+test('a stringified JSON body is parsed, not forwarded as a string', async () => {
+  const { dispatchGeneratedTool } = await import('../src/specgen/dispatch.js');
+  const tool = generatedTools.find((t) => t.name === 'create-pod')!;
+  const seen: unknown[] = [];
+  const client = {
+    POST: async (_p: string, init: Record<string, unknown>) => {
+      seen.push(init.body);
+      return { data: { id: 'pod_1' }, response: new Response('{}') };
+    },
+  };
+  const result = await dispatchGeneratedTool(client as never, tool, {
+    body: JSON.stringify({ name: 'x', image: 'y', gpu: { count: 1 } }),
+  });
+  assert.equal(result.ok, true, JSON.stringify(result.payload));
+  assert.deepEqual(seen[0], { name: 'x', image: 'y', gpu: { count: 1 } });
+});
+
+test('a body string that is not JSON is a named 400, not an upstream 422', async () => {
+  const { dispatchGeneratedTool } = await import('../src/specgen/dispatch.js');
+  const tool = generatedTools.find((t) => t.name === 'create-pod')!;
+  const boom = new Proxy(
+    {},
+    {
+      get() {
+        throw new Error('API must not be called');
+      },
+    }
+  );
+  const result = await dispatchGeneratedTool(boom as never, tool, {
+    body: 'not json at all',
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 400);
+  assert.match(JSON.stringify(result.payload), /not valid JSON/);
+});

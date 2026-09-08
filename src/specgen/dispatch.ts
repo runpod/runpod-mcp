@@ -75,6 +75,28 @@ export async function dispatchGeneratedTool(
       param.explode === false && Array.isArray(value) ? value.join(',') : value;
   }
 
+  // Some MCP clients serialize a nested object argument as a JSON string
+  // rather than an object. Forwarding that verbatim makes upstream reject the
+  // whole request with "$: got string, want object" — which never mentions
+  // that the body was stringified, so the agent re-reads the schema it already
+  // followed and retries the same shape. Accept the string and parse it; a
+  // body that is not valid JSON is the client's error, so name it plainly.
+  let body = args.body;
+  if (tool.hasBody && typeof body === 'string') {
+    try {
+      body = JSON.parse(body);
+    } catch {
+      return {
+        ok: false,
+        status: 400,
+        payload: {
+          error:
+            'The body argument arrived as a string that is not valid JSON. Send body as an object.',
+        },
+      };
+    }
+  }
+
   // openapi-fetch is typed per literal path; generated dispatch is generic by
   // construction, so the client is narrowed to the structural shape of a verb
   // call rather than asserted to any.
@@ -85,7 +107,7 @@ export async function dispatchGeneratedTool(
   const verbs = client as unknown as Record<string, VerbCall>;
   const { data, error, response } = await verbs[tool.method](tool.path, {
     params: { path: pathParams, query },
-    ...(tool.hasBody && args.body !== undefined ? { body: args.body } : {}),
+    ...(tool.hasBody && body !== undefined ? { body } : {}),
   });
 
   // Branch on the RESPONSE, not on `error`: openapi-fetch returns
