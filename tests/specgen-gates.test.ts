@@ -140,43 +140,57 @@ test('dispatch 400s a missing required argument instead of calling the API', asy
 // exploded, but is specified multiple times"). Found by hand against the
 // preview on 2026-09-08: single-value filters passed, multi-value ones 400'd,
 // which is the shape of bug that survives casual testing.
+//
+// Asserted on the outgoing REQUEST URL, not on the query object dispatch hands
+// the SDK. The bug was never in our string — it was in how openapi-fetch
+// serialized it — so stubbing the client out would test the input to the
+// component that was broken and take the rest on faith. Running the real
+// client against a stub fetch tests the wire format that actually 400'd, and
+// getAll() proves there is exactly ONE param rather than two.
 test('non-exploded array query params are comma-joined, not repeated', async () => {
+  const { createRunpodClient } = await import('@runpod/sdk');
   const { generatedTools } = await import(
     '../src/specgen/generated/tools.gen.js'
   );
   const { dispatchGeneratedTool } = await import('../src/specgen/dispatch.js');
 
-  const seen: Array<Record<string, unknown>> = [];
-  const client = {
-    GET: async (_path: string, init: { params: { query: unknown } }) => {
-      seen.push(init.params.query as Record<string, unknown>);
-      return {
-        data: {},
-        error: undefined,
-        response: new Response('{}', { status: 200 }),
-      };
+  const seen: Request[] = [];
+  const client = createRunpodClient({
+    apiKey: 'test-key',
+    baseUrl: 'https://example.test',
+    retry: false,
+    fetch: async (input, init) => {
+      seen.push(new Request(input, init));
+      return new Response('{}', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
     },
-  };
+  });
 
   const dcs = generatedTools.find((t) => t.name === 'list-data-centers')!;
-  const regions = dcs.params.find((p) => p.name === 'regions')!;
-  assert.equal(regions.explode, false, 'regions must be marked non-exploded');
+  assert.equal(
+    dcs.params.find((p) => p.name === 'regions')?.explode,
+    false,
+    'regions must be marked non-exploded'
+  );
 
-  await dispatchGeneratedTool(client as never, dcs, {
+  const multi = await dispatchGeneratedTool(client, dcs, {
     regions: ['EUROPE', 'ASIA'],
+    compliance: ['GDPR', 'HIPAA'],
   });
-  assert.equal(seen[0].regions, 'EUROPE,ASIA');
+  assert.equal(multi.ok, true);
+  const q = new URL(seen[0].url).searchParams;
+  assert.deepEqual(q.getAll('regions'), ['EUROPE,ASIA']);
+  assert.deepEqual(q.getAll('compliance'), ['GDPR,HIPAA']);
 
   // A single-element array must serialize the same way — no special case.
-  await dispatchGeneratedTool(client as never, dcs, { regions: ['EUROPE'] });
-  assert.equal(seen[1].regions, 'EUROPE');
+  await dispatchGeneratedTool(client, dcs, { regions: ['EUROPE'] });
+  assert.deepEqual(new URL(seen[1].url).searchParams.getAll('regions'), [
+    'EUROPE',
+  ]);
 
   // A non-array value is untouched.
-  const gpus = generatedTools.find((t) => t.name === 'list-gpu-types')!;
-  await dispatchGeneratedTool(client as never, gpus, {
-    minCudaVersion: '12.4',
-    product: ['POD', 'SERVERLESS'],
-  });
-  assert.equal(seen[2].minCudaVersion, '12.4');
-  assert.equal(seen[2].product, 'POD,SERVERLESS');
+  await dispatchGeneratedTool(client, dcs, { globalNetwork: true });
+  assert.equal(new URL(seen[2].url).searchParams.get('globalNetwork'), 'true');
 });
