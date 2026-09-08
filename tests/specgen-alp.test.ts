@@ -184,9 +184,8 @@ test('ingest is honest when no sink is configured', async () => {
   assert.match(body.note, /Do not retry/);
 });
 
-// Regression: a wrong ALP_SINK_URL answering 200 without the sink's own
-// { ok, id } body must NOT be reported as recorded. Observed live on the
-// preview deployment (2026-09-03): three acked submissions, zero stored rows.
+// A 200 without the sink's own { ok, id } body must NOT be reported as
+// recorded: "recorded" should mean a row exists, not that some host answered.
 test('a 200 from the wrong host is not a stored write', async () => {
   const { req, res, written } = fakeReqRes(
     { authorization: 'Bearer rpa_live' },

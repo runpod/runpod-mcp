@@ -132,12 +132,12 @@ export async function handleAlpSubmit(
     send(200, notRecorded('ingest is not configured on this deployment'));
     return;
   }
-  // Refuse a sink URL that is not shaped like the sink. A wrong value used to
-  // be invisible twice over: stored as a Vercel Sensitive value nobody could
-  // read back, and accepted by any host that answered a POST, so it surfaced
-  // only as missing rows. The URL is now a readable env var (the secret stays
-  // hidden), and this check is the second half — the sink is always a Convex
-  // HTTP action, so anything else is a config error worth saying in the log.
+  // Refuse a sink URL that is not shaped like the sink. The sink is always a
+  // Convex HTTP action, so anything else is a config error, and a loud log
+  // line beats inferring it from a table later. Note the limit of this check:
+  // it cannot tell one Convex deployment from another, so it catches a
+  // malformed or foreign URL, never a valid URL aimed at the wrong
+  // environment. Separating the per-environment secrets is what covers that.
   if (!isSinkUrl(sinkUrl)) {
     console.warn('alp_sink_misconfigured');
     send(200, notRecorded('ingest is misconfigured on this deployment'));
@@ -193,9 +193,9 @@ export async function handleAlpSubmit(
     // (a static page, a redirect target, another app's root), and treating
     // that as success reports recorded: true while nothing is stored — a
     // silent data loss that no log line and no ack can distinguish from a
-    // real write. Verified once by a wrong ALP_SINK_URL on the preview
-    // deployment (2026-09-03): three submissions acked, zero rows. Require
-    // the sink's own contract instead: { ok: true, id }.
+    // real write. This is defense in depth, not a fix for an observed
+    // incident: require the sink's own contract, { ok: true, id }, so that
+    // "recorded" can only mean a row exists.
     const sinkBody = (await response.json().catch(() => null)) as {
       ok?: boolean;
       id?: string;

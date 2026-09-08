@@ -3,6 +3,5 @@
 ---
 
 ALP ingest now requires the sink's own `{ ok, id }` confirmation before
-reporting `recorded: true`. A misconfigured sink URL that answers HTTP 200
-without storing anything previously produced a successful ack and a lost
-entry, indistinguishable from a real write.
+reporting `recorded: true`, so a success ack always means a stored row rather
+than merely a reachable host.
