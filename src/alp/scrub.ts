@@ -63,23 +63,29 @@ export function redactAnchoredCredentials(text: string): ScrubResult {
 
 // ---- Stage B: sensitive headers, whole value ----------------------------
 
-// One header per line, value taken to end of line. `Authorization: Basic x`,
-// `Authorization: Token x` and `Cookie: a=1; b=2; c=3` each collapse to one
-// marker. Header names are case-insensitive on the wire and in pastes.
-const SENSITIVE_HEADER =
-  /^([ \t]*)((?:proxy-)?authorization|cookie|set-cookie|x-api-key|x-auth-token|x-runpod-token)([ \t]*:[ \t]*)(.+?)[ \t]*$/gim;
+// Headers are matched wherever they appear, not only at line start: pastes
+// arrive inline ("… got 401 with Authorization: Basic xyz | cookie: a=1; b=2")
+// and the first version, anchored ^…$, missed exactly that and fell through
+// to the token matcher — which redacted the word "Basic" and kept the
+// credential. So the VALUE is bounded by its own shape rather than by the end
+// of the line: an auth header is `<scheme> <token>` or a bare token; a cookie
+// header is a `k=v; k=v` chain. Header names are case-insensitive.
+const AUTH_HEADER =
+  /\b((?:proxy-)?authorization|x-api-key|x-auth-token|x-runpod-token)(\s*:\s*)((?:basic|bearer|token|digest|negotiate|ntlm|apikey)\s+[^\s|,]+|[^\s|,]+)/gi;
+const COOKIE_HEADER =
+  /\b(cookie|set-cookie)(\s*:\s*)([^\s;=,|]+=[^\s;,|]*(?:\s*;\s*[^\s;=,|]+(?:=[^\s;,|]*)?)*)/gi;
 
 export function redactHeaderValues(text: string): ScrubResult {
   let redactions = 0;
-  const out = text.replace(
-    SENSITIVE_HEADER,
-    (match, indent: string, name: string, sep: string, value: string) => {
-      // Stage A may already have replaced the whole value; keep its marker.
-      if (MARKER.test(value)) return match;
-      redactions++;
-      return `${indent}${name}${sep}[redacted:header]`;
-    }
-  );
+  const replace = (match: string, name: string, sep: string, value: string) => {
+    // Stage A may already have replaced the value; keep its marker.
+    if (MARKER.test(value)) return match;
+    redactions++;
+    return `${name}${sep}[redacted:header]`;
+  };
+  const out = text
+    .replace(AUTH_HEADER, replace)
+    .replace(COOKIE_HEADER, replace);
   return { text: out, redactions };
 }
 

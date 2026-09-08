@@ -386,6 +386,22 @@ test('sensitive header values are redacted whole, not tokenized', () => {
     assert.equal(again.text, text);
     assert.equal(again.redactions, 0);
   }
+  // Inline, mid-sentence, several on one line — the shape real pastes take.
+  // The first version anchored ^…$ and missed all of these live.
+  const inline = scrub(
+    `got 401 with Authorization: Basic ${cred} | cookie: session=abc123secretvalue; csrf=def456othervalue; theme=dark | then SERVICE_API_KEY=fake-opaque-credential and tokenizer: llama-3`
+  );
+  assert.ok(!inline.text.includes(cred), `inline Basic leaked: ${inline.text}`);
+  assert.ok(
+    !/abc123|def456|fake-opaque/.test(inline.text),
+    `inline leaked: ${inline.text}`
+  );
+  assert.match(
+    inline.text,
+    /Authorization: \[redacted:header\] \| cookie: \[redacted:header\]/
+  );
+  assert.match(inline.text, /tokenizer: llama-3$/);
+  assert.equal(inline.redactions, 3);
   // A Bearer value is already taken by stage A; stage B must not double-count.
   const bearer = scrub(
     'Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456'
