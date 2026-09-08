@@ -39,8 +39,19 @@ export async function dispatchGeneratedTool(
   const query: Record<string, unknown> = {};
   for (const param of tool.params) {
     if (args[param.name] === undefined) continue;
-    if (param.location === 'path') pathParams[param.name] = args[param.name];
-    else query[param.name] = args[param.name];
+    if (param.location === 'path') {
+      pathParams[param.name] = args[param.name];
+      continue;
+    }
+    const value = args[param.name];
+    // `explode: false` in the spec means form style with ONE comma-joined
+    // value. openapi-fetch's default serializer repeats the key per array
+    // item instead, and upstream rejects that with "parameter 'x' is not
+    // exploded, but is specified multiple times" — so a multi-value filter
+    // fails while a single value passes, which is exactly the shape of bug
+    // that survives casual testing.
+    query[param.name] =
+      param.explode === false && Array.isArray(value) ? value.join(',') : value;
   }
 
   // openapi-fetch is typed per literal path; generated dispatch is generic by

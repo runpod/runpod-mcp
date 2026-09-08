@@ -95,6 +95,7 @@ function kebabCase(operationId: string): string {
 interface ToolParam {
   name: string;
   location: 'path' | 'query';
+  explode?: false;
 }
 
 // The slice of an OpenAPI operation this generator reads. Parameters and
@@ -145,7 +146,17 @@ for (const [path, pathItem] of Object.entries<SpecPathItem>(spec.paths)) {
         ...(param.description ? { description: param.description } : {}),
       });
       if (param.required) required.push(param.name);
-      params.push({ name: param.name, location: param.in });
+      // Carry style/explode through. These query params are declared
+      // `explode: false` (form style), i.e. one comma-joined value — while
+      // openapi-fetch's default serializer emits a repeated key per array
+      // item, which upstream rejects outright ("parameter 'x' is not
+      // exploded, but is specified multiple times"). dispatch.ts needs to
+      // know, and only the spec knows.
+      params.push({
+        name: param.name,
+        location: param.in,
+        ...(param.explode === false ? { explode: false as const } : {}),
+      });
     }
 
     const bodySchema = op.requestBody?.content?.['application/json']?.schema;
@@ -190,6 +201,8 @@ const header = `// Code generated from specgen/spec/openapi.yaml by specgen/gene
 export interface GeneratedToolParam {
   name: string;
   location: "path" | "query";
+  /** Spec-declared \`explode: false\`: serialize an array as one comma-joined value. */
+  explode?: false;
 }
 
 export interface GeneratedTool {

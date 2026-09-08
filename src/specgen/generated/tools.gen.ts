@@ -3,6 +3,8 @@
 export interface GeneratedToolParam {
   name: string;
   location: 'path' | 'query';
+  /** Spec-declared `explode: false`: serialize an array as one comma-joined value. */
+  explode?: false;
 }
 
 export interface GeneratedTool {
@@ -1479,10 +1481,12 @@ export const generatedTools: GeneratedTool[] = [
       {
         name: 'include',
         location: 'query',
+        explode: false,
       },
       {
         name: 'product',
         location: 'query',
+        explode: false,
       },
       {
         name: 'vcpuCount',
@@ -1553,6 +1557,7 @@ export const generatedTools: GeneratedTool[] = [
       {
         name: 'include',
         location: 'query',
+        explode: false,
       },
     ],
     hasBody: false,
@@ -1656,10 +1661,12 @@ export const generatedTools: GeneratedTool[] = [
       {
         name: 'include',
         location: 'query',
+        explode: false,
       },
       {
         name: 'product',
         location: 'query',
+        explode: false,
       },
       {
         name: 'count',
@@ -1672,10 +1679,12 @@ export const generatedTools: GeneratedTool[] = [
       {
         name: 'countryCodes',
         location: 'query',
+        explode: false,
       },
       {
         name: 'cudaVersions',
         location: 'query',
+        explode: false,
       },
       {
         name: 'minCudaVersion',
@@ -2073,10 +2082,12 @@ export const generatedTools: GeneratedTool[] = [
       {
         name: 'include',
         location: 'query',
+        explode: false,
       },
       {
         name: 'product',
         location: 'query',
+        explode: false,
       },
       {
         name: 'vcpuCount',
@@ -2139,18 +2150,22 @@ export const generatedTools: GeneratedTool[] = [
       {
         name: 'include',
         location: 'query',
+        explode: false,
       },
       {
         name: 'regions',
         location: 'query',
+        explode: false,
       },
       {
         name: 'networkVolumeTypes',
         location: 'query',
+        explode: false,
       },
       {
         name: 'compliance',
         location: 'query',
+        explode: false,
       },
       {
         name: 'globalNetwork',
@@ -2420,10 +2435,12 @@ export const generatedTools: GeneratedTool[] = [
       {
         name: 'include',
         location: 'query',
+        explode: false,
       },
       {
         name: 'product',
         location: 'query',
+        explode: false,
       },
       {
         name: 'count',
@@ -2436,10 +2453,12 @@ export const generatedTools: GeneratedTool[] = [
       {
         name: 'countryCodes',
         location: 'query',
+        explode: false,
       },
       {
         name: 'cudaVersions',
         location: 'query',
+        explode: false,
       },
       {
         name: 'minCudaVersion',

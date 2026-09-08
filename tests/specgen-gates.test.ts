@@ -133,3 +133,50 @@ test('dispatch 400s a missing required argument instead of calling the API', asy
   assert.equal(result.status, 400);
   assert.match(JSON.stringify(result.payload), /Missing required argument.*id/);
 });
+
+// A spec-declared `explode: false` query param must reach the API as ONE
+// comma-joined value. openapi-fetch's default serializer repeats the key per
+// array item, and upstream rejects that outright ("parameter 'regions' is not
+// exploded, but is specified multiple times"). Found by hand against the
+// preview on 2026-09-08: single-value filters passed, multi-value ones 400'd,
+// which is the shape of bug that survives casual testing.
+test('non-exploded array query params are comma-joined, not repeated', async () => {
+  const { generatedTools } = await import(
+    '../src/specgen/generated/tools.gen.js'
+  );
+  const { dispatchGeneratedTool } = await import('../src/specgen/dispatch.js');
+
+  const seen: Array<Record<string, unknown>> = [];
+  const client = {
+    GET: async (_path: string, init: { params: { query: unknown } }) => {
+      seen.push(init.params.query as Record<string, unknown>);
+      return {
+        data: {},
+        error: undefined,
+        response: new Response('{}', { status: 200 }),
+      };
+    },
+  };
+
+  const dcs = generatedTools.find((t) => t.name === 'list-data-centers')!;
+  const regions = dcs.params.find((p) => p.name === 'regions')!;
+  assert.equal(regions.explode, false, 'regions must be marked non-exploded');
+
+  await dispatchGeneratedTool(client as never, dcs, {
+    regions: ['EUROPE', 'ASIA'],
+  });
+  assert.equal(seen[0].regions, 'EUROPE,ASIA');
+
+  // A single-element array must serialize the same way — no special case.
+  await dispatchGeneratedTool(client as never, dcs, { regions: ['EUROPE'] });
+  assert.equal(seen[1].regions, 'EUROPE');
+
+  // A non-array value is untouched.
+  const gpus = generatedTools.find((t) => t.name === 'list-gpu-types')!;
+  await dispatchGeneratedTool(client as never, gpus, {
+    minCudaVersion: '12.4',
+    product: ['POD', 'SERVERLESS'],
+  });
+  assert.equal(seen[2].minCudaVersion, '12.4');
+  assert.equal(seen[2].product, 'POD,SERVERLESS');
+});
