@@ -278,11 +278,28 @@ function encodeBody(body: VercelRequest['body']): string {
   return '';
 }
 
+// Ported from #86 (donovanclarke, against the v1 surface). Both discovery
+// documents are derived purely from the request host and are fetched by MCP
+// clients on every auth flow, so today every fetch is a function invocation
+// (verified: x-vercel-cache: MISS on both).
+//   s-maxage=3600            — the CDN serves repeat fetches from the edge.
+//   stale-while-revalidate   — an expired copy revalidates in the background
+//                              instead of serializing invocations behind it.
+//   max-age=0                — clients hold no copy, so changing an advertised
+//                              endpoint propagates once the edge copy expires.
+// Safe to share across callers because these responses contain nothing
+// per-caller and CORS here is a static `*`, not a reflected Origin — so no
+// Vary is needed and no caller's response can be replayed to another. Never
+// put this on the MCP endpoint itself, whose responses are per-caller.
+const DISCOVERY_CACHE_CONTROL =
+  'public, max-age=0, s-maxage=3600, stale-while-revalidate=86400';
+
 function handleProtectedResourceMetadata(
   req: VercelRequest,
   res: VercelResponse
 ): void {
   const baseUrl = getBaseUrl(req);
+  res.setHeader('Cache-Control', DISCOVERY_CACHE_CONTROL);
   // Advertise THIS server as the authorization server so Claude discovers our
   // /authorize and /token routes.
   res.status(200).json({
@@ -298,6 +315,7 @@ function handleAuthorizationServerMetadata(
   res: VercelResponse
 ): void {
   const baseUrl = getBaseUrl(req);
+  res.setHeader('Cache-Control', DISCOVERY_CACHE_CONTROL);
   // This server is the full authorization server. The flow is a flash-backed
   // approval: /authorize creates a request and hands off to the console, and
   // /token exchanges the resulting code for the minted Runpod API key. There is
