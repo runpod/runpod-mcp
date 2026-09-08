@@ -132,11 +132,12 @@ export async function handleAlpSubmit(
     send(200, notRecorded('ingest is not configured on this deployment'));
     return;
   }
-  // Refuse a sink URL that is not shaped like the sink. Vercel stores these as
-  // Secret-type values, which cannot be read back — so a wrong one is invisible
-  // to inspection and only shows up as missing rows. The sink is always a
-  // Convex HTTP action; anything else is a config error, and saying so in the
-  // log beats discovering it from an empty table later.
+  // Refuse a sink URL that is not shaped like the sink. A wrong value used to
+  // be invisible twice over: stored as a Vercel Sensitive value nobody could
+  // read back, and accepted by any host that answered a POST, so it surfaced
+  // only as missing rows. The URL is now a readable env var (the secret stays
+  // hidden), and this check is the second half — the sink is always a Convex
+  // HTTP action, so anything else is a config error worth saying in the log.
   if (!isSinkUrl(sinkUrl)) {
     console.warn('alp_sink_misconfigured');
     send(200, notRecorded('ingest is misconfigured on this deployment'));
