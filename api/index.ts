@@ -278,10 +278,10 @@ function encodeBody(body: VercelRequest['body']): string {
   return '';
 }
 
-// Ported from #86 (donovanclarke, against the v1 surface). Both discovery
-// documents are derived purely from the request host and are fetched by MCP
-// clients on every auth flow, so today every fetch is a function invocation
-// (verified: x-vercel-cache: MISS on both).
+// Both discovery documents are derived purely from the request host and are
+// fetched by MCP clients on every auth flow, so without this every fetch is a
+// function invocation (verified before the change: x-vercel-cache: MISS on
+// both). Introduced for the v1 surface in #86.
 //   s-maxage=3600            — the CDN serves repeat fetches from the edge.
 //   stale-while-revalidate   — an expired copy revalidates in the background
 //                              instead of serializing invocations behind it.
