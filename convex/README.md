@@ -10,9 +10,22 @@ env var on both the Convex deployment (`npx convex env set`) and Vercel; the
 ingest action rejects any request that does not present it, which makes the
 Vercel server the only caller.
 
-The deployment name is deliberately not written down here (Rule 1: no
-infrastructure values in a public repo). Resolve it from the linked Convex
-project when you need it, then inspect what the sink stored:
+## One sink per environment
+
+Production and Preview write to **different Convex deployments**, each with its
+own `ALP_SINK_SECRET`, so preview traffic never reaches the production table and
+clearing one store cannot touch the other. Each secret is rejected by the other
+deployment (verified). The Vercel `Development` target is deliberately left
+unconfigured: ALP is hosted-only, and absent from `tools/list` is the disabled
+state.
+
+Deploy `convex/` to both when the schema or the ingest action changes — the
+preview deployment is not updated by a production deploy.
+
+The deployment names are deliberately not written down here (Rule 1: no
+infrastructure values in a public repo). `ALP_SINK_URL` is a readable Vercel env
+var per environment, so read the name from there — then inspect what that sink
+stored:
 
 ```bash
 npx convex data submissions --deployment <name>
