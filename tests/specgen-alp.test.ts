@@ -302,3 +302,62 @@ test('ingest scrubs config and metadata before the storage boundary', async () =
   assert.ok(!stored.content.includes('fake-secret'));
   assert.deepEqual(scrubSubmission(stored), stored);
 });
+
+// Pass ORDER is the security property here, so it gets its own test.
+// Several anchored patterns recognize a credential by the token in front of
+// it: `bearer` matches `Bearer <opaque>`, never the opaque part alone. The
+// assignment pass stops an unquoted value at the first space, so when it ran
+// first it rewrote `Authorization: Bearer <opaque>` to
+// `Authorization: [redacted:config] <opaque>` — consuming the word "Bearer",
+// destroying the anchor, and leaving the credential in plaintext. It read as
+// a redaction while being a leak, which is the only reason it survived
+// review: every other value in the fixtures was independently matched by a
+// pattern (jwt, rpa_, sk_), so nothing noticed.
+test('an unquoted Bearer credential is redacted, anchor and all', () => {
+  const opaque = 'abcdefghijklmnopqrstuvwxyz123456';
+  for (const input of [
+    `Authorization: Bearer ${opaque}`,
+    `cookie: Bearer ${opaque}`,
+    `authorization = "Bearer ${opaque}"`,
+    `{"authorization": "Bearer ${opaque}"}`,
+  ]) {
+    const { text, redactions } = scrub(input);
+    assert.ok(!text.includes(opaque), `leaked the credential: ${text}`);
+    assert.match(text, /\[redacted:bearer\]/, `lost the anchor: ${text}`);
+    assert.equal(redactions, 1, `double-counted: ${text}`);
+    // Re-scrubbing at the sink must not change it or inflate the count.
+    const again = scrub(text);
+    assert.equal(again.text, text);
+    assert.equal(again.redactions, 0);
+  }
+});
+
+// Sensitive key names are matched by segment, not substring. Over-redaction
+// has a real cost here: the corpus exists to be read.
+test('config redaction keys match by segment, not substring', () => {
+  for (const benign of [
+    'tokenizer: llama-3',
+    'model: gpt-4o',
+    'const timeout = 5000;',
+    'the ratio is 3:1 at 10:30',
+  ]) {
+    assert.equal(scrub(benign).redactions, 0, `false positive: ${benign}`);
+    assert.equal(scrub(benign).text, benign);
+  }
+  // camelCase has no separator to split on, so the segment split has to
+  // break on case boundaries too — otherwise `clientSecret` reads as one
+  // opaque word and sails through.
+  for (const secret of [
+    'access_token: xyzsecretvalue',
+    'apikey=abcdefgvalue',
+    'apiKey=abcdefgvalue',
+    'DB_PASSWORD=letmein',
+    'export ALP_SINK_SECRET=s3cr3tvalue',
+    "databasePassword: 'fake password with spaces'",
+    '{"clientSecret":"fakevalue"}',
+  ]) {
+    const { text, redactions } = scrub(secret);
+    assert.ok(redactions > 0, `missed a secret: ${secret}`);
+    assert.match(text, /\[redacted:config\]/);
+  }
+});
