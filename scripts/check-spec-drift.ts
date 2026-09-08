@@ -1,7 +1,7 @@
 // Compares the vendored spec (specgen/spec/openapi.yaml) against the spec the
 // production API is serving right now. Exits non-zero on drift so CI can
 // alert BEFORE a stale surface ships; prints the exact operations that
-// appeared, disappeared, or moved so the fix is obvious:
+// appeared, disappeared, moved, or changed input contracts so the fix is obvious:
 //
 //   curl -s https://api.runpod.io/v2/openapi.json  (re-vendor, see specgen/README.md)
 //   pnpm generate:tools
@@ -10,27 +10,10 @@
 // PRs that touch specgen/)
 import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
+import { operations } from './spec-drift.js';
 
 const SPEC_URL =
   process.env.SPEC_URL ?? 'https://api.runpod.io/v2/openapi.json';
-const METHODS = ['get', 'put', 'post', 'delete', 'patch'] as const;
-
-type Ops = Map<string, string>; // operationId -> "METHOD path"
-
-function operations(spec: {
-  paths: Record<string, Record<string, { operationId?: string }>>;
-}): Ops {
-  const ops: Ops = new Map();
-  for (const [path, item] of Object.entries(spec.paths)) {
-    for (const method of METHODS) {
-      const op = item[method];
-      if (op?.operationId)
-        ops.set(op.operationId, `${method.toUpperCase()} ${path}`);
-    }
-  }
-  return ops;
-}
-
 const vendored = operations(
   parse(readFileSync('specgen/spec/openapi.yaml', 'utf8'))
 );
@@ -46,10 +29,14 @@ const live = operations(await response.json());
 const added = [...live.keys()].filter((id) => !vendored.has(id));
 const removed = [...vendored.keys()].filter((id) => !live.has(id));
 const moved = [...live.keys()].filter(
-  (id) => vendored.has(id) && vendored.get(id) !== live.get(id)
+  (id) => vendored.has(id) && vendored.get(id)!.route !== live.get(id)!.route
 );
 
-if (!added.length && !removed.length && !moved.length) {
+const changed = [...live.keys()].filter(
+  (id) => vendored.has(id) && vendored.get(id)!.input !== live.get(id)!.input
+);
+
+if (!added.length && !removed.length && !moved.length && !changed.length) {
   console.log(
     `spec-drift: vendored spec matches ${SPEC_URL} (${live.size} operations).`
   );
@@ -58,15 +45,19 @@ if (!added.length && !removed.length && !moved.length) {
 console.error(`spec-drift: the vendored spec is out of date with ${SPEC_URL}:`);
 for (const id of added)
   console.error(
-    `  + ${id}  (${live.get(id)}) — new upstream operation, no tool serves it`
+    `  + ${id}  (${live.get(id)!.route}) — new upstream operation, no tool serves it`
   );
 for (const id of removed)
   console.error(
-    `  - ${id}  (${vendored.get(id)}) — gone upstream, its tool now dead-ends`
+    `  - ${id}  (${vendored.get(id)!.route}) — gone upstream, its tool now dead-ends`
   );
 for (const id of moved)
   console.error(
-    `  ~ ${id}  ${vendored.get(id)} -> ${live.get(id)} — its tool calls the OLD path`
+    `  ~ ${id}  ${vendored.get(id)!.route} -> ${live.get(id)!.route} — its tool calls the OLD path`
+  );
+for (const id of changed)
+  console.error(
+    `  ~ ${id} — request body, parameters, or referenced schemas changed`
   );
 console.error(
   '\nFix: re-vendor the spec and regenerate (specgen/README.md), then run pnpm test.'

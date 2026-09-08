@@ -60,3 +60,26 @@ test('CRLF event boundaries count as complete', async () => {
   );
   assert.equal(r.count, 1);
 });
+
+test('partial heartbeat or metadata does not discard a preceding complete log', async () => {
+  for (const newline of ['\n', '\r\n']) {
+    for (const tail of [
+      ': heartbeat',
+      'event: log',
+      'id: 123',
+      'retry: 1000',
+      'data: {"line":"partial',
+    ]) {
+      for (const truncated of [false, true]) {
+        const raw = `data: {"line":"container crashed"}${newline}${newline}${tail}${newline}`;
+        const result = await collectLogSnapshot(
+          async () => ({ raw, truncated }),
+          'https://example.invalid',
+          {}
+        );
+        assert.deepEqual(result.items, [{ line: 'container crashed' }]);
+        assert.equal(result.truncated, truncated);
+      }
+    }
+  }
+});

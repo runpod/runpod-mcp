@@ -149,16 +149,13 @@ export async function collectLogSnapshot(
     maxWaitMs: params.maxWaitMs ?? LOG_STREAM_DEFAULT_WAIT_MS,
     maxBytes: LOG_STREAM_MAX_BYTES,
   });
-  const items = parseLogSse(raw);
-  // Any abort-ended read (byte cap or timeout) can slice the final event. The
-  // question is whether the LAST EVENT is whole, and SSE answers that exactly:
-  // a complete event ends with a blank line. So decide on the tail, never on
-  // the `truncated` flag — popping whenever the cap was hit threw away a
-  // complete final entry (the crash line, in a log tail) if the cap happened
-  // to land on an event boundary. And a bare trailing "\n" is not enough
-  // either: `data: {"line":"parti\n` ends in a newline mid-event, parses as
-  // a `{ raw }` entry, and used to be kept as if it were real.
-  const endsOnEventBoundary = /\r?\n\r?\n$/.test(raw);
-  if (raw.length > 0 && !endsOnEventBoundary) items.pop();
+  // Discard the unfinished raw event before parsing. It may contain only
+  // a heartbeat or metadata, which produces no item; popping a parsed item
+  // would then remove the preceding complete log entry instead.
+  let completeEnd = 0;
+  for (const boundary of raw.matchAll(/\r?\n\r?\n/g)) {
+    completeEnd = boundary.index! + boundary[0].length;
+  }
+  const items = parseLogSse(raw.slice(0, completeEnd));
   return { items, count: items.length, truncated };
 }
