@@ -152,7 +152,10 @@ export async function handleAlpSubmit(
     harness: typeof body.harness === 'string' ? body.harness : undefined,
     harnessSource:
       typeof body.harnessSource === 'string' ? body.harnessSource : undefined,
-    transport: typeof body.transport === 'string' ? body.transport : undefined,
+    transport:
+      body.transport === 'http' || body.transport === 'stdio'
+        ? body.transport
+        : undefined,
     redactions: 0,
     scrubVersion: SCRUB_VERSION,
   });
@@ -220,7 +223,7 @@ export async function handleAlpSubmit(
     'alp_submit',
     JSON.stringify({
       route: body.route,
-      transport: body.transport,
+      transport: row.transport,
       redactions: row.redactions,
       row: storedId,
     })

@@ -3,6 +3,7 @@
 // management spec the generated tools cover — Runpod publishes no OpenAPI
 // document for it, so the tools that use it are curated (src/specgen/tools/jobs.ts).
 
+import { serverlessBase } from '../../_shared/hosts.js';
 import { boundedFetch } from './bounded-fetch.js';
 import { HttpError, missingKeyError } from './http-error.js';
 import { withRateLimitHint } from '../../_shared/rate-limit.js';
@@ -32,10 +33,7 @@ export function createRuntimeClient(
   options: RuntimeClientOptions = {}
 ): RuntimeClient {
   const apiKey = options.apiKey ?? process.env.RUNPOD_API_KEY;
-  const baseUrl =
-    options.baseUrl ??
-    process.env.RUNPOD_SERVERLESS_API_URL ??
-    DEFAULT_SERVERLESS_BASE_URL;
+  const baseUrl = options.baseUrl || serverlessBase(process.env);
   const fetchImpl = options.fetchImpl ?? fetch;
 
   return async (endpointId, path, opts = {}) => {

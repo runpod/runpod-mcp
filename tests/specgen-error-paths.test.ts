@@ -101,3 +101,92 @@ test('job polling still recovers from transient upstream failures', async () => 
     assert.equal(result.status, 'COMPLETED');
   }
 });
+
+test('SSE connection timeout is a tool error; established streams still yield snapshots', async () => {
+  const { createSseReader, collectLogSnapshot } = await import(
+    '../src/specgen/clients/sse.js'
+  );
+  const { runTool } = await import('../src/specgen/tools/util.js');
+  const silent = createSseReader({
+    apiKey: 'fake',
+    fetchImpl: ((_url, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        init!.signal!.addEventListener(
+          'abort',
+          () => reject(init!.signal!.reason),
+          { once: true }
+        );
+      })) as typeof fetch,
+  });
+  const failed = await runTool(async () => ({
+    ok: true,
+    status: 200,
+    payload: await collectLogSnapshot(silent, 'https://example.invalid', {
+      maxWaitMs: 20,
+    }),
+  }));
+  assert.equal(failed.ok, false);
+  assert.equal(failed.status, 504);
+
+  for (const frame of ['', 'data: {"line":"startup complete"}\n\n']) {
+    const reader = createSseReader({
+      apiKey: 'fake',
+      fetchImpl: (async (_url, init) =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              if (frame) controller.enqueue(new TextEncoder().encode(frame));
+              init!.signal!.addEventListener(
+                'abort',
+                () => controller.error(init!.signal!.reason),
+                { once: true }
+              );
+            },
+          }),
+          { headers: { 'content-type': 'text/event-stream' } }
+        )) as typeof fetch,
+    });
+    const snapshot = await collectLogSnapshot(
+      reader,
+      'https://example.invalid',
+      { maxWaitMs: 20 }
+    );
+    assert.deepEqual(
+      snapshot.items,
+      frame ? [{ line: 'startup complete' }] : []
+    );
+    assert.equal(snapshot.truncated, false);
+  }
+});
+
+test('runtime empty host override uses production while a configured override is preserved', async () => {
+  const { createRuntimeClient, DEFAULT_SERVERLESS_BASE_URL } = await import(
+    '../src/specgen/clients/runtime.js'
+  );
+  const original = process.env.RUNPOD_SERVERLESS_API_URL;
+  const urls: string[] = [];
+  const fetchImpl = (async (input: RequestInfo | URL) => {
+    urls.push(new URL(String(input)).href);
+    return new Response('{"status":"COMPLETED"}');
+  }) as typeof fetch;
+  try {
+    for (const configured of ['', 'https://runtime.example.test/v2']) {
+      process.env.RUNPOD_SERVERLESS_API_URL = configured;
+      const runtime = createRuntimeClient({ apiKey: 'fake', fetchImpl });
+      await runtime('ep', '/status/job');
+      assert.equal(
+        urls.at(-1),
+        `${configured || DEFAULT_SERVERLESS_BASE_URL}/ep/status/job`
+      );
+    }
+    await createRuntimeClient({
+      apiKey: 'fake',
+      baseUrl: 'https://explicit.example.test/v2',
+      fetchImpl,
+    })('ep', '/status/job');
+    assert.equal(urls.at(-1), 'https://explicit.example.test/v2/ep/status/job');
+  } finally {
+    if (original === undefined) delete process.env.RUNPOD_SERVERLESS_API_URL;
+    else process.env.RUNPOD_SERVERLESS_API_URL = original;
+  }
+});

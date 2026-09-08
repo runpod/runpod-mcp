@@ -55,9 +55,9 @@ export type SseReader = (
 
 // Time-bounded by maxWaitMs (the stream stays open to tail live output) and
 // byte-bounded by maxBytes; whichever fires first aborts and returns what was
-// collected. An abort is the NORMAL end of a bounded snapshot — only a non-OK
-// HTTP status throws. Bytes are concatenated and decoded once at the end so a
-// UTF-8 char split across chunks is never corrupted.
+// collected. A deadline ends an established stream normally; a timeout before
+// response headers arrive is a failed request. Bytes are concatenated and decoded
+// once at the end so a UTF-8 char split across chunks is never corrupted.
 export function createSseReader(
   options: { apiKey?: string; fetchImpl?: typeof fetch } = {}
 ): SseReader {
@@ -71,6 +71,7 @@ export function createSseReader(
     const chunks: Uint8Array[] = [];
     let bytes = 0;
     let truncated = false;
+    let streamEstablished = false;
     try {
       const response = await fetchImpl(url, {
         method: 'GET',
@@ -90,6 +91,7 @@ export function createSseReader(
             : body
         );
       }
+      streamEstablished = true;
       if (response.body) {
         for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
           chunks.push(chunk);
@@ -102,10 +104,13 @@ export function createSseReader(
         }
       }
     } catch (err) {
-      // Abort (timeout or byte cap) is a clean end of a bounded read; anything
-      // else (incl. HttpError) propagates.
+      // Only our own abort on an established stream ends a snapshot normally.
+      // Before headers, there is no successful log read to return; runTool
+      // maps the timeout to a retryable 504 instead of an empty success.
       if (
         !(
+          streamEstablished &&
+          controller.signal.aborted &&
           err instanceof Error &&
           (err.name === 'AbortError' || err.name === 'TimeoutError')
         )

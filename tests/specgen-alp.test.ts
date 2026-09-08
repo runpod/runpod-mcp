@@ -435,3 +435,52 @@ test('qualified key names are sensitive with any prefix, plain key is not', () =
     assert.equal(scrub(benign).text, benign, `false positive: ${benign}`);
   }
 });
+
+test('ingest only stores and logs recognized transport values', async () => {
+  const originalLog = console.log;
+  const canary = 'rpa_FAKECANARY1234567890';
+  try {
+    for (const transport of [
+      'http',
+      'stdio',
+      canary,
+      { secret: canary },
+      undefined,
+    ]) {
+      const logs: unknown[][] = [];
+      let stored: Record<string, unknown> = {};
+      console.log = (...args: unknown[]) => {
+        logs.push(args);
+      };
+      const { req, res, written } = fakeReqRes(
+        { authorization: 'Bearer fake' },
+        {
+          route: 'feedback',
+          content: 'normal feedback',
+          transport,
+        }
+      );
+      await handleAlpSubmit(req, res, {
+        verify: async () => ({ status: 'valid', accountId: 'account' }),
+        env: {
+          ALP_SINK_URL: 'https://test.convex.site/alp/submit',
+          ALP_SINK_SECRET: 'fake',
+        },
+        sinkFetch: (async (_u, init) => {
+          stored = JSON.parse(String(init?.body));
+          return new Response('{"ok":true,"id":"row"}');
+        }) as typeof fetch,
+      });
+      assert.equal(JSON.parse(written.body!).recorded, true);
+      const expected =
+        transport === 'http' || transport === 'stdio' ? transport : undefined;
+      assert.equal(stored.transport, expected);
+      assert.equal(logs.length, 1);
+      assert.equal(JSON.parse(String(logs[0][1])).transport, expected);
+      assert.ok(!JSON.stringify(logs).includes(canary));
+      assert.ok(!JSON.stringify(stored).includes(canary));
+    }
+  } finally {
+    console.log = originalLog;
+  }
+});
