@@ -257,3 +257,54 @@ test('stream errors retain earlier output and upstream recovery hints through MC
     await Promise.all([client.close(), server.close()]);
   }
 });
+
+test('exhausted status polling throws an upstream error with its last successful status', async () => {
+  let polls = 0;
+  await assert.rejects(
+    pollJobStatus({
+      budgetMs: 10000,
+      pollIntervalMs: 1,
+      fetchStatus: async () => {
+        if (++polls === 1) return { status: 'IN_PROGRESS', id: 'job' };
+        throw new HttpError('Unavailable', 503, {});
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof HttpError);
+      assert.equal(error.status, 503);
+      assert.equal((error.payload as { status: string }).status, 'IN_PROGRESS');
+      assert.match(error.message, /5 consecutive errors/);
+      return true;
+    }
+  );
+  assert.equal(polls, 6);
+});
+
+test('exhausted streaming polls produce an MCP tool error and preserve collected chunks', async () => {
+  const ctx = createToolContext({ apiKey: 'fake' });
+  let polls = 0;
+  ctx.runtime = async () => {
+    if (++polls === 1)
+      return { status: 'IN_PROGRESS', stream: ['partial output'] };
+    throw new HttpError('Unavailable', 503, {});
+  };
+  const server = createSpecgenServer(ctx, 'test');
+  const client = new Client({ name: 'test', version: '1' });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  try {
+    await Promise.all([server.connect(st), client.connect(ct)]);
+    const result = await client.callTool({
+      name: 'stream-job',
+      arguments: { endpointId: 'ep', jobId: 'job' },
+    });
+    assert.equal(result.isError, true);
+    const payload = JSON.parse(
+      (result.content as Array<{ text: string }>)[0].text
+    );
+    assert.deepEqual(payload.detail.stream, ['partial output']);
+    assert.match(payload.error, /5 consecutive errors/);
+    assert.equal(polls, 6);
+  } finally {
+    await Promise.all([client.close(), server.close()]);
+  }
+});

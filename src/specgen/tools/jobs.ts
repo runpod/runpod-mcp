@@ -130,11 +130,11 @@ async function pollUntilTerminal(deps: {
       consecutiveErrors++;
       lastError = error instanceof Error ? error.message : String(error);
       if (consecutiveErrors >= MAX_CONSECUTIVE_STREAM_ERRORS) {
-        return {
-          ...result,
-          error: `Polling aborted after ${MAX_CONSECUTIVE_STREAM_ERRORS} consecutive errors: ${lastError}`,
-          note: deps.abortedNote,
-        };
+        throw new HttpError(
+          `Polling aborted after ${MAX_CONSECUTIVE_STREAM_ERRORS} consecutive errors: ${lastError}`,
+          error instanceof HttpError ? error.status : 502,
+          { ...result, note: deps.abortedNote }
+        );
       }
     }
 
