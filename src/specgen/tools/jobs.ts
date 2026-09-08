@@ -6,6 +6,7 @@
 // (5-minute wait budgets) and the hosted Vercel path, where the 60s gateway
 // reaper clamps every hold to HTTP_LONG_POLL_BUDGET_MS (see HOSTED below).
 
+import { HttpError } from '../clients/http-error.js';
 import type { CuratedTool } from '../server.js';
 import type { ToolContext } from '../context.js';
 import { badRequest, ok, runTool } from './util.js';
@@ -115,6 +116,17 @@ async function pollUntilTerminal(deps: {
       result = reply;
       if (TERMINAL_STATUSES.has(reply.status as string)) return result;
     } catch (error) {
+      // Retrying cannot repair client errors. Let runTool retain the status
+      // and recovery hint (especially 401 re-auth and 429 Retry-After).
+      // A request timeout is transient and can still use the polling budget.
+      if (
+        error instanceof HttpError &&
+        error.status >= 400 &&
+        error.status < 500 &&
+        error.status !== 408
+      ) {
+        throw error;
+      }
       consecutiveErrors++;
       lastError = error instanceof Error ? error.message : String(error);
       if (consecutiveErrors >= MAX_CONSECUTIVE_STREAM_ERRORS) {

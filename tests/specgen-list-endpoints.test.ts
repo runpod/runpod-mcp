@@ -28,7 +28,7 @@ const fakeCtx = (count: number) =>
           endpoints: Array.from({ length: count }, (_, i) => endpoint(i)),
         },
         error: undefined,
-        response: { status: 200 },
+        response: new Response(null, { status: 200 }),
       }),
     },
   }) as unknown as ToolContext;

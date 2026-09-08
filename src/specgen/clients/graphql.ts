@@ -11,6 +11,7 @@
 // Separate env vars despite the identical default, so the credential-free
 // path can be pointed at a stub without the key following it.
 
+import { withRateLimitHint } from '../../_shared/rate-limit.js';
 import { authedGraphqlBase, publicGraphqlBase } from '../../_shared/hosts.js';
 import { boundedFetch } from './bounded-fetch.js';
 import { HttpError, missingKeyError } from './http-error.js';
@@ -59,7 +60,9 @@ export function createGraphqlClient(
       throw new HttpError(
         `Runpod GraphQL HTTP error (${response.status})`,
         response.status,
-        body
+        response.status === 429
+          ? withRateLimitHint({ error: body }, response.headers)
+          : body
       );
     }
 

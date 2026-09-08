@@ -5,6 +5,7 @@
 // time- and byte-bounded snapshot instead. Ported from the official MCP
 // server's reader (Apache-2.0, runpod/runpod-mcp).
 
+import { withRateLimitHint } from '../../_shared/rate-limit.js';
 import { HttpError, missingKeyError } from './http-error.js';
 
 // One parsed log frame. A payload that isn't a JSON object is kept verbatim
@@ -80,10 +81,13 @@ export function createSseReader(
         signal: controller.signal,
       });
       if (!response.ok) {
+        const body = await response.text().catch(() => '');
         throw new HttpError(
           `Runpod API error (${response.status})`,
           response.status,
-          await response.text().catch(() => '')
+          response.status === 429
+            ? withRateLimitHint({ error: body }, response.headers)
+            : body
         );
       }
       if (response.body) {
