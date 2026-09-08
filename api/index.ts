@@ -648,7 +648,7 @@ export default async function handler(
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
     res.setHeader(
       'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, Mcp-Session-Id'
+      'Content-Type, Authorization, Mcp-Session-Id, MCP-Protocol-Version, X-Runpod-Analytics'
     );
     res.status(204).end();
     return;
