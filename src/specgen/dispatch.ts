@@ -35,6 +35,27 @@ export async function dispatchGeneratedTool(
     };
   }
 
+  // Mirror of the check above, for the opposite mistake. Dispatch only reads
+  // declared params, so an argument with a plausible-but-wrong name used to be
+  // dropped in silence and the call still succeeded — asking for
+  // `includeAvailability` (the v1 spelling) on list-gpu-types returned a 200
+  // with no availability fields at all, which reads as "priced and in stock"
+  // if you trust the request you thought you made. A wrong answer is worse
+  // than an error, so name the unknown key and list what this tool accepts.
+  const allowed = new Set(tool.params.map((p) => p.name));
+  if (tool.hasBody) allowed.add('body');
+  const unknown = Object.keys(args).filter((name) => !allowed.has(name));
+  if (unknown.length) {
+    return {
+      ok: false,
+      status: 400,
+      payload: {
+        error: `Unknown argument${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}`,
+        accepted: [...allowed],
+      },
+    };
+  }
+
   const pathParams: Record<string, unknown> = {};
   const query: Record<string, unknown> = {};
   for (const param of tool.params) {

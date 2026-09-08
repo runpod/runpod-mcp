@@ -194,3 +194,51 @@ test('non-exploded array query params are comma-joined, not repeated', async () 
   await dispatchGeneratedTool(client, dcs, { globalNetwork: true });
   assert.equal(new URL(seen[2].url).searchParams.get('globalNetwork'), 'true');
 });
+
+// The mirror of the missing-required gate. A plausible-but-wrong argument name
+// used to be dropped in silence: `includeAvailability` is the v1 spelling of
+// what v2 calls `include=AVAILABILITY`, and sending it returned a cheerful 200
+// with no availability fields, which reads as a priced, in-stock answer. Found
+// by hand against the preview during the 2026-09-08 read-tier pass.
+test('dispatch 400s an unknown argument instead of dropping it', async () => {
+  const { dispatchGeneratedTool } = await import('../src/specgen/dispatch.js');
+  const tool = generatedTools.find((t) => t.name === 'list-gpu-types')!;
+  const boom = new Proxy(
+    {},
+    {
+      get() {
+        throw new Error('API must not be called');
+      },
+    }
+  );
+  const result = await dispatchGeneratedTool(boom as never, tool, {
+    includeAvailability: true,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 400);
+  const body = JSON.stringify(result.payload);
+  assert.match(body, /Unknown argument: includeAvailability/);
+  // The error has to name the real parameter, or the agent just guesses again.
+  assert.match(body, /"include"/);
+  assert.match(body, /"product"/);
+});
+
+// A body-carrying tool must still accept `body`, which is not a declared param.
+test('the body argument is not mistaken for an unknown one', async () => {
+  const { dispatchGeneratedTool } = await import('../src/specgen/dispatch.js');
+  const tool = generatedTools.find((t) => t.name === 'create-pod')!;
+  assert.equal(tool.hasBody, true, 'create-pod must carry a body');
+  const seen: string[] = [];
+  const client = {
+    POST: async (path: string, init: Record<string, unknown>) => {
+      seen.push(path);
+      assert.ok(init.body, 'body must reach the client');
+      return { data: { id: 'pod_1' }, response: new Response('{}') };
+    },
+  };
+  const result = await dispatchGeneratedTool(client as never, tool, {
+    body: { name: 'x', imageName: 'y' },
+  });
+  assert.equal(result.ok, true, JSON.stringify(result.payload));
+  assert.equal(seen.length, 1);
+});
