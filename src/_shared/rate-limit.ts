@@ -360,13 +360,14 @@ export function withRateLimitHint(
   payload: unknown,
   headers: { get(name: string): string | null }
 ): unknown {
-  return typeof payload === 'object' && payload !== null
-    ? {
-        ...(payload as Record<string, unknown>),
-        hint: rateLimitHint(
-          headers.get('ratelimit'),
-          headers.get('retry-after')
-        ),
-      }
-    : payload;
+  // Gateways can send plain text or JSON primitives. Preserve that detail
+  // inside an object so every 429 can carry the same recovery hint.
+  const detail =
+    typeof payload === 'object' && payload !== null
+      ? (payload as Record<string, unknown>)
+      : { error: payload };
+  return {
+    ...detail,
+    hint: rateLimitHint(headers.get('ratelimit'), headers.get('retry-after')),
+  };
 }

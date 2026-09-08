@@ -52,9 +52,8 @@ export interface ToolCallLog {
   durationMs: number;
 }
 
-// One line per tool call, JSON-shaped for Vercel's log drain. console.log is
-// the intended transport for now (visible via `vercel logs`); a real drain
-// swaps this function, not its call sites.
+// One line per tool call, visible in Vercel's logs and on local stderr.
+// stdout belongs exclusively to the MCP JSON-RPC transport on stdio.
 export function logToolCall(entry: ToolCallLog): void {
-  console.log('tool_call', JSON.stringify(entry));
+  console.error('tool_call', JSON.stringify(entry));
 }

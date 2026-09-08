@@ -190,3 +190,42 @@ test('runtime empty host override uses production while a configured override is
     else process.env.RUNPOD_SERVERLESS_API_URL = original;
   }
 });
+
+test('plain-text runtime and primitive JSON SDK errors retain Retry-After through MCP', async () => {
+  const original = globalThis.fetch;
+  let responseText = 'Too Many Requests';
+  globalThis.fetch = async () =>
+    new Response(responseText, {
+      status: 429,
+      headers: { 'retry-after': '120' },
+    });
+  const server = createSpecgenServer(
+    createToolContext({ apiKey: 'fake', sdkRetry: false }),
+    'test'
+  );
+  const client = new Client({ name: 'test', version: '1' });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  try {
+    await Promise.all([server.connect(st), client.connect(ct)]);
+    for (const call of [
+      { name: 'run-endpoint', arguments: { endpointId: 'ep', input: {} } },
+      { name: 'list-pods', arguments: {} },
+    ]) {
+      responseText =
+        call.name === 'run-endpoint'
+          ? 'Too Many Requests'
+          : JSON.stringify('Too Many Requests');
+      const result = await client.callTool(call);
+      assert.equal(result.isError, true);
+      const payload = JSON.parse(
+        (result.content as Array<{ text: string }>)[0].text
+      );
+      assert.match(payload.hint, /120s/);
+      assert.match(JSON.stringify(payload), /Too Many Requests/);
+    }
+  } finally {
+    globalThis.fetch = original;
+    await client.close();
+    await server.close();
+  }
+});
