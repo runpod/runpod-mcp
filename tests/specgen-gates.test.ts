@@ -283,3 +283,64 @@ test('a body string that is not JSON is a named 400, not an upstream 422', async
   assert.equal(result.status, 400);
   assert.match(JSON.stringify(result.payload), /not valid JSON/);
 });
+
+test('generation freshness check rejects stale schemas and config without writing output', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } =
+    await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const { createRequire } = await import('node:module');
+  const { fileURLToPath } = await import('node:url');
+  const { stringify } = await import('yaml');
+  const temp = mkdtempSync(join(tmpdir(), 'mcp-generation-check-'));
+  const generator = fileURLToPath(
+    new URL('../specgen/generator/generate-tools.ts', import.meta.url)
+  );
+  const loader = createRequire(import.meta.url).resolve('tsx');
+  const check = () =>
+    spawnSync(process.execPath, ['--import', loader, generator, '--check'], {
+      cwd: temp,
+      encoding: 'utf8',
+      timeout: 10000,
+    });
+  try {
+    mkdirSync(join(temp, 'specgen/spec'), { recursive: true });
+    writeFileSync(join(temp, 'specgen/spec/openapi.yaml'), stringify(spec));
+    writeFileSync(
+      join(temp, 'specgen/generator-config.yaml'),
+      stringify(config)
+    );
+    const unchanged = check();
+    assert.equal(unchanged.status, 0, unchanged.stderr);
+    const changed = structuredClone(spec);
+    changed.paths['/v2/pods/{id}'].get.parameters = [
+      {
+        in: 'query',
+        name: 'newRequiredFilter',
+        required: true,
+        schema: { type: 'string' },
+      },
+    ];
+    writeFileSync(join(temp, 'specgen/spec/openapi.yaml'), stringify(changed));
+    const staleSchema = check();
+    assert.equal(staleSchema.status, 1, staleSchema.stderr);
+    assert.match(staleSchema.stderr, /Generated tools are stale/);
+    writeFileSync(join(temp, 'specgen/spec/openapi.yaml'), stringify(spec));
+    const changedConfig = structuredClone(config);
+    changedConfig.rename.getPod = 'renamed-get-pod';
+    writeFileSync(
+      join(temp, 'specgen/generator-config.yaml'),
+      stringify(changedConfig)
+    );
+    const staleConfig = check();
+    assert.equal(staleConfig.status, 1, staleConfig.stderr);
+    assert.equal(
+      existsSync(join(temp, 'src')),
+      false,
+      'check mode must not write generated output'
+    );
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});

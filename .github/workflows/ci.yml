@@ -45,6 +45,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Check generated tools are current
+        run: pnpm generate:check
+
       - name: Type check
         run: pnpm run type-check
 

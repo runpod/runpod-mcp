@@ -5,6 +5,7 @@
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { parse } from 'yaml';
+import { isDeepStrictEqual } from 'node:util';
 
 interface Exclusion {
   replacedBy?: string;
@@ -195,6 +196,22 @@ for (const [path, pathItem] of Object.entries<SpecPathItem>(spec.paths)) {
 }
 
 tools.sort((a, b) => a.name.localeCompare(b.name));
+
+// Compare the actual served metadata with a fresh generation, without
+// modifying files. Object comparison ignores formatter and line-ending changes.
+if (process.argv.includes('--check')) {
+  const { generatedTools } = await import(
+    '../../src/specgen/generated/tools.gen.js'
+  );
+  if (!isDeepStrictEqual(tools, generatedTools)) {
+    console.error(
+      'Generated tools are stale. Run pnpm generate:tools and commit the result.'
+    );
+    process.exit(1);
+  }
+  console.log('Generated tools match the vendored spec and generator config.');
+  process.exit(0);
+}
 
 const header = `// Code generated from specgen/spec/openapi.yaml by specgen/generator/generate-tools.ts; DO NOT EDIT.
 
