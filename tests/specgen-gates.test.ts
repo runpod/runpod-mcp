@@ -291,13 +291,19 @@ test('generation freshness check rejects stale schemas and config without writin
   const { join } = await import('node:path');
   const { spawnSync } = await import('node:child_process');
   const { createRequire } = await import('node:module');
-  const { fileURLToPath } = await import('node:url');
+  const { fileURLToPath, pathToFileURL } = await import('node:url');
   const { stringify } = await import('yaml');
   const temp = mkdtempSync(join(tmpdir(), 'mcp-generation-check-'));
   const generator = fileURLToPath(
     new URL('../specgen/generator/generate-tools.ts', import.meta.url)
   );
-  const loader = createRequire(import.meta.url).resolve('tsx');
+  // `--import` takes a URL or bare specifier, not a path. The bare 'tsx' the
+  // stdio test uses would not resolve from the temp cwd, so resolve it here —
+  // and hand it over as file:// : on Windows an absolute path parses as URL
+  // scheme "d:" and Node refuses it (ERR_UNSUPPORTED_ESM_URL_SCHEME).
+  const loader = pathToFileURL(
+    createRequire(import.meta.url).resolve('tsx')
+  ).href;
   const check = () =>
     spawnSync(process.execPath, ['--import', loader, generator, '--check'], {
       cwd: temp,
