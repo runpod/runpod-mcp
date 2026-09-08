@@ -10,6 +10,7 @@ import handler from '../api/index.js';
 
 function fakeReqRes(method: string, url: string) {
   const state: Record<string, string> = {};
+  let statusCode: number | undefined;
   const req = {
     method,
     url,
@@ -25,7 +26,8 @@ function fakeReqRes(method: string, url: string) {
     getHeader(name: string) {
       return state[name];
     },
-    status() {
+    status(code: number) {
+      statusCode = code;
       return this;
     },
     json() {
@@ -37,12 +39,13 @@ function fakeReqRes(method: string, url: string) {
     end() {
       return this;
     },
-    writeHead() {
+    writeHead(code: number) {
+      statusCode = code;
       return this;
     },
     on() {},
   } as unknown as Parameters<typeof handler>[1];
-  return { req, res, state };
+  return { req, res, state, status: () => statusCode };
 }
 
 describe('OAuth discovery responses are CDN-cacheable', () => {
@@ -51,12 +54,17 @@ describe('OAuth discovery responses are CDN-cacheable', () => {
     '/.well-known/oauth-authorization-server',
   ]) {
     it(`GET ${path} carries s-maxage so the CDN serves repeat fetches`, async () => {
-      const { req, res, state } = fakeReqRes('GET', path);
-      await handler(req, res).catch(() => {});
+      const { req, res, state, status } = fakeReqRes('GET', path);
+      await handler(req, res);
+      // Assert the route answered before asserting on its headers: a handler
+      // that threw, or a path that fell through to 404, would otherwise
+      // satisfy every header check below by simply setting nothing.
+      assert.equal(status(), 200);
       const cacheControl = state['Cache-Control'];
       assert.ok(cacheControl, 'no Cache-Control set on the discovery response');
       assert.match(cacheControl, /\bpublic\b/);
       assert.match(cacheControl, /\bs-maxage=[1-9]\d*/);
+      assert.match(cacheControl, /\bstale-while-revalidate=[1-9]\d*/);
       // max-age=0: endpoint changes propagate as soon as the CDN copy expires.
       assert.match(cacheControl, /\bmax-age=0\b/);
     });
@@ -66,8 +74,14 @@ describe('OAuth discovery responses are CDN-cacheable', () => {
     // MCP responses are per-caller; a CDN-cached copy would replay one
     // caller's response to another. Pin the directive's absence on the
     // catch-all route so it stays out of the shared prelude in api/index.ts.
-    const { req, res, state } = fakeReqRes('POST', '/');
-    await handler(req, res).catch(() => {});
+    // This request carries no credentials, so it is rejected by the pre-flight
+    // (401) rather than reaching the MCP handler. Asserting that status is
+    // what gives the absence check below any weight — without it the test
+    // passes for any request that fails early, including one that never
+    // touched this route at all.
+    const { req, res, state, status } = fakeReqRes('POST', '/');
+    await handler(req, res);
+    assert.equal(status(), 401);
     assert.equal(state['Cache-Control'], undefined);
   });
 });
