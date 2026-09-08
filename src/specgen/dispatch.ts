@@ -81,10 +81,10 @@ export async function dispatchGeneratedTool(
   // that the body was stringified, so the agent re-reads the schema it already
   // followed and retries the same shape. Accept the string and parse it; a
   // body that is not valid JSON is the client's error, so name it plainly.
-  let body = args.body;
-  if (tool.hasBody && typeof body === 'string') {
+  let requestBody = args.body;
+  if (tool.hasBody && typeof requestBody === 'string') {
     try {
-      body = JSON.parse(body);
+      requestBody = JSON.parse(requestBody);
     } catch {
       return {
         ok: false,
@@ -107,7 +107,7 @@ export async function dispatchGeneratedTool(
   const verbs = client as unknown as Record<string, VerbCall>;
   const { data, error, response } = await verbs[tool.method](tool.path, {
     params: { path: pathParams, query },
-    ...(tool.hasBody && body !== undefined ? { body } : {}),
+    ...(tool.hasBody && requestBody !== undefined ? { body: requestBody } : {}),
   });
 
   // Branch on the RESPONSE, not on `error`: openapi-fetch returns
