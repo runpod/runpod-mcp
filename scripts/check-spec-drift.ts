@@ -17,14 +17,22 @@ const SPEC_URL =
 const vendored = operations(
   parse(readFileSync('specgen/spec/openapi.yaml', 'utf8'))
 );
-const response = await fetch(SPEC_URL, { signal: AbortSignal.timeout(30_000) });
-if (!response.ok) {
+let body: string;
+try {
+  const response = await fetch(SPEC_URL, {
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  // Reading the body can also fail if the connection drops or times out.
+  body = await response.text();
+} catch (error) {
   console.error(
-    `spec-drift: fetching ${SPEC_URL} failed (${response.status}) — cannot judge drift.`
+    `spec-drift: fetching ${SPEC_URL} failed (${error instanceof Error ? error.message : String(error)}) — cannot judge drift.`
   );
   process.exit(2);
 }
-const live = operations(await response.json());
+// Invalid JSON/schema and comparison failures must still fail CI.
+const live = operations(JSON.parse(body));
 
 const added = [...live.keys()].filter((id) => !vendored.has(id));
 const removed = [...vendored.keys()].filter((id) => !live.has(id));

@@ -105,3 +105,74 @@ test('route changes and added or removed operations remain detectable', () => {
   delete spec.paths['/new-pods'].post;
   assert.equal(operations(spec).has('createPod'), false);
 });
+
+test('spec-check CLI distinguishes network failures from drift and invalid specs', async (t) => {
+  const { createServer } = await import('node:http');
+  const { spawn } = await import('node:child_process');
+  const { readFileSync } = await import('node:fs');
+  const { parse } = await import('yaml');
+  const cwd = new URL('../', import.meta.url);
+  const spec = parse(
+    readFileSync(new URL('specgen/spec/openapi.yaml', cwd), 'utf8')
+  );
+  for (const mode of ['reset', 'partial', '503', 'match', 'drift', 'invalid']) {
+    await t.test(mode, async () => {
+      const server = createServer((req, res) => {
+        if (mode === 'reset') {
+          req.socket.destroy();
+        } else if (mode === 'partial') {
+          res.writeHead(200, { 'Content-Length': '1000000' });
+          res.write('{"paths":');
+          setTimeout(() => res.destroy(), 30);
+        } else if (mode === '503') {
+          res.writeHead(503).end('unavailable');
+        } else {
+          res.end(
+            mode === 'match'
+              ? JSON.stringify(spec)
+              : mode === 'drift'
+                ? '{"paths":{}}'
+                : 'invalid JSON'
+          );
+        }
+      });
+      await new Promise<void>((resolve) =>
+        server.listen(0, '127.0.0.1', resolve)
+      );
+      try {
+        const address = server.address();
+        assert.ok(address && typeof address !== 'string');
+        const child = spawn(
+          process.execPath,
+          ['--import', 'tsx', 'scripts/check-spec-drift.ts'],
+          {
+            cwd,
+            env: {
+              ...process.env,
+              SPEC_URL: `http://127.0.0.1:${address.port}`,
+            },
+            timeout: 10000,
+          }
+        );
+        let stderr = '';
+        child.stderr.on('data', (chunk) => {
+          stderr += chunk;
+        });
+        child.stdout.resume();
+        const code = await new Promise<number | null>((resolve, reject) => {
+          child.on('error', reject);
+          child.on('close', resolve);
+        });
+        const unavailable = ['reset', 'partial', '503'].includes(mode);
+        assert.equal(code, unavailable ? 2 : mode === 'match' ? 0 : 1, stderr);
+        if (unavailable) assert.match(stderr, /cannot judge drift/);
+        if (mode === 'drift') assert.match(stderr, /out of date/);
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve()))
+        );
+      }
+    });
+  }
+});
