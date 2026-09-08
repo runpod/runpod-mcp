@@ -393,6 +393,15 @@ function requireIds(
   return null;
 }
 
+// The low-level MCP server does not enforce the advertised input schema.
+// Reject malformed waits before they reach timeout arithmetic or the API.
+function validateWait(wait: unknown): string | null {
+  if (wait === undefined) return null;
+  return typeof wait === 'number' && Number.isFinite(wait) && wait >= 1000
+    ? null
+    : 'wait must be a finite number of at least 1000 milliseconds, or omitted.';
+}
+
 export const runEndpoint: CuratedTool = {
   name: 'run-endpoint',
   description:
@@ -458,18 +467,20 @@ export const runsyncEndpoint: CuratedTool = {
     runTool(async () => {
       const invalid = requireIds(args, ['endpointId']);
       if (invalid) return badRequest(invalid);
+      const waitError = validateWait(args.wait);
+      if (waitError) return badRequest(waitError);
       const { endpointId, wait, ...body } = args;
       // Hosted: an omitted wait inherits the upstream 90s hold, which outlives
       // the 60s platform reaper — send an explicit clamped wait instead.
       const requested = wait as number | undefined;
-      const clamped = HOSTED
-        ? Math.min(
-            requested ?? HTTP_LONG_POLL_BUDGET_MS,
-            HTTP_LONG_POLL_BUDGET_MS
-          )
-        : requested;
-      // undefined, not falsy: `wait: 0` would drop the query and inherit the
-      // upstream 90s default silently.
+      const clamped =
+        requested === undefined
+          ? HOSTED
+            ? HTTP_LONG_POLL_BUDGET_MS
+            : undefined
+          : Math.min(requested, STATUS_WAIT_MAX_MS);
+      // Omitted local waits retain the upstream default; hosted always sends
+      // an explicit wait that fits its gateway budget.
       const waitQuery = clamped === undefined ? '' : `?wait=${clamped}`;
       return ok(
         await ctx.runtime(endpointId as string, `/runsync${waitQuery}`, {
@@ -512,6 +523,8 @@ export const getJobStatus: CuratedTool = {
     runTool(async () => {
       const invalid = requireIds(args, ['endpointId', 'jobId']);
       if (invalid) return badRequest(invalid);
+      const waitError = validateWait(args.wait);
+      if (waitError) return badRequest(waitError);
       const endpointId = args.endpointId as string;
       const jobId = args.jobId as string;
       const fetchStatus = (timeoutMs?: number) =>

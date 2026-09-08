@@ -143,37 +143,25 @@ export function buildHubEnv(
     const override = entry.key in remaining ? remaining[entry.key] : undefined;
     delete remaining[entry.key];
 
-    // An override present but EMPTY is not a value — an empty string must not
-    // satisfy a required key (it would deploy a broken worker).
+    // Empty overrides retain the existing fallback to the release default.
+    // Validate the final serialized value, including boolean mappings.
+    let value: string | undefined;
     if (override !== undefined && override !== '') {
-      env.push({
-        key: entry.key,
-        value:
-          input.type === 'boolean'
-            ? serializeBoolean(override, input)
-            : override,
-      });
-      continue;
+      value =
+        input.type === 'boolean' ? serializeBoolean(override, input) : override;
+    } else if (input.default !== undefined && input.default !== null) {
+      value =
+        typeof input.default === 'boolean'
+          ? serializeBoolean(String(input.default), input)
+          : String(input.default);
     }
 
-    if (input.default !== undefined && input.default !== null) {
-      env.push({
-        key: entry.key,
-        value:
-          typeof input.default === 'boolean'
-            ? input.default
-              ? (input.trueValue ?? 'true')
-              : (input.falseValue ?? 'false')
-            : String(input.default),
-      });
-      continue;
-    }
-
-    if (input.required) {
+    if (input.required && (value === undefined || value === '')) {
       missingRequired.push(entry.key);
       env.push({ key: entry.key, value: '' });
       continue;
     }
+    if (value !== undefined) env.push({ key: entry.key, value });
 
     // Optional, no default, nothing supplied: OMIT the key rather than send ''
     // (os.environ.get('X', 'fallback') returns '' when X='', shadowing the
