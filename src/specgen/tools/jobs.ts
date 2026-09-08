@@ -189,8 +189,11 @@ export async function pollJobStatus(deps: {
 
 // A job stuck IN_QUEUE has two very different causes its status alone cannot
 // distinguish: no host has the endpoint's GPU available (capacity), or a
-// worker DID spin up and is crash-looping — the platform marks it UNHEALTHY
-// while the job stays queued. Agents read the endless IN_QUEUE as "no
+// worker DID spin up and is crash-looping. The platform SOMETIMES marks the
+// latter UNHEALTHY — but not always: a container that fails to start loops
+// while its worker keeps reporting RUNNING or THROTTLED (observed
+// 2026-09-08), so UNHEALTHY is a symptom to act on rather than a test to
+// trust, and every branch below ends by pointing at the logs. Agents read the endless IN_QUEUE as "no
 // capacity" and stop digging, so get-job-status best-effort attaches the
 // endpoint's worker summary and a hint. Never fails the status call itself.
 interface WorkerSummary {
@@ -285,7 +288,23 @@ async function diagnoseQueuedJob(
         hint: 'A worker is initializing — likely a cold start (image pull / model load); the job should start soon.',
       });
     }
-    return remember({ workerHealth: summary, hint: '' });
+    // Workers exist, none UNHEALTHY, none initializing — and the job is still
+    // queued. Do NOT read this as "the workers are fine": a container that
+    // fails to start loops while its worker keeps reporting RUNNING or
+    // THROTTLED and unhealthy stays 0. Observed 2026-09-08: twelve
+    // `error starting container: no space left on device` cycles in 100
+    // seconds, unhealthy 0 throughout. The logs are the only authority here,
+    // so send the caller there rather than returning an empty hint.
+    const running = summary.running ?? 0;
+    const throttled = summary.throttled ?? 0;
+    return remember({
+      workerHealth: summary,
+      hint: `${summary.total ?? 0} worker(s) exist and none report UNHEALTHY${
+        throttled > 0 ? ` (${throttled} throttled)` : ''
+      }, yet the job is still queued. UNHEALTHY is one symptom of a crash loop, not a test for it — a container failing to start loops while its worker still reports RUNNING. Read stream-worker-logs on ${
+        running > 0 ? 'a RUNNING worker' : 'any worker'
+      } (ids from list-endpoint-workers) before concluding this is only a slow cold start.`,
+    });
   } catch {
     return null; // diagnosis is best-effort — never break the status call
   } finally {
@@ -459,7 +478,7 @@ export const getJobStatus: CuratedTool = {
   description:
     'Check the status of a Serverless job. Returns the current status and output when complete. Job statuses: IN_QUEUE, IN_PROGRESS, COMPLETED, FAILED, CANCELLED, TIMED_OUT. Pass `wait` (milliseconds, up to ' +
     STATUS_WAIT_MAX_MS +
-    ') to BLOCK server-side, polling until the job reaches a terminal status or the budget expires — use it to ride out a cold start (a first job on a fresh worker pulls the image and loads the model, commonly 1–5+ minutes) in a single call instead of returning on the first IN_QUEUE and tight-looping the tool. Without `wait` it returns the current status immediately (a single check). If the budget expires before a terminal status, it returns the latest non-terminal status with pollingTimedOut:true — call again (with `wait`) to keep blocking. IMPORTANT: a job stuck IN_QUEUE does not necessarily mean a capacity shortage — a worker may have spun up and crash-looped (the platform marks it UNHEALTHY while the job stays queued). When the job is IN_QUEUE this tool attaches a workerHealth summary and a hint; to dig deeper, call list-endpoint-workers (look for UNHEALTHY) and stream-worker-logs.',
+    ') to BLOCK server-side, polling until the job reaches a terminal status or the budget expires — use it to ride out a cold start (a first job on a fresh worker pulls the image and loads the model, commonly 1–5+ minutes) in a single call instead of returning on the first IN_QUEUE and tight-looping the tool. Without `wait` it returns the current status immediately (a single check). If the budget expires before a terminal status, it returns the latest non-terminal status with pollingTimedOut:true — call again (with `wait`) to keep blocking. IMPORTANT: a job stuck IN_QUEUE does not necessarily mean a capacity shortage — a worker may have spun up and crash-looped. When the job is IN_QUEUE this tool attaches a workerHealth summary and a hint. To dig deeper call list-endpoint-workers, then read stream-worker-logs regardless of the status a worker reports: a container failing to start loops while its worker still shows RUNNING or THROTTLED and unhealthy stays 0, so UNHEALTHY is one symptom of a crash loop and not a test for it. The logs are the authority.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -601,7 +620,7 @@ export const retryJob: CuratedTool = {
 export const endpointHealth: CuratedTool = {
   name: 'endpoint-health',
   description:
-    "Get the endpoint-level health rollup for a Serverless endpoint: worker counts by state plus job queue statistics. This is the runtime plane's own /health view and it can lag or disagree with the per-worker truth — when a job is stuck IN_QUEUE, treat list-endpoint-workers as the authority on whether a worker is UNHEALTHY (crash-looping container; read it with stream-worker-logs), and note that get-job-status already attaches that worker summary and a hint on every IN_QUEUE result. Zero workers here means the endpoint is waiting for GPU capacity.",
+    "Get the endpoint-level health rollup for a Serverless endpoint: worker counts by state plus job queue statistics. This is the runtime plane's own /health view and it can lag or disagree with the per-worker truth — when a job is stuck IN_QUEUE, prefer list-endpoint-workers over this rollup for per-worker state — but treat neither as the authority on crash loops, because a container failing to start loops while its worker reports RUNNING or THROTTLED and unhealthy stays 0; stream-worker-logs is what settles it, and note that get-job-status already attaches that worker summary and a hint on every IN_QUEUE result. Zero workers here means the endpoint is waiting for GPU capacity.",
   inputSchema: {
     type: 'object',
     properties: {

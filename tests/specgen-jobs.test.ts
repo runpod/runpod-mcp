@@ -173,3 +173,44 @@ test('get-job-status attaches workerHealth even when the wait budget is spent', 
   });
   assert.equal(workerCalls, 1, 'diagnosis should be cached per endpoint');
 });
+
+// A crash loop does not always raise UNHEALTHY. Observed 2026-09-08: a
+// container failed to start twelve times in 100 seconds while its worker
+// reported RUNNING and unhealthy stayed 0. That shape fell through to an
+// empty hint, so the one signal that would have sent an agent to the logs was
+// missing exactly when it was needed.
+test('workers look healthy but the job is queued: the hint points at the logs', async () => {
+  const ctx = {
+    runtime: async () => ({ status: 'IN_QUEUE' }),
+    sdk: {
+      GET: async () => ({
+        data: {
+          summary: {
+            total: 3,
+            unhealthy: 0,
+            initializing: 0,
+            running: 1,
+            throttled: 2,
+            idle: 0,
+          },
+          workers: [{ id: 'w-run', status: 'RUNNING' }],
+        },
+      }),
+    },
+  } as unknown as Parameters<typeof getJobStatus.handler>[0];
+
+  const result = await getJobStatus.handler(ctx, {
+    endpointId: 'ep-quiet-crashloop',
+    jobId: 'job-1',
+    wait: 1000,
+  });
+  const payload = result.payload as Record<string, unknown>;
+
+  assert.equal(payload.status, 'IN_QUEUE');
+  const hint = String(payload.hint);
+  assert.notEqual(hint, '', 'an empty hint is the bug this guards against');
+  assert.match(hint, /stream-worker-logs/);
+  assert.match(hint, /not a test for it/);
+  assert.match(hint, /2 throttled/);
+  assert.match(hint, /RUNNING worker/);
+});
