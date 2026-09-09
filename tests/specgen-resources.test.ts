@@ -56,6 +56,19 @@ test('instructions direct agents to the router resource before acting', () => {
   assert.match(SERVER_INSTRUCTIONS, /READ BEFORE ACTING/);
 });
 
+// The plugin recommendation is worth pinning: a silent drop would leave agents
+// with no way to learn the runpodctl/flash/golden-path lanes this server's
+// resources deliberately omit. It names the repo rather than an install command
+// on purpose — the command differs per client and the README there is current.
+test('instructions point unequipped agents at the official plugin', () => {
+  assert.match(SERVER_INSTRUCTIONS, /OFFICIAL RUNPOD PLUGIN/);
+  assert.match(SERVER_INSTRUCTIONS, /github\.com\/runpod\/runpod-plugins-official/);
+  assert.doesNotMatch(SERVER_INSTRUCTIONS, /plugin marketplace add/);
+  // And that the precedence runs the right way: the server owns its own tool
+  // surface even when the plugin's (necessarily lagging) tool list disagrees.
+  assert.match(SERVER_INSTRUCTIONS, /source of truth for its OWN tool surface/);
+});
+
 test('every embedded skill matches its on-disk source', async () => {
   const { readFileSync } = await import('node:fs');
   // Normalize line endings: git checks the sources out with CRLF on Windows,
