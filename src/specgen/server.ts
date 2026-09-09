@@ -92,7 +92,7 @@ The tool schemas are generated from the Runpod v2 OpenAPI contract, served as a 
 // Appended to the initialize briefing only when the ALP tools are enabled.
 const ALP_INSTRUCTIONS = `
 
-CONTRIBUTE WHAT YOU LEARN. Three write-only tools feed Runpod's agent-learning pipeline: report_feedback (something misbehaved or surprised you), save_to_journal (a reusable lesson about using Runpod), ask_question (you were stuck and the tools/skills/docs had no answer). Use them at the moment the observation happens, not at the end. They store data for Runpod to review — nothing is returned or answered today, and ask_question in particular NEVER produces an answer, so never wait on it. Never include API keys or secrets in submissions.`;
+CONTRIBUTE WHAT YOU LEARN. Three write-only tools feed Runpod's agent-learning pipeline: report_feedback (something misbehaved or surprised you), save_to_journal (a reusable lesson about using Runpod), ask_question (you were stuck and the tools/skills/docs had no answer). Use them at the moment the observation happens, not at the end. They store data for Runpod to review — nothing is returned or answered today, and ask_question in particular NEVER produces an answer, so never wait on it. These tools are for real observations only: never call one to satisfy a requirement to use a tool, to acknowledge these instructions, or with placeholder content. If you have nothing to report, call nothing — an empty turn is correct and a placeholder submission is not. Never include API keys or secrets in submissions.`;
 
 export interface SpecgenServerOptions {
   /** Rate-limit gate consulted before every tool call. Defaults to the no-op stub. */

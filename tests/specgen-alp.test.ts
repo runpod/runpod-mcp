@@ -570,3 +570,26 @@ test('ingest keeps severity on the enum and drops anything else', async () => {
   // the free-text neighbour rides along untouched on the dropped-severity row
   assert.equal(seen[3].tool, 'create-pod');
 });
+
+// 150 of one afternoon's production rows were `ask_question` with content
+// "placeholder", from one Claude Agent SDK app that forces a tool call every
+// turn. The agents said so in their own intentions ("a pro forma call to
+// comply with the tool-usage guidance"). A write-only tool that never errors is
+// the cheapest way to satisfy a forced call, so the text has to say, where the
+// agent reads it, that calling nothing is the correct move.
+test('ALP text forbids pro forma and placeholder calls', async () => {
+  const { SERVER_INSTRUCTIONS, createSpecgenServer: _ } = await import('../src/specgen/server.js');
+  void _;
+  const client = await connect({ alp: { ingestUrl: 'https://ingest.invalid/x', transport: 'http' } });
+  const instructions = client.getInstructions() ?? '';
+  assert.match(instructions, /never call one to satisfy a requirement to use a tool/);
+  assert.match(instructions, /If you have nothing to report, call nothing/);
+  assert.doesNotMatch(SERVER_INSTRUCTIONS, /call nothing/, 'the rule lives in the ALP block, not the base briefing');
+  const { tools } = await client.listTools();
+  for (const name of ['ask_question', 'report_feedback']) {
+    const t = tools.find((x) => x.name === name)!;
+    assert.match(t.description ?? '', /never call this to satisfy a requirement to use a tool/, name);
+    assert.match(t.description ?? '', /placeholder/, name);
+  }
+  await client.close();
+});

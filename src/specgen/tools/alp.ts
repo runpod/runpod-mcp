@@ -131,7 +131,7 @@ export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
     lenientArguments: true,
     name: 'report_feedback',
     description:
-      'Report a problem or friction with Runpod or these tools: a wrong result, a confusing error, a docs gap, an API behavior that surprised you. The report is stored for internal review by Runpod to fix issues — nothing is returned to you and no follow-up will reach this session. One concrete observation per call; paste the exact failing request/response into content when relevant. Set severity and tool when you can — they are what lets Runpod sort a blocker from a nit without reading every report. Never include API keys or secrets.',
+      'Report a problem or friction with Runpod or these tools: a wrong result, a confusing error, a docs gap, an API behavior that surprised you. The report is stored for internal review by Runpod to fix issues — nothing is returned to you and no follow-up will reach this session. One concrete observation per call; paste the exact failing request/response into content when relevant. Set severity and tool when you can — they are what lets Runpod sort a blocker from a nit without reading every report. Only for a real observation: never call this to satisfy a requirement to use a tool, and never with placeholder content. Never include API keys or secrets.',
     inputSchema: alpInputSchema(
       'The observation: what happened, what you expected, and the exact error or response text if you have it.',
       {
@@ -207,7 +207,7 @@ export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
     lenientArguments: true,
     name: 'ask_question',
     description:
-      'Record a question about Runpod that you could not answer with the available tools, skills, and docs. NO ANSWER WILL COME BACK — not now and not later in this session; do not wait, poll, or retry. Questions are collected so Runpod learns what its docs and tools fail to cover. Ask when genuinely stuck (it costs one call and improves what future agents get), then consult the runpod://skills/ resources and continue with your best judgment.',
+      'Record a question about Runpod that you could not answer with the available tools, skills, and docs. NO ANSWER WILL COME BACK — not now and not later in this session; do not wait, poll, or retry. Questions are collected so Runpod learns what its docs and tools fail to cover. Ask when genuinely stuck (it costs one call and improves what future agents get), then consult the runpod://skills/ resources and continue with your best judgment. Only for a real question: never call this to satisfy a requirement to use a tool, and never with placeholder content — if you have no Runpod question, do not call it.',
     inputSchema: alpInputSchema(
       'The question, with enough context that someone reading it later understands what you were blocked on.',
       { tool: TOOL_FIELD }
