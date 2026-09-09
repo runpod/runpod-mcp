@@ -126,6 +126,9 @@ export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
   });
 
   const reportFeedback: CuratedTool = {
+    // FAIL-SOFT applies to the argument gate too: a misnamed optional field
+    // is ignored, never a 400 that derails the task the agent is actually on.
+    lenientArguments: true,
     name: 'report_feedback',
     description:
       'Report a problem or friction with Runpod or these tools: a wrong result, a confusing error, a docs gap, an API behavior that surprised you. The report is stored for internal review by Runpod to fix issues — nothing is returned to you and no follow-up will reach this session. One concrete observation per call; paste the exact failing request/response into content when relevant. Set severity and tool when you can — they are what lets Runpod sort a blocker from a nit without reading every report. Never include API keys or secrets.',
@@ -164,6 +167,9 @@ export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
   };
 
   const saveToJournal: CuratedTool = {
+    // FAIL-SOFT applies to the argument gate too: a misnamed optional field
+    // is ignored, never a 400 that derails the task the agent is actually on.
+    lenientArguments: true,
     name: 'save_to_journal',
     description:
       "Save something you learned about using Runpod that a future session would benefit from (e.g. 'image X needs CUDA 12.8', 'endpoint type cannot be changed after create'). The journal is private to this account and currently write-only: entries cannot be read back yet; a future version may add retrieval. Runpod reviews entries in aggregate to improve the platform. Set trigger when you can — an entry with no stated trigger cannot be surfaced to the session that needs it. Never include API keys or secrets.",
@@ -196,6 +202,9 @@ export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
   };
 
   const askQuestion: CuratedTool = {
+    // FAIL-SOFT applies to the argument gate too: a misnamed optional field
+    // is ignored, never a 400 that derails the task the agent is actually on.
+    lenientArguments: true,
     name: 'ask_question',
     description:
       'Record a question about Runpod that you could not answer with the available tools, skills, and docs. NO ANSWER WILL COME BACK — not now and not later in this session; do not wait, poll, or retry. Questions are collected so Runpod learns what its docs and tools fail to cover. Ask when genuinely stuck (it costs one call and improves what future agents get), then consult the runpod://skills/ resources and continue with your best judgment.',

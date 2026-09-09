@@ -25,16 +25,27 @@ export interface ToolResult {
   payload: unknown;
 }
 
-export async function dispatchGeneratedTool(
-  client: RunpodClient,
-  tool: GeneratedTool,
+// Argument-shape gate, shared by every tool on the server. Two checks, both
+// read from the tool's own JSON Schema so no tool needs per-tool code:
+//
+// Missing required argument. Without this an unresolved path placeholder
+// reaches the API and comes back as a resource 404 ("gpu type not found"),
+// sending the agent off to re-verify an id that was never sent.
+//
+// Unknown argument. Handlers only read declared keys, so an argument with a
+// plausible-but-wrong name used to vanish in silence and the call still went
+// out — `includeAvailability` (the v1 spelling) on list-gpu-types returned a
+// 200 with no availability fields at all, which reads as "priced and in stock"
+// if you trust the request you thought you made. The curated tools had the
+// same hole until the 2026-09-09 release smoke: stream-pod-logs called with
+// `id` instead of `podId` fetched /pods/undefined/logs and answered 404
+// "pod not found" with a hint to re-verify the id. A wrong answer is worse
+// than an error, so name the key and list what the tool accepts.
+export function validateArguments(
+  inputSchema: { required?: unknown; properties?: unknown },
   args: Record<string, unknown>
-): Promise<ToolResult> {
-  // Fail loudly on a missing required argument. Without this, an unresolved
-  // path placeholder reaches the API and comes back as a resource 404 ("gpu
-  // type not found"), sending the agent off to re-verify an id that was never
-  // sent. Checked from the generated schema, so it needs no per-tool code.
-  const required = (tool.inputSchema.required ?? []) as string[];
+): ToolResult | null {
+  const required = (inputSchema.required ?? []) as string[];
   const missing = required.filter((name) => args[name] === undefined);
   if (missing.length) {
     return {
@@ -50,16 +61,9 @@ export async function dispatchGeneratedTool(
       },
     };
   }
-
-  // Mirror of the check above, for the opposite mistake. Dispatch only reads
-  // declared params, so an argument with a plausible-but-wrong name used to be
-  // dropped in silence and the call still succeeded — asking for
-  // `includeAvailability` (the v1 spelling) on list-gpu-types returned a 200
-  // with no availability fields at all, which reads as "priced and in stock"
-  // if you trust the request you thought you made. A wrong answer is worse
-  // than an error, so name the unknown key and list what this tool accepts.
-  const allowed = new Set(tool.params.map((p) => p.name));
-  if (tool.hasBody) allowed.add('body');
+  const allowed = new Set(
+    Object.keys((inputSchema.properties ?? {}) as Record<string, unknown>)
+  );
   const unknown = Object.keys(args).filter((name) => !allowed.has(name));
   if (unknown.length) {
     return {
@@ -72,6 +76,16 @@ export async function dispatchGeneratedTool(
       },
     };
   }
+  return null;
+}
+
+export async function dispatchGeneratedTool(
+  client: RunpodClient,
+  tool: GeneratedTool,
+  args: Record<string, unknown>
+): Promise<ToolResult> {
+  const rejected = validateArguments(tool.inputSchema, args);
+  if (rejected) return rejected;
 
   const pathParams: Record<string, unknown> = {};
   const query: Record<string, unknown> = {};

@@ -11,7 +11,11 @@ import {
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolContext } from './context.js';
-import { dispatchGeneratedTool, type ToolResult } from './dispatch.js';
+import {
+  dispatchGeneratedTool,
+  validateArguments,
+  type ToolResult,
+} from './dispatch.js';
 import { generatedTools } from './generated/tools.gen.js';
 import { skillDocs } from './generated/skills.gen.js';
 import { getCapacity } from './tools/capacity.js';
@@ -42,6 +46,10 @@ export interface CuratedTool {
     ctx: ToolContext,
     args: Record<string, unknown>
   ) => Promise<ToolResult>;
+  /** Skip the argument-shape gate. Only for tools whose contract is to never
+   *  return an error result (the ALP write tools): an unknown key there is
+   *  ignored by the handler rather than rejected, by design. */
+  lenientArguments?: boolean;
 }
 
 // The curated overlay: tools whose backing plane the v2 spec does not cover
@@ -244,11 +252,24 @@ export function createSpecgenServer(
     // raised outside a handler body — a missing API key when the SDK client is
     // first built (src/specgen/context.ts) — onto a 401 tool result instead of a
     // protocol-level crash.
-    const result = await runTool(() =>
-      curated
-        ? curated.handler(ctx, args)
-        : dispatchTool(request.params.name, args)
-    );
+    // Curated tools get the same argument-shape gate as generated ones, from
+    // their own inputSchema. Before this they read only the keys they knew,
+    // so a misnamed argument produced a confident wrong answer (see
+    // validateArguments). Generated tools run the gate inside dispatch.
+    const rejected =
+      curated && !curated.lenientArguments
+        ? validateArguments(
+            curated.inputSchema as { required?: unknown; properties?: unknown },
+            args
+          )
+        : null;
+    const result =
+      rejected ??
+      (await runTool(() =>
+        curated
+          ? curated.handler(ctx, args)
+          : dispatchTool(request.params.name, args)
+      ));
     logToolCall({
       tool: request.params.name,
       caller,

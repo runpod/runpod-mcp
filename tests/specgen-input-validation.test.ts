@@ -190,3 +190,83 @@ test('Hub deployment refuses empty required defaults before any creation', async
   assert.equal(valid.ok, true);
   assert.equal(creations, 1);
 });
+
+// The generated tools reject a misnamed or missing argument before any request
+// goes out; the curated tools did not, and the 2026-09-09 release smoke showed
+// what that costs. stream-pod-logs called with `id` (the tool takes `podId`)
+// fetched /pods/undefined/logs and returned a confident 404 "pod not found"
+// with a hint to re-verify an id that was never sent. Same gate, same
+// wording, now in front of every curated handler — read from each tool's own
+// inputSchema, so a new curated tool is covered the moment it declares one.
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { createSpecgenServer } from '../src/specgen/server.js';
+import { createToolContext } from '../src/specgen/context.js';
+
+async function connectServer(alp?: { ingestUrl: string }) {
+  const server = createSpecgenServer(
+    createToolContext({ apiKey: 'rpa_test' }),
+    'test',
+    alp ? { alp: { ...alp, transport: 'http' } } : undefined
+  );
+  const client = new Client({ name: 'test', version: '1' });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(st), client.connect(ct)]);
+  return client;
+}
+
+function payload(result: Awaited<ReturnType<Client['callTool']>>) {
+  const text = (result.content as Array<{ text: string }>)
+    .map((c) => c.text)
+    .join('');
+  return { isError: result.isError === true, body: JSON.parse(text) };
+}
+
+test('curated tools reject an unknown argument before any request goes out', async () => {
+  const client = await connectServer();
+  const { isError, body } = payload(
+    await client.callTool({
+      name: 'stream-pod-logs',
+      // podId present so the required check passes and the unknown-key check
+      // is what fires; `id` is the misnaming from the live smoke run.
+      arguments: { podId: 'wr94h5kjbrf2tf', id: 'wr94h5kjbrf2tf', tail: 20 },
+    })
+  );
+  assert.equal(isError, true, 'a misnamed argument must be an error result');
+  assert.equal(body.error, 'Unknown argument: id');
+  assert.ok(body.accepted.includes('podId'), 'the accepted list names podId');
+  assert.match(body.hint, /cached from an earlier version/);
+  // and never the confident wrong answer it used to give
+  assert.notEqual(body.error, 'Runpod API error (404)');
+  await client.close();
+});
+
+test('curated tools reject a missing required argument by name', async () => {
+  const client = await connectServer();
+  const { isError, body } = payload(
+    await client.callTool({ name: 'stream-pod-logs', arguments: { tail: 20 } })
+  );
+  assert.equal(isError, true);
+  assert.equal(body.error, 'Missing required argument: podId');
+  assert.deepEqual(body.expected, ['podId']);
+  // podId is a path param, not a body: an omission gets the generic recovery
+  // hint the 400 path already attaches, never the stale-schema one.
+  assert.doesNotMatch(String(body.hint ?? ''), /cached from an earlier version/);
+  await client.close();
+});
+
+test('ALP tools stay fail-soft: an unknown key is ignored, not rejected', async () => {
+  const client = await connectServer({
+    ingestUrl: 'https://ingest.invalid/api/alp/submit',
+  });
+  const { isError, body } = payload(
+    await client.callTool({
+      name: 'report_feedback',
+      arguments: { content: 'x', severty: 'blocked' },
+    })
+  );
+  assert.equal(isError, false, 'ALP never returns an error result');
+  assert.equal(body.error, undefined);
+  assert.equal(typeof body.recorded, 'boolean');
+  await client.close();
+});
