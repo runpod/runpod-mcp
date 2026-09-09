@@ -87,6 +87,15 @@ RT2 is the one route that is read/write in Phase 1, so it ships as two tools:
 - `save_to_journal` — write an entry scoped to the calling identity.
 - `read_journal` — read back that identity's own entries, nobody else's.
 
+  Shipped 2026-09-09. The tool takes a `limit` and nothing else: identity is
+  never an argument, on the tool or on the server route. The hosted handler
+  resolves the account from the Bearer token exactly as ingest does and sends
+  that id as the only filter to a second secret-gated sink action
+  (`/alp/journal`, an `internalQuery` behind an `httpAction`). Any failure
+  returns zero entries with a no-retry note; it never falls back to a wider
+  query. Only the journal route is served — feedback and questions stay
+  write-only.
+
 Naming diverges from the PRD's `save_learning` deliberately. "Journal" carries
 the Phase 1 semantics the name needs to carry: it is _yours_, it is private, and
 writing to it is not publishing. That is the property we most need the model to
@@ -442,7 +451,7 @@ to be in this repo at all.
 
 | Repo              | Holds                                                                                                                                                                                    |
 | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| this one (public) | the three P0 tool definitions in `src/`; a thin ingest handler (`src/alp/`, mounted at `/api/alp/submit`) that resolves identity, runs the courtesy scrub, and POSTs to the private sink |
+| this one (public) | the four tool definitions in `src/`; a thin ingest handler (`src/alp/ingest.ts`, mounted at `/api/alp/submit`) that resolves identity, runs the courtesy scrub, and POSTs to the private sink; a thin read handler (`src/alp/read.ts`, mounted at `/api/alp/journal`) that resolves identity the same way and forwards only that id as the filter |
 | private           | `convex/` — schema, mutations, the ingest action (scrub, embed), the review-time clustering job, the dashboard                                                                           |
 
 That makes the boundary a GitHub permission rather than a directory convention,

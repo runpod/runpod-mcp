@@ -62,4 +62,49 @@ http.route({
   }),
 });
 
+// The read door for the private journal. Same secret, same single-caller
+// property: the server has already resolved `identity` from the caller's own
+// token, and this action forwards it unchanged. Nothing here can widen the
+// filter — there is no "all" mode and no cross-identity argument.
+http.route({
+  path: '/alp/journal',
+  method: 'POST',
+  handler: httpAction(async (ctx, request) => {
+    const secret = process.env.ALP_SINK_SECRET;
+    if (!secret || request.headers.get('x-alp-secret') !== secret) {
+      return new Response(JSON.stringify({ error: 'unauthorized' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    let body: Record<string, unknown>;
+    try {
+      body = (await request.json()) as Record<string, unknown>;
+    } catch {
+      return new Response(JSON.stringify({ error: 'invalid JSON' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const identity = typeof body.identity === 'string' ? body.identity : '';
+    if (!identity) {
+      return new Response(JSON.stringify({ error: 'identity required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const entries = await ctx.runQuery(
+      internal.submissions.listJournalByIdentity,
+      {
+        identity,
+        limit: Number(body.limit ?? 20),
+      }
+    );
+    return new Response(JSON.stringify({ ok: true, entries }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }),
+});
+
 export default http;

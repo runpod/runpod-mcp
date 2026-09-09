@@ -10,10 +10,17 @@ import { createToolContext } from '../src/specgen/context.js';
 import { generatedTools } from '../src/specgen/generated/tools.gen.js';
 import { createAlpTools } from '../src/specgen/tools/alp.js';
 import { handleAlpSubmit, isSinkUrl } from '../src/alp/ingest.js';
+import {
+  clampLimit,
+  handleAlpJournalRead,
+  journalSinkUrl,
+} from '../src/alp/read.js';
+import { journalReadUrl } from '../src/specgen/tools/alp.js';
 import { scrub, SCRUBBED_FIELDS, scrubSubmission } from '../src/alp/scrub.js';
 import { ALP_SEVERITIES } from '../src/alp/ingest.js';
 
-const ALP_NAMES = ['report_feedback', 'save_to_journal', 'ask_question'];
+const ALP_WRITE_NAMES = ['report_feedback', 'save_to_journal', 'ask_question'];
+const ALP_NAMES = [...ALP_WRITE_NAMES, 'read_journal'];
 
 async function connect(opts?: Parameters<typeof createSpecgenServer>[2]) {
   const server = createSpecgenServer(
@@ -37,7 +44,7 @@ test('disabled means absent: no ALP config, no ALP tools in tools/list', async (
   await client.close();
 });
 
-test('configured means present: the three write tools appear, with honest wording', async () => {
+test('configured means present: the four ALP tools appear, with honest wording', async () => {
   const client = await connect({
     alp: { ingestUrl: 'http://127.0.0.1:9/api/alp/submit', transport: 'stdio' },
   });
@@ -49,7 +56,10 @@ test('configured means present: the three write tools appear, with honest wordin
   const ask = tools.find((t) => t.name === 'ask_question')!;
   assert.match(ask.description ?? '', /NO ANSWER WILL COME BACK/);
   const journal = tools.find((t) => t.name === 'save_to_journal')!;
-  assert.match(journal.description ?? '', /cannot be read back yet/i);
+  assert.match(journal.description ?? '', /read_journal returns these entries/);
+  const read = tools.find((t) => t.name === 'read_journal')!;
+  assert.match(read.description ?? '', /cannot read any other account/);
+  assert.deepEqual(Object.keys(read.inputSchema.properties ?? {}), ['limit']);
   await client.close();
 });
 
@@ -498,7 +508,10 @@ test('every agent-writable submission field is scrubbed', () => {
     'utf8'
   );
   const block = /export interface AlpSubmitBody \{([\s\S]*?)\n\}/.exec(src);
-  assert.ok(block, 'AlpSubmitBody not found — update this test with the rename');
+  assert.ok(
+    block,
+    'AlpSubmitBody not found — update this test with the rename'
+  );
   const fields = [...block[1].matchAll(/^\s{2}(\w+)\??:/gm)].map((m) => m[1]);
   assert.ok(fields.length > 5, `parsed too few fields: ${fields.join(',')}`);
   // `route` is set by which tool was called, never agent prose, and is
@@ -578,17 +591,32 @@ test('ingest keeps severity on the enum and drops anything else', async () => {
 // the cheapest way to satisfy a forced call, so the text has to say, where the
 // agent reads it, that calling nothing is the correct move.
 test('ALP text forbids pro forma and placeholder calls', async () => {
-  const { SERVER_INSTRUCTIONS, createSpecgenServer: _ } = await import('../src/specgen/server.js');
+  const { SERVER_INSTRUCTIONS, createSpecgenServer: _ } = await import(
+    '../src/specgen/server.js'
+  );
   void _;
-  const client = await connect({ alp: { ingestUrl: 'https://ingest.invalid/x', transport: 'http' } });
+  const client = await connect({
+    alp: { ingestUrl: 'https://ingest.invalid/x', transport: 'http' },
+  });
   const instructions = client.getInstructions() ?? '';
-  assert.match(instructions, /never call one to satisfy a requirement to use a tool/);
+  assert.match(
+    instructions,
+    /never call one to satisfy a requirement to use a tool/
+  );
   assert.match(instructions, /If you have nothing to report, call nothing/);
-  assert.doesNotMatch(SERVER_INSTRUCTIONS, /call nothing/, 'the rule lives in the ALP block, not the base briefing');
+  assert.doesNotMatch(
+    SERVER_INSTRUCTIONS,
+    /call nothing/,
+    'the rule lives in the ALP block, not the base briefing'
+  );
   const { tools } = await client.listTools();
   for (const name of ['ask_question', 'report_feedback']) {
     const t = tools.find((x) => x.name === name)!;
-    assert.match(t.description ?? '', /never call this to satisfy a requirement to use a tool/, name);
+    assert.match(
+      t.description ?? '',
+      /never call this to satisfy a requirement to use a tool/,
+      name
+    );
     assert.match(t.description ?? '', /placeholder/, name);
   }
   await client.close();
@@ -599,17 +627,203 @@ test('ALP text forbids pro forma and placeholder calls', async () => {
 // old wording ("if you know it") read as permission to skip. Ask for a best
 // guess explicitly; keep it optional so call-through does not move.
 test('modelType asks for a best guess and stays optional', async () => {
-  const client = await connect({ alp: { ingestUrl: 'https://ingest.invalid/x', transport: 'http' } });
+  const client = await connect({
+    alp: { ingestUrl: 'https://ingest.invalid/x', transport: 'http' },
+  });
   const { tools } = await client.listTools();
-  for (const name of ALP_NAMES) {
+  for (const name of ALP_WRITE_NAMES) {
     const schema = tools.find((t) => t.name === name)!.inputSchema as {
       properties: Record<string, { description?: string }>;
       required?: string[];
     };
     assert.match(schema.properties.modelType.description ?? '', /best/i, name);
-    assert.match(schema.properties.modelType.description ?? '', /probably/, name);
-    assert.doesNotMatch(schema.properties.modelType.description ?? '', /if you know it/, name);
-    assert.deepEqual(schema.required, ['content'], `${name} must keep content the only required arg`);
+    assert.match(
+      schema.properties.modelType.description ?? '',
+      /probably/,
+      name
+    );
+    assert.doesNotMatch(
+      schema.properties.modelType.description ?? '',
+      /if you know it/,
+      name
+    );
+    assert.deepEqual(
+      schema.required,
+      ['content'],
+      `${name} must keep content the only required arg`
+    );
   }
+  await client.close();
+});
+
+// ---- journal read-back ----
+
+const VALID_VERIFY = async () => ({
+  status: 'valid' as const,
+  accountId: 'acct_me',
+});
+const READ_ENV = {
+  ALP_SINK_URL: 'https://sink.convex.site/alp/submit',
+  ALP_SINK_SECRET: 'shh',
+};
+
+test('journal read 401s without a bearer token and never touches the sink', async () => {
+  let sinkCalls = 0;
+  const { req, res, written } = fakeReqRes({}, { limit: 5 });
+  await handleAlpJournalRead(req, res, {
+    env: READ_ENV,
+    sinkFetch: (async () => {
+      sinkCalls++;
+      return new Response('{}');
+    }) as typeof fetch,
+  });
+  assert.equal(written.statusCode, 401);
+  assert.equal(sinkCalls, 0, 'no sink call without a credential');
+});
+
+test('journal read scopes to the TOKEN identity; an identity in the body is ignored', async () => {
+  const sent: unknown[] = [];
+  const { req, res, written } = fakeReqRes(
+    { authorization: 'Bearer rpa_x' },
+    { identity: 'acct_someone_else', limit: 3 }
+  );
+  await handleAlpJournalRead(req, res, {
+    env: READ_ENV,
+    verify: VALID_VERIFY,
+    sinkFetch: (async (url: string | URL | Request, init?: RequestInit) => {
+      sent.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          entries: [{ content: 'x', receivedAt: 't' }],
+        })
+      );
+    }) as typeof fetch,
+  });
+  assert.equal(written.statusCode, 200);
+  assert.deepEqual(sent, [
+    {
+      url: 'https://sink.convex.site/alp/journal',
+      body: { identity: 'acct_me', limit: 3 },
+    },
+  ]);
+  const body = JSON.parse(written.body!);
+  assert.equal(body.available, true);
+  assert.equal(body.entries.length, 1);
+});
+
+test('journal read fails closed: sink down, wrong shape, or unresolved identity yield zero entries', async () => {
+  const cases: Array<[string, Parameters<typeof handleAlpJournalRead>[2]]> = [
+    [
+      'sink 500',
+      {
+        env: READ_ENV,
+        verify: VALID_VERIFY,
+        sinkFetch: (async () =>
+          new Response('x', { status: 500 })) as typeof fetch,
+      },
+    ],
+    [
+      'sink unrecognized',
+      {
+        env: READ_ENV,
+        verify: VALID_VERIFY,
+        sinkFetch: (async () => new Response('{"ok":true}')) as typeof fetch,
+      },
+    ],
+    [
+      'sink unreachable',
+      {
+        env: READ_ENV,
+        verify: VALID_VERIFY,
+        sinkFetch: (async () => {
+          throw new Error('ECONNREFUSED');
+        }) as typeof fetch,
+      },
+    ],
+    [
+      'identity unknown',
+      {
+        env: READ_ENV,
+        verify: async () => ({ status: 'unknown' as const }),
+        sinkFetch: (async () => {
+          throw new Error('must not be called');
+        }) as typeof fetch,
+      },
+    ],
+    [
+      'no sink configured',
+      {
+        env: {},
+        verify: VALID_VERIFY,
+        sinkFetch: (async () => {
+          throw new Error('must not be called');
+        }) as typeof fetch,
+      },
+    ],
+  ];
+  for (const [label, opts] of cases) {
+    const { req, res, written } = fakeReqRes(
+      { authorization: 'Bearer rpa_x' },
+      {}
+    );
+    await handleAlpJournalRead(req, res, opts);
+    assert.equal(written.statusCode, 200, `${label}: calm 200`);
+    const body = JSON.parse(written.body!);
+    assert.equal(body.available, false, `${label}: available=false`);
+    assert.deepEqual(body.entries, [], `${label}: no entries`);
+    assert.match(body.note, /Do not retry/, `${label}: no-retry note`);
+  }
+});
+
+test('journal read rejects an invalid key with 401', async () => {
+  const { req, res, written } = fakeReqRes(
+    { authorization: 'Bearer rpa_dead' },
+    {}
+  );
+  await handleAlpJournalRead(req, res, {
+    env: READ_ENV,
+    verify: async () => ({ status: 'invalid' as const }),
+  });
+  assert.equal(written.statusCode, 401);
+});
+
+test('journal limit clamps to [1, 50] and defaults on garbage', () => {
+  assert.equal(clampLimit(undefined), 20);
+  assert.equal(clampLimit('abc'), 20);
+  assert.equal(clampLimit(0), 1);
+  assert.equal(clampLimit(-4), 1);
+  assert.equal(clampLimit(7.9), 7);
+  assert.equal(clampLimit(999), 50);
+  assert.equal(clampLimit('12'), 12);
+});
+
+test('journal sink URL is derived from the submit URL, never configured separately', () => {
+  assert.equal(
+    journalSinkUrl('https://sink.convex.site/alp/submit'),
+    'https://sink.convex.site/alp/journal'
+  );
+  assert.equal(journalSinkUrl('https://evil.example/alp/submit'), null);
+  assert.equal(journalSinkUrl('not a url'), null);
+  assert.equal(
+    journalReadUrl('https://mcp.getrunpod.io/api/alp/submit'),
+    'https://mcp.getrunpod.io/api/alp/journal'
+  );
+});
+
+test('read_journal tool fails soft when the read endpoint is unreachable', async () => {
+  const client = await connect({
+    alp: { ingestUrl: 'http://127.0.0.1:9/api/alp/submit', transport: 'stdio' },
+  });
+  const result = await client.callTool({
+    name: 'read_journal',
+    arguments: { limit: 5 },
+  });
+  assert.equal(result.isError ?? false, false, 'read_journal never errors');
+  const text = (result.content as Array<{ text: string }>)[0].text;
+  const payload = JSON.parse(text);
+  assert.equal(payload.available, false);
+  assert.deepEqual(payload.entries, []);
+  assert.match(payload.note, /Do not retry/);
   await client.close();
 });

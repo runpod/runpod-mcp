@@ -1,18 +1,26 @@
-// ALP write tools (Agent Learning Protocol, P0 — write-only): report_feedback,
-// save_to_journal, ask_question. See docs/agent-learning-protocol.md.
+// ALP tools (Agent Learning Protocol): report_feedback, save_to_journal,
+// ask_question write; read_journal reads back the caller's own journal. See
+// docs/agent-learning-protocol.md, "The tool pair".
 //
-// All three are thin clients of the one hosted ingest endpoint
-// (POST /api/alp/submit) — the npm package holds no storage credentials, so
-// both transports submit there with the caller's own key. P0 is write-only:
-// nothing is served back to agents, and every description and response says
-// so honestly — an ambiguous ack is a false affordance the model may plan
-// around (waiting, polling, re-asking).
+// All four are thin clients of the hosted endpoints (POST /api/alp/submit and
+// POST /api/alp/journal) — the npm package holds no storage credentials, so
+// both transports go there with the caller's own key. The journal is the ONE
+// route that is served back, and only to the identity that wrote it; feedback
+// and questions return nothing, and every description and response says so
+// honestly — an ambiguous ack is a false affordance the model may plan around
+// (waiting, polling, re-asking).
 //
 // FAIL-SOFT: these tools are side quests. Whatever goes wrong, the result is
 // a calm non-error saying the entry was not recorded and not to retry —
 // never a tool failure that derails the agent's actual task.
 
 import type { AlpRoute } from '../../alp/ingest.js';
+import {
+  clampLimit,
+  DEFAULT_JOURNAL_LIMIT,
+  MAX_JOURNAL_LIMIT,
+  type JournalEntry,
+} from '../../alp/read.js';
 import type { ToolContext } from '../context.js';
 import type { CuratedTool } from '../server.js';
 import { ok } from './util.js';
@@ -63,6 +71,46 @@ async function submit(
     return { recorded: response.ok && body.recorded === true };
   } catch {
     return { recorded: false };
+  }
+}
+
+// The read endpoint sits beside the write endpoint on the same deployment.
+// Derived, not configured, so the two can never point at different servers.
+export function journalReadUrl(ingestUrl: string): string {
+  return ingestUrl.replace(/\/submit$/, '/journal');
+}
+
+async function readJournal(
+  ctx: ToolContext,
+  readUrl: string,
+  limit: number
+): Promise<{ available: boolean; entries: JournalEntry[] }> {
+  try {
+    const response = await fetch(readUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(ctx.apiKey ? { Authorization: `Bearer ${ctx.apiKey}` } : {}),
+      },
+      // Only the page size crosses the wire. Whose journal this is comes from
+      // the Bearer token, resolved server-side — there is no argument for it.
+      body: JSON.stringify({ limit }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    const body = (await response.json().catch(() => ({}))) as {
+      available?: boolean;
+      entries?: unknown;
+    };
+    if (
+      !response.ok ||
+      body.available !== true ||
+      !Array.isArray(body.entries)
+    ) {
+      return { available: false, entries: [] };
+    }
+    return { available: true, entries: body.entries as JournalEntry[] };
+  } catch {
+    return { available: false, entries: [] };
   }
 }
 
@@ -173,7 +221,7 @@ export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
     lenientArguments: true,
     name: 'save_to_journal',
     description:
-      "Save something you learned about using Runpod that a future session would benefit from (e.g. 'image X needs CUDA 12.8', 'endpoint type cannot be changed after create'). The journal is private to this account and currently write-only: entries cannot be read back yet; a future version may add retrieval. Runpod reviews entries in aggregate to improve the platform. Set trigger when you can — an entry with no stated trigger cannot be surfaced to the session that needs it. Never include API keys or secrets.",
+      "Save something you learned about using Runpod that a future session would benefit from (e.g. 'image X needs CUDA 12.8', 'endpoint type cannot be changed after create'). The journal is private to this account: read_journal returns these entries to a future session on the same account and to nobody else. Runpod reviews entries in aggregate to improve the platform. Set trigger when you can — an entry with no stated trigger cannot be surfaced to the session that needs it. Never include API keys or secrets.",
     inputSchema: alpInputSchema(
       'The learning, stated so a future agent can act on it: the situation, what turned out to be true, and how you verified it.',
       {
@@ -196,7 +244,7 @@ export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
       return ok({
         recorded,
         note: recorded
-          ? "Saved to this account's private journal (write-only today — entries cannot be read back yet). Continue your task."
+          ? "Saved to this account's private journal. A future session on this account can read it back with read_journal. Continue your task."
           : NOT_RECORDED,
       });
     },
@@ -231,5 +279,41 @@ export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
     },
   };
 
-  return [reportFeedback, saveToJournal, askQuestion];
+  const readUrl = journalReadUrl(opts.ingestUrl);
+  const readJournalTool: CuratedTool = {
+    lenientArguments: true,
+    name: 'read_journal',
+    description:
+      "Read back this account's private journal: the lessons earlier sessions on this account saved with save_to_journal, newest first. Call it once near the start of a Runpod task to pick up what was already learned (an image's CUDA floor, a field that turned out to be immutable, a region with no stock). Entries are scoped to the account behind your API key — you cannot read any other account's journal, and there is no argument to ask for one. Only call when you have a Runpod task the entries could inform; never to satisfy a requirement to use a tool.",
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        limit: {
+          type: 'integer' as const,
+          minimum: 1,
+          maximum: MAX_JOURNAL_LIMIT,
+          description: `How many of the newest entries to return. Default ${DEFAULT_JOURNAL_LIMIT}, maximum ${MAX_JOURNAL_LIMIT}.`,
+        },
+      },
+    },
+    handler: async (ctx, args) => {
+      const { available, entries } = await readJournal(
+        ctx,
+        readUrl,
+        clampLimit(args.limit)
+      );
+      return ok({
+        available,
+        count: entries.length,
+        entries,
+        note: !available
+          ? 'The journal could not be read right now. Do not retry — continue your task.'
+          : entries.length === 0
+            ? 'This account has no journal entries yet. Continue your task; save what you learn with save_to_journal.'
+            : "These are earlier sessions' own notes, not verified documentation: confirm anything time-sensitive (stock, prices, versions) with a live read before acting on it.",
+      });
+    },
+  };
+
+  return [reportFeedback, saveToJournal, askQuestion, readJournalTool];
 }
