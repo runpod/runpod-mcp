@@ -511,6 +511,11 @@ test('every agent-writable submission field is scrubbed', () => {
   }
 });
 
+// Every assert.ok in this file carries a message on purpose. Without one, a
+// failing assert.ok makes Node re-read and parse the source file to print the
+// offending expression, and under the tsx loader that took tens of seconds to
+// never — the file looked hung six tests earlier because the reporter had
+// only flushed that far. Verified 2026-09-09 by bisecting a forced failure.
 test('the new triage fields are scrubbed, not just carried', () => {
   const row = scrubSubmission({
     content: 'ok',
@@ -521,8 +526,14 @@ test('the new triage fields are scrubbed, not just carried', () => {
     redactions: 0,
     scrubVersion: 0,
   });
-  assert.ok(!row.workaround?.includes('sk-live-abcdefghijklmnop'));
-  assert.ok(!row.trigger?.includes('abcdefghijklmnopqrst'));
+  assert.ok(
+    !row.workaround?.includes('sk-live-abcdefghijklmnop'),
+    'workaround was stored unscrubbed'
+  );
+  assert.ok(
+    !row.trigger?.includes('abcdefghijklmnopqrst'),
+    'trigger was stored unscrubbed'
+  );
   assert.equal(row.tool, 'create-pod');
   assert.equal(row.severity, 'blocked');
   assert.ok(row.redactions >= 2, `expected redactions, got ${row.redactions}`);
