@@ -69,6 +69,16 @@ test('instructions point unequipped agents at the official plugin', () => {
   assert.match(SERVER_INSTRUCTIONS, /source of truth for its OWN tool surface/);
 });
 
+// A client caches tools/list at connect, so a release or an alias move leaves it
+// validating against a schema the server no longer serves. One production
+// report burned a session retrying flat v1 arguments at a body-shaped
+// create-pod. The briefing has to name refresh as the recovery, because
+// retrying the same shape never converges.
+test('instructions name refreshing the tool list as the fix for a shape rejection', () => {
+  assert.match(SERVER_INSTRUCTIONS, /snapshot from when you connected/);
+  assert.match(SERVER_INSTRUCTIONS, /refresh the tool list/);
+});
+
 test('every embedded skill matches its on-disk source', async () => {
   const { readFileSync } = await import('node:fs');
   // Normalize line endings: git checks the sources out with CRLF on Windows,

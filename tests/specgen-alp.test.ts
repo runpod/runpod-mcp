@@ -1,6 +1,7 @@
 // ALP P0 gates: config-gated registration, honest response contracts,
 // scrub-on-write, identity keying, and the fail-soft posture.
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -9,7 +10,8 @@ import { createToolContext } from '../src/specgen/context.js';
 import { generatedTools } from '../src/specgen/generated/tools.gen.js';
 import { createAlpTools } from '../src/specgen/tools/alp.js';
 import { handleAlpSubmit, isSinkUrl } from '../src/alp/ingest.js';
-import { scrub } from '../src/alp/scrub.js';
+import { scrub, SCRUBBED_FIELDS, scrubSubmission } from '../src/alp/scrub.js';
+import { ALP_SEVERITIES } from '../src/alp/ingest.js';
 
 const ALP_NAMES = ['report_feedback', 'save_to_journal', 'ask_question'];
 
@@ -483,4 +485,77 @@ test('ingest only stores and logs recognized transport values', async () => {
   } finally {
     console.log = originalLog;
   }
+});
+
+// The scrub list is hand-maintained, and a submission field missing from it is
+// stored verbatim — the exact failure that leaks a pasted credential. Nothing
+// in the type system connects the two, so read the shape from source and
+// require every field to be covered. Adding a field to AlpSubmitBody without
+// adding it to SCRUBBED_FIELDS fails here instead of in the table.
+test('every agent-writable submission field is scrubbed', () => {
+  const src = readFileSync(
+    new URL('../src/alp/ingest.ts', import.meta.url),
+    'utf8'
+  );
+  const block = /export interface AlpSubmitBody \{([\s\S]*?)\n\}/.exec(src);
+  assert.ok(block, 'AlpSubmitBody not found — update this test with the rename');
+  const fields = [...block[1].matchAll(/^\s{2}(\w+)\??:/gm)].map((m) => m[1]);
+  assert.ok(fields.length > 5, `parsed too few fields: ${fields.join(',')}`);
+  // `route` is set by which tool was called, never agent prose, and is
+  // validated against ALP_ROUTES before it is stored.
+  for (const field of fields.filter((f) => f !== 'route')) {
+    assert.ok(
+      (SCRUBBED_FIELDS as readonly string[]).includes(field),
+      `AlpSubmitBody.${field} is not in SCRUBBED_FIELDS — it would be stored unscrubbed`
+    );
+  }
+});
+
+test('the new triage fields are scrubbed, not just carried', () => {
+  const row = scrubSubmission({
+    content: 'ok',
+    workaround: 'retried with Authorization: Bearer sk-live-abcdefghijklmnop',
+    trigger: 'when x-api-key: abcdefghijklmnopqrst is set',
+    tool: 'create-pod',
+    severity: 'blocked',
+    redactions: 0,
+    scrubVersion: 0,
+  });
+  assert.ok(!row.workaround?.includes('sk-live-abcdefghijklmnop'));
+  assert.ok(!row.trigger?.includes('abcdefghijklmnopqrst'));
+  assert.equal(row.tool, 'create-pod');
+  assert.equal(row.severity, 'blocked');
+  assert.ok(row.redactions >= 2, `expected redactions, got ${row.redactions}`);
+});
+
+// severity only earns its place if it stays sortable, so an off-enum value is
+// dropped rather than stored as prose.
+test('ingest keeps severity on the enum and drops anything else', async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const sinkFetch = (async (_u: RequestInfo | URL, init?: RequestInit) => {
+    seen.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return new Response(JSON.stringify({ ok: true, id: 'row_1' }), {
+      status: 200,
+    });
+  }) as typeof fetch;
+  for (const severity of [...ALP_SEVERITIES, 'critical', 'P0', 42]) {
+    const { req, res } = fakeReqRes(
+      { authorization: 'Bearer rpa_live' },
+      { route: 'feedback', content: 'c', severity, tool: 'create-pod' }
+    );
+    await handleAlpSubmit(req, res, {
+      verify: async () => ({ status: 'valid', accountId: 'user_42' }),
+      sinkFetch,
+      env: {
+        ALP_SINK_URL: 'https://sink-test-1.convex.site/alp/submit',
+        ALP_SINK_SECRET: 's3cret',
+      },
+    });
+  }
+  assert.deepEqual(
+    seen.map((r) => r.severity),
+    ['blocked', 'degraded', 'cosmetic', undefined, undefined, undefined]
+  );
+  // the free-text neighbour rides along untouched on the dropped-severity row
+  assert.equal(seen[3].tool, 'create-pod');
 });

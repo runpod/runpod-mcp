@@ -6,6 +6,19 @@ import type { RunpodClient } from '@runpod/sdk';
 import type { GeneratedTool } from './generated/tools.gen.js';
 import { withRateLimitHint } from '../_shared/rate-limit.js';
 
+// A client caches tools/list when it connects. If the served surface changes
+// under a live session — a release, or a deployment alias moving — the client
+// keeps validating calls against the OLD schema and silently strips arguments
+// the new schema requires. The agent cannot see this: from inside the session
+// its schema looks authoritative, so it retries variations of a shape the
+// server will never accept. A production report burned a session that way,
+// sending flat v1 arguments (gpuTypeIds, imageName) at a body-shaped
+// create-pod and then re-sending them nested under a `body` key its own client
+// dropped, leaving `received: []`. Reconnecting is the only fix, so name it on
+// exactly the two errors a stale schema produces.
+const STALE_SCHEMA_HINT =
+  'If this disagrees with the schema you hold, your tool list may be cached from an earlier version of this server. Reconnect the Runpod MCP server (in Claude Code, /mcp) to refresh tools/list, then call again — do not retry variations of the same argument shape.';
+
 export interface ToolResult {
   ok: boolean;
   status: number;
@@ -31,6 +44,9 @@ export async function dispatchGeneratedTool(
         error: `Missing required argument${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}`,
         expected: required,
         received: Object.keys(args),
+        // A missing path/query param is an ordinary omission. A missing `body`
+        // is the shape a stale schema produces, so only that one earns the hint.
+        ...(missing.includes('body') ? { hint: STALE_SCHEMA_HINT } : {}),
       },
     };
   }
@@ -52,6 +68,7 @@ export async function dispatchGeneratedTool(
       payload: {
         error: `Unknown argument${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}`,
         accepted: [...allowed],
+        hint: STALE_SCHEMA_HINT,
       },
     };
   }

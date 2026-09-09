@@ -28,11 +28,22 @@ const MAX_CONTENT_CHARS = 20_000;
 const MAX_FIELD_CHARS = 500;
 const SINK_TIMEOUT_MS = 5_000;
 
+export const ALP_SEVERITIES = ['blocked', 'degraded', 'cosmetic'] as const;
+export type AlpSeverity = (typeof ALP_SEVERITIES)[number];
+
 export interface AlpSubmitBody {
   route: AlpRoute;
   content: string;
   intention?: string;
   modelType?: string;
+  /** Triage dimension, feedback route. Constrained so it stays sortable. */
+  severity?: AlpSeverity;
+  /** The tool the entry is about, as it appears in the agent's tool list. */
+  tool?: string;
+  /** Feedback route: what the agent did instead. Absent means fully blocked. */
+  workaround?: string;
+  /** Journal route: the situation in which to recall the entry. */
+  trigger?: string;
   harness?: string;
   harnessSource?: 'client_info' | 'user_agent';
   transport?: 'stdio' | 'http';
@@ -149,6 +160,16 @@ export async function handleAlpSubmit(
     content: body.content,
     intention: typeof body.intention === 'string' ? body.intention : undefined,
     modelType: typeof body.modelType === 'string' ? body.modelType : undefined,
+    // Drop an off-enum severity rather than storing it. The whole value of the
+    // field is that it can be sorted and counted; one free-text variant
+    // ("critical", "high") turns a dimension back into prose, and the loss of
+    // one label costs less than that.
+    severity: ALP_SEVERITIES.includes(body.severity as AlpSeverity)
+      ? (body.severity as AlpSeverity)
+      : undefined,
+    tool: typeof body.tool === 'string' ? body.tool : undefined,
+    workaround: typeof body.workaround === 'string' ? body.workaround : undefined,
+    trigger: typeof body.trigger === 'string' ? body.trigger : undefined,
     harness: typeof body.harness === 'string' ? body.harness : undefined,
     harnessSource:
       typeof body.harnessSource === 'string' ? body.harnessSource : undefined,
@@ -165,6 +186,12 @@ export async function handleAlpSubmit(
     content: clean.content.slice(0, MAX_CONTENT_CHARS),
     intention: clean.intention?.slice(0, MAX_FIELD_CHARS),
     modelType: clean.modelType?.slice(0, MAX_FIELD_CHARS),
+    severity: clean.severity,
+    tool: clean.tool?.slice(0, MAX_FIELD_CHARS),
+    // Prose fields, so they get the content cap rather than the field cap: a
+    // workaround worth reading is a paragraph, not a label.
+    workaround: clean.workaround?.slice(0, MAX_CONTENT_CHARS),
+    trigger: clean.trigger?.slice(0, MAX_CONTENT_CHARS),
     harness: clean.harness?.slice(0, MAX_FIELD_CHARS),
     harnessSource: clean.harnessSource?.slice(0, MAX_FIELD_CHARS),
     transport: clean.transport?.slice(0, MAX_FIELD_CHARS),

@@ -182,11 +182,28 @@ export function scrub(text: string): ScrubResult {
 
 // Only user-authored text is scrubbed; resolved identity and server timestamps
 // remain authoritative. Reapplying this at the sink is safe and idempotent.
+export const SCRUBBED_FIELDS = [
+  'content',
+  'intention',
+  'modelType',
+  'severity',
+  'tool',
+  'workaround',
+  'trigger',
+  'harness',
+  'harnessSource',
+  'transport',
+] as const;
+
 export function scrubSubmission<
   T extends {
     content: string;
     intention?: string;
     modelType?: string;
+    severity?: string;
+    tool?: string;
+    workaround?: string;
+    trigger?: string;
     harness?: string;
     harnessSource?: string;
     transport?: string;
@@ -195,14 +212,12 @@ export function scrubSubmission<
   },
 >(row: T): T {
   const clean = { ...row };
-  for (const field of [
-    'content',
-    'intention',
-    'modelType',
-    'harness',
-    'harnessSource',
-    'transport',
-  ] as const) {
+  // EVERY agent-writable string field belongs in this list. A field added to
+  // the submission shape but not here is stored unscrubbed, which is how a
+  // pasted credential reaches the table — the fields most likely to carry one
+  // are exactly the free-text ones a new route adds. Guarded by a test that
+  // walks the submission type, so the omission fails CI rather than shipping.
+  for (const field of SCRUBBED_FIELDS) {
     const value = clean[field];
     if (typeof value !== 'string') continue;
     const result = scrub(value);

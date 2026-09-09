@@ -49,6 +49,10 @@ async function submit(
         content: args.content,
         intention: args.intention,
         modelType: args.modelType,
+        severity: args.severity,
+        tool: args.tool,
+        workaround: args.workaround,
+        trigger: args.trigger,
         ...extra,
       }),
       signal: AbortSignal.timeout(10_000),
@@ -62,9 +66,28 @@ async function submit(
   }
 }
 
-// Shared input schema: two agent-supplied fields plus one self-report —
-// fewer required args means a higher call-through rate (design doc, Fields).
-const alpInputSchema = (contentDescription: string) => ({
+// Shared input schema. `content` stays the only required field — fewer required
+// args means a higher call-through rate (design doc, Fields) — and everything
+// added since is optional and mechanical, answerable from what the agent
+// already did rather than from fresh reasoning.
+//
+// The first 21 production submissions showed prose was never the shortfall:
+// 233-1794 characters each, `intention` filled on 20 of 21, several tracing a
+// contradiction across five paired reads. What was missing was any dimension to
+// sort or route them by, so a total blocker sat beside a docs nit and telling
+// them apart meant opening both. Hence structure, not longer prose.
+const SEVERITY = ['blocked', 'degraded', 'cosmetic'] as const;
+
+const TOOL_FIELD = {
+  type: 'string' as const,
+  description:
+    'The name of the tool this is about, exactly as it appears in your tool list (for example create-pod). Omit only when no single tool is involved.',
+};
+
+const alpInputSchema = (
+  contentDescription: string,
+  extra: Record<string, unknown> = {}
+) => ({
   type: 'object' as const,
   properties: {
     content: {
@@ -76,6 +99,7 @@ const alpInputSchema = (contentDescription: string) => ({
       description:
         'One short sentence: what you were trying to accomplish when this came up.',
     },
+    ...extra,
     modelType: {
       type: 'string' as const,
       description: 'The model you are running as, if you know it (optional).',
@@ -104,9 +128,23 @@ export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
   const reportFeedback: CuratedTool = {
     name: 'report_feedback',
     description:
-      'Report a problem or friction with Runpod or these tools: a wrong result, a confusing error, a docs gap, an API behavior that surprised you. The report is stored for internal review by Runpod to fix issues — nothing is returned to you and no follow-up will reach this session. One concrete observation per call; paste the exact failing request/response into content when relevant. Never include API keys or secrets.',
+      'Report a problem or friction with Runpod or these tools: a wrong result, a confusing error, a docs gap, an API behavior that surprised you. The report is stored for internal review by Runpod to fix issues — nothing is returned to you and no follow-up will reach this session. One concrete observation per call; paste the exact failing request/response into content when relevant. Set severity and tool when you can — they are what lets Runpod sort a blocker from a nit without reading every report. Never include API keys or secrets.',
     inputSchema: alpInputSchema(
-      'The observation: what happened, what you expected, and the exact error or response text if you have it.'
+      'The observation: what happened, what you expected, and the exact error or response text if you have it.',
+      {
+        severity: {
+          type: 'string' as const,
+          enum: [...SEVERITY],
+          description:
+            'How much this cost you: blocked (you could not complete the task at all), degraded (you completed it the slow or awkward way), cosmetic (correct but confusing or badly worded). Report the effect on your task, not how bad the underlying bug looks.',
+        },
+        tool: TOOL_FIELD,
+        workaround: {
+          type: 'string' as const,
+          description:
+            'What you did instead, if anything worked. Leave this out when nothing did — an absent workaround is read as fully blocked.',
+        },
+      }
     ),
     handler: async (ctx, args) => {
       const { recorded } = await submit(
@@ -128,9 +166,17 @@ export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
   const saveToJournal: CuratedTool = {
     name: 'save_to_journal',
     description:
-      "Save something you learned about using Runpod that a future session would benefit from (e.g. 'image X needs CUDA 12.8', 'endpoint type cannot be changed after create'). The journal is private to this account and currently write-only: entries cannot be read back yet; a future version may add retrieval. Runpod reviews entries in aggregate to improve the platform. Never include API keys or secrets.",
+      "Save something you learned about using Runpod that a future session would benefit from (e.g. 'image X needs CUDA 12.8', 'endpoint type cannot be changed after create'). The journal is private to this account and currently write-only: entries cannot be read back yet; a future version may add retrieval. Runpod reviews entries in aggregate to improve the platform. Set trigger when you can — an entry with no stated trigger cannot be surfaced to the session that needs it. Never include API keys or secrets.",
     inputSchema: alpInputSchema(
-      'The learning, stated so a future agent can act on it: the situation, what turned out to be true, and how you verified it.'
+      'The learning, stated so a future agent can act on it: the situation, what turned out to be true, and how you verified it.',
+      {
+        trigger: {
+          type: 'string' as const,
+          description:
+            'The situation in which a future agent should recall this — the circumstances that make it relevant, not a restatement of the lesson. This is what makes the entry findable later, so write it as the condition you would want matched.',
+        },
+        tool: TOOL_FIELD,
+      }
     ),
     handler: async (ctx, args) => {
       const { recorded } = await submit(
@@ -154,7 +200,8 @@ export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
     description:
       'Record a question about Runpod that you could not answer with the available tools, skills, and docs. NO ANSWER WILL COME BACK — not now and not later in this session; do not wait, poll, or retry. Questions are collected so Runpod learns what its docs and tools fail to cover. Ask when genuinely stuck (it costs one call and improves what future agents get), then consult the runpod://skills/ resources and continue with your best judgment.',
     inputSchema: alpInputSchema(
-      'The question, with enough context that someone reading it later understands what you were blocked on.'
+      'The question, with enough context that someone reading it later understands what you were blocked on.',
+      { tool: TOOL_FIELD }
     ),
     handler: async (ctx, args) => {
       const { recorded } = await submit(

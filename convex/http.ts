@@ -36,6 +36,15 @@ http.route({
         typeof body.intention === 'string' ? body.intention : undefined,
       modelType:
         typeof body.modelType === 'string' ? body.modelType : undefined,
+      // Triage dimensions. Named explicitly like every other field, which is
+      // also what makes the deploy order forgiving: a sink that predates them
+      // drops them instead of rejecting the write, so submissions keep landing
+      // (without the new columns) until this is redeployed.
+      severity: typeof body.severity === 'string' ? body.severity : undefined,
+      tool: typeof body.tool === 'string' ? body.tool : undefined,
+      workaround:
+        typeof body.workaround === 'string' ? body.workaround : undefined,
+      trigger: typeof body.trigger === 'string' ? body.trigger : undefined,
       identity: String(body.identity ?? ''),
       harness: typeof body.harness === 'string' ? body.harness : undefined,
       harnessSource:

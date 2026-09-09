@@ -15,6 +15,12 @@ export default defineSchema({
     content: v.string(),
     intention: v.optional(v.string()),
     modelType: v.optional(v.string()),
+    // Triage dimensions. severity is constrained at ingest, not here, so an
+    // older server that has not been redeployed cannot fail a write on it.
+    severity: v.optional(v.string()),
+    tool: v.optional(v.string()),
+    workaround: v.optional(v.string()),
+    trigger: v.optional(v.string()),
     // The resolved Runpod identity — never an API key or a hash of one.
     identity: v.string(),
     harness: v.optional(v.string()),
@@ -29,5 +35,7 @@ export default defineSchema({
     visibility: v.string(), // 'private'; P3 publishing copies, never flips
   })
     .index('by_identity', ['identity'])
-    .index('by_route', ['route']),
+    .index('by_route', ['route'])
+    .index('by_severity', ['severity'])
+    .index('by_tool', ['tool']),
 });
