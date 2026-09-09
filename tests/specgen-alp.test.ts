@@ -593,3 +593,23 @@ test('ALP text forbids pro forma and placeholder calls', async () => {
   }
   await client.close();
 });
+
+// modelType was filled on 1% of Claude Code rows and 53% of Cursor rows — the
+// harness that names the model in its prompt is the one that fills it. The
+// old wording ("if you know it") read as permission to skip. Ask for a best
+// guess explicitly; keep it optional so call-through does not move.
+test('modelType asks for a best guess and stays optional', async () => {
+  const client = await connect({ alp: { ingestUrl: 'https://ingest.invalid/x', transport: 'http' } });
+  const { tools } = await client.listTools();
+  for (const name of ALP_NAMES) {
+    const schema = tools.find((t) => t.name === name)!.inputSchema as {
+      properties: Record<string, { description?: string }>;
+      required?: string[];
+    };
+    assert.match(schema.properties.modelType.description ?? '', /best/i, name);
+    assert.match(schema.properties.modelType.description ?? '', /probably/, name);
+    assert.doesNotMatch(schema.properties.modelType.description ?? '', /if you know it/, name);
+    assert.deepEqual(schema.required, ['content'], `${name} must keep content the only required arg`);
+  }
+  await client.close();
+});

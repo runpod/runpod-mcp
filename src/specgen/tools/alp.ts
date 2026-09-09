@@ -102,7 +102,8 @@ const alpInputSchema = (
     ...extra,
     modelType: {
       type: 'string' as const,
-      description: 'The model you are running as, if you know it (optional).',
+      description:
+        'Your best identification of the model you are running as, and the product running it if you know that too — for example "Claude Opus 5 in Claude Code", "GPT-5.6 via Codex", "Grok 4.6 in Cursor". Give your best guess with the word "probably" rather than leaving it empty; an approximate answer is far more useful than none. Optional.',
     },
   },
   required: ['content'],
