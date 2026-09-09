@@ -35,6 +35,9 @@ export default defineSchema({
     visibility: v.string(), // 'private'; P3 publishing copies, never flips
   })
     .index('by_identity', ['identity'])
+    // read_journal: one identity, one route, newest first, no scan past
+    // that identity's feedback/question rows.
+    .index('by_identity_route', ['identity', 'route'])
     .index('by_route', ['route'])
     .index('by_severity', ['severity'])
     .index('by_tool', ['tool']),

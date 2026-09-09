@@ -53,9 +53,10 @@ export const listJournalByIdentity = internalQuery({
     if (!identity) return [];
     const rows = await ctx.db
       .query('submissions')
-      .withIndex('by_identity', (q) => q.eq('identity', identity))
+      .withIndex('by_identity_route', (q) =>
+        q.eq('identity', identity).eq('route', 'journal')
+      )
       .order('desc')
-      .filter((q) => q.eq(q.field('route'), 'journal'))
       .take(
         Number.isFinite(limit)
           ? Math.min(Math.max(Math.trunc(limit), 1), MAX_JOURNAL_READ)
