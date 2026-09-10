@@ -1765,8 +1765,9 @@ describe('config edits land where the client actually reads', () => {
 });
 
 // ============== install wizard: key verification deadline ==============
-// The wizard's own fetch, which does not go through createHttpClient and so
-// needed its own deadline. Interactive code with no other test surface: the
+// The wizard's own fetch carries its own deadline (it predates the shared
+// boundedFetch and runs outside the tool clients). Interactive code with no
+// other test surface: the
 // failure mode is a spinner that never resolves and no way out but ^C.
 describe('verifyApiKey deadline', () => {
   // Bounded: without the deadline this hangs rather than fails, and node:test

@@ -289,3 +289,50 @@ describe('the gate runs on a host that does not pre-parse bodies', () => {
     );
   });
 });
+
+describe('browser MCP preflight', () => {
+  it('allows protocol negotiation and analytics opt-out headers on the wire', async () => {
+    const requested = [
+      'authorization',
+      'content-type',
+      'mcp-session-id',
+      'mcp-protocol-version',
+      'x-runpod-analytics',
+    ];
+    await withServer(
+      async (req, res) => {
+        const vercelRes = Object.assign(res, {
+          status(code: number) {
+            res.statusCode = code;
+            return res;
+          },
+        });
+        await handler(
+          req as Parameters<typeof handler>[0],
+          vercelRes as unknown as Parameters<typeof handler>[1]
+        );
+      },
+      async (baseUrl) => {
+        const response = await fetch(baseUrl, {
+          method: 'OPTIONS',
+          headers: {
+            origin: 'https://browser-client.example',
+            'access-control-request-method': 'POST',
+            'access-control-request-headers': requested.join(', '),
+          },
+        });
+        assert.equal(response.status, 204);
+        assert.equal(response.headers.get('access-control-allow-origin'), '*');
+        const allowed = response.headers
+          .get('access-control-allow-headers')!
+          .toLowerCase()
+          .split(/,\s*/);
+        for (const header of requested)
+          assert.ok(allowed.includes(header), `${header} blocked by CORS`);
+        assert.ok(
+          response.headers.get('access-control-allow-methods')!.includes('POST')
+        );
+      }
+    );
+  });
+});

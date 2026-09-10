@@ -1,0 +1,32 @@
+# Alerts when the vendored OpenAPI spec no longer matches what the production
+# API serves — the signal that `specgen/spec/openapi.yaml` needs a re-vendor
+# and `pnpm generate:tools` a re-run (see specgen/README.md).
+#
+# Runs daily, on demand, and on every PR — any PR shows at a glance whether
+# the vendored spec is current. It reports as its own check (spec-drift), so
+# whether a red result blocks merging is a branch-protection choice: leave it
+# out of the required checks and upstream churn stays visible without
+# stopping unrelated work.
+name: Spec drift
+
+on:
+  schedule:
+    - cron: '17 9 * * *' # daily
+  workflow_dispatch:
+  pull_request:
+
+jobs:
+  spec-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Compare vendored spec against the live production spec
+        run: pnpm spec:check

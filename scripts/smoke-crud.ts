@@ -1,15 +1,14 @@
 // ============== LIVE CRUD SMOKE (dev account) — B6 ==============
-// Boots the stdio MCP server once per requested REST version, runs a real
+// Boots the stdio MCP server, runs a real
 // create → get → delete lifecycle against the dev account, and tears down
 // everything it created. Teardown is part of the test: every created resource is
 // tracked by NAME and deleted in a `finally`, and a fail-closed post-verify asserts
 // no `mcp-smoke-*` resources remain (exit non-zero on any leak).
 //
-// Uses only FREE resources (templates, container-registry-auth) — no pods or
+// Uses only FREE resources (templates, registries) — no pods or
 // network volumes, so it can't incur GPU/storage cost. Not part of `pnpm test`
 // (it hits the live API and needs RUNPOD_API_KEY). Run manually:
-//   RUNPOD_API_KEY=... RUNPOD_REST_V2_API_URL=https://v2-rest.runpod.dev/v2 \
-//     tsx scripts/smoke-crud.ts v1 v2
+//   RUNPOD_API_KEY=... pnpm smoke:crud
 //
 // A unique run prefix keeps test resources identifiable and collision-free; a
 // pre-sweep at start removes orphans from a prior crashed run.
@@ -17,6 +16,13 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { randomUUID } from 'node:crypto';
+
+const ENV_PASSTHROUGH = [
+  'RUNPOD_API_BASE_URL',
+  'RUNPOD_SERVERLESS_API_URL',
+  'RUNPOD_PUBLIC_GRAPHQL_URL',
+  'RUNPOD_AUTHED_GRAPHQL_URL',
+];
 
 const PREFIX = 'mcp-smoke';
 const runId = `${PREFIX}-${randomUUID().slice(0, 8)}`;
@@ -27,26 +33,17 @@ function apiKey(): string {
   return k;
 }
 
-async function connect(version: string): Promise<Client> {
+async function connect(): Promise<Client> {
   // StdioClientTransport REPLACES (does not merge) the child env, so without an
   // explicit passthrough the child boots with prod defaults and a caller-set
-  // RUNPOD_REST_V2_API_URL (e.g. the dev host) silently never reaches it —
-  // making the "v2" smoke actually validate against prod. Forward the relevant
-  // overrides, but keep RUNPOD_REST_VERSION authoritative to THIS run's `version`
-  // (don't let a parent RUNPOD_REST_VERSION override the per-version loop).
+  // host override (e.g. the dev API) silently never reaches it. Forward the
+  // relevant overrides.
   const childEnv: Record<string, string> = {
     RUNPOD_API_KEY: apiKey(),
-    RUNPOD_REST_VERSION: version,
   };
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value === undefined || key === 'RUNPOD_REST_VERSION') continue;
-    if (
-      key.startsWith('RUNPOD_REST') ||
-      key === 'RUNPOD_SERVERLESS_API_URL' ||
-      key === 'RUNPOD_PUBLIC_GRAPHQL_URL'
-    ) {
-      childEnv[key] = value;
-    }
+  for (const key of ENV_PASSTHROUGH) {
+    const value = process.env[key];
+    if (value !== undefined) childEnv[key] = value;
   }
   const transport = new StdioClientTransport({
     command: 'node',
@@ -75,7 +72,15 @@ async function call(
   name: string,
   args: Record<string, unknown>
 ) {
-  return parse(await client.callTool({ name, arguments: args }));
+  // The server reports tool failures as successful protocol results with
+  // isError: true — callTool does not throw on those. Without this check a
+  // failing delete "succeeds" silently and the teardown guarantee is fiction.
+  const result = await client.callTool({ name, arguments: args });
+  const parsed = parse(result);
+  if ((result as { isError?: boolean }).isError) {
+    throw new Error(`${name} failed: ${JSON.stringify(parsed)}`);
+  }
+  return parsed;
 }
 
 // List a tool's FULL result, paging through the MCP cap envelope until
@@ -105,10 +110,15 @@ async function listAll(
       items?: unknown[];
       pagination?: { truncated?: boolean; nextCursor?: string | null };
     };
-    if (!Array.isArray(env.items)) {
-      throw new Error(`${tool} payload missing items[]`);
+    // Curated lists return { items, pagination }; generated lists return the
+    // raw v2 payload keyed by resource ({ registries: [...] }, { templates: [...] }).
+    const list =
+      env.items ??
+      Object.values(payload as Record<string, unknown>).find(Array.isArray);
+    if (!Array.isArray(list)) {
+      throw new Error(`${tool} payload contained no list`);
     }
-    all.push(...(env.items as Array<Record<string, unknown>>));
+    all.push(...(list as Array<Record<string, unknown>>));
     if (env.pagination?.truncated && env.pagination.nextCursor) {
       cursor = env.pagination.nextCursor;
       continue;
@@ -134,33 +144,34 @@ async function sweepByPrefix(
 ): Promise<void> {
   const items = await listAll(client, listTool);
   for (const item of items) {
-    if (typeof item.name === 'string' && item.name.startsWith(PREFIX) && item.id) {
+    if (
+      typeof item.name === 'string' &&
+      item.name.startsWith(PREFIX) &&
+      item.id
+    ) {
       await call(client, deleteTool, { [idArg]: item.id });
     }
   }
 }
 
-async function runVersion(version: string): Promise<void> {
-  console.error(`\n=== CRUD smoke: RUNPOD_REST_VERSION=${version} ===`);
-  const client = await connect(version);
+async function runSmoke(): Promise<void> {
+  console.error('\n=== CRUD smoke ===');
+  const client = await connect();
   const createdRegistry: string[] = [];
   const createdTemplate: string[] = [];
 
   try {
     // Pre-sweep orphans from a prior crashed run.
-    await sweepByPrefix(
-      client,
-      'list-container-registry-auths',
-      'delete-container-registry-auth',
-      'containerRegistryAuthId'
-    );
-    await sweepByPrefix(client, 'list-templates', 'delete-template', 'templateId');
+    await sweepByPrefix(client, 'list-registries', 'delete-registry', 'id');
+    await sweepByPrefix(client, 'list-templates', 'delete-template', 'id');
 
     // --- container registry auth: create → delete ---
-    const reg = await call(client, 'create-container-registry-auth', {
-      name: `${runId}-reg`,
-      username: 'smoke',
-      password: 'smoke-pass',
+    const reg = await call(client, 'create-registry', {
+      body: {
+        name: `${runId}-reg`,
+        username: 'smoke',
+        password: 'smoke-pass',
+      },
     });
     const regId = idOf(reg);
     if (!regId)
@@ -170,10 +181,11 @@ async function runVersion(version: string): Promise<void> {
 
     // --- template: create → get → delete ---
     const tpl = await call(client, 'create-template', {
-      name: `${runId}-tpl`,
-      imageName: 'runpod/pytorch:1.0.2',
-      isServerless: false,
-      containerDiskInGb: 10,
+      body: {
+        name: `${runId}-tpl`,
+        image: 'runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04',
+        disk: 10,
+      },
     });
     const tplId = idOf(tpl);
     if (!tplId)
@@ -181,7 +193,7 @@ async function runVersion(version: string): Promise<void> {
     createdTemplate.push(tplId);
     console.error(`  ✓ created template ${tplId}`);
 
-    const got = await call(client, 'get-template', { templateId: tplId });
+    const got = await call(client, 'get-template', { id: tplId });
     if (idOf(got) !== tplId)
       throw new Error('get-template did not round-trip the id');
     console.error('  ✓ get-template round-trip ok');
@@ -189,16 +201,14 @@ async function runVersion(version: string): Promise<void> {
     // Teardown — best-effort, never let one failure strand the rest.
     for (const id of createdTemplate) {
       try {
-        await call(client, 'delete-template', { templateId: id });
+        await call(client, 'delete-template', { id });
       } catch (e) {
         console.error(`  ! template ${id} delete failed: ${String(e)}`);
       }
     }
     for (const id of createdRegistry) {
       try {
-        await call(client, 'delete-container-registry-auth', {
-          containerRegistryAuthId: id,
-        });
+        await call(client, 'delete-registry', { id });
       } catch (e) {
         console.error(`  ! registry ${id} delete failed: ${String(e)}`);
       }
@@ -209,11 +219,11 @@ async function runVersion(version: string): Promise<void> {
     let leaked: Array<Record<string, unknown>> = [];
     let verifyError: unknown;
     try {
-      const regItems = await listAll(client, 'list-container-registry-auths');
+      const regItems = await listAll(client, 'list-registries');
       const tplItems = await listAll(client, 'list-templates');
       leaked = [...regItems, ...tplItems].filter(
         (x) =>
-          typeof x.name === 'string' && (x.name as string).startsWith(runId)
+          typeof x.name === 'string' && (x.name as string).startsWith(PREFIX)
       );
     } catch (e) {
       verifyError = e;
@@ -231,7 +241,7 @@ async function runVersion(version: string): Promise<void> {
     }
     if (leaked.length > 0) {
       throw new Error(
-        `LEAK: ${leaked.length} ${runId}-* resource(s) remain after teardown`
+        `LEAK: ${leaked.length} ${PREFIX}-* resource(s) remain after teardown`
       );
     }
     console.error('  ✓ teardown verified clean');
@@ -239,20 +249,8 @@ async function runVersion(version: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  // Reject unknown args rather than silently dropping them — a typo like `V2`
-  // or `v2 ` must NOT exit 0 having run only the default (false green on a
-  // gating script).
-  const args = process.argv.slice(2);
-  const bad = args.filter((v) => v !== 'v1' && v !== 'v2');
-  if (bad.length) {
-    console.error(`Unknown version arg(s): ${bad.join(', ')} (expected v1|v2)`);
-    process.exit(1);
-  }
-  const versions = args.length ? args : ['v1'];
-  for (const v of versions) {
-    await runVersion(v);
-  }
-  console.error('\nAll CRUD smokes passed.');
+  await runSmoke();
+  console.error('\nCRUD smoke passed.');
 }
 
 main().catch((error) => {

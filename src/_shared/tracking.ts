@@ -30,7 +30,11 @@ export function buildTrackingHeaders(
 ): Record<string, string> {
   const name = sanitizeUaToken(input.clientName || 'unknown');
   const version = sanitizeUaToken(input.clientVersion || 'unknown');
-  const userAgent = `runpod-mcp-server/${input.serverVersion} (caller=mcp; client=${name}; client_version=${version}; transport=${input.transport})`;
+  // `surface=v2` is the durable generation marker for warehouse attribution
+  // (the spec-generated surface; v1 was the hand-written tool set). Bump it
+  // with the surface, independently of the npm package version. Keep in sync
+  // with SURFACE_VERSION in src/specgen/analytics.ts.
+  const userAgent = `runpod-mcp-server/${input.serverVersion} (caller=mcp; surface=v2; client=${name}; client_version=${version}; transport=${input.transport})`;
   return {
     'User-Agent': userAgent,
     'X-Runpod-Session-Id': input.sessionId,

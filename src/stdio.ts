@@ -1,13 +1,7 @@
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import fetch from 'node-fetch';
-import { createServer } from './server.js';
-import { registerTools } from './tools.js';
-import {
-  createV2Prober,
-  restV2Base,
-  wantsAutoProbe,
-  type ProbeFetch,
-} from './_shared/backend.js';
+import { SERVER_VERSION } from './server.js';
+import { createSpecgenServer } from './specgen/server.js';
+import { createToolContext } from './specgen/context.js';
 
 // Detect the install wizard subcommand (`add` / `remove`). In this mode we run
 // the interactive installer instead of starting the stdio server, and the API
@@ -17,27 +11,19 @@ const subcommand = process.argv[2];
 const isWizardMode = WIZARD_SUBCOMMANDS.includes(subcommand);
 
 async function main(apiKey: string): Promise<void> {
-  // `auto` mode (stdio only): probe v2 once at startup and pass the resolved
-  // verdict to the tools. Explicit v1/v2 needs no probe.
-  let v2Available: boolean | undefined;
-  if (wantsAutoProbe(process.env)) {
-    const probe = createV2Prober({
-      // node-fetch's signature is wider than the `{ status }` the prober needs.
-      fetch: fetch as unknown as ProbeFetch,
-      baseUrl: restV2Base(process.env),
+  // One surface everywhere: stdio serves the same spec-generated tool set
+  // and skill resources the hosted path serves (see specgen/DESIGN.md).
+  // stdio keeps the 5-minute wait budgets — no gateway reaper applies here.
+  // ALP write tools are hosted-only by decision (docs/agent-learning-protocol.md):
+  // the stdio path never registers them, so local users cannot enable them.
+  const server = createSpecgenServer(
+    createToolContext({
       apiKey,
-      // Surface a transient/timeout fallback to v1 — otherwise `auto` silently
-      // pins the session to v1 with no signal (stderr is the MCP log channel).
-      warn: (message) => console.error(`[runpod-mcp] ${message}`),
-    });
-    v2Available = await probe();
-  }
-
-  const server = createServer();
-  registerTools(server, { apiKey, transport: 'stdio' }, { v2Available });
-
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+      tracking: { transport: 'stdio', serverVersion: SERVER_VERSION },
+    }),
+    SERVER_VERSION
+  );
+  await server.connect(new StdioServerTransport());
 }
 
 if (isWizardMode) {

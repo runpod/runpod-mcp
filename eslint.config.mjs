@@ -26,7 +26,7 @@ export default [
     },
   },
   {
-    ignores: ['dist/**', 'build/**', 'node_modules/**', '*.js', '*.mjs'],
+    ignores: ['dist/**', 'build/**', 'node_modules/**', 'convex/_generated/**', '*.js', '*.mjs'],
   },
 ];
 

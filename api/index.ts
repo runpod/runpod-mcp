@@ -2,7 +2,9 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import fetch from 'node-fetch';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { handleMcpRequest } from '../src/http.js';
+import { getBaseUrl, handleMcpRequest } from '../src/http.js';
+import { handleAlpSubmit } from '../src/alp/ingest.js';
+import { handleAlpJournalRead } from '../src/alp/read.js';
 import {
   isLoopbackHost,
   validatePkceAuthorization,
@@ -27,17 +29,6 @@ const PACKAGE_VERSION: string = (() => {
 // Verbose logging gate. The authorize/token flows log request ids (which are
 // live, single-use auth codes) only when MCP_VERBOSE_LOGS=true.
 const VERBOSE = process.env.MCP_VERBOSE_LOGS === 'true';
-
-function getBaseUrl(req: VercelRequest): string {
-  const proto =
-    (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0] ??
-    'https';
-  const host = req.headers.host;
-  if (!host) {
-    throw new Error('Missing Host header');
-  }
-  return `${proto}://${host}`;
-}
 
 /**
  * Runpod GraphQL endpoint used by the OAuth authorize flow (the flash backend).
@@ -98,8 +89,8 @@ function sleep(ms: number): Promise<void> {
 // vercel.json's 60s maxDuration for api/index.ts. A flash backend that accepts
 // the connection and goes quiet would otherwise hang the OAuth handshake until
 // the platform reaps it — a blank 504 on the one flow the user cannot retry
-// their way out of, since they have no credential yet. Tool requests get the
-// same treatment through createHttpClient (src/_shared/http.ts); these calls
+// their way out of, since they have no credential yet. Tool requests carry
+// their own deadlines (src/specgen/context.ts and clients/); these calls
 // build their own request, so they are bounded here.
 // Exported so the parsing test asserts the real fallback, not a copy of it.
 export const DEFAULT_FLASH_GRAPHQL_TIMEOUT_MS = 10_000;
@@ -142,7 +133,7 @@ export function getFlashTimeoutMs(): number {
 }
 
 // Deadline for one /token poll: the per-call deadline, never past what is left
-// of the whole poll. The sibling of streamPollTimeoutMs in src/tools/jobs.ts.
+// of the whole poll. The sibling of streamPollTimeoutMs in src/specgen/tools/jobs.ts.
 // No floor is needed — the loop below will not start a read at all once the
 // budget is down to MIN_TOKEN_POLL_REMAINDER_MS.
 function tokenPollDeadlineMs(remainingMs: number): number {
@@ -234,7 +225,7 @@ async function createFlashAuthRequest(codeChallenge: string): Promise<string> {
   const parts: string[] = [];
   const apiKeyName = getApiKeyName();
   if (apiKeyName) parts.push(`apiKeyName: ${JSON.stringify(apiKeyName)}`);
-  // These fields require the DR-1398 backend schema to be deployed.
+  // These fields require the PKCE-aware flash auth backend schema.
   parts.push(`codeChallenge: ${JSON.stringify(codeChallenge)}`);
   parts.push('codeChallengeMethod: "S256"');
   const args = parts.length ? `(${parts.join(', ')})` : '';
@@ -288,11 +279,19 @@ function encodeBody(body: VercelRequest['body']): string {
   return '';
 }
 
-// The discovery documents are static per host and fetched by MCP clients on
-// every auth flow. s-maxage serves repeat fetches from the CDN instead of the
-// function; stale-while-revalidate revalidates expired copies in the
-// background; max-age=0 keeps clients uncached so a deploy that changes the
-// advertised endpoints propagates within the hour.
+// Both discovery documents are derived purely from the request host and are
+// fetched by MCP clients on every auth flow, so without this every fetch is a
+// function invocation (verified before the change: x-vercel-cache: MISS on
+// both). Introduced for the v1 surface in #86.
+//   s-maxage=3600            — the CDN serves repeat fetches from the edge.
+//   stale-while-revalidate   — an expired copy revalidates in the background
+//                              instead of serializing invocations behind it.
+//   max-age=0                — clients hold no copy, so changing an advertised
+//                              endpoint propagates once the edge copy expires.
+// Safe to share across callers because these responses contain nothing
+// per-caller and CORS here is a static `*`, not a reflected Origin — so no
+// Vary is needed and no caller's response can be replayed to another. Never
+// put this on the MCP endpoint itself, whose responses are per-caller.
 const DISCOVERY_CACHE_CONTROL =
   'public, max-age=0, s-maxage=3600, stale-while-revalidate=86400';
 
@@ -650,7 +649,7 @@ export default async function handler(
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
     res.setHeader(
       'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, Mcp-Session-Id'
+      'Content-Type, Authorization, Mcp-Session-Id, MCP-Protocol-Version, X-Runpod-Analytics'
     );
     res.status(204).end();
     return;
@@ -686,6 +685,26 @@ export default async function handler(
 
   if (req.method === 'GET' && pathname === '/authorize') {
     await handleAuthorize(req, res);
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/alp/submit') {
+    await handleAlpSubmit(
+      req as unknown as import('node:http').IncomingMessage & {
+        body?: unknown;
+      },
+      res as unknown as import('node:http').ServerResponse
+    );
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/api/alp/journal') {
+    await handleAlpJournalRead(
+      req as unknown as import('node:http').IncomingMessage & {
+        body?: unknown;
+      },
+      res as unknown as import('node:http').ServerResponse
+    );
     return;
   }
 

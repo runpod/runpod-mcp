@@ -44,21 +44,18 @@ async function createTransport(mode: Mode) {
 
   const target = process.argv[3] ?? 'dist/stdio.mjs';
 
-  // Forward the API key AND the REST routing env to the spawned server, so
-  // `smoke:stdio` can target dev/v2 the same way the HTTP path does. Without
-  // this passthrough the child booted with prod-v1 defaults regardless of the
-  // caller's env. Pass through every RUNPOD_REST* var (version, per-resource
-  // overrides, v1/v2 base URLs) plus the serverless + public-GraphQL bases.
+  // StdioClientTransport REPLACES (does not merge) the child env: forward the
+  // API key plus every host override the specgen surface reads
+  // (_shared/hosts.ts) — miss one and "smoke against dev" silently tests prod.
   const childEnv: Record<string, string> = { RUNPOD_API_KEY: apiKey };
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value === undefined) continue;
-    if (
-      key.startsWith('RUNPOD_REST') ||
-      key === 'RUNPOD_SERVERLESS_API_URL' ||
-      key === 'RUNPOD_PUBLIC_GRAPHQL_URL'
-    ) {
-      childEnv[key] = value;
-    }
+  for (const key of [
+    'RUNPOD_API_BASE_URL',
+    'RUNPOD_SERVERLESS_API_URL',
+    'RUNPOD_PUBLIC_GRAPHQL_URL',
+    'RUNPOD_AUTHED_GRAPHQL_URL',
+  ]) {
+    const value = process.env[key];
+    if (value !== undefined) childEnv[key] = value;
   }
 
   return new StdioClientTransport({
