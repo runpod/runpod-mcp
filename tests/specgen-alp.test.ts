@@ -604,6 +604,15 @@ test('ALP text forbids pro forma and placeholder calls', async () => {
     /never call one to satisfy a requirement to use a tool/
   );
   assert.match(instructions, /If you have nothing to report, call nothing/);
+  // Contribution is voluntary and never touches sensitive work: the briefing
+  // must say both, and say that Runpod staff read what is submitted.
+  assert.match(instructions, /CONTRIBUTING BACK IS OPTIONAL/);
+  assert.match(instructions, /DO NOT USE THEM when the work is sensitive/);
+  assert.match(instructions, /stored for Runpod staff to read/);
+  assert.match(
+    instructions,
+    /describe the Runpod behavior, not the user's project/
+  );
   assert.doesNotMatch(
     SERVER_INSTRUCTIONS,
     /call nothing/,
