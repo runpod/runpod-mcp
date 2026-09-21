@@ -5,9 +5,11 @@
 import { restError } from '../clients/rest-result.js';
 import type { ToolContext } from '../context.js';
 import type { CuratedTool } from '../types.js';
+import { readOnly } from './annotations.js';
 
 export const listTemplates: CuratedTool = {
   name: 'list-templates',
+  annotations: readOnly,
   description:
     'List templates visible to the account. Returns id, name, image, and ' +
     'serverless flag per template; use get-template for full detail.',

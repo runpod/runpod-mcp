@@ -6,6 +6,7 @@
 import type { CuratedTool } from '../types.js';
 import { listPaginationProperties, capList } from '../pagination.js';
 import { ok, runTool } from './util.js';
+import { readOnly } from './annotations.js';
 
 interface PublicEndpointConfig {
   id: string;
@@ -49,6 +50,7 @@ function parseMetadata(
 
 export const listPublicEndpoints: CuratedTool = {
   name: 'list-public-endpoints',
+  annotations: readOnly,
   description:
     'List Runpod Public Endpoints — managed, pay-per-use model APIs (text, image, video, audio) that require no deployment. Public catalog, no auth required. Each result includes the endpointId to call with run-endpoint/runsync-endpoint (or via https://api.runpod.ai/v2/{endpointId}), the model name, modality, owner, and pricing. Only live endpoints are returned by default; set includeOffline:true to also list ones that are not currently live.',
   inputSchema: {

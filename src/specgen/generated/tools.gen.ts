@@ -7,6 +7,15 @@ export interface GeneratedToolParam {
   explode?: false;
 }
 
+/** MCP tool annotations (tools/list `annotations`): behavioral hints hosts use
+ *  to decide what needs human approval. */
+export interface ToolAnnotations {
+  readOnlyHint: boolean;
+  destructiveHint: boolean;
+  idempotentHint: boolean;
+  openWorldHint: boolean;
+}
+
 export interface GeneratedTool {
   name: string;
   operationId: string;
@@ -15,6 +24,7 @@ export interface GeneratedTool {
   path: string;
   params: GeneratedToolParam[];
   hasBody: boolean;
+  annotations: ToolAnnotations;
   inputSchema: Record<string, unknown>;
 }
 
@@ -28,6 +38,12 @@ export const generatedTools: GeneratedTool[] = [
     path: '/v2/clusters',
     params: [],
     hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -272,6 +288,12 @@ export const generatedTools: GeneratedTool[] = [
     path: '/v2/registries/delegations',
     params: [],
     hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -312,6 +334,12 @@ export const generatedTools: GeneratedTool[] = [
     path: '/v2/serverless',
     params: [],
     hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -740,6 +768,12 @@ export const generatedTools: GeneratedTool[] = [
     path: '/v2/network-volumes',
     params: [],
     hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -801,6 +835,12 @@ export const generatedTools: GeneratedTool[] = [
     path: '/v2/pods',
     params: [],
     hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -1153,6 +1193,12 @@ export const generatedTools: GeneratedTool[] = [
     path: '/v2/registries',
     params: [],
     hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -1252,6 +1298,12 @@ export const generatedTools: GeneratedTool[] = [
     path: '/v2/templates',
     params: [],
     hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -1468,6 +1520,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -1493,6 +1551,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -1518,6 +1582,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -1543,6 +1613,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -1568,6 +1644,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -1617,6 +1699,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -1641,6 +1729,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -1680,6 +1774,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -1747,6 +1847,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -1787,6 +1893,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -1816,6 +1928,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -1878,6 +1996,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -1973,6 +2097,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -1997,6 +2127,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -2022,6 +2158,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -2066,6 +2208,12 @@ export const generatedTools: GeneratedTool[] = [
     path: '/v2/account/ssh-keys',
     params: [],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {},
@@ -2085,6 +2233,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -2121,6 +2275,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -2195,6 +2355,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -2257,6 +2423,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -2277,6 +2449,12 @@ export const generatedTools: GeneratedTool[] = [
     path: '/v2/clusters',
     params: [],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {},
@@ -2306,6 +2484,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -2384,6 +2568,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -2485,6 +2675,12 @@ export const generatedTools: GeneratedTool[] = [
     path: '/v2/registries/delegations',
     params: [],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {},
@@ -2516,6 +2712,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -2582,6 +2784,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -2627,6 +2835,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -2664,6 +2878,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -2717,6 +2937,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -2825,6 +3051,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -2882,6 +3114,12 @@ export const generatedTools: GeneratedTool[] = [
     path: '/v2/network-volumes',
     params: [],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {},
@@ -2917,6 +3155,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -2987,6 +3231,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -3025,6 +3275,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -3047,6 +3303,12 @@ export const generatedTools: GeneratedTool[] = [
     path: '/v2/registries',
     params: [],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {},
@@ -3107,6 +3369,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -3169,6 +3437,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -3212,6 +3486,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -3236,6 +3516,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -3280,6 +3566,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -3651,6 +3943,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -3704,6 +4002,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -3966,6 +4270,12 @@ export const generatedTools: GeneratedTool[] = [
     path: '/v2/account/ssh-keys',
     params: [],
     hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -4013,6 +4323,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
