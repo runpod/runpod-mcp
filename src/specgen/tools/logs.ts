@@ -9,6 +9,7 @@ import { sdkBase } from '../../_shared/hosts.js';
 import type { CuratedTool } from '../types.js';
 import { collectLogSnapshot, type LogSnapshotParams } from '../clients/sse.js';
 import { ok, runTool } from './util.js';
+import { readOnly } from './annotations.js';
 
 const logStreamProperties = {
   source: {
@@ -71,6 +72,7 @@ function logParams(args: Record<string, unknown>): LogSnapshotParams {
 
 export const streamPodLogs: CuratedTool = {
   name: 'stream-pod-logs',
+  annotations: readOnly,
   description:
     "Read a bounded snapshot of a Pod's logs (container and/or system source). Holds the live stream open for maxWaitMs and returns the parsed log lines; `truncated: true` means the byte cap cut the output. Use `since` to resume from a timestamp.",
   inputSchema: {
@@ -95,6 +97,7 @@ export const streamPodLogs: CuratedTool = {
 
 export const streamWorkerLogs: CuratedTool = {
   name: 'stream-worker-logs',
+  annotations: readOnly,
   description:
     "Read a bounded snapshot of a Serverless worker's logs (container and/or system source). Holds the live stream open for maxWaitMs and returns the parsed log lines; `truncated: true` means the byte cap cut the output. Get worker IDs from list-endpoint-workers. Use this whenever a job stays IN_QUEUE while workers exist, whatever status they report — a crash-looping container often still shows RUNNING or THROTTLED with unhealthy 0, so these logs, not the worker status, are what identify a crash loop.",
   inputSchema: {

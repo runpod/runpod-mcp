@@ -10,9 +10,11 @@ import {
   serverPageQuery,
   serverPagination,
 } from '../pagination.js';
+import { readOnly } from './annotations.js';
 
 export const listTemplates: CuratedTool = {
   name: 'list-templates',
+  annotations: readOnly,
   description:
     'List templates visible to the account. Returns id, name, image, and ' +
     'serverless flag per template; use get-template for full detail. ' +

@@ -2,6 +2,7 @@
 import type {
   GeneratedTool,
   GeneratedToolParam,
+  ToolAnnotations,
 } from '../../src/specgen/generated/tools.gen.js';
 
 export interface GeneratorConfig {
@@ -211,6 +212,21 @@ function operationParameters(
   return [...parameters.values()];
 }
 
+// MCP tool annotations, derived from the HTTP method the tool wraps so they
+// cannot drift from the surface: hosts read these to decide what a human has
+// to approve. Every operation reaches the Runpod API, so openWorldHint is
+// always true. Writes that create or update (POST/PATCH) are additive, so
+// only DELETE is marked destructive; a repeated DELETE or PUT lands on the
+// same state, so those are idempotent — as does any GET.
+function annotationsFor(method: string): ToolAnnotations {
+  return {
+    readOnlyHint: method === 'GET',
+    destructiveHint: method === 'DELETE',
+    idempotentHint: method === 'GET' || method === 'DELETE' || method === 'PUT',
+    openWorldHint: true,
+  };
+}
+
 function buildTool(
   path: string,
   method: string,
@@ -281,6 +297,7 @@ function buildTool(
     path,
     params,
     hasBody,
+    annotations: annotationsFor(method.toUpperCase()),
     inputSchema: {
       type: 'object',
       properties,

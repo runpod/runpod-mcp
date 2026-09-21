@@ -4,6 +4,7 @@ import type { components } from '@runpod/typescript-api-sdk';
 import type { CuratedTool } from '../types.js';
 import { restError } from '../clients/rest-result.js';
 import { badRequest, ok, runTool } from './util.js';
+import { idempotentWrite } from './annotations.js';
 
 type GpuSelection = { pools: string[]; excludedTypes: string[] };
 const CUDA_VERSION = /^\d+\.\d+$/;
@@ -59,6 +60,7 @@ function formatGpuIds(gpu: {
 
 export const setEndpointGpus: CuratedTool = {
   name: 'set-endpoint-gpus',
+  annotations: idempotentWrite,
   description:
     "Set which GPUs a Serverless endpoint's workers run on — including pinning specific GPU SKUs. Provide either a raw gpuIds string, or pools plus optional excludeGpuTypeIds (GPU type ids from list-gpu-types) and the exclusion string is built for you: a pool allows every SKU in it, and excluding all but one SKU pins that SKU exactly. Updates only GPU settings through REST v2, preserving other endpoint settings. create-endpoint/update-endpoint also support gpu.excludedTypes.",
   inputSchema: {

@@ -140,24 +140,9 @@ Endpoints are image-based — pass an image and a GPU pool (a `pool` value from 
 
 See [`docs/configuration.md`](docs/configuration.md) for host overrides, private image pull (registry credentials vs ECR delegation), and large-output handling.
 
-## The tool surface
+## Upgrading from 3.x
 
-Hosted and local serve the same surface, with one deliberate exception: **68
-tools** (51 generated from the v2 OpenAPI spec + 17 curated) on both, plus the
-four hosted-only ALP tools — `report_feedback`, `save_to_journal`,
-`ask_question`, and `read_journal`, which returns the calling account's own
-journal and nobody else's — for **72 hosted**. Those four need storage credentials the
-npm package cannot hold, so local stdio never registers them and they are
-simply absent from `tools/list` (see
-[`docs/agent-learning-protocol.md`](docs/agent-learning-protocol.md)). Both
-transports also serve the ten Runpod task playbooks as MCP resources under
-`runpod://skills/`. New API endpoints become
-tools by regeneration, not by hand-writing code. Start with
-[specgen/DESIGN.md](specgen/DESIGN.md) for a progressive walkthrough, and
-[specgen/README.md](specgen/README.md) for the regeneration workflow and
-drift gates.
-
-Upgrading from 3.x: eight tools follow their spec operationIds (e.g.
+Eight tools follow their spec operationIds (e.g.
 `create-container-registry-auth` → `create-registry`, `get-billing` →
 `list-billing`) and `start-pod`/`stop-pod`/`restart-pod` fold into
 `pod-action` with an `action` argument. The full old→new map is
@@ -169,7 +154,7 @@ v2-only; `RUNPOD_REST_VERSION` and the v1 fallback are retired.
 This server acts with the full permissions of the supplied API key.
 
 - Never share your API key.
-- Be deliberate with destructive tools.
+- Be deliberate with destructive tools. Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) derived from the operation it wraps, so a host can auto-approve reads and gate `delete-pod` or `purge-endpoint-queue` on a human.
 - Each request authenticates with its own caller-supplied token, which is forwarded to the Runpod API and **never persisted server-side**. The server never holds a credential of its own and never shares one across users.
 
 ## Local development
@@ -195,6 +180,8 @@ pnpm lint
 pnpm test    # offline unit suite — no network or API key required
 pnpm build
 ```
+
+Tools are generated from the vendored v2 OpenAPI spec rather than hand-written: see [specgen/DESIGN.md](specgen/DESIGN.md) for the walkthrough and [specgen/README.md](specgen/README.md) for the regeneration workflow and drift gates.
 
 This project uses [changesets](https://github.com/changesets/changesets) for versioning and npm publishing; every PR with user-facing changes needs a changeset. See `CLAUDE.md` and `docs/context.md` for full contributor guidance, architecture, and the test suite.
 

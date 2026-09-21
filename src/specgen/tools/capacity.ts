@@ -9,6 +9,7 @@ import type { ToolContext } from '../context.js';
 import type { CuratedTool } from '../types.js';
 import { listPaginationProperties, capList } from '../pagination.js';
 import { badRequest, ok, runTool } from './util.js';
+import { readOnly } from './annotations.js';
 
 const CUDA_VERSION_REGEX = /^\d{1,2}\.\d{1,2}$/;
 const MAX_PROBE_VERSIONS = 12;
@@ -98,6 +99,7 @@ function rankByStock<T>(
 
 export const getCapacity: CuratedTool = {
   name: 'get-capacity',
+  annotations: readOnly,
   description:
     "GPU capacity across host CUDA versions, as a matrix. Use this to choose an endpoint's allowedCudaVersions/minCudaVersion (or diagnose/widen a capacity-starved one) and to distinguish capacity problems from compatibility problems. Default mode is one call returning, per GPU type, overall stock plus AVAILABLE/UNAVAILABLE per host-reported CUDA version. Pass cudaVersions to deep-probe instead: one stock lookup per listed version, returning graded stock (High/Medium/Low/Out) and the lowest on-demand price per version; a probe that fails transiently reports a per-version error instead of failing the call. Nothing is hidden by default — set includeUnavailable:false to drop GPUs with no stock on any listed version. Credential-free public catalog data. Stock is live, so page cursors can shift between calls.",
   inputSchema: {

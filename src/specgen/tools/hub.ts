@@ -7,6 +7,7 @@ import type { CuratedTool } from '../types.js';
 import { listPaginationProperties, capList } from '../pagination.js';
 import type { ToolResult } from '../dispatch.js';
 import { badRequest, ok, runTool } from './util.js';
+import { readOnly, write } from './annotations.js';
 
 interface HubBuild {
   id: string;
@@ -197,6 +198,7 @@ function randomSuffix(): string {
 
 export const listHubRepos: CuratedTool = {
   name: 'list-hub-repos',
+  annotations: readOnly,
   description:
     'List repos published to the Runpod Hub (prebuilt Serverless workers and Pod templates, e.g. vLLM, ComfyUI). Public catalog — no auth required. Each result includes the currently listed release with its hubReleaseId and prebuilt image name. Results are sorted by deploy count (most popular first). Set includeConfig:true to also return the release config (hardware requirements and environment-variable schema) — it is large, so prefer requesting it for a single repo via the repoOwner/searchTerm filters.',
   inputSchema: {
@@ -322,6 +324,7 @@ export const listHubRepos: CuratedTool = {
 
 export const deployHubRepo: CuratedTool = {
   name: 'deploy-hub-repo',
+  annotations: write,
   description:
     "Deploy a Runpod Hub repo's listed release as a new Serverless endpoint (the same as clicking Deploy on the Hub). Identify the repo by `repo` (\"owner/name\" from list-hub-repos) or by `hubReleaseId`. The release supplies the prebuilt image, container disk, CUDA constraints, and env-var defaults; pass `env` to override or fill in values (required keys without a default must be provided — check list-hub-repos with includeConfig:true for the schema). GPU selection comes from the release config when it specifies one; otherwise pass gpuIds (GPU pool names, e.g. 'ADA_24' or 'ADA_80_PRO,AMPERE_80'). Uses the authenticated GraphQL API (no REST home for Hub deploys yet).",
   inputSchema: {

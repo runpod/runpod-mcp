@@ -150,18 +150,28 @@ export function createSpecgenServer(
     }
   };
 
+  // annotations travel with every tool: hosts use readOnlyHint and
+  // destructiveHint to decide what a human has to approve, so dropping them
+  // here would make delete-pod indistinguishable from list-pods. Generated
+  // tools derive theirs from the HTTP method; curated ones declare theirs.
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
-      ...servedCuratedTools.map(({ name, description, inputSchema }) => ({
-        name,
-        description,
-        inputSchema,
-      })),
-      ...generatedTools.map(({ name, description, inputSchema }) => ({
-        name,
-        description,
-        inputSchema,
-      })),
+      ...servedCuratedTools.map(
+        ({ name, description, inputSchema, annotations }) => ({
+          name,
+          description,
+          inputSchema,
+          annotations,
+        })
+      ),
+      ...generatedTools.map(
+        ({ name, description, inputSchema, annotations }) => ({
+          name,
+          description,
+          inputSchema,
+          annotations,
+        })
+      ),
     ],
   }));
 

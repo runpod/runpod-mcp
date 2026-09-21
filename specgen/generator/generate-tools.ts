@@ -32,6 +32,15 @@ export interface GeneratedToolParam {
   explode?: false;
 }
 
+/** MCP tool annotations (tools/list \`annotations\`): behavioral hints hosts use
+ *  to decide what needs human approval. */
+export interface ToolAnnotations {
+  readOnlyHint: boolean;
+  destructiveHint: boolean;
+  idempotentHint: boolean;
+  openWorldHint: boolean;
+}
+
 export interface GeneratedTool {
   name: string;
   operationId: string;
@@ -40,6 +49,7 @@ export interface GeneratedTool {
   path: string;
   params: GeneratedToolParam[];
   hasBody: boolean;
+  annotations: ToolAnnotations;
   inputSchema: Record<string, unknown>;
 }
 
