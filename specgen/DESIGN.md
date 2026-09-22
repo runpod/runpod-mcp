@@ -180,6 +180,48 @@ env var — the vendored file records its source in its header:
 While dev-vendored, the drift check against production goes red — that
 red is correct (you are deliberately drifted), not a bug.
 
+### The other half of the update loop: the SDK
+
+`pnpm spec:pull && pnpm generate:tools` only finishes half the job, because
+two repositories generate from the same
+`https://api.runpod.io/v2/openapi.json` and they generate different things.
+
+This repo generates **tool definitions**: `src/specgen/generated/tools.gen.ts`
+is an array of plain objects — tool name, description written for a language
+model, JSON Schema for the arguments, and the method and path to call. It is
+data, read at runtime to answer `tools/list` and to route a call.
+
+[`@runpod/typescript-api-sdk`](https://github.com/runpod/typescript-api-sdk)
+generates **types**: its `src/generated/schema.ts` is TypeScript declarations
+and no runtime code, which is what makes `ctx.sdk.GET('/v2/pods')` know the
+path exists, which query parameters it takes, and what comes back.
+
+The two are stacked. Our generated tools say what to call; the call itself
+goes out through the SDK, pinned as a devDependency and bundled into the
+build. So a new upstream parameter reaches the two halves of our surface at
+different times:
+
+```
+GENERATED TOOLS (src/specgen/generated/)
+  pnpm spec:pull + pnpm generate:tools  →  have it immediately.
+  Dispatch reads the method and path from the spec, not from SDK types.
+
+CURATED TOOLS (src/specgen/tools/)
+  Hand-written handlers calling ctx.sdk.GET(...). They stay on the old
+  contract until the SDK regenerates AND publishes AND we bump the pin.
+```
+
+This is not hypothetical: when the v2 API added cursor pagination,
+`list-pods` (generated) had `cursor`/`limit` the moment the spec was
+re-vendored, while `list-endpoints` and `list-templates` (curated, because
+they trim fat fields) could not pass those parameters at all — the pinned
+SDK's types did not know they existed.
+
+So when a spec resync touches an endpoint a curated tool serves, the order is:
+regenerate and publish the SDK first, bump the pin here, then teach the
+curated handler the new parameter. Check `src/specgen/tools/` for a handler
+on the affected path before assuming a re-vendor was enough.
+
 ---
 
 ## Level 5: the skills
