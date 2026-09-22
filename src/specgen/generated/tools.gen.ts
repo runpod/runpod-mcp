@@ -1247,6 +1247,12 @@ export const generatedTools: GeneratedTool[] = [
     path: '/v2/account/secrets',
     params: [],
     hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -1674,6 +1680,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -2188,6 +2200,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -3328,6 +3346,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -4223,6 +4247,12 @@ export const generatedTools: GeneratedTool[] = [
       },
     ],
     hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     inputSchema: {
       type: 'object',
       properties: {
