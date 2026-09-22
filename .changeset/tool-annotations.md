@@ -1,5 +1,5 @@
 ---
-'@runpod/mcp-server': minor
+'@runpod/mcp-server': patch
 ---
 
 Serve MCP tool annotations. Every tool now advertises `readOnlyHint`,

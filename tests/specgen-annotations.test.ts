@@ -72,6 +72,7 @@ test('generated annotations follow the HTTP method they wrap', () => {
       'delete-network-volume',
       'delete-pod',
       'delete-registry',
+      'delete-secret',
       'delete-template',
       'revoke-delegation',
     ]
