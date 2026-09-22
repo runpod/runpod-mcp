@@ -1,5 +1,5 @@
 # Vendored from https://api.runpod.io/v2/openapi.json
-# on 2026-09-02 by scripts/pull-spec.ts (pnpm spec:pull).
+# on 2026-09-22 by scripts/pull-spec.ts (pnpm spec:pull).
 #
 # PRODUCTION is the default source. The dev host (v2-rest.runpod.dev)
 # serves a different generation with different paths — vendor it only
@@ -241,6 +241,39 @@ components:
         type: integer
         minimum: 1
       example: 30
+    PaginationCursor:
+      name: cursor
+      in: query
+      required: false
+      description: >
+        Opaque resume cursor — pass the previous response's
+        `pagination.nextCursor` through verbatim; omit for the first page. A
+        cursor is only valid for the operation and parameters that issued it; a
+        malformed or foreign cursor is rejected with 422.
+      schema:
+        type: string
+        minLength: 1
+      example: Y3JlYXRlZEF0PTE3NDg3ODA0MDA
+    PaginationLimit:
+      name: limit
+      in: query
+      required: false
+      description: Page size, 1–1000. Defaults to 1000 when omitted.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+      example: 50
+    PaginationLimitBuilds:
+      name: limit
+      in: query
+      required: false
+      description: Page size, 1–100. Defaults to 100 when omitted.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+      example: 50
     CatalogIncludeParam:
       name: include
       in: query
@@ -429,19 +462,99 @@ components:
         type: string
         format: date-time
   schemas:
+    Pagination:
+      type: object
+      required:
+        - nextCursor
+        - hasNextPage
+      description: >
+        Cursor-pagination metadata, uniform across list endpoints. Every
+        response carries it: follow `nextCursor` while `hasNextPage` is true to
+        walk the full result set.
+      properties:
+        nextCursor:
+          type:
+            - string
+            - "null"
+          description: >
+            Pass as the `cursor` query parameter to fetch the next page. Null on
+            the last page.
+          examples:
+            - null
+        hasNextPage:
+          type: boolean
+          description: Whether more items exist after this page.
+          examples:
+            - false
+    Paginated:
+      type: object
+      description: >
+        Mixin for cursor-paginated list responses. Compose it with `allOf` next
+        to the resource's bare list schema so that a list shape shared with a
+        non-paginated endpoint (e.g. a cluster's member pods) does not inherit a
+        pagination block it cannot honour.
+      required:
+        - pagination
+      properties:
+        pagination:
+          $ref: "#/components/schemas/Pagination"
     BaseContainerConfig:
       type: object
       description: >
         Container configuration universal to every containerized resource.
-        Compose ContainerConfig instead unless the resource cannot support
-        private registries (clusters, until the upstream input accepts a
-        registry credential).
+        Compose ContainerConfig instead unless the resource cannot support a
+        direct registry credential (clusters — there the registry credential
+        arrives via a pod template, see CreateClusterRequest.templateId).
       properties:
         args:
           type: string
-          description: Arguments passed to the container entrypoint
+          description: >
+            The container's command, as a single raw string. This is the field
+            `entrypoint` and `cmd` encode into, exposed in its stored form.
+
+
+            Two shapes are accepted. A bare shell string is treated as CMD and
+            split into arguments, which is what the console's "Container start
+            command" field writes. A JSON object of the form
+            `{"entrypoint":[...],"cmd":[...]}` sets either or both explicitly.
+
+
+            Responses always return both representations: `args` exactly as
+            stored, plus the deconstructed `entrypoint` and `cmd`. Supplying
+            `args` together with `entrypoint` or `cmd` is allowed only when they
+            describe the same command, so a read-modify-write client can send
+            back everything it received. Send `""` to clear, omit to leave
+            unchanged.
           examples:
+            - --model meta-llama/Llama-3-8B --max-model-len 8192
+            - '{"entrypoint":["/bin/bash","-c"],"cmd":["python -u main.py"]}'
             - ""
+        cmd:
+          type: array
+          items:
+            type: string
+          description: >
+            Container CMD in exec form. When the image defines an ENTRYPOINT,
+            this is the argument list passed to it. Encoded into the `args`
+            field; supplying both is allowed only when they describe the same
+            command. Send `[]` to clear, omit to leave unchanged.
+          examples:
+            - - --model
+              - meta-llama/Llama-3-8B
+              - --max-model-len
+              - "8192"
+        entrypoint:
+          type: array
+          items:
+            type: string
+          description: >
+            Container ENTRYPOINT in exec form, overriding the image's own.
+            Encoded into `args` field; supplying both is allowed only when they
+            describe the same command. Send `[]` to clear, omit to leave
+            unchanged.
+          examples:
+            - - /bin/bash
+              - -c
         disk:
           type: integer
           minimum: 1
@@ -863,6 +976,21 @@ components:
             Serverless GPU pool IDs (as returned by `GET /v2/catalog/gpus` in
             `pool`). Workers are placed on whichever listed pool has capacity.
             Narrow a pool down to specific cards with `excludedTypes`.
+
+            On `PATCH`, `pools` and `excludedTypes` are one selection and are
+            replaced together, so sending `pools` by itself **clears the
+            exclusions**. Two cases:
+
+            - **Changing pools, keeping exclusions** — send both fields in one
+              request: `{"gpu": {"pools": ["ADA_24"], "excludedTypes":
+              ["NVIDIA L40"]}}`. `GET` the endpoint first to read the current
+              `excludedTypes` and resend the ones that still apply to the new
+              pools; an exclusion naming a type outside `pools` is a 400.
+            - **Changing only `count` or a CUDA constraint** — omit `pools`:
+              `{"gpu": {"minCudaVersion": "12.4"}}`. The pool list and the
+              exclusions are both left exactly as they are.
+
+            `excludedTypes` documents the full rule.
           items:
             type: string
           examples:
@@ -1201,11 +1329,14 @@ components:
       type: object
       required:
         - endpoints
+        - pagination
       properties:
         endpoints:
           type: array
           items:
             $ref: "#/components/schemas/Endpoint"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
     WorkerStatus:
       type: string
       description: |
@@ -1491,15 +1622,19 @@ components:
       type: object
       required:
         - builds
+        - pagination
       properties:
         builds:
           type: array
           description: |
-            Build history, newest first. At most the 100 most recent builds
-            are returned; any older build can still be fetched by id via
+            Build history, newest first, cursor-paginated (an omitted `limit`
+            defaults to 100). Page with `cursor`/`limit` to walk the full
+            history, or fetch any build by id via
             `GET /v2/serverless/{id}/builds/{buildId}`.
           items:
             $ref: "#/components/schemas/Build"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
     ReleaseDiffEntry:
       type: object
       required:
@@ -1610,6 +1745,7 @@ components:
       required:
         - rollout
         - releases
+        - pagination
       properties:
         endpointVersion:
           type:
@@ -1625,6 +1761,8 @@ components:
           description: Release history, newest first.
           items:
             $ref: "#/components/schemas/Release"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
     CreateEndpointRequest:
       allOf:
         - $ref: "#/components/schemas/ContainerConfig"
@@ -2038,6 +2176,106 @@ components:
             - - ssh-ed25519
                 AAAAC3NzaC1lZDI1NTE5AAAAILXGDN/SclOozk1xsDztpmhGiKkkrfQB9SKoO8dSIQQZ
                 me@example.com
+    Secret:
+      type: object
+      description: "An account-scoped secret: an encrypted string stored by Runpod,
+        referenced from pod, serverless, and template environment variables with
+        the `{{ RUNPOD_SECRET_<name> }}` placeholder, substituted with the
+        secret's value when the pod or worker boots. The value is write-only and
+        never returned by the API."
+      required:
+        - id
+        - name
+        - createdAt
+      properties:
+        id:
+          type: string
+          description: Unique secret identifier
+          examples:
+            - 2q9m7x4cavgd
+        name:
+          type: string
+          description: Unique, human-readable name — the `<name>` referenced by the
+            `RUNPOD_SECRET_<name>` placeholder. Immutable after creation.
+          examples:
+            - hf-token
+        description:
+          type:
+            - string
+            - "null"
+          description: Human-readable description
+          examples:
+            - Hugging Face read token
+        createdAt:
+          type: string
+          format: date-time
+          description: When the secret was created
+        valueLastUpdatedAt:
+          type:
+            - string
+            - "null"
+          format: date-time
+          description: When the secret's value was last set (creation or rotation)
+    CreateSecretRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - value
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 191
+          pattern: ^[a-zA-Z_][a-zA-Z0-9_.\-/]*$
+          description: Unique name for the secret — referenced from environment variables
+            as `{{ RUNPOD_SECRET_<name> }}`; immutable after creation. Maximum
+            191 characters, must start with a letter or underscore, and may
+            contain letters, digits, and `_.-/`. Names beginning with the
+            reserved prefix `RUNPOD` are rejected (case-insensitive).
+          examples:
+            - hf-token
+        value:
+          type: string
+          minLength: 1
+          maxLength: 16777216
+          description: The secret value. Write-only — never returned by the API. Must be
+            smaller than 16 MiB of UTF-8 text (strictly under 16,777,216 bytes).
+        description:
+          type: string
+          maxLength: 65535
+          description: Optional human-readable description, at most 65,535 bytes of UTF-8
+            text.
+          examples:
+            - Hugging Face read token
+    UpdateSecretRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: |
+        Only the provided fields are updated; at least one field is required.
+        The secret's `name` is immutable.
+      properties:
+        value:
+          type: string
+          minLength: 1
+          maxLength: 16777216
+          description: New secret value, replacing the current one. Write-only. Must be
+            smaller than 16 MiB of UTF-8 text (strictly under 16,777,216 bytes).
+        description:
+          type: string
+          maxLength: 65535
+          description: New human-readable description, at most 65,535 bytes of UTF-8 text.
+            Send `""` to clear.
+    ListSecretsResponse:
+      type: object
+      required:
+        - secrets
+      properties:
+        secrets:
+          type: array
+          items:
+            $ref: "#/components/schemas/Secret"
     Pod:
       allOf:
         - $ref: "#/components/schemas/ContainerConfig"
@@ -2219,7 +2457,7 @@ components:
                 Create-time flag telling the provisioner to start JupyterLab:
                 injects a generated `JUPYTER_PASSWORD` environment variable,
                 unless the request already sets one. Only images that honor
-                the convention start Jupyter from it (RunPod official images
+                the convention start Jupyter from it (Runpod official images
                 do); expose `8888/http` in `ports` to reach it.
 
                 Not part of the pod's readable config — never returned by
@@ -2236,7 +2474,7 @@ components:
                 already sets one. **Requires registered keys** (`PUT
                 /v2/account/ssh-keys`) — with none registered the flag does
                 nothing and the pod has no SSH access. Only images that honor
-                the convention start sshd from it (all RunPod official images
+                the convention start sshd from it (all Runpod official images
                 do). Connect using the pod's `ssh` block; the `ssh.direct`
                 variant additionally needs a `22/tcp` entry in `ports`.
 
@@ -2319,8 +2557,12 @@ components:
       properties:
         action:
           $ref: "#/components/schemas/PodAction"
-    ListPodsResponse:
+    PodList:
       type: object
+      description: >
+        A bare list of pods. `GET /v2/clusters/{id}/pods` returns it as-is (a
+        cluster's members are a small, complete set); `GET /v2/pods` composes it
+        with the pagination block via ListPodsResponse.
       required:
         - pods
       properties:
@@ -2328,6 +2570,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Pod"
+    ListPodsResponse:
+      allOf:
+        - $ref: "#/components/schemas/PodList"
+        - $ref: "#/components/schemas/Paginated"
     ClusterType:
       type: string
       description: Cluster type. TRAINING is the generic distributed-training cluster;
@@ -2555,11 +2801,15 @@ components:
             homogeneous pod shape; the container configuration (image, env,
             ports,
 
-            …) applies to every pod and can be spread from a template response.
+            …) applies to every pod. Pass `templateId` to provision every member
 
-            Private registries are not yet supported for clusters — there is no
+            pod from a pod template instead of inline container fields — the
 
-            `registry` field here, unlike the other create requests.
+            template also supplies the container registry credential, the only
+
+            private-image path for clusters (a bare `registry` property on this
+
+            body is rejected).
           properties:
             compute:
               $ref: "#/components/schemas/ClusterCompute"
@@ -2570,6 +2820,20 @@ components:
                 - my-training-cluster
             type:
               $ref: "#/components/schemas/ClusterType"
+            templateId:
+              type: string
+              minLength: 1
+              description: |
+                ID of a pod template to provision every member pod from. The
+                template supplies the container settings (image, args, disk,
+                env, ports) and the container registry credential for private
+                images — the only private-image path for clusters. Mutually
+                exclusive with `image`, `args`, `entrypoint`, `cmd`, `disk`,
+                `env`, `ports`, and `mounts` (rejected with 400). The cluster
+                retains the link: the `template` response field is set. Must be
+                a non-serverless pod template accessible to the caller.
+              examples:
+                - 30zmvf89kd
             dataCenterIds:
               type: array
               items:
@@ -2728,7 +2992,7 @@ components:
                 Start JupyterLab in containers created from this template:
                 injects a generated `JUPYTER_PASSWORD` environment variable,
                 unless `env` already sets one. Only images that honor the
-                convention start Jupyter from it (RunPod official images do);
+                convention start Jupyter from it (Runpod official images do);
                 expose `8888/http` in `ports` to reach it. Defaults to `true`
                 when omitted, matching console-created templates.
               examples:
@@ -2742,7 +3006,7 @@ components:
                 deployer's registered SSH public keys (`PUT
                 /v2/account/ssh-keys` — with none registered the flag does
                 nothing), unless `env` already sets one. Only images that
-                honor the convention start sshd from it (all RunPod official
+                honor the convention start sshd from it (all Runpod official
                 images do); direct SSH also needs a `22/tcp` entry in
                 `ports`. Defaults to `true` when omitted, matching
                 console-created templates.
@@ -2782,8 +3046,12 @@ components:
               description: Provision SSH access at container startup (`PUBLIC_KEY` env
                 injection). See the create-time field for details.
       unevaluatedProperties: false
-    ListTemplatesResponse:
+    TemplateList:
       type: object
+      description: >
+        A bare list of templates. `GET /v2/catalog/templates` returns it as-is
+        (the catalog is a capped, curated set); `GET /v2/templates` composes it
+        with the pagination block via ListTemplatesResponse.
       required:
         - templates
       properties:
@@ -2791,6 +3059,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Template"
+    ListTemplatesResponse:
+      allOf:
+        - $ref: "#/components/schemas/TemplateList"
+        - $ref: "#/components/schemas/Paginated"
     NetworkVolume:
       type: object
       required:
@@ -2919,15 +3191,18 @@ components:
         name:
           type: string
           minLength: 1
+          maxLength: 191
           examples:
             - my-private-registry
         password:
           type: string
           minLength: 1
+          maxLength: 16384
           description: Registry password (write-only, not returned in responses)
         username:
           type: string
           minLength: 1
+          maxLength: 191
           description: Registry username (write-only, not returned in responses)
     ListRegistriesResponse:
       type: object
@@ -3519,7 +3794,8 @@ components:
       description: >
         Total spend across all billable Runpod resources with each cost
         component broken out, fully prefixed by resource. Backs the aggregate
-        record's amounts and the metadata totals.
+        record's amounts and the metadata totals. Serverless amounts are
+        inclusive of platform charges.
       required:
         - totalAmount
         - podGpuAmount
@@ -3569,7 +3845,10 @@ components:
         serverlessFeeAmount:
           type: number
           format: double
-          description: Serverless platform fee in USD for the bucket.
+          deprecated: true
+          description: >
+            Unused and always 0. Platform charges are included in the serverless
+            compute amounts.
         storageStandardAmount:
           type: number
           format: double
@@ -3653,8 +3932,8 @@ components:
     ServerlessBillingAmounts:
       type: object
       description: >
-        Serverless cost components. Backs a record's amounts and the metadata
-        totals.
+        Serverless cost components, inclusive of platform charges. Backs a
+        record's amounts and the metadata totals.
       required:
         - totalAmount
         - gpuAmount
@@ -3683,7 +3962,10 @@ components:
         feeAmount:
           type: number
           format: double
-          description: Serverless platform fee in USD for the bucket.
+          deprecated: true
+          description: >
+            Unused and always 0. Platform charges are included in the GPU and
+            CPU amounts.
     ServerlessBillingRecord:
       description: >
         A single time-bucketed serverless billing record. Returned by GET
@@ -4113,6 +4395,10 @@ paths:
     get:
       operationId: getSshKeys
       summary: List registered SSH public keys
+      x-mint:
+        metadata:
+          description: List the SSH public keys registered to your Runpod account and used
+            to authenticate secure connections to newly created Pods.
       description: Returns the account's registered SSH public keys — the keys
         provisioned into pods created with `startSsh` and used to authenticate
         the SSH connections reported in a pod's `ssh` block.
@@ -4158,6 +4444,11 @@ paths:
     put:
       operationId: updateSshKeys
       summary: Replace registered SSH public keys
+      x-mint:
+        metadata:
+          description: Replace all SSH public keys registered to your Runpod account,
+            remove omitted keys, and apply the new set to subsequently created
+            Pods.
       description: Replaces the account's full set of registered SSH public keys.
         Existing keys not present in the request are removed; send `[]` to
         remove all keys. Keys take effect for pods created afterwards with
@@ -4217,14 +4508,351 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /v2/account/secrets:
+    get:
+      operationId: listSecrets
+      summary: List secrets
+      x-mint:
+        metadata:
+          description: List the encrypted secrets on your Runpod account that Pods,
+            Serverless endpoints, and templates reference from environment
+            variables. Values are never returned.
+      description: Returns the account's secrets — encrypted strings referenced from
+        pod, serverless, and template environment variables with the `{{
+        RUNPOD_SECRET_<name> }}` placeholder syntax, substituted with the
+        secret's value when the pod or worker boots. Secret values are
+        write-only and are never returned.
+      tags:
+        - Account
+      parameters:
+        - name: name
+          in: query
+          required: false
+          schema:
+            type: string
+          description: When provided, returns only the secret with this name
+            (case-insensitive).
+      responses:
+        "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListSecretsResponse"
+              examples:
+                secrets:
+                  summary: Successful response
+                  value:
+                    secrets:
+                      - id: 2q9m7x4cavgd
+                        name: hf-token
+                        description: Hugging Face read token
+                        createdAt: 2026-08-01T12:00:00Z
+                        valueLastUpdatedAt: 2026-09-01T08:30:00Z
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
+        default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      operationId: createSecret
+      summary: Create a secret
+      x-mint:
+        metadata:
+          description: Create an encrypted Runpod account secret that Pods, Serverless
+            endpoints, and templates can reference from environment variables at
+            boot.
+      description: |
+        Stores a new account-scoped encrypted string. `name` must be unique
+        across the account's secrets and is immutable; `value` is write-only
+        and can never be read back through the API.
+
+        Use the secret from pods, serverless endpoints, and templates by
+        setting an environment variable's value to
+        `{{ RUNPOD_SECRET_<name> }}` — Runpod substitutes the stored value
+        when the pod or worker boots.
+
+        Returns `201` with the created secret's metadata, or `409` when the
+        name is already taken.
+      tags:
+        - Account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSecretRequest"
+            examples:
+              secret:
+                summary: Secret with a description
+                value:
+                  name: hf-token
+                  value: hf_********************************
+                  description: Hugging Face read token
+      responses:
+        "201":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Secret"
+              examples:
+                secret:
+                  summary: Successful response
+                  value:
+                    id: 2q9m7x4cavgd
+                    name: hf-token
+                    description: Hugging Face read token
+                    createdAt: 2026-09-10T17:23:45Z
+                    valueLastUpdatedAt: 2026-09-10T17:23:45Z
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "409":
+          description: A secret with this name already exists.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntityError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
+        default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v2/account/secrets/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Secret identifier
+        example: 2q9m7x4cavgd
+    get:
+      operationId: getSecret
+      summary: Get a secret
+      x-mint:
+        metadata:
+          description: Retrieve a Runpod account secret's metadata by ID. The secret value
+            is write-only and is never returned.
+      description: Returns a single secret's metadata by ID. The value is write-only
+        and never returned.
+      tags:
+        - Account
+      responses:
+        "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Secret"
+              examples:
+                secret:
+                  summary: Successful response
+                  value:
+                    id: 2q9m7x4cavgd
+                    name: hf-token
+                    description: Hugging Face read token
+                    createdAt: 2026-08-01T12:00:00Z
+                    valueLastUpdatedAt: 2026-09-01T08:30:00Z
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
+        default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      operationId: updateSecret
+      summary: Update a secret
+      x-mint:
+        metadata:
+          description: Update a Runpod account secret's description or rotate its value.
+            The new value takes effect the next time a referencing Pod or worker
+            boots.
+      description: |
+        Rotates a secret's value and/or updates its description. Only the
+        provided fields are changed and at least one field is required; the
+        `name` is immutable.
+
+        Pods and workers receive the new value at their next boot — running
+        instances keep the value they were started with.
+
+        When both fields are sent, the value is applied first, then the
+        description. The two updates are not atomic: if the description
+        update fails after the value was rotated, the response is an error
+        but the new value has already taken effect. Send the fields in
+        separate requests when that partial outcome matters.
+      tags:
+        - Account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSecretRequest"
+            examples:
+              rotateSecret:
+                summary: Rotate the value
+                value:
+                  value: hf_********************************
+              updateDescription:
+                summary: Update the description
+                value:
+                  description: Rotated HF token
+      responses:
+        "200":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Secret"
+              examples:
+                secret:
+                  summary: Successful response after rotation
+                  value:
+                    id: 2q9m7x4cavgd
+                    name: hf-token
+                    description: Rotated HF token
+                    createdAt: 2026-08-01T12:00:00Z
+                    valueLastUpdatedAt: 2026-09-10T17:40:12Z
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntityError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
+        default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteSecret
+      summary: Delete a secret
+      x-mint:
+        metadata:
+          description: Delete a Runpod account secret so Pods, Serverless endpoints, and
+            templates can no longer resolve it from environment variables.
+      description: |
+        Permanently deletes a secret. Environment variables referencing the
+        deleted secret's name will no longer resolve to a value.
+      tags:
+        - Account
+      responses:
+        "204":
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Deleted. Response has no body.
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "429":
+          $ref: "#/components/responses/TooManyRequestsError"
+        default:
+          headers:
+            RateLimit:
+              $ref: "#/components/headers/RateLimit"
+            RateLimit-Policy:
+              $ref: "#/components/headers/RateLimit-Policy"
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /v2/pods:
     get:
       operationId: listPods
       summary: List pods
+      x-mint:
+        metadata:
+          description: List Pods owned by the authenticated Runpod user, with an option to
+            include member Pods that belong to Runpod Clusters.
       description: |
         Returns pods owned by the authenticated user. Cluster member
         pods are excluded by default; set `includeClusterPods=true` to include
         them (each carries a non-null `cluster` membership block).
+
+        Results are cursor-paginated newest-first; an omitted `limit`
+        defaults to 1000. When cluster member pods are excluded, the
+        exclusion applies to each page after it is cut, so a page may hold
+        fewer than `limit` pods — follow `pagination.nextCursor` until
+        `hasNextPage` is false rather than counting items.
       tags:
         - Pods
       parameters:
@@ -4236,6 +4864,8 @@ paths:
             type: boolean
             default: false
           example: false
+        - $ref: "#/components/parameters/PaginationCursor"
+        - $ref: "#/components/parameters/PaginationLimit"
       responses:
         "200":
           headers:
@@ -4306,6 +4936,9 @@ paths:
                               ip: 195.26.233.3
                         createdAt: 2026-06-01T12:00:00Z
                         startedAt: 2026-06-01T12:02:00Z
+                    pagination:
+                      nextCursor: null
+                      hasNextPage: false
         "401":
           $ref: "#/components/responses/UnauthorizedError"
         "403":
@@ -4326,6 +4959,10 @@ paths:
     post:
       operationId: createPod
       summary: Create a pod
+      x-mint:
+        metadata:
+          description: Create a Runpod Pod with GPU or CPU compute, container or template
+            settings, storage, networking, and deployment constraints.
       description: |
         Creates a new pod. `name` is always required; supply exactly one of
         `gpu` or `cpu` to select compute (a GPU or a CPU pod). Container
@@ -4382,6 +5019,15 @@ paths:
         | `403` | Your account cannot access the requested pool. | Skip this candidate, keep going. |
         | `429` | Rate limited. | Back off using `Retry-After`, then resume. |
         | `5xx` | Transient upstream failure. | Retry the same candidate with backoff. |
+
+        Requests larger than 102400 bytes receive `413` before authentication
+        or processing. Reduce the serialized JSON request body and retry.
+
+        This limit also applies to the deployment request built from your input
+        and any referenced template. A small request can therefore receive `413`
+        if inherited template settings make the combined request too large.
+        Reduce environment variables or command values in your request or template
+        and retry.
 
         `400` covers both "your request breaks a rule" and "no capacity",
         because capacity exhaustion currently carries no machine-readable code
@@ -4591,6 +5237,13 @@ paths:
           $ref: "#/components/responses/ForbiddenError"
         "404":
           $ref: "#/components/responses/NotFoundError"
+        "413":
+          description: The incoming request body or expanded upstream request exceeds the
+            102400 byte limit, or the upstream rejects the request as too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "422":
           $ref: "#/components/responses/UnprocessableEntityError"
         "429":
@@ -4618,6 +5271,10 @@ paths:
     get:
       operationId: getPod
       summary: Get a pod
+      x-mint:
+        metadata:
+          description: Retrieve a Runpod Pod by ID with its compute, container, storage,
+            networking, lifecycle status, and connection details.
       description: Returns a single pod by ID.
       tags:
         - Pods
@@ -4712,6 +5369,11 @@ paths:
     patch:
       operationId: updatePod
       summary: Update a pod
+      x-mint:
+        metadata:
+          description: Update selected settings on an existing Runpod Pod while preserving
+            omitted fields, with guidance on mutable fields and restart
+            behavior.
       description: |
         Partially updates a pod's configuration. This is a PATCH: only the
         fields present in the body are changed, and omitted fields are left
@@ -4843,6 +5505,11 @@ paths:
     delete:
       operationId: deletePod
       summary: Terminate a pod
+      x-mint:
+        metadata:
+          description: Permanently terminate a Runpod Pod, release its compute, and
+            understand what happens to persistent mounts, network volumes, and
+            Cluster members.
       description: |
         Permanently terminates and deletes a pod. This is irreversible:
         compute is released, any `mounts.persistent` host-local storage is
@@ -4900,6 +5567,10 @@ paths:
     get:
       operationId: getPodLogs
       summary: Stream pod logs
+      x-mint:
+        metadata:
+          description: Stream a Runpod Pod's container and system logs in real time as
+            Server-Sent Events, with resumable reconnects via Last-Event-ID.
       description: |
         Streams pod logs as Server-Sent Events. The `source` query parameter
         selects which log source to include.
@@ -4977,6 +5648,10 @@ paths:
     post:
       operationId: podAction
       summary: Trigger a pod state transition
+      x-mint:
+        metadata:
+          description: Start, stop, or restart a Runpod Pod by sending a supported state
+            transition action and retrieving the Pod's updated lifecycle state.
       description: |
         Triggers a state transition on a pod. Send a JSON body with a single
         `action` field, e.g. `{ "action": "stop" }`.
@@ -5126,6 +5801,10 @@ paths:
     get:
       operationId: listClusters
       summary: List clusters
+      x-mint:
+        metadata:
+          description: List all Runpod Clusters owned by the authenticated user, including
+            each Cluster's configuration, status, and aggregate Pod counts.
       description: Returns all clusters owned by the authenticated user.
       tags:
         - Clusters
@@ -5151,6 +5830,10 @@ paths:
     post:
       operationId: createCluster
       summary: Create a cluster
+      x-mint:
+        metadata:
+          description: Create a multi-node Runpod Cluster with a consistent compute shape
+            and container configuration across every member Pod.
       description: >
         Creates a multi-node cluster. `compute` sets the homogeneous
 
@@ -5201,6 +5884,10 @@ paths:
     get:
       operationId: getCluster
       summary: Get a cluster
+      x-mint:
+        metadata:
+          description: Retrieve a Runpod Cluster by ID with its configuration, status, and
+            an aggregate summary of member Pods by status.
       description: Returns a single cluster by ID. The pods field is an aggregate
         summary (total + count by status); fetch the member pods themselves from
         /v2/clusters/{id}/pods.
@@ -5234,6 +5921,10 @@ paths:
     patch:
       operationId: updateCluster
       summary: Rename a cluster
+      x-mint:
+        metadata:
+          description: Rename a Runpod Cluster. Compute shape, type, and container
+            configuration are fixed at creation and cannot be changed.
       description: |
         Renames a cluster. This endpoint only changes the cluster
         name — compute shape, type, and container configuration are fixed at
@@ -5278,6 +5969,10 @@ paths:
     delete:
       operationId: deleteCluster
       summary: Delete a cluster
+      x-mint:
+        metadata:
+          description: Permanently delete a Runpod Cluster and terminate all of its member
+            Pods, with the response confirming the deleted Cluster.
       description: Permanently deletes a cluster and terminates all of its member pods.
       tags:
         - Clusters
@@ -5314,6 +6009,11 @@ paths:
     get:
       operationId: listClusterPods
       summary: List a cluster's pods
+      x-mint:
+        metadata:
+          description: List every Pod in a Runpod Cluster with each member's complete
+            configuration and status, beyond the aggregate counts in the Cluster
+            summary.
       description: Returns the full member pods of a cluster. The cluster summary
         (`GET /v2/clusters/{id}`) carries only aggregate pod counts; this
         endpoint returns each member as a complete Pod object.
@@ -5325,7 +6025,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ListPodsResponse"
+                $ref: "#/components/schemas/PodList"
         "401":
           $ref: "#/components/responses/UnauthorizedError"
         "403":
@@ -5348,9 +6048,19 @@ paths:
     get:
       operationId: listEndpoints
       summary: List serverless endpoints
-      description: Returns all serverless endpoints owned by the authenticated user.
+      x-mint:
+        metadata:
+          description: List all Runpod Serverless endpoints owned by the authenticated
+            user, including compute, worker, scaling, and deployment settings.
+      description: |
+        Returns serverless endpoints owned by the authenticated user,
+        cursor-paginated newest-first; an omitted `limit` defaults to 1000.
+        Follow `pagination.nextCursor` until `hasNextPage` is false.
       tags:
         - Serverless
+      parameters:
+        - $ref: "#/components/parameters/PaginationCursor"
+        - $ref: "#/components/parameters/PaginationLimit"
       responses:
         "200":
           headers:
@@ -5408,6 +6118,9 @@ paths:
                         timeout: 300000
                         flashboot: OFF
                         createdAt: 2026-06-01T12:00:00Z
+                    pagination:
+                      nextCursor: null
+                      hasNextPage: false
         "401":
           $ref: "#/components/responses/UnauthorizedError"
         "403":
@@ -5428,6 +6141,10 @@ paths:
     post:
       operationId: createEndpoint
       summary: Create a serverless endpoint
+      x-mint:
+        metadata:
+          description: Create a Runpod Serverless endpoint with GPU or CPU compute,
+            container or template settings, worker limits, and scaling policies.
       description: |
         Creates a serverless endpoint. Callers specify exactly one of `gpu` or
         `cpu`; neither or both returns 400. Container settings come from the
@@ -5653,6 +6370,10 @@ paths:
     get:
       operationId: getEndpoint
       summary: Get a serverless endpoint
+      x-mint:
+        metadata:
+          description: Retrieve a Runpod Serverless endpoint by ID with its compute,
+            worker, scaling, container, storage, and current status settings.
       description: Returns a single serverless endpoint by ID.
       tags:
         - Serverless
@@ -5728,6 +6449,10 @@ paths:
     patch:
       operationId: updateEndpoint
       summary: Update a serverless endpoint
+      x-mint:
+        metadata:
+          description: Update selected settings on a Runpod Serverless endpoint, including
+            compute, workers, scaling, storage, and container configuration.
       description: |
         Partially updates a serverless endpoint. This is a PATCH: only the
         fields present in the body are changed; omitted fields are left
@@ -5768,6 +6493,31 @@ paths:
                   scaling:
                     type: QUEUE_DELAY
                     queueDelay: 8
+              changeGpuPoolsKeepingExclusions:
+                summary: Change GPU pools and keep the existing exclusions
+                description: |
+                  `pools` and `excludedTypes` are replaced together, so both
+                  are sent. Omitting `excludedTypes` here would clear it.
+                  Read the current value with `GET /v2/serverless/{id}` first
+                  and resend the entries that still apply to the new pools —
+                  an exclusion naming a type that is not in `pools` is
+                  rejected with 400.
+                value:
+                  gpu:
+                    pools:
+                      - ADA_24
+                      - AMPERE_80
+                    excludedTypes:
+                      - NVIDIA L40
+              changeCudaOnly:
+                summary: Change a CUDA constraint without touching the GPU selection
+                description: |
+                  No `pools`, so the pool list and any `excludedTypes` are
+                  both left exactly as they are. Same shape for a `count`-only
+                  change.
+                value:
+                  gpu:
+                    minCudaVersion: "12.4"
       responses:
         "200":
           headers:
@@ -5850,6 +6600,11 @@ paths:
     delete:
       operationId: deleteEndpoint
       summary: Delete a serverless endpoint
+      x-mint:
+        metadata:
+          description: Permanently delete a Runpod Serverless endpoint, terminate its
+            workers, cancel queued and active jobs, and remove its bound
+            template.
       description: |
         Permanently deletes a serverless endpoint and its bound template.
         This is irreversible: all workers are terminated and any queued or
@@ -5895,6 +6650,10 @@ paths:
     get:
       operationId: listEndpointWorkers
       summary: List serverless endpoint workers
+      x-mint:
+        metadata:
+          description: List active workers for a Runpod Serverless endpoint with worker
+            status, runtime details, and summary counts grouped by status.
       description: |
         Lists the active workers for a serverless endpoint.
 
@@ -5978,14 +6737,26 @@ paths:
     get:
       operationId: listEndpointReleases
       summary: List serverless endpoint releases
+      x-mint:
+        metadata:
+          description: List a Serverless endpoint's release history, configuration
+            changes, build IDs, and current worker rollout status, newest
+            release first.
       description: |
         Returns the endpoint's release history (newest first) plus a rollout
         summary of how many workers are running the current version. Each
         release is a versioned configuration snapshot with a `diff` of what
         changed; build-driven releases carry a `buildId` (fetch build detail via
         the builds sub-routes).
+
+        Releases are cursor-paginated newest-first; an omitted `limit`
+        defaults to 1000. The rollout summary always describes the endpoint's
+        current state, independent of the page requested.
       tags:
         - Serverless
+      parameters:
+        - $ref: "#/components/parameters/PaginationCursor"
+        - $ref: "#/components/parameters/PaginationLimit"
       responses:
         "200":
           headers:
@@ -6020,6 +6791,9 @@ paths:
                           - field: workers.max
                             old: 5
                             new: 10
+                    pagination:
+                      nextCursor: null
+                      hasNextPage: false
         "401":
           $ref: "#/components/responses/UnauthorizedError"
         "403":
@@ -6051,14 +6825,23 @@ paths:
     get:
       operationId: listEndpointBuilds
       summary: List serverless endpoint builds
+      x-mint:
+        metadata:
+          description: List a Runpod Serverless endpoint's GitHub build history, newest
+            first, capped to the 100 most recent builds, with older builds
+            fetchable by ID.
       description: |
-        Returns the endpoint's GitHub build history, newest first (RunPod
-        GitHub-build integration). At most the 100 most recent builds are
-        returned; any older build can still be fetched by id via
+        Returns the endpoint's GitHub build history, newest first (Runpod
+        GitHub-build integration), cursor-paginated; an omitted `limit`
+        defaults to 100, so a bare request returns at most the 100 most
+        recent builds. Any build can also be fetched by id via
         `GET /v2/serverless/{id}/builds/{buildId}`. Stream a build's logs via
         `/v2/serverless/{id}/builds/{buildId}/logs`.
       tags:
         - Serverless
+      parameters:
+        - $ref: "#/components/parameters/PaginationCursor"
+        - $ref: "#/components/parameters/PaginationLimitBuilds"
       responses:
         "200":
           headers:
@@ -6086,6 +6869,9 @@ paths:
                         startedAt: 2026-06-01T12:00:05Z
                         completedAt: 2026-06-01T12:04:31Z
                         error: null
+                    pagination:
+                      nextCursor: null
+                      hasNextPage: false
         "401":
           $ref: "#/components/responses/UnauthorizedError"
         "403":
@@ -6125,9 +6911,13 @@ paths:
     get:
       operationId: getEndpointBuild
       summary: Get a serverless endpoint build
+      x-mint:
+        metadata:
+          description: Retrieve a single GitHub build for a Runpod Serverless endpoint by
+            its build ID, returning that build regardless of how old it is.
       description: |
         Returns one of the endpoint's GitHub builds by id, regardless of age —
-        unlike the list, which is capped to recent history.
+        no need to page through `GET /v2/serverless/{id}/builds` to reach it.
       tags:
         - Serverless
       responses:
@@ -6194,6 +6984,10 @@ paths:
     get:
       operationId: getWorkerLogs
       summary: Stream serverless worker logs
+      x-mint:
+        metadata:
+          description: Stream a Runpod Serverless worker's logs in real time as
+            Server-Sent Events, with resumable reconnects via Last-Event-ID.
       description: >
         Streams a serverless worker's logs as Server-Sent Events. The `source`
 
@@ -6270,9 +7064,20 @@ paths:
     get:
       operationId: listTemplates
       summary: List templates
-      description: Returns all templates owned by the authenticated user.
+      description: |
+        Returns templates owned by the authenticated user (including
+        team/organization-scoped ones), cursor-paginated; an omitted `limit`
+        defaults to 1000. Follow `pagination.nextCursor` until `hasNextPage`
+        is false.
+      x-mint:
+        metadata:
+          description: List all reusable Runpod templates owned by the authenticated user,
+            including Pod and Serverless container configuration details.
       tags:
         - Templates
+      parameters:
+        - $ref: "#/components/parameters/PaginationCursor"
+        - $ref: "#/components/parameters/PaginationLimit"
       responses:
         "200":
           headers:
@@ -6310,6 +7115,9 @@ paths:
                         startSsh: true
                         startJupyter: false
                         allowedCudaVersions: []
+                    pagination:
+                      nextCursor: null
+                      hasNextPage: false
         "401":
           $ref: "#/components/responses/UnauthorizedError"
         "403":
@@ -6330,6 +7138,10 @@ paths:
     post:
       operationId: createTemplate
       summary: Create a template
+      x-mint:
+        metadata:
+          description: Create a reusable Runpod template for Pod and Serverless container
+            settings, including images, storage, ports, environment, and mounts.
       description: |
         Creates a reusable container-configuration preset — image, disk,
         ports, env, registry, and mount settings — for pods and serverless
@@ -6430,6 +7242,11 @@ paths:
     get:
       operationId: getTemplate
       summary: Get a template
+      x-mint:
+        metadata:
+          description: Retrieve the complete configuration of an owned or public Runpod
+            template by ID, including settings used to create Pods and
+            endpoints.
       description: |
         Returns the full configuration of a single template by ID. Serves
         both templates you own and public catalog templates — everything you
@@ -6494,6 +7311,11 @@ paths:
     patch:
       operationId: updateTemplate
       summary: Update a template
+      x-mint:
+        metadata:
+          description: Update selected fields on a Runpod template while preserving
+            omitted settings, with ownership rules and behavior for existing
+            resources.
       description: >
         Partially updates a template. This is a PATCH: only the fields
 
@@ -6592,6 +7414,10 @@ paths:
     delete:
       operationId: deleteTemplate
       summary: Delete a template
+      x-mint:
+        metadata:
+          description: Permanently delete an owned Runpod template by ID and understand
+            restrictions when Pods or Serverless endpoints still reference it.
       description: |
         Permanently deletes a template by ID. Only the template's owner can
         delete it — public catalog templates return `404` here. Rejected if
@@ -6642,6 +7468,10 @@ paths:
     get:
       operationId: listNetworkVolumes
       summary: List network volumes
+      x-mint:
+        metadata:
+          description: List all network volumes owned by the authenticated Runpod user,
+            including each volume's size, data center, and storage tier.
       description: Returns all network volumes owned by the authenticated user.
       tags:
         - Network Volumes
@@ -6687,6 +7517,10 @@ paths:
     post:
       operationId: createNetworkVolume
       summary: Create a network volume
+      x-mint:
+        metadata:
+          description: Create a persistent Runpod network volume with a name, size, data
+            center, and storage tier for use by Pods and Serverless workers.
       description: |
         Provisions a new network volume — persistent, network-attached
         storage that can be mounted into pods and serverless workers.
@@ -6768,6 +7602,10 @@ paths:
     get:
       operationId: getNetworkVolume
       summary: Get a network volume
+      x-mint:
+        metadata:
+          description: Retrieve a Runpod network volume by ID with its name, size, data
+            center, storage tier, and current resource details.
       description: Returns a single network volume by ID.
       tags:
         - Network Volumes
@@ -6814,6 +7652,10 @@ paths:
     patch:
       operationId: updateNetworkVolume
       summary: Update a network volume
+      x-mint:
+        metadata:
+          description: Update a Runpod network volume's mutable fields, such as its name
+            or size. Size can only be increased, never reduced.
       description: >
         Updates mutable fields on a network volume. Only provided fields are
         changed.
@@ -6889,6 +7731,10 @@ paths:
     delete:
       operationId: deleteNetworkVolume
       summary: Delete a network volume
+      x-mint:
+        metadata:
+          description: Permanently delete a Runpod network volume, release its persistent
+            storage, and confirm the removed volume in the response.
       description: Permanently deletes a network volume and releases its storage.
       tags:
         - Network Volumes
@@ -6923,6 +7769,10 @@ paths:
     get:
       operationId: listRegistries
       summary: List container registries
+      x-mint:
+        metadata:
+          description: List all container registry credentials owned by the authenticated
+            Runpod user, with secret usernames and passwords excluded.
       description: Returns all container registry credentials owned by the
         authenticated user.
       tags:
@@ -6966,6 +7816,11 @@ paths:
     post:
       operationId: createRegistry
       summary: Create a container registry credential
+      x-mint:
+        metadata:
+          description: Store credentials for a private container registry in Runpod for
+            authenticated image pulls while keeping the saved secrets
+            write-only.
       description: Stores credentials for a private container registry. Credentials
         are write-only.
       tags:
@@ -7033,6 +7888,10 @@ paths:
     get:
       operationId: getRegistry
       summary: Get a container registry credential
+      x-mint:
+        metadata:
+          description: Retrieve a Runpod container registry credential by ID while keeping
+            stored usernames and passwords excluded from the response.
       description: |
         Returns a single container registry credential by ID. `username` and
         `password` are never included in the response — credentials are
@@ -7079,6 +7938,10 @@ paths:
     delete:
       operationId: deleteRegistry
       summary: Delete a container registry credential
+      x-mint:
+        metadata:
+          description: Delete a Runpod container registry credential by ID and understand
+            how active Pods and templates that reference it are handled.
       description: |
         Permanently deletes a container registry credential by ID. Rejected
         if any pod currently uses this credential to pull its image.
@@ -7129,6 +7992,10 @@ paths:
     get:
       operationId: listDelegations
       summary: List all ECR delegations
+      x-mint:
+        metadata:
+          description: List the Amazon ECR delegations that let Runpod pull private
+            container images from your AWS registries.
       tags:
         - Registries
       responses:
@@ -7143,6 +8010,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListDelegationsResponse"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "429":
           $ref: "#/components/responses/TooManyRequestsError"
         default:
@@ -7159,6 +8030,11 @@ paths:
     post:
       operationId: createDelegation
       summary: Register an ECR delegation
+      x-mint:
+        metadata:
+          description: Register an Amazon ECR delegation that lets Runpod pull private
+            container images from your AWS registry for Pods and Serverless
+            endpoints.
       tags:
         - Registries
       requestBody:
@@ -7179,6 +8055,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EcrDelegation"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "429":
           $ref: "#/components/responses/TooManyRequestsError"
         default:
@@ -7203,6 +8083,10 @@ paths:
     delete:
       operationId: revokeDelegation
       summary: Revoke an ECR delegation
+      x-mint:
+        metadata:
+          description: Revoke an Amazon ECR delegation so Runpod can no longer pull
+            private container images from that AWS registry on your behalf.
       tags:
         - Registries
       responses:
@@ -7213,6 +8097,10 @@ paths:
             RateLimit-Policy:
               $ref: "#/components/headers/RateLimit-Policy"
           description: Delegation revoked
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
         "404":
           headers:
             RateLimit:
@@ -7241,6 +8129,10 @@ paths:
     get:
       operationId: listGpuTypes
       summary: List GPU types
+      x-mint:
+        metadata:
+          description: List available Runpod GPU types with pricing and optional
+            availability filters by product, country, and deployment context.
       description: Returns available GPU types with pricing. Availability is included
         only when requested with include=AVAILABILITY, which requires `product`
         — stock differs by product context. With countryCodes, the list is
@@ -7320,6 +8212,10 @@ paths:
     get:
       operationId: getGpuType
       summary: Get a GPU type
+      x-mint:
+        metadata:
+          description: Retrieve one Runpod GPU type with pricing and optional availability
+            details for a specified product and deployment context.
       description: Returns a single GPU type with pricing. Availability details are
         included only when requested with include=AVAILABILITY, which requires
         `product` — stock differs by product context.
@@ -7391,6 +8287,10 @@ paths:
     get:
       operationId: listCpuTypes
       summary: List CPU types
+      x-mint:
+        metadata:
+          description: List available Runpod CPU types with pricing and optional
+            availability details for a specified product and deployment context.
       description: Returns available CPU flavors. Availability is included only when
         requested with include=AVAILABILITY, which requires `product` — stock
         differs by product context.
@@ -7460,6 +8360,10 @@ paths:
     get:
       operationId: getCpuType
       summary: Get a CPU type
+      x-mint:
+        metadata:
+          description: Retrieve one Runpod CPU type with pricing and optional availability
+            details for a specified product and deployment context.
       description: Returns a single CPU type with pricing. Availability details are
         included only when requested with include=AVAILABILITY, which requires
         `product` — stock differs by product context.
@@ -7523,6 +8427,10 @@ paths:
     get:
       operationId: listDataCenters
       summary: List data centers
+      x-mint:
+        metadata:
+          description: List Runpod data centers with region, compliance, storage,
+            networking, and optional GPU or CPU availability details.
       description: >
         Returns available data center locations with region, compliance,
         supported network volume tiers, and global networking support. Use
@@ -7663,6 +8571,10 @@ paths:
     get:
       operationId: getDataCenter
       summary: Get a data center
+      x-mint:
+        metadata:
+          description: Retrieve a single Runpod data center by ID, optionally including
+            current GPU or CPU availability for Pod deployment.
       description: Returns a single data center. Availability is included only when
         requested with include=GPU_AVAILABILITY or include=CPU_AVAILABILITY.
       tags:
@@ -7738,6 +8650,10 @@ paths:
     get:
       operationId: listPublicTemplates
       summary: List public templates
+      x-mint:
+        metadata:
+          description: List Runpod public templates by official, verified, or community
+            source and inspect reusable Pod and Serverless configurations.
       description: |
         Returns the public template catalog. `source` selects which slice:
         `official` (the default) is Runpod-curated templates, `verified` is
@@ -7748,7 +8664,9 @@ paths:
         templates (public or private) are managed under `/v2/templates`; fetch
         any individual template — catalog or owned — via `/v2/templates/{id}`.
 
-        At most 100 templates are returned. Pagination is not yet supported.
+        At most 100 templates are returned. Cursor pagination is not yet
+        supported here; `pagination` is always the exhausted marker
+        (`nextCursor: null`, `hasNextPage: false`).
       tags:
         - Catalog
       parameters:
@@ -7779,7 +8697,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ListTemplatesResponse"
+                $ref: "#/components/schemas/TemplateList"
               examples:
                 templates:
                   summary: Successful response
@@ -7802,6 +8720,9 @@ paths:
                         startSsh: true
                         startJupyter: true
                         allowedCudaVersions: []
+                    pagination:
+                      nextCursor: null
+                      hasNextPage: false
         "401":
           $ref: "#/components/responses/UnauthorizedError"
         "403":
@@ -7823,6 +8744,11 @@ paths:
     get:
       operationId: listBilling
       summary: Get aggregated billing history
+      x-mint:
+        metadata:
+          description: Retrieve time-bucketed total Runpod spend across Pods, Serverless,
+            storage, Public Endpoints, and Clusters for the authenticated
+            account.
       description: >
         Returns time-bucketed total spend across all billable Runpod resources
         for the authenticated user. Use startTime/endTime with bucketSize for an
@@ -7861,10 +8787,10 @@ paths:
                         podGpuAmount: 18.2
                         podCpuAmount: 0
                         podDiskAmount: 1.1
-                        serverlessGpuAmount: 12.6
+                        serverlessGpuAmount: 13.85
                         serverlessCpuAmount: 0
                         serverlessDiskAmount: 0.44
-                        serverlessFeeAmount: 1.25
+                        serverlessFeeAmount: 0
                         storageStandardAmount: 0
                         storageHighPerformanceAmount: 2.5
                         endpointAmount: 3.21
@@ -7882,10 +8808,10 @@ paths:
                         podGpuAmount: 18.2
                         podCpuAmount: 0
                         podDiskAmount: 1.1
-                        serverlessGpuAmount: 12.6
+                        serverlessGpuAmount: 13.85
                         serverlessCpuAmount: 0
                         serverlessDiskAmount: 0.44
-                        serverlessFeeAmount: 1.25
+                        serverlessFeeAmount: 0
                         storageStandardAmount: 0
                         storageHighPerformanceAmount: 2.5
                         endpointAmount: 3.21
@@ -7913,6 +8839,10 @@ paths:
     get:
       operationId: listPodBilling
       summary: Get pod billing history
+      x-mint:
+        metadata:
+          description: Retrieve time-bucketed billing details for one or all Runpod Pods,
+            including GPU, CPU, disk, total costs, and query metadata.
       description: >
         Returns pod-only billing detail for the authenticated user, split into
         time buckets by startTime/endTime with bucketSize or by lastN recent
@@ -7993,14 +8923,19 @@ paths:
     get:
       operationId: listServerlessBilling
       summary: Get serverless billing history
+      x-mint:
+        metadata:
+          description: Retrieve time-bucketed billing history for one or all Runpod
+            Serverless endpoints, including compute, disk, platform, and total
+            costs.
       description: >
         Returns serverless endpoint billing detail for the authenticated user,
         split into time buckets by startTime/endTime with bucketSize or by lastN
         recent buckets. Use serverlessId to filter to one endpoint; without it,
         records are emitted per serverless endpoint per bucket. Each record
-        reports endpoint-level GPU, CPU, disk, platform fee, and total amounts.
-        This is distinct from pod billing, which covers standalone GPU and CPU
-        pod costs rather than serverless endpoint workloads.
+        reports endpoint-level GPU, CPU, disk, and total amounts. This is
+        distinct from pod billing, which covers standalone GPU and CPU pod costs
+        rather than serverless endpoint workloads.
       tags:
         - Billing
       parameters:
@@ -8036,10 +8971,10 @@ paths:
                         endTime: 2026-06-02T00:00:00Z
                         serverlessId: 4m7x2k9q
                         totalAmount: 8.9
-                        gpuAmount: 7.5
+                        gpuAmount: 8.5
                         cpuAmount: 0
                         diskAmount: 0.4
-                        feeAmount: 1
+                        feeAmount: 0
                     metadata:
                       query:
                         startTime: 2026-06-01T00:00:00Z
@@ -8049,10 +8984,10 @@ paths:
                       recordCount: 1
                       totals:
                         totalAmount: 8.9
-                        gpuAmount: 7.5
+                        gpuAmount: 8.5
                         cpuAmount: 0
                         diskAmount: 0.4
-                        feeAmount: 1
+                        feeAmount: 0
                       uniqueServerlessCount: 1
         "401":
           $ref: "#/components/responses/UnauthorizedError"
@@ -8075,6 +9010,10 @@ paths:
     get:
       operationId: listEndpointBilling
       summary: Get public endpoint billing history
+      x-mint:
+        metadata:
+          description: Retrieve time-bucketed billing history for Runpod Public Endpoints,
+            including endpoint totals and resolved query metadata.
       description: >
         Returns Runpod public endpoint billing history for the authenticated
         user, split into time buckets by startTime/endTime with bucketSize or by
@@ -8137,6 +9076,11 @@ paths:
     get:
       operationId: listNetworkVolumeBilling
       summary: Get network volume billing history
+      x-mint:
+        metadata:
+          description: Retrieve time-bucketed billing history for one or all Runpod
+            network volumes, including storage tiers, totals, and query
+            metadata.
       description: >
         Returns network volume billing history for the authenticated user, split
         into time buckets by startTime/endTime with bucketSize or by lastN
@@ -8215,6 +9159,10 @@ paths:
     get:
       operationId: listClusterBilling
       summary: Get cluster billing history
+      x-mint:
+        metadata:
+          description: Retrieve time-bucketed Runpod Cluster billing history, including
+            GPU compute, disk, inter-node networking, and total costs.
       description: >
         Returns Cluster billing history for the authenticated user, split into
         time buckets by startTime/endTime with bucketSize or by lastN recent

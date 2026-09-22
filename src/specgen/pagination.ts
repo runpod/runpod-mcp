@@ -1,8 +1,14 @@
-// Client-side list caps. The REST list endpoints do not support server-side
-// pagination yet, so a large account's list response can exceed an LLM's
-// context window. List-shaped curated tools cap their results and report what
-// was omitted; `limit`/`cursor` are shaped like the cursor pagination the
-// REST API will eventually ship, so tool signatures won't change when it does.
+// Client-side list caps, applied to whatever a list call returns so a large
+// account's response cannot exceed an LLM's context window. List-shaped
+// curated tools cap their results and report what was omitted.
+//
+// The v2 API now ships its own cursor pagination (the `cursor`/`limit` query
+// parameters, and a `pagination` block on list responses), which the generated
+// list tools expose directly from the spec. The cursors below are NOT those:
+// they are client-side offsets over one server page, so a curated tool's
+// `total` counts what that page held, not the account. Teaching the curated
+// tools to pass the server's opaque cursor through is follow-up work — it
+// matters only for an account holding more than one server page (1000 items).
 
 export const DEFAULT_LIST_LIMIT = 20;
 export const MAX_LIST_LIMIT = 100;
