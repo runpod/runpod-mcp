@@ -215,7 +215,8 @@ This is not hypothetical: when the v2 API added cursor pagination,
 `list-pods` (generated) had `cursor`/`limit` the moment the spec was
 re-vendored, while `list-endpoints` and `list-templates` (curated, because
 they trim fat fields) could not pass those parameters at all — the pinned
-SDK's types did not know they existed.
+SDK's types did not know they existed. They gained them only after SDK 0.2.0
+shipped and the pin moved to it.
 
 So when a spec resync touches an endpoint a curated tool serves, the order is:
 regenerate and publish the SDK first, bump the pin here, then teach the

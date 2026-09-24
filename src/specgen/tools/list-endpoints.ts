@@ -7,7 +7,11 @@
 import { restError } from '../clients/rest-result.js';
 import type { ToolContext } from '../context.js';
 import type { CuratedTool } from '../types.js';
-import { capList, listPaginationProperties } from '../pagination.js';
+import {
+  listPaginationProperties,
+  serverPageQuery,
+  serverPagination,
+} from '../pagination.js';
 
 export const listEndpoints: CuratedTool = {
   name: 'list-endpoints',
@@ -21,7 +25,9 @@ export const listEndpoints: CuratedTool = {
     properties: { ...listPaginationProperties },
   },
   async handler(ctx: ToolContext, args) {
-    const { data, error, response } = await ctx.sdk.GET('/v2/serverless');
+    const { data, error, response } = await ctx.sdk.GET('/v2/serverless', {
+      params: { query: serverPageQuery(args) },
+    });
     if (!response.ok) return restError(response, error);
     if (!data || !Array.isArray(data.endpoints)) {
       return {
@@ -46,10 +52,10 @@ export const listEndpoints: CuratedTool = {
     return {
       ok: true,
       status: response.status,
-      payload: capList(trimmed, {
-        limit: args.limit as number | undefined,
-        cursor: args.cursor as string | undefined,
-      }),
+      payload: {
+        items: trimmed,
+        pagination: serverPagination(data.pagination, trimmed.length),
+      },
     };
   },
 };

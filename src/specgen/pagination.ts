@@ -1,14 +1,9 @@
-// Client-side list caps, applied to whatever a list call returns so a large
-// account's response cannot exceed an LLM's context window. List-shaped
-// curated tools cap their results and report what was omitted.
-//
-// The v2 API now ships its own cursor pagination (the `cursor`/`limit` query
-// parameters, and a `pagination` block on list responses), which the generated
-// list tools expose directly from the spec. The cursors below are NOT those:
-// they are client-side offsets over one server page, so a curated tool's
-// `total` counts what that page held, not the account. Teaching the curated
-// tools to pass the server's opaque cursor through is follow-up work — it
-// matters only for an account holding more than one server page (1000 items).
+// List caps so a large account's response cannot exceed an LLM's context
+// window. Curated tools over a paginated v2 list endpoint (list-endpoints,
+// list-templates) pass the server's `limit`/`cursor` through with
+// serverPageQuery and return its `pagination` block via serverPagination.
+// Tools whose data has no server pagination (hub, public endpoints, capacity)
+// cap client-side with capList, whose cursors are offsets into one response.
 
 export const DEFAULT_LIST_LIMIT = 20;
 export const MAX_LIST_LIMIT = 100;
@@ -28,6 +23,48 @@ export const listPaginationProperties = {
       'Opaque pagination cursor from a previous response (nextCursor). Omit to start from the beginning.',
   },
 } as const;
+
+// Coerce, floor at 1, and cap: the low-level server never validates the
+// JSON Schema, so limit: 0 (or junk) would otherwise return an empty page
+// whose nextCursor never advances.
+export function clampListLimit(limit: unknown): number {
+  const requested = Number(limit);
+  return Math.min(
+    Number.isFinite(requested) && requested >= 1
+      ? Math.floor(requested)
+      : DEFAULT_LIST_LIMIT,
+    MAX_LIST_LIMIT
+  );
+}
+
+// Query for a server-paginated list: the capped limit, and the server's
+// opaque cursor verbatim. A malformed cursor is the server's to reject (422).
+export function serverPageQuery(args: Record<string, unknown>): {
+  limit: number;
+  cursor?: string;
+} {
+  const cursor =
+    typeof args.cursor === 'string' && args.cursor !== ''
+      ? args.cursor
+      : undefined;
+  return { limit: clampListLimit(args.limit), ...(cursor ? { cursor } : {}) };
+}
+
+// The server's pagination block, plus how many items this page returned.
+export function serverPagination(
+  pagination: { nextCursor?: string | null; hasNextPage?: boolean } | undefined,
+  returned: number
+): Record<string, unknown> {
+  const hasNextPage = pagination?.hasNextPage === true;
+  return {
+    returned,
+    hasNextPage,
+    nextCursor: pagination?.nextCursor ?? null,
+    ...(hasNextPage
+      ? { note: 'More results exist. Pass cursor=nextCursor to fetch them.' }
+      : {}),
+  };
+}
 
 // The cursor is a base64-encoded offset today; invalid values are treated as
 // the start so a bad cursor never throws in an agent's face.
@@ -59,16 +96,7 @@ export function capList(
   options: { limit?: number; cursor?: string },
   extra?: Record<string, unknown>
 ): Record<string, unknown> {
-  // Coerce, floor at 1, and cap: the low-level server never validates the
-  // JSON Schema, so limit: 0 (or junk) would otherwise return an empty page
-  // whose nextCursor equals the current offset — a pager that never advances.
-  const requested = Number(options.limit);
-  const limit = Math.min(
-    Number.isFinite(requested) && requested >= 1
-      ? Math.floor(requested)
-      : DEFAULT_LIST_LIMIT,
-    MAX_LIST_LIMIT
-  );
+  const limit = clampListLimit(options.limit);
   const offset = decodeCursorOffset(options.cursor);
   const total = items.length;
   const page = items.slice(offset, offset + limit);

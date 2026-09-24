@@ -1,4 +1,4 @@
-// The trimmed list-endpoints overlay: drops env/requestUrls, paginates.
+// The trimmed list overlays: drop fat fields, page on the server.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { listTemplates } from '../src/specgen/tools/list-templates.js';
@@ -21,16 +21,36 @@ const endpoint = (id: number) => ({
   requestUrls: { run: `https://api.runpod.ai/v2/ep_${id}/run` },
 });
 
-const fakeCtx = (count: number) =>
+type Call = { path: string; query: Record<string, unknown> | undefined };
+
+const fakeCtx = (
+  count: number,
+  pagination = { nextCursor: null as string | null, hasNextPage: false },
+  calls: Call[] = []
+) =>
   ({
     sdk: {
-      GET: async () => ({
-        data: {
-          endpoints: Array.from({ length: count }, (_, i) => endpoint(i)),
-        },
-        error: undefined,
-        response: new Response(null, { status: 200 }),
-      }),
+      GET: async (
+        path: string,
+        init?: { params?: { query?: Record<string, unknown> } }
+      ) => {
+        calls.push({ path, query: init?.params?.query });
+        return {
+          data: {
+            endpoints: Array.from({ length: count }, (_, i) => endpoint(i)),
+            templates: Array.from({ length: count }, (_, i) => ({
+              id: `tpl_${i}`,
+              name: `template-${i}`,
+              image: 'runpod/pytorch:1',
+              serverless: false,
+              readme: 'long readme',
+            })),
+            pagination,
+          },
+          error: undefined,
+          response: new Response(null, { status: 200 }),
+        };
+      },
     },
   }) as unknown as ToolContext;
 
@@ -46,29 +66,54 @@ test('drops env and requestUrls, keeps identifying fields', async () => {
   assert.ok(!JSON.stringify(result.payload).includes('do-not-echo'));
 });
 
-test('paginates past the default cap and hands back a cursor', async () => {
-  const first = await listEndpoints.handler(fakeCtx(61), {});
-  const page1 = first.payload as {
-    items: unknown[];
-    pagination: {
-      total: number;
-      nextCursor: string | null;
-      truncated: boolean;
+test('list overlays page on the server and return its cursor verbatim', async () => {
+  for (const [tool, path, key] of [
+    [listEndpoints, '/v2/serverless', 'items'],
+    [listTemplates, '/v2/templates', 'templates'],
+  ] as const) {
+    const calls: Call[] = [];
+    const first = await tool.handler(
+      fakeCtx(20, { nextCursor: 'c2VydmVy', hasNextPage: true }, calls),
+      {}
+    );
+    assert.deepEqual(calls[0], { path, query: { limit: 20 } });
+    const page = first.payload as Record<string, unknown> & {
+      pagination: Record<string, unknown>;
     };
-  };
-  assert.equal(page1.items.length, 20);
-  assert.equal(page1.pagination.total, 61);
-  assert.ok(page1.pagination.truncated && page1.pagination.nextCursor);
-  const last = await listEndpoints.handler(fakeCtx(61), {
-    cursor: page1.pagination.nextCursor,
-    limit: 100,
+    assert.equal((page[key] as unknown[]).length, 20);
+    assert.equal(page.pagination.returned, 20);
+    assert.equal(page.pagination.hasNextPage, true);
+    assert.equal(page.pagination.nextCursor, 'c2VydmVy');
+    assert.ok(page.pagination.note);
+
+    const last = await tool.handler(fakeCtx(3, undefined, calls), {
+      cursor: 'c2VydmVy',
+      limit: 100,
+    });
+    assert.deepEqual(calls[1], {
+      path,
+      query: { limit: 100, cursor: 'c2VydmVy' },
+    });
+    const lastPage = last.payload as { pagination: Record<string, unknown> };
+    assert.equal(lastPage.pagination.hasNextPage, false);
+    assert.equal(lastPage.pagination.nextCursor, null);
+    assert.ok(!('note' in lastPage.pagination));
+  }
+});
+
+test('server page query caps the limit and drops empty cursors', async () => {
+  const { serverPageQuery, MAX_LIST_LIMIT, DEFAULT_LIST_LIMIT } = await import(
+    '../src/specgen/pagination.js'
+  );
+  assert.deepEqual(serverPageQuery({ limit: 0, cursor: '' }), {
+    limit: DEFAULT_LIST_LIMIT,
   });
-  const page2 = last.payload as {
-    items: unknown[];
-    pagination: { nextCursor: string | null };
-  };
-  assert.equal(page2.items.length, 41);
-  assert.equal(page2.pagination.nextCursor, null);
+  assert.deepEqual(serverPageQuery({ limit: 10_000 }), {
+    limit: MAX_LIST_LIMIT,
+  });
+  assert.deepEqual(serverPageQuery({ limit: 'junk', cursor: 42 }), {
+    limit: DEFAULT_LIST_LIMIT,
+  });
 });
 
 test('capList survives limit 0, junk cursors, and out-of-range offsets', async () => {
