@@ -16,7 +16,9 @@ export const listTemplates: CuratedTool = {
   description:
     'List templates visible to the account. Returns id, name, image, and ' +
     'serverless flag per template; use get-template for full detail. ' +
-    'Returns a page; pass cursor=nextCursor for more.',
+    'Returns 20 templates per page by default. To find a template, follow ' +
+    '`pagination.nextCursor` until `hasNextPage` is false: a name missing ' +
+    'from one page may be on a later one.',
   inputSchema: {
     type: 'object',
     properties: { ...listPaginationProperties },

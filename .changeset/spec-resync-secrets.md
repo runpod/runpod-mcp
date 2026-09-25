@@ -2,6 +2,9 @@
 '@runpod/mcp-server': minor
 ---
 
+`list-templates` now returns 20 templates per page by default instead of the
+full list. Follow `nextCursor` to see the rest.
+
 Resync the vendored v2 OpenAPI spec with production. Adds five account-secret
 tools (`list-secrets`, `get-secret`, `create-secret`, `update-secret`,
 `delete-secret`) and refreshes the schemas for pods, endpoints, templates,
