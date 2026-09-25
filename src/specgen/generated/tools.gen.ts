@@ -40,12 +40,37 @@ export const generatedTools: GeneratedTool[] = [
         BaseContainerConfig: {
           type: 'object',
           description:
-            'Container configuration universal to every containerized resource. Compose ContainerConfig instead unless the resource cannot support private registries (clusters, until the upstream input accepts a registry credential).\n',
+            'Container configuration universal to every containerized resource. Compose ContainerConfig instead unless the resource cannot support a direct registry credential (clusters — there the registry credential arrives via a pod template, see CreateClusterRequest.templateId).\n',
           properties: {
             args: {
               type: 'string',
-              description: 'Arguments passed to the container entrypoint',
-              examples: [''],
+              description:
+                'The container\'s command, as a single raw string. This is the field `entrypoint` and `cmd` encode into, exposed in its stored form.\n\nTwo shapes are accepted. A bare shell string is treated as CMD and split into arguments, which is what the console\'s "Container start command" field writes. A JSON object of the form `{"entrypoint":[...],"cmd":[...]}` sets either or both explicitly.\n\nResponses always return both representations: `args` exactly as stored, plus the deconstructed `entrypoint` and `cmd`. Supplying `args` together with `entrypoint` or `cmd` is allowed only when they describe the same command, so a read-modify-write client can send back everything it received. Send `""` to clear, omit to leave unchanged.\n',
+              examples: [
+                '--model meta-llama/Llama-3-8B --max-model-len 8192',
+                '{"entrypoint":["/bin/bash","-c"],"cmd":["python -u main.py"]}',
+                '',
+              ],
+            },
+            cmd: {
+              type: 'array',
+              items: {
+                type: 'string',
+              },
+              description:
+                'Container CMD in exec form. When the image defines an ENTRYPOINT, this is the argument list passed to it. Encoded into the `args` field; supplying both is allowed only when they describe the same command. Send `[]` to clear, omit to leave unchanged.\n',
+              examples: [
+                ['--model', 'meta-llama/Llama-3-8B', '--max-model-len', '8192'],
+              ],
+            },
+            entrypoint: {
+              type: 'array',
+              items: {
+                type: 'string',
+              },
+              description:
+                "Container ENTRYPOINT in exec form, overriding the image's own. Encoded into `args` field; supplying both is allowed only when they describe the same command. Send `[]` to clear, omit to leave unchanged.\n",
+              examples: [['/bin/bash', '-c']],
             },
             disk: {
               type: 'integer',
@@ -126,7 +151,7 @@ export const generatedTools: GeneratedTool[] = [
               type: 'object',
               required: ['name', 'type', 'compute'],
               description:
-                'Request body for creating a cluster. `compute` defines the\nhomogeneous pod shape; the container configuration (image, env, ports,\n…) applies to every pod and can be spread from a template response.\nPrivate registries are not yet supported for clusters — there is no\n`registry` field here, unlike the other create requests.\n',
+                'Request body for creating a cluster. `compute` defines the\nhomogeneous pod shape; the container configuration (image, env, ports,\n…) applies to every pod. Pass `templateId` to provision every member\npod from a pod template instead of inline container fields — the\ntemplate also supplies the container registry credential, the only\nprivate-image path for clusters (a bare `registry` property on this\nbody is rejected).\n',
               properties: {
                 compute: {
                   $ref: '#/$defs/ClusterCompute',
@@ -138,6 +163,13 @@ export const generatedTools: GeneratedTool[] = [
                 },
                 type: {
                   $ref: '#/$defs/ClusterType',
+                },
+                templateId: {
+                  type: 'string',
+                  minLength: 1,
+                  description:
+                    'ID of a pod template to provision every member pod from. The\ntemplate supplies the container settings (image, args, disk,\nenv, ports) and the container registry credential for private\nimages — the only private-image path for clusters. Mutually\nexclusive with `image`, `args`, `entrypoint`, `cmd`, `disk`,\n`env`, `ports`, and `mounts` (rejected with 400). The cluster\nretains the link: the `template` response field is set. Must be\na non-serverless pod template accessible to the caller.\n',
+                  examples: ['30zmvf89kd'],
                 },
                 dataCenterIds: {
                   type: 'array',
@@ -292,12 +324,37 @@ export const generatedTools: GeneratedTool[] = [
         BaseContainerConfig: {
           type: 'object',
           description:
-            'Container configuration universal to every containerized resource. Compose ContainerConfig instead unless the resource cannot support private registries (clusters, until the upstream input accepts a registry credential).\n',
+            'Container configuration universal to every containerized resource. Compose ContainerConfig instead unless the resource cannot support a direct registry credential (clusters — there the registry credential arrives via a pod template, see CreateClusterRequest.templateId).\n',
           properties: {
             args: {
               type: 'string',
-              description: 'Arguments passed to the container entrypoint',
-              examples: [''],
+              description:
+                'The container\'s command, as a single raw string. This is the field `entrypoint` and `cmd` encode into, exposed in its stored form.\n\nTwo shapes are accepted. A bare shell string is treated as CMD and split into arguments, which is what the console\'s "Container start command" field writes. A JSON object of the form `{"entrypoint":[...],"cmd":[...]}` sets either or both explicitly.\n\nResponses always return both representations: `args` exactly as stored, plus the deconstructed `entrypoint` and `cmd`. Supplying `args` together with `entrypoint` or `cmd` is allowed only when they describe the same command, so a read-modify-write client can send back everything it received. Send `""` to clear, omit to leave unchanged.\n',
+              examples: [
+                '--model meta-llama/Llama-3-8B --max-model-len 8192',
+                '{"entrypoint":["/bin/bash","-c"],"cmd":["python -u main.py"]}',
+                '',
+              ],
+            },
+            cmd: {
+              type: 'array',
+              items: {
+                type: 'string',
+              },
+              description:
+                'Container CMD in exec form. When the image defines an ENTRYPOINT, this is the argument list passed to it. Encoded into the `args` field; supplying both is allowed only when they describe the same command. Send `[]` to clear, omit to leave unchanged.\n',
+              examples: [
+                ['--model', 'meta-llama/Llama-3-8B', '--max-model-len', '8192'],
+              ],
+            },
+            entrypoint: {
+              type: 'array',
+              items: {
+                type: 'string',
+              },
+              description:
+                "Container ENTRYPOINT in exec form, overriding the image's own. Encoded into `args` field; supplying both is allowed only when they describe the same command. Send `[]` to clear, omit to leave unchanged.\n",
+              examples: [['/bin/bash', '-c']],
             },
             disk: {
               type: 'integer',
@@ -359,7 +416,7 @@ export const generatedTools: GeneratedTool[] = [
               type: 'array',
               minItems: 1,
               description:
-                'Serverless GPU pool IDs (as returned by `GET /v2/catalog/gpus` in\n`pool`). Workers are placed on whichever listed pool has capacity.\nNarrow a pool down to specific cards with `excludedTypes`.\n',
+                'Serverless GPU pool IDs (as returned by `GET /v2/catalog/gpus` in\n`pool`). Workers are placed on whichever listed pool has capacity.\nNarrow a pool down to specific cards with `excludedTypes`.\n\nOn `PATCH`, `pools` and `excludedTypes` are one selection and are\nreplaced together, so sending `pools` by itself **clears the\nexclusions**. Two cases:\n\n- **Changing pools, keeping exclusions** — send both fields in one\n  request: `{"gpu": {"pools": ["ADA_24"], "excludedTypes":\n  ["NVIDIA L40"]}}`. `GET` the endpoint first to read the current\n  `excludedTypes` and resend the ones that still apply to the new\n  pools; an exclusion naming a type outside `pools` is a 400.\n- **Changing only `count` or a CUDA constraint** — omit `pools`:\n  `{"gpu": {"minCudaVersion": "12.4"}}`. The pool list and the\n  exclusions are both left exactly as they are.\n\n`excludedTypes` documents the full rule.\n',
               items: {
                 type: 'string',
               },
@@ -756,12 +813,37 @@ export const generatedTools: GeneratedTool[] = [
         BaseContainerConfig: {
           type: 'object',
           description:
-            'Container configuration universal to every containerized resource. Compose ContainerConfig instead unless the resource cannot support private registries (clusters, until the upstream input accepts a registry credential).\n',
+            'Container configuration universal to every containerized resource. Compose ContainerConfig instead unless the resource cannot support a direct registry credential (clusters — there the registry credential arrives via a pod template, see CreateClusterRequest.templateId).\n',
           properties: {
             args: {
               type: 'string',
-              description: 'Arguments passed to the container entrypoint',
-              examples: [''],
+              description:
+                'The container\'s command, as a single raw string. This is the field `entrypoint` and `cmd` encode into, exposed in its stored form.\n\nTwo shapes are accepted. A bare shell string is treated as CMD and split into arguments, which is what the console\'s "Container start command" field writes. A JSON object of the form `{"entrypoint":[...],"cmd":[...]}` sets either or both explicitly.\n\nResponses always return both representations: `args` exactly as stored, plus the deconstructed `entrypoint` and `cmd`. Supplying `args` together with `entrypoint` or `cmd` is allowed only when they describe the same command, so a read-modify-write client can send back everything it received. Send `""` to clear, omit to leave unchanged.\n',
+              examples: [
+                '--model meta-llama/Llama-3-8B --max-model-len 8192',
+                '{"entrypoint":["/bin/bash","-c"],"cmd":["python -u main.py"]}',
+                '',
+              ],
+            },
+            cmd: {
+              type: 'array',
+              items: {
+                type: 'string',
+              },
+              description:
+                'Container CMD in exec form. When the image defines an ENTRYPOINT, this is the argument list passed to it. Encoded into the `args` field; supplying both is allowed only when they describe the same command. Send `[]` to clear, omit to leave unchanged.\n',
+              examples: [
+                ['--model', 'meta-llama/Llama-3-8B', '--max-model-len', '8192'],
+              ],
+            },
+            entrypoint: {
+              type: 'array',
+              items: {
+                type: 'string',
+              },
+              description:
+                "Container ENTRYPOINT in exec form, overriding the image's own. Encoded into `args` field; supplying both is allowed only when they describe the same command. Send `[]` to clear, omit to leave unchanged.\n",
+              examples: [['/bin/bash', '-c']],
             },
             disk: {
               type: 'integer',
@@ -1088,19 +1170,73 @@ export const generatedTools: GeneratedTool[] = [
             name: {
               type: 'string',
               minLength: 1,
+              maxLength: 191,
               examples: ['my-private-registry'],
             },
             password: {
               type: 'string',
               minLength: 1,
+              maxLength: 16384,
               description:
                 'Registry password (write-only, not returned in responses)',
             },
             username: {
               type: 'string',
               minLength: 1,
+              maxLength: 191,
               description:
                 'Registry username (write-only, not returned in responses)',
+            },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: 'create-secret',
+    operationId: 'createSecret',
+    description:
+      "Create a secret. Stores a new account-scoped encrypted string. `name` must be unique across the account's secrets and is immutable; `value` is write-only and can never be read back through the API. Use the secret from pods, serverless endpoints, and templates by setting an environment variable's value to `{{ RUNPOD_SECRET_<name> }}` — Runpod substitutes the stored value when the pod or worker boots. Returns `201` with the created secret's metadata, or `409` when the name is already taken.",
+    method: 'POST',
+    path: '/v2/account/secrets',
+    params: [],
+    hasBody: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        body: {
+          $ref: '#/$defs/CreateSecretRequest',
+        },
+      },
+      required: ['body'],
+      $defs: {
+        CreateSecretRequest: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['name', 'value'],
+          properties: {
+            name: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 191,
+              pattern: '^[a-zA-Z_][a-zA-Z0-9_.\\-/]*$',
+              description:
+                'Unique name for the secret — referenced from environment variables as `{{ RUNPOD_SECRET_<name> }}`; immutable after creation. Maximum 191 characters, must start with a letter or underscore, and may contain letters, digits, and `_.-/`. Names beginning with the reserved prefix `RUNPOD` are rejected (case-insensitive).',
+              examples: ['hf-token'],
+            },
+            value: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 16777216,
+              description:
+                'The secret value. Write-only — never returned by the API. Must be smaller than 16 MiB of UTF-8 text (strictly under 16,777,216 bytes).',
+            },
+            description: {
+              type: 'string',
+              maxLength: 65535,
+              description:
+                'Optional human-readable description, at most 65,535 bytes of UTF-8 text.',
+              examples: ['Hugging Face read token'],
             },
           },
         },
@@ -1128,12 +1264,37 @@ export const generatedTools: GeneratedTool[] = [
         BaseContainerConfig: {
           type: 'object',
           description:
-            'Container configuration universal to every containerized resource. Compose ContainerConfig instead unless the resource cannot support private registries (clusters, until the upstream input accepts a registry credential).\n',
+            'Container configuration universal to every containerized resource. Compose ContainerConfig instead unless the resource cannot support a direct registry credential (clusters — there the registry credential arrives via a pod template, see CreateClusterRequest.templateId).\n',
           properties: {
             args: {
               type: 'string',
-              description: 'Arguments passed to the container entrypoint',
-              examples: [''],
+              description:
+                'The container\'s command, as a single raw string. This is the field `entrypoint` and `cmd` encode into, exposed in its stored form.\n\nTwo shapes are accepted. A bare shell string is treated as CMD and split into arguments, which is what the console\'s "Container start command" field writes. A JSON object of the form `{"entrypoint":[...],"cmd":[...]}` sets either or both explicitly.\n\nResponses always return both representations: `args` exactly as stored, plus the deconstructed `entrypoint` and `cmd`. Supplying `args` together with `entrypoint` or `cmd` is allowed only when they describe the same command, so a read-modify-write client can send back everything it received. Send `""` to clear, omit to leave unchanged.\n',
+              examples: [
+                '--model meta-llama/Llama-3-8B --max-model-len 8192',
+                '{"entrypoint":["/bin/bash","-c"],"cmd":["python -u main.py"]}',
+                '',
+              ],
+            },
+            cmd: {
+              type: 'array',
+              items: {
+                type: 'string',
+              },
+              description:
+                'Container CMD in exec form. When the image defines an ENTRYPOINT, this is the argument list passed to it. Encoded into the `args` field; supplying both is allowed only when they describe the same command. Send `[]` to clear, omit to leave unchanged.\n',
+              examples: [
+                ['--model', 'meta-llama/Llama-3-8B', '--max-model-len', '8192'],
+              ],
+            },
+            entrypoint: {
+              type: 'array',
+              items: {
+                type: 'string',
+              },
+              description:
+                "Container ENTRYPOINT in exec form, overriding the image's own. Encoded into `args` field; supplying both is allowed only when they describe the same command. Send `[]` to clear, omit to leave unchanged.\n",
+              examples: [['/bin/bash', '-c']],
             },
             disk: {
               type: 'integer',
@@ -1418,6 +1579,31 @@ export const generatedTools: GeneratedTool[] = [
     },
   },
   {
+    name: 'delete-secret',
+    operationId: 'deleteSecret',
+    description:
+      "Delete a secret. Permanently deletes a secret. Environment variables referencing the deleted secret's name will no longer resolve to a value.",
+    method: 'DELETE',
+    path: '/v2/account/secrets/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Secret identifier',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
     name: 'delete-template',
     operationId: 'deleteTemplate',
     description:
@@ -1616,7 +1802,7 @@ export const generatedTools: GeneratedTool[] = [
     name: 'get-endpoint-build',
     operationId: 'getEndpointBuild',
     description:
-      "Get a serverless endpoint build. Returns one of the endpoint's GitHub builds by id, regardless of age — unlike the list, which is capped to recent history.",
+      "Get a serverless endpoint build. Returns one of the endpoint's GitHub builds by id, regardless of age — no need to page through `GET /v2/serverless/{id}/builds` to reach it.",
     method: 'GET',
     path: '/v2/serverless/{id}/builds/{buildId}',
     params: [
@@ -1841,6 +2027,31 @@ export const generatedTools: GeneratedTool[] = [
       properties: {
         id: {
           type: 'string',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'get-secret',
+    operationId: 'getSecret',
+    description:
+      "Get a secret. Returns a single secret's metadata by ID. The value is write-only and never returned.",
+    method: 'GET',
+    path: '/v2/account/secrets/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Secret identifier',
         },
       },
       required: ['id'],
@@ -2353,13 +2564,21 @@ export const generatedTools: GeneratedTool[] = [
     name: 'list-endpoint-builds',
     operationId: 'listEndpointBuilds',
     description:
-      "List serverless endpoint builds. Returns the endpoint's GitHub build history, newest first (Runpod GitHub-build integration). At most the 100 most recent builds are returned; any older build can still be fetched by id via `GET /v2/serverless/{id}/builds/{buildId}`. Stream a build's logs via `/v2/serverless/{id}/builds/{buildId}/logs`.",
+      "List serverless endpoint builds. Returns the endpoint's GitHub build history, newest first (Runpod GitHub-build integration), cursor-paginated; an omitted `limit` defaults to 100, so a bare request returns at most the 100 most recent builds. Any build can also be fetched by id via `GET /v2/serverless/{id}/builds/{buildId}`. Stream a build's logs via `/v2/serverless/{id}/builds/{buildId}/logs`.",
     method: 'GET',
     path: '/v2/serverless/{id}/builds',
     params: [
       {
         name: 'id',
         location: 'path',
+      },
+      {
+        name: 'cursor',
+        location: 'query',
+      },
+      {
+        name: 'limit',
+        location: 'query',
       },
     ],
     hasBody: false,
@@ -2370,6 +2589,18 @@ export const generatedTools: GeneratedTool[] = [
           type: 'string',
           description: 'Serverless endpoint identifier',
         },
+        cursor: {
+          type: 'string',
+          minLength: 1,
+          description:
+            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected with 422.\n",
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          description: 'Page size, 1–100. Defaults to 100 when omitted.',
+        },
       },
       required: ['id'],
     },
@@ -2378,13 +2609,21 @@ export const generatedTools: GeneratedTool[] = [
     name: 'list-endpoint-releases',
     operationId: 'listEndpointReleases',
     description:
-      "List serverless endpoint releases. Returns the endpoint's release history (newest first) plus a rollout summary of how many workers are running the current version. Each release is a versioned configuration snapshot with a `diff` of what changed; build-driven releases carry a `buildId` (fetch build detail via the builds sub-routes).",
+      "List serverless endpoint releases. Returns the endpoint's release history (newest first) plus a rollout summary of how many workers are running the current version. Each release is a versioned configuration snapshot with a `diff` of what changed; build-driven releases carry a `buildId` (fetch build detail via the builds sub-routes). Releases are cursor-paginated newest-first; an omitted `limit` defaults to 1000. The rollout summary always describes the endpoint's current state, independent of the page requested.",
     method: 'GET',
     path: '/v2/serverless/{id}/releases',
     params: [
       {
         name: 'id',
         location: 'path',
+      },
+      {
+        name: 'cursor',
+        location: 'query',
+      },
+      {
+        name: 'limit',
+        location: 'query',
       },
     ],
     hasBody: false,
@@ -2394,6 +2633,18 @@ export const generatedTools: GeneratedTool[] = [
         id: {
           type: 'string',
           description: 'Serverless endpoint identifier',
+        },
+        cursor: {
+          type: 'string',
+          minLength: 1,
+          description:
+            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected with 422.\n",
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 1000,
+          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
         },
       },
       required: ['id'],
@@ -2718,12 +2969,20 @@ export const generatedTools: GeneratedTool[] = [
     name: 'list-pods',
     operationId: 'listPods',
     description:
-      'List pods. Returns pods owned by the authenticated user. Cluster member pods are excluded by default; set `includeClusterPods=true` to include them (each carries a non-null `cluster` membership block).',
+      'List pods. Returns pods owned by the authenticated user. Cluster member pods are excluded by default; set `includeClusterPods=true` to include them (each carries a non-null `cluster` membership block). Results are cursor-paginated newest-first; an omitted `limit` defaults to 1000. When cluster member pods are excluded, the exclusion applies to each page after it is cut, so a page may hold fewer than `limit` pods — follow `pagination.nextCursor` until `hasNextPage` is false rather than counting items.',
     method: 'GET',
     path: '/v2/pods',
     params: [
       {
         name: 'includeClusterPods',
+        location: 'query',
+      },
+      {
+        name: 'cursor',
+        location: 'query',
+      },
+      {
+        name: 'limit',
         location: 'query',
       },
     ],
@@ -2737,6 +2996,18 @@ export const generatedTools: GeneratedTool[] = [
           description:
             'Include cluster member pods in the result. Defaults to false.',
         },
+        cursor: {
+          type: 'string',
+          minLength: 1,
+          description:
+            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected with 422.\n",
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 1000,
+          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+        },
       },
     },
   },
@@ -2744,7 +3015,7 @@ export const generatedTools: GeneratedTool[] = [
     name: 'list-public-templates',
     operationId: 'listPublicTemplates',
     description:
-      "List public templates. Returns the public template catalog. `source` selects which slice: `official` (the default) is Runpod-curated templates, `verified` is community templates Runpod has verified, and `community` is everything else other users have shared publicly. Both pod and serverless templates appear — use each entry's `serverless` flag to tell them apart. `registry` is always null for templates you don't own. Your own templates (public or private) are managed under `/v2/templates`; fetch any individual template — catalog or owned — via `/v2/templates/{id}`. At most 100 templates are returned. Pagination is not yet supported.",
+      "List public templates. Returns the public template catalog. `source` selects which slice: `official` (the default) is Runpod-curated templates, `verified` is community templates Runpod has verified, and `community` is everything else other users have shared publicly. Both pod and serverless templates appear — use each entry's `serverless` flag to tell them apart. `registry` is always null for templates you don't own. Your own templates (public or private) are managed under `/v2/templates`; fetch any individual template — catalog or owned — via `/v2/templates/{id}`. At most 100 templates are returned. Cursor pagination is not yet supported here; `pagination` is always the exhausted marker (`nextCursor: null`, `hasNextPage: false`).",
     method: 'GET',
     path: '/v2/catalog/templates',
     params: [
@@ -2779,6 +3050,31 @@ export const generatedTools: GeneratedTool[] = [
     inputSchema: {
       type: 'object',
       properties: {},
+    },
+  },
+  {
+    name: 'list-secrets',
+    operationId: 'listSecrets',
+    description:
+      "List secrets. Returns the account's secrets — encrypted strings referenced from pod, serverless, and template environment variables with the `{{ RUNPOD_SECRET_<name> }}` placeholder syntax, substituted with the secret's value when the pod or worker boots. Secret values are write-only and are never returned.",
+    method: 'GET',
+    path: '/v2/account/secrets',
+    params: [
+      {
+        name: 'name',
+        location: 'query',
+      },
+    ],
+    hasBody: false,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description:
+            'When provided, returns only the secret with this name (case-insensitive).',
+        },
+      },
     },
   },
   {
@@ -3000,12 +3296,37 @@ export const generatedTools: GeneratedTool[] = [
         BaseContainerConfig: {
           type: 'object',
           description:
-            'Container configuration universal to every containerized resource. Compose ContainerConfig instead unless the resource cannot support private registries (clusters, until the upstream input accepts a registry credential).\n',
+            'Container configuration universal to every containerized resource. Compose ContainerConfig instead unless the resource cannot support a direct registry credential (clusters — there the registry credential arrives via a pod template, see CreateClusterRequest.templateId).\n',
           properties: {
             args: {
               type: 'string',
-              description: 'Arguments passed to the container entrypoint',
-              examples: [''],
+              description:
+                'The container\'s command, as a single raw string. This is the field `entrypoint` and `cmd` encode into, exposed in its stored form.\n\nTwo shapes are accepted. A bare shell string is treated as CMD and split into arguments, which is what the console\'s "Container start command" field writes. A JSON object of the form `{"entrypoint":[...],"cmd":[...]}` sets either or both explicitly.\n\nResponses always return both representations: `args` exactly as stored, plus the deconstructed `entrypoint` and `cmd`. Supplying `args` together with `entrypoint` or `cmd` is allowed only when they describe the same command, so a read-modify-write client can send back everything it received. Send `""` to clear, omit to leave unchanged.\n',
+              examples: [
+                '--model meta-llama/Llama-3-8B --max-model-len 8192',
+                '{"entrypoint":["/bin/bash","-c"],"cmd":["python -u main.py"]}',
+                '',
+              ],
+            },
+            cmd: {
+              type: 'array',
+              items: {
+                type: 'string',
+              },
+              description:
+                'Container CMD in exec form. When the image defines an ENTRYPOINT, this is the argument list passed to it. Encoded into the `args` field; supplying both is allowed only when they describe the same command. Send `[]` to clear, omit to leave unchanged.\n',
+              examples: [
+                ['--model', 'meta-llama/Llama-3-8B', '--max-model-len', '8192'],
+              ],
+            },
+            entrypoint: {
+              type: 'array',
+              items: {
+                type: 'string',
+              },
+              description:
+                "Container ENTRYPOINT in exec form, overriding the image's own. Encoded into `args` field; supplying both is allowed only when they describe the same command. Send `[]` to clear, omit to leave unchanged.\n",
+              examples: [['/bin/bash', '-c']],
             },
             disk: {
               type: 'integer',
@@ -3067,7 +3388,7 @@ export const generatedTools: GeneratedTool[] = [
               type: 'array',
               minItems: 1,
               description:
-                'Serverless GPU pool IDs (as returned by `GET /v2/catalog/gpus` in\n`pool`). Workers are placed on whichever listed pool has capacity.\nNarrow a pool down to specific cards with `excludedTypes`.\n',
+                'Serverless GPU pool IDs (as returned by `GET /v2/catalog/gpus` in\n`pool`). Workers are placed on whichever listed pool has capacity.\nNarrow a pool down to specific cards with `excludedTypes`.\n\nOn `PATCH`, `pools` and `excludedTypes` are one selection and are\nreplaced together, so sending `pools` by itself **clears the\nexclusions**. Two cases:\n\n- **Changing pools, keeping exclusions** — send both fields in one\n  request: `{"gpu": {"pools": ["ADA_24"], "excludedTypes":\n  ["NVIDIA L40"]}}`. `GET` the endpoint first to read the current\n  `excludedTypes` and resend the ones that still apply to the new\n  pools; an exclusion naming a type outside `pools` is a 400.\n- **Changing only `count` or a CUDA constraint** — omit `pools`:\n  `{"gpu": {"minCudaVersion": "12.4"}}`. The pool list and the\n  exclusions are both left exactly as they are.\n\n`excludedTypes` documents the full rule.\n',
               items: {
                 type: 'string',
               },
@@ -3399,12 +3720,37 @@ export const generatedTools: GeneratedTool[] = [
         BaseContainerConfig: {
           type: 'object',
           description:
-            'Container configuration universal to every containerized resource. Compose ContainerConfig instead unless the resource cannot support private registries (clusters, until the upstream input accepts a registry credential).\n',
+            'Container configuration universal to every containerized resource. Compose ContainerConfig instead unless the resource cannot support a direct registry credential (clusters — there the registry credential arrives via a pod template, see CreateClusterRequest.templateId).\n',
           properties: {
             args: {
               type: 'string',
-              description: 'Arguments passed to the container entrypoint',
-              examples: [''],
+              description:
+                'The container\'s command, as a single raw string. This is the field `entrypoint` and `cmd` encode into, exposed in its stored form.\n\nTwo shapes are accepted. A bare shell string is treated as CMD and split into arguments, which is what the console\'s "Container start command" field writes. A JSON object of the form `{"entrypoint":[...],"cmd":[...]}` sets either or both explicitly.\n\nResponses always return both representations: `args` exactly as stored, plus the deconstructed `entrypoint` and `cmd`. Supplying `args` together with `entrypoint` or `cmd` is allowed only when they describe the same command, so a read-modify-write client can send back everything it received. Send `""` to clear, omit to leave unchanged.\n',
+              examples: [
+                '--model meta-llama/Llama-3-8B --max-model-len 8192',
+                '{"entrypoint":["/bin/bash","-c"],"cmd":["python -u main.py"]}',
+                '',
+              ],
+            },
+            cmd: {
+              type: 'array',
+              items: {
+                type: 'string',
+              },
+              description:
+                'Container CMD in exec form. When the image defines an ENTRYPOINT, this is the argument list passed to it. Encoded into the `args` field; supplying both is allowed only when they describe the same command. Send `[]` to clear, omit to leave unchanged.\n',
+              examples: [
+                ['--model', 'meta-llama/Llama-3-8B', '--max-model-len', '8192'],
+              ],
+            },
+            entrypoint: {
+              type: 'array',
+              items: {
+                type: 'string',
+              },
+              description:
+                "Container ENTRYPOINT in exec form, overriding the image's own. Encoded into `args` field; supplying both is allowed only when they describe the same command. Send `[]` to clear, omit to leave unchanged.\n",
+              examples: [['/bin/bash', '-c']],
             },
             disk: {
               type: 'integer',
@@ -3560,6 +3906,58 @@ export const generatedTools: GeneratedTool[] = [
     },
   },
   {
+    name: 'update-secret',
+    operationId: 'updateSecret',
+    description:
+      "Update a secret. Rotates a secret's value and/or updates its description. Only the provided fields are changed and at least one field is required; the `name` is immutable. Pods and workers receive the new value at their next boot — running instances keep the value they were started with. When both fields are sent, the value is applied first, then the description. The two updates are not atomic: if the description update fails after the value was rotated, the response is an error but the new value has already taken effect. Send the fields in separate requests when that partial outcome matters.",
+    method: 'PATCH',
+    path: '/v2/account/secrets/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Secret identifier',
+        },
+        body: {
+          $ref: '#/$defs/UpdateSecretRequest',
+        },
+      },
+      required: ['id', 'body'],
+      $defs: {
+        UpdateSecretRequest: {
+          type: 'object',
+          additionalProperties: false,
+          minProperties: 1,
+          description:
+            "Only the provided fields are updated; at least one field is required.\nThe secret's `name` is immutable.\n",
+          properties: {
+            value: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 16777216,
+              description:
+                'New secret value, replacing the current one. Write-only. Must be smaller than 16 MiB of UTF-8 text (strictly under 16,777,216 bytes).',
+            },
+            description: {
+              type: 'string',
+              maxLength: 65535,
+              description:
+                'New human-readable description, at most 65,535 bytes of UTF-8 text. Send `""` to clear.',
+            },
+          },
+        },
+      },
+    },
+  },
+  {
     name: 'update-ssh-keys',
     operationId: 'updateSshKeys',
     description:
@@ -3630,12 +4028,37 @@ export const generatedTools: GeneratedTool[] = [
         BaseContainerConfig: {
           type: 'object',
           description:
-            'Container configuration universal to every containerized resource. Compose ContainerConfig instead unless the resource cannot support private registries (clusters, until the upstream input accepts a registry credential).\n',
+            'Container configuration universal to every containerized resource. Compose ContainerConfig instead unless the resource cannot support a direct registry credential (clusters — there the registry credential arrives via a pod template, see CreateClusterRequest.templateId).\n',
           properties: {
             args: {
               type: 'string',
-              description: 'Arguments passed to the container entrypoint',
-              examples: [''],
+              description:
+                'The container\'s command, as a single raw string. This is the field `entrypoint` and `cmd` encode into, exposed in its stored form.\n\nTwo shapes are accepted. A bare shell string is treated as CMD and split into arguments, which is what the console\'s "Container start command" field writes. A JSON object of the form `{"entrypoint":[...],"cmd":[...]}` sets either or both explicitly.\n\nResponses always return both representations: `args` exactly as stored, plus the deconstructed `entrypoint` and `cmd`. Supplying `args` together with `entrypoint` or `cmd` is allowed only when they describe the same command, so a read-modify-write client can send back everything it received. Send `""` to clear, omit to leave unchanged.\n',
+              examples: [
+                '--model meta-llama/Llama-3-8B --max-model-len 8192',
+                '{"entrypoint":["/bin/bash","-c"],"cmd":["python -u main.py"]}',
+                '',
+              ],
+            },
+            cmd: {
+              type: 'array',
+              items: {
+                type: 'string',
+              },
+              description:
+                'Container CMD in exec form. When the image defines an ENTRYPOINT, this is the argument list passed to it. Encoded into the `args` field; supplying both is allowed only when they describe the same command. Send `[]` to clear, omit to leave unchanged.\n',
+              examples: [
+                ['--model', 'meta-llama/Llama-3-8B', '--max-model-len', '8192'],
+              ],
+            },
+            entrypoint: {
+              type: 'array',
+              items: {
+                type: 'string',
+              },
+              description:
+                "Container ENTRYPOINT in exec form, overriding the image's own. Encoded into `args` field; supplying both is allowed only when they describe the same command. Send `[]` to clear, omit to leave unchanged.\n",
+              examples: [['/bin/bash', '-c']],
             },
             disk: {
               type: 'integer',
