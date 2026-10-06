@@ -2,7 +2,8 @@
 // derive theirs from the HTTP method (specgen/generator/tools.ts); curated
 // tools have no method to read, so each one picks the set that matches what
 // it does. Every tool here reaches the Runpod API, so openWorldHint is always
-// true.
+// true. destructiveHint here means "can delete a resource or work in flight",
+// not "can lose state": an additive update such as a PATCH is not destructive.
 import type { ToolAnnotations } from '../types.js';
 
 /** A pure read: safe to call without asking anyone. */

@@ -25,6 +25,18 @@ exclude:
 # operationId -> tool name overrides; default is the kebab-cased operationId.
 rename: {}
 
+# operationId -> annotation overrides, merged over the hints derived from the
+# HTTP method. Use for operations whose method understates what they do. The
+# generator rejects keys whose operationId is absent from the spec.
+annotations:
+  # POST, but action terminate deletes the pod (equivalent to deletePod). A
+  # host lists tools before it sees the argument, so the whole tool is marked.
+  podAction:
+    destructiveHint: true
+  # PUT that replaces the whole key set, removing every key not in the request.
+  updateSshKeys:
+    destructiveHint: true
+
 # operationId -> description overrides; default is the spec summary+description.
 # The mutation-tool overrides carry the critical gotchas inline so the
 # BARE-CLIENT path (no skills installed) still sees them at tool-choice time.

@@ -56,12 +56,18 @@ test('every tool reaches the client with a complete annotation set', async () =>
   }
 });
 
-test('generated annotations follow the HTTP method they wrap', () => {
+test('generated annotations follow the HTTP method they wrap, plus config overrides', () => {
+  // Operations whose method understates them: a POST and a PUT that delete.
+  const overridden = new Set(['pod-action', 'update-ssh-keys']);
   for (const tool of generatedTools) {
     assert.equal(tool.annotations.readOnlyHint, tool.method === 'GET');
-    assert.equal(tool.annotations.destructiveHint, tool.method === 'DELETE');
+    assert.equal(
+      tool.annotations.destructiveHint,
+      tool.method === 'DELETE' || overridden.has(tool.name),
+      tool.name
+    );
   }
-  // The DELETE tools are the set a host most needs to gate.
+  // The tools that can delete are the set a host most needs to gate.
   assert.deepEqual(
     generatedTools
       .filter((tool) => tool.annotations.destructiveHint)
@@ -74,7 +80,9 @@ test('generated annotations follow the HTTP method they wrap', () => {
       'delete-registry',
       'delete-secret',
       'delete-template',
+      'pod-action',
       'revoke-delegation',
+      'update-ssh-keys',
     ]
   );
 });

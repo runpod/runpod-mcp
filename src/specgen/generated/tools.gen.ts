@@ -3463,7 +3463,7 @@ export const generatedTools: GeneratedTool[] = [
     hasBody: true,
     annotations: {
       readOnlyHint: false,
-      destructiveHint: false,
+      destructiveHint: true,
       idempotentHint: false,
       openWorldHint: true,
     },
@@ -4302,7 +4302,7 @@ export const generatedTools: GeneratedTool[] = [
     hasBody: true,
     annotations: {
       readOnlyHint: false,
-      destructiveHint: false,
+      destructiveHint: true,
       idempotentHint: true,
       openWorldHint: true,
     },
