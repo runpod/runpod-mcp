@@ -1,7 +1,9 @@
-# Manual production spec update. Run it from the Actions tab (Run workflow)
-# when spec-drift goes red, or whenever you want the vendored spec current.
+# Manual production spec and TypeScript SDK update. Run it from the Actions tab
+# (Run workflow) when spec-drift goes red, after an SDK release, or whenever you
+# want both current.
 #
-# It re-vendors specgen/spec/openapi.yaml from production, regenerates
+# It re-vendors specgen/spec/openapi.yaml from production, updates
+# @runpod/typescript-api-sdk to latest, regenerates
 # src/specgen/generated/tools.gen.ts, validates, and opens or updates one PR on
 # automation/production-spec. A new upstream operation fails the specgen gates
 # until it is generated or excluded with a reason. That PR still opens, as a
@@ -52,12 +54,38 @@ jobs:
           else
             echo 'changed=true' >> "$GITHUB_OUTPUT"
           fi
+      # The generated tools call the SDK, so it moves with the spec. Publish the
+      # SDK's own spec update first, or this run picks up the old version.
+      - name: Update the TypeScript SDK to latest
+        id: sdk
+        run: |
+          before=$(jq -r '.devDependencies["@runpod/typescript-api-sdk"]' package.json)
+          pnpm update --latest @runpod/typescript-api-sdk
+          after=$(jq -r '.devDependencies["@runpod/typescript-api-sdk"]' package.json)
+          echo "before=$before" >> "$GITHUB_OUTPUT"
+          echo "after=$after" >> "$GITHUB_OUTPUT"
+          if [ "$before" = "$after" ]; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Decide whether to update
+        id: any
+        env:
+          SPEC: ${{ steps.spec.outputs.changed }}
+          SDK: ${{ steps.sdk.outputs.changed }}
+        run: |
+          if [ "$SPEC" = true ] || [ "$SDK" = true ]; then
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          fi
       - name: Regenerate tools
-        if: steps.spec.outputs.changed == 'true'
+        if: steps.any.outputs.changed == 'true'
         run: pnpm generate:tools
       - name: Validate
         id: validate
-        if: steps.spec.outputs.changed == 'true'
+        if: steps.any.outputs.changed == 'true'
         continue-on-error: true
         run: |
           pnpm generate:check
@@ -66,18 +94,24 @@ jobs:
           pnpm test
           pnpm run build
       - name: Add a changeset
-        if: steps.spec.outputs.changed == 'true'
+        if: steps.any.outputs.changed == 'true'
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SPEC: ${{ steps.spec.outputs.changed }}
+          SDK: ${{ steps.sdk.outputs.changed }}
+          SDK_BEFORE: ${{ steps.sdk.outputs.before }}
+          SDK_AFTER: ${{ steps.sdk.outputs.after }}
         run: |
-          cat > .changeset/production-spec-update.md <<EOF
-          ---
-          '@runpod/mcp-server': minor
-          ---
-
-          Resync the vendored v2 OpenAPI spec with production as of
-          $(date -u +%Y-%m-%d) and regenerate the tools. Update run: $RUN_URL
-          EOF
+          {
+            printf -- "---\n'@runpod/mcp-server': minor\n---\n\n"
+            if [ "$SPEC" = true ]; then
+              printf 'Resync the vendored v2 OpenAPI spec with production as of %s and regenerate the tools.\n' "$(date -u +%Y-%m-%d)"
+            fi
+            if [ "$SDK" = true ]; then
+              printf 'Update `@runpod/typescript-api-sdk` from %s to %s.\n' "$SDK_BEFORE" "$SDK_AFTER"
+            fi
+            printf '\nUpdate run: %s\n' "$RUN_URL"
+          } > .changeset/production-spec-update.md
       # Runs even with no change so the action closes a superseded update PR.
       - name: Create or update the spec update PR
         id: update-pr
@@ -88,13 +122,17 @@ jobs:
           add-paths: |
             specgen/spec/openapi.yaml
             src/specgen/generated/tools.gen.ts
+            package.json
+            pnpm-lock.yaml
             .changeset/production-spec-update.md
-          commit-message: 'chore(spec): resync the vendored v2 spec with production'
-          title: 'chore(spec): resync the vendored v2 spec with production'
+          commit-message: 'chore(spec): resync the v2 spec and TypeScript SDK with production'
+          title: 'chore(spec): resync the v2 spec and TypeScript SDK with production'
           draft: ${{ steps.validate.outcome != 'success' }}
           body: |
-            Re-vendor `specgen/spec/openapi.yaml` from production and regenerate `src/specgen/generated/tools.gen.ts`.
+            Re-vendor `specgen/spec/openapi.yaml` from production, update `@runpod/typescript-api-sdk` to latest, and regenerate `src/specgen/generated/tools.gen.ts`.
 
+            Spec changed: ${{ steps.spec.outputs.changed }}
+            SDK: ${{ steps.sdk.outputs.before }} → ${{ steps.sdk.outputs.after }}
             Source: https://api.runpod.io/v2/openapi.json
             Update run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
             Validation (generate:check, type-check, lint, test, build): **${{ steps.validate.outcome }}**
