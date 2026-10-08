@@ -1,6 +1,7 @@
-# Manual production spec and TypeScript SDK update. Run it from the Actions tab
-# (Run workflow) when spec-drift goes red, after an SDK release, or whenever you
-# want both current.
+# Daily and manual production spec and TypeScript SDK update. It runs every day
+# an hour after the SDK's own spec update, so a published SDK release is picked
+# up the next morning. Run it from the Actions tab (Run workflow) to catch up
+# sooner, for example right after an SDK release.
 #
 # It re-vendors specgen/spec/openapi.yaml from production, updates
 # @runpod/typescript-api-sdk to latest, regenerates
@@ -11,6 +12,8 @@
 name: Production spec update
 
 on:
+  schedule:
+    - cron: '23 10 * * *' # daily, an hour after the SDK's 09:23 run
   workflow_dispatch:
 
 permissions:
@@ -22,7 +25,7 @@ concurrency:
 
 jobs:
   update:
-    # Reject manual runs from other refs.
+    # Scheduled runs use the default branch. Reject manual runs from other refs.
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -112,9 +115,27 @@ jobs:
             fi
             printf '\nUpdate run: %s\n' "$RUN_URL"
           } > .changeset/production-spec-update.md
+      # Updating the PR resets the branch to main plus one bot commit. If anyone
+      # else has pushed a fix onto it, leave it alone until that PR merges or
+      # the branch is deleted.
+      - name: Check the update branch for pushed fixes
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          if ! committers=$(gh api "repos/$GH_REPO/compare/$BASE...automation/production-spec" --jq '.commits[].commit.committer.email' 2>/dev/null); then
+            echo 'skip=false' >> "$GITHUB_OUTPUT"
+          elif printf '%s\n' "$committers" | grep -v -e '^$' -e '^41898282+github-actions\[bot\]@users.noreply.github.com$' -e '^noreply@github.com$' | grep -q .; then
+            echo 'skip=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'skip=false' >> "$GITHUB_OUTPUT"
+          fi
       # Runs even with no change so the action closes a superseded update PR.
       - name: Create or update the spec update PR
         id: update-pr
+        if: steps.guard.outputs.skip != 'true'
         uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
         with:
           branch: automation/production-spec
@@ -141,7 +162,7 @@ jobs:
 
             The changeset is a minor bump. Edit it to describe the tool changes before merging. CI is dispatched on this branch because PRs opened by the Actions token do not trigger it.
 
-            Rerunning the workflow regenerates this branch from main and discards commits pushed to it.
+            The workflow runs daily. While this branch has only bot commits, each run regenerates it from main. Once anyone else pushes to it, runs leave it alone until it merges or the branch is deleted.
       - name: Run CI on the update branch
         if: steps.update-pr.outputs.pull-request-number != '' && steps.update-pr.outputs.pull-request-operation != 'closed'
         env:
@@ -154,8 +175,11 @@ jobs:
           UPDATE_URL: ${{ steps.update-pr.outputs.pull-request-url }}
           UPDATE_OPERATION: ${{ steps.update-pr.outputs.pull-request-operation }}
           VALIDATE: ${{ steps.validate.outcome }}
+          SKIP: ${{ steps.guard.outputs.skip }}
         run: |
-          if [ -n "$UPDATE_URL" ] && [ "$UPDATE_OPERATION" != "closed" ]; then
+          if [ "$SKIP" = true ]; then
+            printf 'automation/production-spec has pushed fixes. Left unchanged. Merge or delete it to resume updates.\n' >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$UPDATE_URL" ] && [ "$UPDATE_OPERATION" != "closed" ]; then
             printf 'Spec update PR: %s (validation: %s)\n' "$UPDATE_URL" "$VALIDATE" >> "$GITHUB_STEP_SUMMARY"
           else
             printf 'Vendored spec already matches production. No PR.\n' >> "$GITHUB_STEP_SUMMARY"
