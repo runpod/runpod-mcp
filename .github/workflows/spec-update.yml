@@ -112,13 +112,14 @@ jobs:
               printf 'Resync the vendored v2 OpenAPI spec with production as of %s and regenerate the tools.\n' "$(date -u +%Y-%m-%d)"
             fi
             if [ "$SDK" = true ]; then
+              # shellcheck disable=SC2016
               printf 'Update `@runpod/typescript-api-sdk` from %s to %s.\n' "$SDK_BEFORE" "$SDK_AFTER"
             fi
             printf '\nUpdate run: %s\n' "$RUN_URL"
           } > .changeset/production-spec-update.md
-      # Updating the PR resets the branch to main plus one bot commit. If anyone
-      # else has pushed a fix onto it, leave it alone until that PR merges or
-      # the branch is deleted.
+      # Updating the PR resets the branch to main plus one bot commit. Protect
+      # commits authored by a person, including edits made in GitHub's web UI
+      # (which uses noreply@github.com as the committer).
       - name: Check the update branch for pushed fixes
         id: guard
         env:
@@ -127,7 +128,8 @@ jobs:
           BASE: ${{ github.event.repository.default_branch }}
         run: |
           if ref_response=$(gh api -i "repos/$GH_REPO/git/ref/heads/automation/production-spec" 2>&1); then
-            if ! committers=$(gh api "repos/$GH_REPO/compare/$BASE...automation/production-spec" --jq '.commits[].commit.committer.email'); then
+            branch_sha=$(gh api "repos/$GH_REPO/git/ref/heads/automation/production-spec" --jq '.object.sha')
+            if ! commits=$(gh api "repos/$GH_REPO/compare/$BASE...automation/production-spec" --jq '.commits[] | [.commit.author.email, .commit.committer.email, (.author.login // "")] | @tsv'); then
               echo '::error::Could not inspect commits on the existing update branch. Leaving it unchanged.'
               exit 1
             fi
@@ -140,11 +142,76 @@ jobs:
             printf '%s\n' "$ref_response" >&2
             exit 1
           fi
-          if printf '%s\n' "$committers" | grep -v -e '^$' -e '^41898282+github-actions\[bot\]@users.noreply.github.com$' -e '^noreply@github.com$' | grep -q .; then
-            echo 'skip=true' >> "$GITHUB_OUTPUT"
+          bot_email='41898282+github-actions[bot]@users.noreply.github.com'
+          human_commits=$(printf '%s\n' "$commits" | awk -F '\t' -v bot="$bot_email" 'NF && ($1 != bot || $2 != bot) { print }')
+          open_pr=$(gh pr list --state open --head automation/production-spec --json number --jq '.[0].number // empty')
+          if [ -z "$open_pr" ]; then
+            # A squash merge leaves the old commits ahead of main. Only remove
+            # the branch when a merged PR still points at this exact head.
+            merged_sha=$(gh pr list --state merged --head automation/production-spec --limit 1 --json headRefOid --jq '.[0].headRefOid // empty')
+            if [ "$merged_sha" = "$branch_sha" ] || [ -z "$human_commits" ]; then
+              gh api -X DELETE "repos/$GH_REPO/git/refs/heads/automation/production-spec" >/dev/null
+              echo 'skip=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo '::error::Update branch exists without an open PR or a matching merged PR. Leaving it unchanged.'
+            exit 1
+          fi
+          if [ -n "$human_commits" ]; then
+            editors=$(printf '%s\n' "$human_commits" | awk -F '\t' '$3 != "" && $3 !~ /\[bot\]$/ { print $3 }' | sort -u | paste -sd ' ' -)
+            {
+              echo 'skip=true'
+              echo "pr=$open_pr"
+              echo "head_sha=$branch_sha"
+              echo "editors=$editors"
+            } >> "$GITHUB_OUTPUT"
           else
             echo 'skip=false' >> "$GITHUB_OUTPUT"
           fi
+      - name: Notify editors about newer upstream changes
+        if: steps.guard.outputs.skip == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.guard.outputs.pr }}
+          EDITORS: ${{ steps.guard.outputs.editors }}
+          SDK_AFTER: ${{ steps.sdk.outputs.after }}
+        run: |
+          git fetch origin refs/heads/automation/production-spec
+          git show FETCH_HEAD:specgen/spec/openapi.yaml > "$RUNNER_TEMP/pr-openapi.yaml"
+          if git diff --no-index --quiet -I '^# on .* by scripts/pull-spec\.ts' \
+              "$RUNNER_TEMP/pr-openapi.yaml" specgen/spec/openapi.yaml; then
+            spec_drift=false
+          else
+            rc=$?
+            if [ "$rc" -ne 1 ]; then exit "$rc"; fi
+            spec_drift=true
+          fi
+          pr_sdk=$(git show FETCH_HEAD:package.json | jq -r '.devDependencies["@runpod/typescript-api-sdk"]')
+          if [ "$spec_drift" = false ] && [ "$pr_sdk" = "$SDK_AFTER" ]; then
+            exit 0
+          fi
+          fingerprint=$( { sed '/^# on .* by scripts\/pull-spec\.ts/d' specgen/spec/openapi.yaml; printf '\n%s\n' "$SDK_AFTER"; } | shasum -a 256 | cut -d ' ' -f 1)
+          marker="<!-- production-spec-update:$fingerprint -->"
+          comments=$(gh api --paginate "repos/$GH_REPO/issues/$PR/comments?per_page=100" --jq '.[].body')
+          if printf '%s\n' "$comments" | grep -Fq "$marker"; then
+            exit 0
+          fi
+          mentions=
+          for editor in $EDITORS; do mentions="$mentions @$editor"; done
+          {
+            printf '%s\n' "$marker"
+            printf 'Production has newer spec or SDK changes than this PR.%s Please update the spec and generated tools on this branch when ready. The daily workflow will leave your edits intact.\n' "$mentions"
+            printf '\nSpec differs: %s. SDK on PR: %s; latest: %s.\n' "$spec_drift" "$pr_sdk" "$SDK_AFTER"
+          } > "$RUNNER_TEMP/spec-update-comment.md"
+          gh pr comment "$PR" --body-file "$RUNNER_TEMP/spec-update-comment.md"
+      - name: Refresh spec drift status on the edited PR
+        if: steps.guard.outputs.skip == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.guard.outputs.head_sha }}
+        run: gh workflow run spec-drift.yml --ref automation/production-spec -f update_pr_head_sha="$HEAD_SHA"
       # Runs even with no change so the action closes a superseded update PR.
       - name: Create or update the spec update PR
         id: update-pr
@@ -160,6 +227,8 @@ jobs:
             pnpm-lock.yaml
             .changeset/production-spec-update.md
           commit-message: 'chore(spec): resync the v2 spec and TypeScript SDK with production'
+          author: 'github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>'
+          committer: 'github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>'
           title: 'chore(spec): resync the v2 spec and TypeScript SDK with production'
           draft: ${{ steps.validate.outcome != 'success' }}
           body: |
@@ -175,7 +244,21 @@ jobs:
 
             The changeset is a minor bump. Edit it to describe the tool changes before merging. CI is dispatched on this branch because PRs opened by the Actions token do not trigger it.
 
-            The workflow runs daily. While this branch has only bot commits, each run regenerates it from main. Once anyone else pushes to it, runs leave it alone until it merges or the branch is deleted.
+            The workflow runs daily. While this branch has only bot commits, each run regenerates it from main. Once a person edits it, runs leave it alone and comment when production moves again. Updates resume after the PR merges.
+      - name: Sync draft state with validation
+        if: steps.update-pr.outputs.pull-request-number != '' && steps.update-pr.outputs.pull-request-operation != 'closed'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.update-pr.outputs.pull-request-number }}
+          VALIDATE: ${{ steps.validate.outcome }}
+        run: |
+          is_draft=$(gh pr view "$PR" --json isDraft --jq '.isDraft')
+          if [ "$VALIDATE" = success ] && [ "$is_draft" = true ]; then
+            gh pr ready "$PR"
+          elif [ "$VALIDATE" != success ] && [ "$is_draft" = false ]; then
+            gh pr ready "$PR" --undo
+          fi
       - name: Report validation on the update PR
         if: steps.update-pr.outputs.pull-request-number != '' && steps.update-pr.outputs.pull-request-operation != 'closed'
         env:
@@ -203,6 +286,14 @@ jobs:
           UPDATE_BRANCH: ${{ steps.update-pr.outputs.pull-request-branch }}
           HEAD_SHA: ${{ steps.update-pr.outputs.pull-request-head-sha }}
         run: gh workflow run ci.yml --ref "$UPDATE_BRANCH" -f update_pr_head_sha="$HEAD_SHA"
+      - name: Check spec drift on the update branch
+        if: steps.update-pr.outputs.pull-request-number != '' && steps.update-pr.outputs.pull-request-operation != 'closed'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          UPDATE_BRANCH: ${{ steps.update-pr.outputs.pull-request-branch }}
+          HEAD_SHA: ${{ steps.update-pr.outputs.pull-request-head-sha }}
+        run: gh workflow run spec-drift.yml --ref "$UPDATE_BRANCH" -f update_pr_head_sha="$HEAD_SHA"
       - name: Report result
         env:
           UPDATE_URL: ${{ steps.update-pr.outputs.pull-request-url }}

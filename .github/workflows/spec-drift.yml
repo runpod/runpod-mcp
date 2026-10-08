@@ -13,6 +13,11 @@ on:
   schedule:
     - cron: '17 9 * * *' # daily
   workflow_dispatch:
+    inputs:
+      update_pr_head_sha:
+        description: Head commit of the automated spec update PR
+        required: false
+        type: string
   pull_request:
 
 permissions:
@@ -33,3 +38,31 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Compare vendored spec against the live production spec
         run: pnpm spec:check
+
+  report-update-pr:
+    # PRs created by the Actions token do not trigger pull_request workflows.
+    # Put the dispatched drift result on that PR's head as a commit status.
+    if: always() && github.event_name == 'workflow_dispatch' && inputs.update_pr_head_sha != ''
+    needs: spec-drift
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    steps:
+      - name: Report spec drift on the update PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ inputs.update_pr_head_sha }}
+          DRIFT_RESULT: ${{ needs.spec-drift.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$DRIFT_RESULT" = success ]; then
+            state=success
+          else
+            state=failure
+          fi
+          gh api "repos/$GH_REPO/statuses/$HEAD_SHA" \
+            -f state="$state" \
+            -f context=spec-drift \
+            -f description="Spec drift check: $DRIFT_RESULT" \
+            -f target_url="$RUN_URL" >/dev/null
