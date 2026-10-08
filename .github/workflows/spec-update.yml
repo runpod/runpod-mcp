@@ -126,9 +126,21 @@ jobs:
           GH_REPO: ${{ github.repository }}
           BASE: ${{ github.event.repository.default_branch }}
         run: |
-          if ! committers=$(gh api "repos/$GH_REPO/compare/$BASE...automation/production-spec" --jq '.commits[].commit.committer.email' 2>/dev/null); then
+          if ref_response=$(gh api -i "repos/$GH_REPO/git/ref/heads/automation/production-spec" 2>&1); then
+            if ! committers=$(gh api "repos/$GH_REPO/compare/$BASE...automation/production-spec" --jq '.commits[].commit.committer.email'); then
+              echo '::error::Could not inspect commits on the existing update branch. Leaving it unchanged.'
+              exit 1
+            fi
+          elif printf '%s\n' "$ref_response" | grep -Eq '^HTTP/[0-9.]+ 404 '; then
+            # Only a confirmed missing branch is safe to create from scratch.
             echo 'skip=false' >> "$GITHUB_OUTPUT"
-          elif printf '%s\n' "$committers" | grep -v -e '^$' -e '^41898282+github-actions\[bot\]@users.noreply.github.com$' -e '^noreply@github.com$' | grep -q .; then
+            exit 0
+          else
+            echo '::error::Could not check the update branch. Leaving it unchanged.'
+            printf '%s\n' "$ref_response" >&2
+            exit 1
+          fi
+          if printf '%s\n' "$committers" | grep -v -e '^$' -e '^41898282+github-actions\[bot\]@users.noreply.github.com$' -e '^noreply@github.com$' | grep -q .; then
             echo 'skip=true' >> "$GITHUB_OUTPUT"
           else
             echo 'skip=false' >> "$GITHUB_OUTPUT"
