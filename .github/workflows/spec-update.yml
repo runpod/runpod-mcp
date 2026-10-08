@@ -169,7 +169,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           UPDATE_BRANCH: ${{ steps.update-pr.outputs.pull-request-branch }}
-        run: gh workflow run ci.yml --ref "$UPDATE_BRANCH"
+          HEAD_SHA: ${{ steps.update-pr.outputs.pull-request-head-sha }}
+        run: gh workflow run ci.yml --ref "$UPDATE_BRANCH" -f update_pr_head_sha="$HEAD_SHA"
       - name: Report result
         env:
           UPDATE_URL: ${{ steps.update-pr.outputs.pull-request-url }}

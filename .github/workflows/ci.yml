@@ -8,6 +8,11 @@ on:
   # The spec update workflow dispatches CI on its PR branch. PRs opened by the
   # Actions token do not trigger pull_request runs.
   workflow_dispatch:
+    inputs:
+      update_pr_head_sha:
+        description: Head commit of the automated spec update PR
+        required: false
+        type: string
 
 jobs:
   test:
@@ -89,3 +94,30 @@ jobs:
         if: runner.os != 'Windows'
         run: pnpm run build
 
+  report-spec-update:
+    # A workflow_dispatch job's own checks are not attached to the PR. Publish
+    # the matrix result as a commit status on the PR head instead.
+    if: always() && github.event_name == 'workflow_dispatch' && inputs.update_pr_head_sha != ''
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    steps:
+      - name: Report CI on the spec update PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ inputs.update_pr_head_sha }}
+          MATRIX_RESULT: ${{ needs.test.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$MATRIX_RESULT" = success ]; then
+            state=success
+          else
+            state=failure
+          fi
+          gh api "repos/$GH_REPO/statuses/$HEAD_SHA" \
+            -f state="$state" \
+            -f context=automation/spec-update-ci \
+            -f description="CI matrix: $MATRIX_RESULT" \
+            -f target_url="$RUN_URL" >/dev/null
