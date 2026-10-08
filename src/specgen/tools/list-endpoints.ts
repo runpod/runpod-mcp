@@ -12,9 +12,11 @@ import {
   serverPageQuery,
   serverPagination,
 } from '../pagination.js';
+import { readOnly } from './annotations.js';
 
 export const listEndpoints: CuratedTool = {
   name: 'list-endpoints',
+  annotations: readOnly,
   description:
     'List serverless endpoints owned by the account (trimmed: id, name, image, ' +
     'compute config, worker counts, scaling, data centers per endpoint — env ' +

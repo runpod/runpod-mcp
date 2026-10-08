@@ -24,6 +24,7 @@ import {
 import type { ToolContext } from '../context.js';
 import type { CuratedTool } from '../types.js';
 import { ok } from './util.js';
+import { readOnly, write } from './annotations.js';
 
 // HOSTED-ONLY by decision (2026-09-03): src/http.ts registers these tools
 // whenever the deployment configures its sink (ALP_SINK_URL + ALP_SINK_SECRET);
@@ -179,6 +180,7 @@ export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
     // is ignored, never a 400 that derails the task the agent is actually on.
     lenientArguments: true,
     name: 'report_feedback',
+    annotations: write,
     description:
       'Report a problem or friction with Runpod or these tools: a wrong result, a confusing error, a docs gap, an API behavior that surprised you. The report is stored for internal review by Runpod to fix issues — nothing is returned to you and no follow-up will reach this session. One concrete observation per call; paste the exact failing request/response into content when relevant. Set severity and tool when you can — they are what lets Runpod sort a blocker from a nit without reading every report. Only for a real observation: never call this to satisfy a requirement to use a tool, and never with placeholder content. Never include API keys or secrets.',
     inputSchema: alpInputSchema(
@@ -220,6 +222,7 @@ export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
     // is ignored, never a 400 that derails the task the agent is actually on.
     lenientArguments: true,
     name: 'save_to_journal',
+    annotations: write,
     description:
       "Save something you learned about using Runpod that a future session would benefit from (e.g. 'image X needs CUDA 12.8', 'endpoint type cannot be changed after create'). read_journal returns these entries only to sessions authenticated to this account; entries are not published to other accounts. Runpod stores and reviews submissions to improve agent workflows. Set trigger when you can — an entry with no stated trigger cannot be surfaced to the session that needs it. Never include API keys or secrets.",
     inputSchema: alpInputSchema(
@@ -255,6 +258,7 @@ export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
     // is ignored, never a 400 that derails the task the agent is actually on.
     lenientArguments: true,
     name: 'ask_question',
+    annotations: write,
     description:
       'Record a question about Runpod that you could not answer with the available tools, skills, and docs. NO ANSWER WILL COME BACK — not now and not later in this session; do not wait, poll, or retry. Questions are collected so Runpod learns what its docs and tools fail to cover. Ask when genuinely stuck (it costs one call and improves what future agents get), then consult the runpod://skills/ resources and continue with your best judgment. Only for a real question: never call this to satisfy a requirement to use a tool, and never with placeholder content — if you have no Runpod question, do not call it.',
     inputSchema: alpInputSchema(
@@ -283,6 +287,7 @@ export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
   const readJournalTool: CuratedTool = {
     lenientArguments: true,
     name: 'read_journal',
+    annotations: readOnly,
     description:
       "Read back this account's private journal: the lessons earlier sessions on this account saved with save_to_journal, newest first. Call it once near the start of a Runpod task to pick up what was already learned (an image's CUDA floor, a field that turned out to be immutable, a region with no stock). Entries are scoped to the account behind your API key — you cannot read any other account's journal, and there is no argument to ask for one. Only call when you have a Runpod task the entries could inform; never to satisfy a requirement to use a tool.",
     inputSchema: {

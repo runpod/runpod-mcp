@@ -2,12 +2,15 @@
 import type {
   GeneratedTool,
   GeneratedToolParam,
+  ToolAnnotations,
 } from '../../src/specgen/generated/tools.gen.js';
 
 export interface GeneratorConfig {
   exclude?: Record<string, { replacedBy?: string; reason: string }>;
   rename?: Record<string, string>;
   descriptions?: Record<string, string>;
+  /** operationId -> hints for tools whose HTTP method understates what they do. */
+  annotations?: Record<string, Partial<ToolAnnotations>>;
 }
 
 interface Parameter {
@@ -211,6 +214,23 @@ function operationParameters(
   return [...parameters.values()];
 }
 
+// MCP tool annotations, derived from the HTTP method the tool wraps so they
+// cannot drift from the surface: hosts read these to decide what a human has
+// to approve. Every operation reaches the Runpod API, so openWorldHint is
+// always true. Writes that create or update (POST/PATCH) are additive, so
+// only DELETE is marked destructive; a repeated DELETE or PUT lands on the
+// same state, so those are idempotent — as does any GET. Operations whose
+// method understates them (a POST or PUT that deletes) are overridden in the
+// generator config's annotations.
+function annotationsFor(method: string): ToolAnnotations {
+  return {
+    readOnlyHint: method === 'GET',
+    destructiveHint: method === 'DELETE',
+    idempotentHint: method === 'GET' || method === 'DELETE' || method === 'PUT',
+    openWorldHint: true,
+  };
+}
+
 function buildTool(
   path: string,
   method: string,
@@ -281,6 +301,10 @@ function buildTool(
     path,
     params,
     hasBody,
+    annotations: {
+      ...annotationsFor(method.toUpperCase()),
+      ...config.annotations?.[op.operationId],
+    },
     inputSchema: {
       type: 'object',
       properties,
@@ -303,6 +327,7 @@ export function generateTools(
   const tools: GeneratedTool[] = [];
   const names = new Set<string>();
   const unmatchedExclusions = new Set(Object.keys(config.exclude ?? {}));
+  const unmatchedAnnotations = new Set(Object.keys(config.annotations ?? {}));
   for (const [path, pathItem] of Object.entries(spec.paths)) {
     for (const method of HTTP_METHODS) {
       const op = pathItem[method];
@@ -311,6 +336,7 @@ export function generateTools(
         unmatchedExclusions.delete(op.operationId);
         continue;
       }
+      unmatchedAnnotations.delete(op.operationId);
       const tool = buildTool(path, method, pathItem, op, spec, config, defs);
       if (names.has(tool.name))
         throw new Error(`Duplicate tool name: ${tool.name}`);
@@ -321,6 +347,10 @@ export function generateTools(
   if (unmatchedExclusions.size)
     throw new Error(
       `Excluded operations missing from spec: ${[...unmatchedExclusions].sort().join(', ')}`
+    );
+  if (unmatchedAnnotations.size)
+    throw new Error(
+      `Annotated operations missing from spec: ${[...unmatchedAnnotations].sort().join(', ')}`
     );
   return tools.sort((a, b) => a.name.localeCompare(b.name));
 }

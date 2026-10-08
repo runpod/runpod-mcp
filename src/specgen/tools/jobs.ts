@@ -10,6 +10,7 @@ import { HttpError } from '../clients/http-error.js';
 import type { CuratedTool } from '../types.js';
 import type { ToolContext } from '../context.js';
 import { badRequest, ok, runTool } from './util.js';
+import { destructive, readOnly, write } from './annotations.js';
 
 const ID_PATTERN = '^[a-zA-Z0-9_-]+$';
 const ID_REGEX = new RegExp(ID_PATTERN);
@@ -430,6 +431,7 @@ function validateWait(wait: unknown): string | null {
 
 export const runEndpoint: CuratedTool = {
   name: 'run-endpoint',
+  annotations: write,
   description:
     'Submit an asynchronous job to a Serverless endpoint. Returns a job ID immediately — use get-job-status to poll for results (pass its `wait` to block through a cold start instead of tight-looping). Async results are available for 30 minutes after completion.',
   inputSchema: {
@@ -462,6 +464,7 @@ export const runEndpoint: CuratedTool = {
 
 export const runsyncEndpoint: CuratedTool = {
   name: 'runsync-endpoint',
+  annotations: write,
   description:
     'Submit a synchronous job to a Serverless endpoint and wait for the result. Best for fast tasks: if the job outlives the wait, the response returns a job ID and a non-terminal status (IN_QUEUE or IN_PROGRESS) to poll with get-job-status. Max payload 20 MB; results expire after 1 minute. The wait parameter extends the server-side wait' +
     (HOSTED
@@ -524,6 +527,7 @@ export const runsyncEndpoint: CuratedTool = {
 
 export const getJobStatus: CuratedTool = {
   name: 'get-job-status',
+  annotations: readOnly,
   description:
     'Check the status of a Serverless job. Returns the current status and output when complete. Job statuses: IN_QUEUE, IN_PROGRESS, COMPLETED, FAILED, CANCELLED, TIMED_OUT. Pass `wait` (milliseconds, up to ' +
     STATUS_WAIT_MAX_MS +
@@ -584,6 +588,7 @@ export const getJobStatus: CuratedTool = {
 
 export const streamJob: CuratedTool = {
   name: 'stream-job',
+  annotations: readOnly,
   description: `Retrieve streaming output from a Serverless job. The worker must support streaming output. Polls /stream/{jobId} and collects chunks until the status is COMPLETED, FAILED, CANCELLED, or TIMED_OUT, for up to ${formatBudget(STREAM_BUDGET_MS)}. If the budget expires first, returns the chunks collected so far with pollingTimedOut: true — call stream-job again to resume where it left off, or get-job-status to check without streaming.`,
   inputSchema: {
     type: 'object',
@@ -617,6 +622,7 @@ export const streamJob: CuratedTool = {
 
 export const cancelJob: CuratedTool = {
   name: 'cancel-job',
+  annotations: destructive,
   description: 'Cancel a Serverless job that is queued or in progress.',
   inputSchema: {
     type: 'object',
@@ -643,6 +649,7 @@ export const cancelJob: CuratedTool = {
 
 export const retryJob: CuratedTool = {
   name: 'retry-job',
+  annotations: write,
   description:
     'Retry a failed or timed-out Serverless job. Only works for jobs with FAILED or TIMED_OUT status. The previous output is removed and the job is requeued.',
   inputSchema: {
@@ -670,6 +677,7 @@ export const retryJob: CuratedTool = {
 
 export const endpointHealth: CuratedTool = {
   name: 'endpoint-health',
+  annotations: readOnly,
   description:
     "Get the endpoint-level health rollup for a Serverless endpoint: worker counts by state plus job queue statistics. This is the runtime plane's own /health view and it can lag or disagree with the per-worker truth — when a job is stuck IN_QUEUE, prefer list-endpoint-workers over this rollup for per-worker state — but treat neither as the authority on crash loops, because a container failing to start loops while its worker reports RUNNING or THROTTLED and unhealthy stays 0; stream-worker-logs is what settles it, and note that get-job-status already attaches that worker summary and a hint on every IN_QUEUE result. Zero workers here means the endpoint is waiting for GPU capacity.",
   inputSchema: {
@@ -692,6 +700,7 @@ export const endpointHealth: CuratedTool = {
 
 export const purgeEndpointQueue: CuratedTool = {
   name: 'purge-endpoint-queue',
+  annotations: destructive,
   description:
     'Remove all pending jobs from a Serverless endpoint queue. Only affects queued jobs — in-progress jobs continue running. Use this for error recovery or clearing outdated requests.',
   inputSchema: {

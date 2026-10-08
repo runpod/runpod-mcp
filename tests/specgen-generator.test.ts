@@ -193,6 +193,28 @@ test('generation rejects stale exclusions and skips only known operations', () =
   );
 });
 
+test('annotation overrides merge over the method hints and reject stale keys', () => {
+  const spec = bodySpec({ type: 'object' });
+  assert.deepEqual(
+    generateTools(spec, {
+      annotations: { createExample: { destructiveHint: true } },
+    })[0].annotations,
+    {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    }
+  );
+  assert.throws(
+    () =>
+      generateTools(spec, {
+        annotations: { oldCreateName: { destructiveHint: true } },
+      }),
+    /Annotated operations missing from spec: oldCreateName/
+  );
+});
+
 test('unsupported parameter locations fail unless their operation is excluded', () => {
   for (const location of ['header', 'cookie']) {
     const spec = bodySpec({ type: 'object' });
