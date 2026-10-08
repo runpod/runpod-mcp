@@ -1,0 +1,124 @@
+# Manual production spec update. Run it from the Actions tab (Run workflow)
+# when spec-drift goes red, or whenever you want the vendored spec current.
+#
+# It re-vendors specgen/spec/openapi.yaml from production, regenerates
+# src/specgen/generated/tools.gen.ts, validates, and opens or updates one PR on
+# automation/production-spec. A new upstream operation fails the specgen gates
+# until it is generated or excluded with a reason. That PR still opens, as a
+# draft, so the fix can be pushed onto the branch.
+name: Production spec update
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-spec-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    # Reject manual runs from other refs.
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm spec:pull
+      # pull-spec.ts stamps the pull date in the header. A date-only change is
+      # not a spec change, so drop it rather than open a PR for it.
+      - name: Detect a spec change
+        id: spec
+        run: |
+          if git diff --quiet -I '^# on .* by scripts/pull-spec\.ts' -- specgen/spec/openapi.yaml; then
+            git checkout -- specgen/spec/openapi.yaml
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Regenerate tools
+        if: steps.spec.outputs.changed == 'true'
+        run: pnpm generate:tools
+      - name: Validate
+        id: validate
+        if: steps.spec.outputs.changed == 'true'
+        continue-on-error: true
+        run: |
+          pnpm generate:check
+          pnpm run type-check
+          pnpm run lint
+          pnpm test
+          pnpm run build
+      - name: Add a changeset
+        if: steps.spec.outputs.changed == 'true'
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          cat > .changeset/production-spec-update.md <<EOF
+          ---
+          '@runpod/mcp-server': minor
+          ---
+
+          Resync the vendored v2 OpenAPI spec with production as of
+          $(date -u +%Y-%m-%d) and regenerate the tools. Update run: $RUN_URL
+          EOF
+      # Runs even with no change so the action closes a superseded update PR.
+      - name: Create or update the spec update PR
+        id: update-pr
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
+        with:
+          branch: automation/production-spec
+          base: ${{ github.event.repository.default_branch }}
+          add-paths: |
+            specgen/spec/openapi.yaml
+            src/specgen/generated/tools.gen.ts
+            .changeset/production-spec-update.md
+          commit-message: 'chore(spec): resync the vendored v2 spec with production'
+          title: 'chore(spec): resync the vendored v2 spec with production'
+          draft: ${{ steps.validate.outcome != 'success' }}
+          body: |
+            Re-vendor `specgen/spec/openapi.yaml` from production and regenerate `src/specgen/generated/tools.gen.ts`.
+
+            Source: https://api.runpod.io/v2/openapi.json
+            Update run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Validation (generate:check, type-check, lint, test, build): **${{ steps.validate.outcome }}**
+
+            If validation failed, read the run log. A new upstream operation must be generated or excluded with a reason (see `specgen/README.md`). Push the fix onto this branch.
+
+            The changeset is a minor bump. Edit it to describe the tool changes before merging. CI is dispatched on this branch because PRs opened by the Actions token do not trigger it.
+
+            Rerunning the workflow regenerates this branch from main and discards commits pushed to it.
+      - name: Run CI on the update branch
+        if: steps.update-pr.outputs.pull-request-number != '' && steps.update-pr.outputs.pull-request-operation != 'closed'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          UPDATE_BRANCH: ${{ steps.update-pr.outputs.pull-request-branch }}
+        run: gh workflow run ci.yml --ref "$UPDATE_BRANCH"
+      - name: Report result
+        env:
+          UPDATE_URL: ${{ steps.update-pr.outputs.pull-request-url }}
+          UPDATE_OPERATION: ${{ steps.update-pr.outputs.pull-request-operation }}
+          VALIDATE: ${{ steps.validate.outcome }}
+        run: |
+          if [ -n "$UPDATE_URL" ] && [ "$UPDATE_OPERATION" != "closed" ]; then
+            printf 'Spec update PR: %s (validation: %s)\n' "$UPDATE_URL" "$VALIDATE" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf 'Vendored spec already matches production. No PR.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi

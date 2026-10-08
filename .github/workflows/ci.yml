@@ -5,6 +5,9 @@ on:
     branches: [main]
   # Run on stacked PR bases as well as main.
   pull_request:
+  # The spec update workflow dispatches CI on its PR branch. PRs opened by the
+  # Actions token do not trigger pull_request runs.
+  workflow_dispatch:
 
 jobs:
   test:
