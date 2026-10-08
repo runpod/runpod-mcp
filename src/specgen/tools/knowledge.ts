@@ -22,11 +22,55 @@ const STOPWORDS = new Set(
   )
 );
 
+/** Drop a simple English plural, so "pods" matches "pod" and "policies" "policy". */
+const singular = (word: string) => {
+  if (word.length > 4 && word.endsWith('ies')) return `${word.slice(0, -3)}y`;
+  if (word.length > 3 && word.endsWith('s') && !word.endsWith('ss'))
+    return word.slice(0, -1);
+  return word;
+};
+
 const words = (text: string) =>
   text
     .toLowerCase()
     .split(/[^a-z0-9]+/)
-    .filter((word) => word.length > 1 && !STOPWORDS.has(word));
+    .filter((word) => word.length > 1 && !STOPWORDS.has(word))
+    .map(singular);
+
+/** Levenshtein distance, giving up once it passes max. */
+function editDistance(a: string, b: string, max: number): number {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j++) {
+      current[j] = Math.min(
+        previous[j] + 1,
+        current[j - 1] + 1,
+        previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
+      );
+    }
+    if (Math.min(...current) > max) return max + 1;
+    previous = current;
+  }
+  return previous[b.length];
+}
+
+/** Typos tolerated in a word or name: none under 4 letters, two from 8. */
+const typoBudget = (text: string) =>
+  text.length >= 8 ? 2 : text.length >= 4 ? 1 : 0;
+
+/** A search term five letters or longer also matches a word one typo away. */
+const oneTypo = (word: string, term: string) =>
+  term.length >= 5 && editDistance(word, term, 1) <= 1;
+
+/** A search term matches a word it starts, or one typo away from it. */
+const termMatches = (word: string, term: string) =>
+  word.startsWith(term) || oneTypo(word, term);
+
+/** A search term matches a concept name word exactly, or one typo away. */
+const nameMatches = (name: string, term: string) =>
+  name === term || oneTypo(name, term);
 
 const guideSummary = ({
   id,
@@ -79,6 +123,51 @@ for (const concept of knowledge.concepts) {
       conceptIndex.set(key.toLowerCase(), concept);
   }
 }
+/** The same keys, lower-cased with plurals dropped: "Instant Clusters" -> "instant cluster". */
+const conceptKey = (text: string) =>
+  text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+    .map(singular)
+    .join(' ');
+const conceptKeyIndex = new Map<string, Concept>();
+for (const [key, concept] of conceptIndex) {
+  if (!conceptKeyIndex.has(conceptKey(key)))
+    conceptKeyIndex.set(conceptKey(key), concept);
+}
+
+/**
+ * Resolve a concept reference: exact id, name or alias first, then with
+ * plurals dropped, then the one key within typo range. `matchedAs` is set
+ * when the match was not exact.
+ */
+function resolveConcept(
+  input: string
+): { concept: Concept; matchedAs?: string } | undefined {
+  const exact = conceptIndex.get(input.trim().toLowerCase());
+  if (exact) return { concept: exact };
+  const key = conceptKey(input);
+  const plural = conceptKeyIndex.get(key);
+  if (plural) return { concept: plural, matchedAs: key };
+  const budget = typoBudget(key);
+  let best: { concept: Concept; key: string; distance: number } | undefined;
+  let tied = false;
+  for (const [candidate, concept] of conceptKeyIndex) {
+    const distance = editDistance(key, candidate, budget);
+    if (distance > budget) continue;
+    if (!best || distance < best.distance) {
+      best = { concept, key: candidate, distance };
+      tied = false;
+    } else if (distance === best.distance && concept.id !== best.concept.id) {
+      tied = true;
+    }
+  }
+  return best && !tied
+    ? { concept: best.concept, matchedAs: best.key }
+    : undefined;
+}
+
 const ruleIndex = new Map<string, { rule: Rule; concept: Concept }>();
 for (const concept of knowledge.concepts) {
   for (const rule of concept.rules) ruleIndex.set(rule.id, { rule, concept });
@@ -179,7 +268,7 @@ export const lookupConcept: CuratedTool = {
   name: 'lookup-concept',
   annotations: bundledRead,
   description:
-    'Look up one Runpod concept (pod, network volume, machine, worker, template, …) by id, name or alias. Returns its summary, fields, states, relations and rules, each rule with the public source it comes from, the concepts that point at it, and the linked guides: examples (golden paths that use it, with their mcp level) and docs (skills and reference docs that explain it). Use it for exact facts, for example "is a volume disk tied to one machine" or "what happens to a stopped pod\'s GPU".',
+    'Look up one Runpod concept (pod, network volume, machine, worker, template, …) by id, name or alias; case, plurals and small typos are tolerated, and `matched_as` shows the key used when the match was not exact. Returns its summary, fields, states, relations and rules, each rule with the public source it comes from, the concepts that point at it, and the linked guides: examples (golden paths that use it, with their mcp level) and docs (skills and reference docs that explain it). Use it for exact facts, for example "is a volume disk tied to one machine" or "what happens to a stopped pod\'s GPU".',
   inputSchema: {
     type: 'object',
     properties: {
@@ -193,11 +282,15 @@ export const lookupConcept: CuratedTool = {
     additionalProperties: false,
   },
   handler: async (_ctx, args) => {
-    const ref = String(args.concept).trim().toLowerCase();
-    const concept = conceptIndex.get(ref);
-    if (!concept) {
-      const close = [...conceptIndex.keys()]
-        .filter((key) => key.includes(ref))
+    const resolved = resolveConcept(String(args.concept));
+    if (!resolved) {
+      const ref = conceptKey(String(args.concept));
+      const close = [...conceptKeyIndex.keys()]
+        .filter(
+          (key) =>
+            key.includes(ref) ||
+            editDistance(key, ref, typoBudget(ref) + 1) <= typoBudget(ref) + 1
+        )
         .slice(0, 10);
       return {
         ok: false,
@@ -210,6 +303,7 @@ export const lookupConcept: CuratedTool = {
         },
       };
     }
+    const { concept, matchedAs } = resolved;
     const pointedAtBy = knowledge.concepts.flatMap((other) => [
       ...(other.is_a === concept.id
         ? [{ concept: other.id, type: 'is_a' }]
@@ -231,6 +325,7 @@ export const lookupConcept: CuratedTool = {
       }));
     return ok({
       ...source,
+      ...(matchedAs ? { matched_as: matchedAs } : {}),
       ...concept,
       pointed_at_by: pointedAtBy,
       linked_rules: linkedRules,
@@ -277,15 +372,15 @@ export const searchConcepts: CuratedTool = {
         const score = terms.reduce(
           (total, term) =>
             total +
-            statement.filter((word) => word.startsWith(term)).length +
-            (names.includes(term) ? 3 : 0) +
+            statement.filter((word) => termMatches(word, term)).length +
+            (names.some((name) => nameMatches(name, term)) ? 3 : 0) +
             (ruleId.includes(term) ? 1 : 0),
           0
         );
         const matched = terms.filter(
           (term) =>
-            statement.some((word) => word.startsWith(term)) ||
-            names.includes(term)
+            statement.some((word) => termMatches(word, term)) ||
+            names.some((name) => nameMatches(name, term))
         ).length;
         return { rule, concept, score: score * matched };
       })

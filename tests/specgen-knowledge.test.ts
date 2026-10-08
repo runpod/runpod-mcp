@@ -82,6 +82,39 @@ test('lookup-concept resolves aliases and reports what points at it', async () =
   await client.close();
 });
 
+test('lookup-concept tolerates case, plurals and small typos', async () => {
+  const client = await connect();
+  const exact = await call(client, 'lookup-concept', { concept: 'POD' });
+  assert.equal(exact.body.id, 'pod');
+  assert.equal(exact.body.matched_as, undefined);
+  for (const [concept, id] of [
+    ['pods', 'pod'],
+    ['Network Volumes', 'network-volume'],
+    ['netwrk volume', 'network-volume'],
+    ['serverles endpoint', 'serverless-endpoint'],
+  ]) {
+    const { body } = await call(client, 'lookup-concept', { concept });
+    assert.equal(body.id, id, concept);
+    assert.ok(body.matched_as, `${concept} reports matched_as`);
+  }
+  await client.close();
+});
+
+test('search-concepts matches plurals and one-letter typos', async () => {
+  const client = await connect();
+  const { body } = await call(client, 'search-concepts', {
+    query: 'netwrk volumes',
+    limit: 3,
+  });
+  assert.ok(
+    body.rules.every((rule: { concept: string }) =>
+      rule.concept.startsWith('network-volume')
+    ),
+    body.rules.map((rule: { id: string }) => rule.id).join(', ')
+  );
+  await client.close();
+});
+
 test('search-concepts ranks the restart rule for a restart question', async () => {
   const client = await connect();
   const { body } = await call(client, 'search-concepts', {
