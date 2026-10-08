@@ -33,6 +33,7 @@ jobs:
       contents: write
       pull-requests: write
       actions: write
+      statuses: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -156,13 +157,34 @@ jobs:
             SDK: ${{ steps.sdk.outputs.before }} → ${{ steps.sdk.outputs.after }}
             Source: https://api.runpod.io/v2/openapi.json
             Update run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-            Validation (generate:check, type-check, lint, test, build): **${{ steps.validate.outcome }}**
+            Validation (generate:check, type-check, lint, test, build): **${{ steps.validate.outcome }}**. The `automation/spec-update-validation` commit status reports this result on the PR head.
 
             If validation failed, read the run log. A new upstream operation must be generated or excluded with a reason (see `specgen/README.md`). Push the fix onto this branch.
 
             The changeset is a minor bump. Edit it to describe the tool changes before merging. CI is dispatched on this branch because PRs opened by the Actions token do not trigger it.
 
+            Require `automation/spec-update-validation` and `automation/spec-update-ci` in the main branch ruleset to block merges when either check fails.
+
             The workflow runs daily. While this branch has only bot commits, each run regenerates it from main. Once anyone else pushes to it, runs leave it alone until it merges or the branch is deleted.
+      - name: Report validation on the update PR
+        if: steps.update-pr.outputs.pull-request-number != '' && steps.update-pr.outputs.pull-request-operation != 'closed'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.update-pr.outputs.pull-request-head-sha }}
+          VALIDATE: ${{ steps.validate.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$VALIDATE" = success ]; then
+            state=success
+          else
+            state=failure
+          fi
+          gh api "repos/$GH_REPO/statuses/$HEAD_SHA" \
+            -f state="$state" \
+            -f context=automation/spec-update-validation \
+            -f description="Spec update validation: $VALIDATE" \
+            -f target_url="$RUN_URL" >/dev/null
       - name: Run CI on the update branch
         if: steps.update-pr.outputs.pull-request-number != '' && steps.update-pr.outputs.pull-request-operation != 'closed'
         env:
