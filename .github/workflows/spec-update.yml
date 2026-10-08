@@ -84,14 +84,15 @@ jobs:
           else
             echo 'changed=false' >> "$GITHUB_OUTPUT"
           fi
-      - name: Regenerate tools
-        if: steps.any.outputs.changed == 'true'
-        run: pnpm generate:tools
-      - name: Validate
+      # Regeneration is part of validation. The generator throws on some
+      # upstream changes, such as a removed excluded operation or a header
+      # parameter. That must still open a draft PR, not fail the run.
+      - name: Regenerate tools and validate
         id: validate
         if: steps.any.outputs.changed == 'true'
         continue-on-error: true
         run: |
+          pnpm generate:tools
           pnpm generate:check
           pnpm run type-check
           pnpm run lint
@@ -238,7 +239,7 @@ jobs:
             SDK: ${{ steps.sdk.outputs.before }} → ${{ steps.sdk.outputs.after }}
             Source: https://api.runpod.io/v2/openapi.json
             Update run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-            Validation (generate:check, type-check, lint, test, build): **${{ steps.validate.outcome }}**. The `automation/spec-update-validation` commit status reports this result on the PR head.
+            Validation (generate:tools, generate:check, type-check, lint, test, build): **${{ steps.validate.outcome }}**. The `automation/spec-update-validation` commit status reports this result on the PR head.
 
             If validation failed, read the run log. A new upstream operation must be generated or excluded with a reason (see `specgen/README.md`). Push the fix onto this branch.
 
