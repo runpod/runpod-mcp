@@ -175,8 +175,6 @@ jobs:
 
             The changeset is a minor bump. Edit it to describe the tool changes before merging. CI is dispatched on this branch because PRs opened by the Actions token do not trigger it.
 
-            Require `automation/spec-update-validation` and `automation/spec-update-ci` in the main branch ruleset to block merges when either check fails.
-
             The workflow runs daily. While this branch has only bot commits, each run regenerates it from main. Once anyone else pushes to it, runs leave it alone until it merges or the branch is deleted.
       - name: Report validation on the update PR
         if: steps.update-pr.outputs.pull-request-number != '' && steps.update-pr.outputs.pull-request-operation != 'closed'
