@@ -26,6 +26,11 @@ import { listEndpoints } from './tools/list-endpoints.js';
 import { listTemplates } from './tools/list-templates.js';
 import { logTools } from './tools/logs.js';
 import { listPublicEndpoints } from './tools/public-endpoints.js';
+import {
+  GUIDE_URI_PREFIX,
+  guideResources,
+  knowledgeTools,
+} from './tools/knowledge.js';
 import { runTool } from './tools/util.js';
 import { STATUS_WAIT_MAX_MS } from './tools/jobs.js';
 import { SERVER_NAME } from '../server.js';
@@ -54,6 +59,7 @@ export const curatedTools: CuratedTool[] = [
   ...hubTools,
   setEndpointGpus,
   listPublicEndpoints,
+  ...knowledgeTools,
 ];
 
 // Usage briefing delivered to connecting agents at initialize (the MCP
@@ -71,6 +77,8 @@ Commit; don't hedge, don't defer. Diagnosis means one most-likely cause plus its
 Mutations cost money and bind to what this conversation created. State the hourly price before creating anything billable, read before you mutate, and stop, update, or delete only resources your own tool calls created in this conversation — a name that looks like test junk is not attribution. For anything you cannot attribute, the complete answer is the audit: what you checked, what qualifies, the ids, and the exact actions for the user to take.
 
 These tools manage infrastructure only. They do not do SSH sessions, file transfer to or from pods, local image builds, or interactive terminals — say plainly when a task needs one of those and name the real path (the Runpod console, runpodctl) instead of improvising.
+
+OFFICIAL GUIDES AND FACTS. list-guides and read-guide serve the official Runpod plugin's skills, reference docs and live-verified golden paths, so you have them even without the plugin installed. For a multi-step or billable task, look for a matching golden path first. lookup-concept and search-concepts answer exact questions about how Runpod works (what a stopped pod keeps, where a volume lives) with the public source for each fact.
 
 SKILLS — READ BEFORE ACTING. This server publishes its task playbooks as MCP resources under runpod://skills/. Before the FIRST Runpod tool call of a session, read runpod://skills/runpod (the router): it maps the request to a journey skill — deploying an endpoint reads runpod://skills/serverless-deploy, diagnosing a broken pod reads runpod://skills/pod-doctor, cost questions read runpod://skills/cost-audit, and so on — and each journey skill carries the procedure, pitfalls, and report format for that task. A reply produced without the routed skill loaded is out of contract. List them all with resources/list.
 
@@ -178,13 +186,16 @@ export function createSpecgenServer(
   const SKILL_URI_PREFIX = 'runpod://skills/';
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
-    resources: skillDocs.map((skill) => ({
-      uri: `${SKILL_URI_PREFIX}${skill.name}`,
-      name: skill.name,
-      title: `Runpod skill: ${skill.name}`,
-      description: skill.description,
-      mimeType: 'text/markdown',
-    })),
+    resources: [
+      ...skillDocs.map((skill) => ({
+        uri: `${SKILL_URI_PREFIX}${skill.name}`,
+        name: skill.name,
+        title: `Runpod skill: ${skill.name}`,
+        description: skill.description,
+        mimeType: 'text/markdown',
+      })),
+      ...guideResources.map(({ text: _text, ...resource }) => resource),
+    ],
   }));
 
   // Some clients probe templates unconditionally; answer empty instead of -32601.
@@ -193,6 +204,21 @@ export function createSpecgenServer(
   }));
 
   server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    if (request.params.uri.startsWith(GUIDE_URI_PREFIX)) {
+      const guide = guideResources.find(
+        (candidate) => candidate.uri === request.params.uri
+      );
+      if (!guide) {
+        throw new Error(
+          `Unknown resource ${request.params.uri}. Call list-guides for the guide ids.`
+        );
+      }
+      return {
+        contents: [
+          { uri: guide.uri, mimeType: 'text/markdown', text: guide.text },
+        ],
+      };
+    }
     const name = request.params.uri.startsWith(SKILL_URI_PREFIX)
       ? request.params.uri.slice(SKILL_URI_PREFIX.length)
       : undefined;
