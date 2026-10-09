@@ -45,7 +45,6 @@ There is a third box that never runs in production:
    │ specgen/spec/openapi.yaml   the API's menu   │
    │ specgen/generator-config.yaml  our judgment  │
    │ specgen/generator/          the script       │
-   │ specgen/skills/             the playbooks    │
    └──────────────────────────────────────────────┘
 ```
 
@@ -227,27 +226,28 @@ on the affected path before assuming a re-vendor was enough.
 
 ## Level 5: the skills
 
-Ten markdown playbooks (`specgen/skills/`) teach an agent HOW to use the
+The journey playbooks teach an agent HOW to use the
 tools well — e.g. pod-doctor: "if torch can't see the GPU, check gpuCount
 before blaming CUDA; never terminate, that destroys the disk."
 
-They are served over MCP as resources, not tools:
+They live in runpod-plugins-official as skills (`runpod-mcp` is the router,
+plus one skill per journey) and reach this server in `@runpod/plugin-knowledge`,
+served by the `list-guides`/`read-guide` tools and as resources:
 
 ```
-resources/list                        → 10 entries (runpod://skills/<name>)
-resources/read runpod://skills/runpod → the router: maps any request
+read-guide runpod-mcp                 → the router: maps any request
                                         to the right playbook
+resources/read runpod://guides/<id>   → the same guides as resources
 ```
 
 Agents are pointed at them by the `instructions` string in the very first
-handshake response ("SKILLS — READ BEFORE ACTING… read runpod://skills/runpod
-before your first tool call"). This is a strong nudge, not a guarantee —
+handshake response ("PLAYBOOKS — READ BEFORE ACTING… load the plugin's
+runpod-mcp skill, otherwise read-guide runpod-mcp, before your first tool call"). This is a strong nudge, not a guarantee —
 which is why the critical warnings (billable, destructive) are ALSO inlined
 in the tool descriptions, where even a skill-ignoring agent sees them.
 
-Like the tools, skills are embedded at dev time (`pnpm generate:skills` →
-`skills.gen.ts`); a test fails if the embedded copy and the .md files
-disagree.
+A playbook change ships as a plugin release plus a package bump here, so the
+plugin and this server serve one copy.
 
 ---
 
@@ -295,7 +295,6 @@ src/specgen/generated/           Box 2: machine-written output (DO NOT EDIT)
 specgen/spec/openapi.yaml        Box 3: vendored production spec
 specgen/generator-config.yaml    Box 3: exclusions / description overrides
 specgen/generator/               Box 3: the generator
-specgen/skills/                  Box 3: the ten playbooks
 specgen/old-mcp-tools.yaml       parity map against the old 54-tool server
 scripts/check-spec-drift.ts      live-vs-vendored spec diff
 tests/specgen-*.test.ts          the gates described in level 4
@@ -303,7 +302,6 @@ tests/specgen-*.test.ts          the gates described in level 4
 
 ```
 pnpm generate:tools    regenerate the tool surface from the spec
-pnpm generate:skills   re-embed the skills
 pnpm spec:check        am I drifted from the live API?
 pnpm test              all gates (no network, no credentials needed)
 npx vercel deploy      preview deployment (prod promotion is manual)

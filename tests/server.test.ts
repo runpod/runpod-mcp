@@ -48,11 +48,11 @@ describe('initialize handshake', () => {
     assert.equal(capabilities?.prompts, undefined);
   });
 
-  it('sends instructions pointing at the skills and the API contract', async () => {
+  it('sends instructions pointing at the runpod-mcp playbook and the API contract', async () => {
     const client = await connect();
     const instructions = client.getInstructions();
     assert.equal(instructions, SERVER_INSTRUCTIONS);
-    assert.match(instructions ?? '', /runpod:\/\/skills\/runpod/);
+    assert.match(instructions ?? '', /read-guide runpod-mcp/);
     assert.match(instructions ?? '', /api\.runpod\.io\/v2\/openapi\.json/);
   });
 });

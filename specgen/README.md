@@ -15,7 +15,6 @@ resources. The only intended difference is wait budgets: 45 s hosted
 specgen/spec/openapi.yaml       vendored v2 OpenAPI document (production generation)
 specgen/generator-config.yaml   exclusions / renames / description overrides
 specgen/generator/              the generator (pnpm generate:tools)
-specgen/skills/                 the ten journey skills, served as MCP resources
 specgen/old-mcp-tools.yaml      54-tool parity manifest vs. the old surface
 src/specgen/generated/          machine-written output — never hand-edited
 src/specgen/tools/              curated overlay (runtime plane, GraphQL, SSE,
@@ -39,7 +38,6 @@ Serverless runtime and GraphQL clients.
 pnpm spec:pull         # re-vendor the spec (production; SPEC_URL=... overrides)
 pnpm spec:check        # diff the vendored spec against the live one
 pnpm generate:tools    # regenerate src/specgen/generated/tools.gen.ts
-pnpm generate:skills   # re-embed specgen/skills into skills.gen.ts
 pnpm test              # includes the specgen drift gates
 ```
 
@@ -48,12 +46,14 @@ New API endpoint: pull the unmodified production spec, then
 excluded with a reason, if a curated replacement disappears, or if the old
 54-tool surface loses a mapping.
 
-## Skills over MCP
+## Playbooks over MCP
 
-The ten skills embed into the build and serve as resources at
-`runpod://skills/<name>`; the initialize briefing directs agents to read
-`runpod://skills/runpod` (the router) before their first tool call. Local
-installs can still copy `specgen/skills/` into an agent's skills directory.
+The journey playbooks live in runpod-plugins-official and reach this server
+through `@runpod/plugin-knowledge`: `list-guides`/`read-guide` serve them, and
+so do the `runpod://guides/<id>` resources. The initialize briefing directs
+agents to the plugin's `runpod-mcp` skill, or to `read-guide runpod-mcp`
+without the plugin, before their first tool call. Edit a playbook in the
+plugin repo, release it, and bump the package here.
 
 ## Hosted behavior
 
