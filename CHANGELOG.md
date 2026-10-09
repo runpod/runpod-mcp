@@ -1,5 +1,35 @@
 # @runpod/mcp-server
 
+## 4.1.0
+
+### Minor Changes
+
+- 1d049b6: Serve the official Runpod plugin's guides and concept graph: `list-guides`, `read-guide`, `lookup-concept` and `search-concepts`, plus each guide as a `runpod://guides/` resource, from the `@runpod/plugin-knowledge` package.
+- 09a565a: `list-templates` now returns 20 templates per page by default instead of the
+  full list. Follow `nextCursor` to see the rest.
+
+  Resync the vendored v2 OpenAPI spec with production. Adds five account-secret
+  tools (`list-secrets`, `get-secret`, `create-secret`, `update-secret`,
+  `delete-secret`) and refreshes the schemas for pods, endpoints, templates,
+  registries, and clusters — most visibly the `cursor`/`limit` query parameters
+  and `pagination` response block the API now serves on its list endpoints.
+
+  `list-endpoints` and `list-templates` now page on the server: `limit` and
+  `cursor` go to the API, and `pagination` returns its `nextCursor` and
+  `hasNextPage` plus `returned`. `list-endpoints` drops the old client-side
+  `total`, `offset`, and `truncated` fields, which only counted one server page.
+  Requires `@runpod/typescript-api-sdk` 0.2.0.
+
+### Patch Changes
+
+- 531ecb0: Serve MCP tool annotations. Every tool now advertises `readOnlyHint`,
+  `destructiveHint`, `idempotentHint`, and `openWorldHint` in `tools/list`:
+  generated tools derive them from the HTTP method they wrap, so they cannot
+  drift from the spec, with generator-config overrides for operations that delete
+  through a POST or PUT (`pod-action`, `update-ssh-keys`), and the curated
+  overlay declares them per tool. Hosts can
+  auto-approve reads and gate deletions, cancels, and queue purges on a human.
+
 ## 4.0.0
 
 ### Major Changes
