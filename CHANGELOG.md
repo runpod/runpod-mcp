@@ -1,5 +1,42 @@
 # @runpod/mcp-server
 
+## 4.2.0
+
+### Minor Changes
+
+- 4865aed: Tighten what the server tells a connecting agent. The instructions now say
+  that for work done with these tools the journey playbook is the procedure,
+  whether it comes from the plugin's `runpod-mcp` skill or from
+  `read-guide`; the plugin's other skills stay the lane for the CLIs, image
+  builds and golden paths. A resource the user names by id is in scope for the
+  change they asked for and is deleted only when they ask for the delete, and
+  `create-cluster` waits for the user's go on the quoted shape and total hourly
+  price. Jobs are submitted with `run-endpoint` and waited on with
+  `get-job-status`; `runsync-endpoint` is for a warm endpoint and a fast job.
+
+  The 402 hint points at `list-billing`, and the 403 hint says a permission error
+  on a resource the agent did not create is final.
+
+  Tool descriptions: `create-cluster` prices the whole shape (pods times GPUs per
+  pod) and waits for the go; `create-endpoint` describes the CPU choice next to
+  the GPU one; `update-endpoint` puts `idleTimeout` under `workers` and states
+  that `gpu.pools` and `gpu.excludedTypes` are one selection; `delete-endpoint`,
+  `delete-pod`, `delete-cluster` and `delete-secret` allow the one resource the
+  user asked to delete by id.
+
+- 6ffb28e: The journey playbooks now come only from `@runpod/plugin-knowledge`, bumped to
+  1.7.1. The server no longer keeps its own copy under `runpod://skills/`: an
+  agent loads the plugin's `runpod-mcp` skill, or `read-guide runpod-mcp` without
+  the plugin, and that routes it to the journey guides (`discovery`,
+  `lifecycle-crud`, `serverless-deploy`, `pod-deploy`, `pod-doctor`,
+  `endpoint-ops`, `cost-audit`). `resources/list` serves the plugin guides as
+  `runpod://guides/<id>`. The instructions and the `ask_question` text point at
+  `read-guide` instead of `runpod://skills/`.
+
+  The instructions also tell an agent whose instructions look out of date to
+  reconnect the server (or ask the user to), since reconnecting re-runs
+  initialize and delivers the current instructions and tool list.
+
 ## 4.1.0
 
 ### Minor Changes
