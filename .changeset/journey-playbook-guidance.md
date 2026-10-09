@@ -4,7 +4,7 @@
 
 Tighten what the server tells a connecting agent. The instructions now say
 that for work done with these tools the journey playbook is the procedure,
-whether it comes from the plugin's `runpod-mcp-journeys` skill or from
+whether it comes from the plugin's `runpod-mcp` skill or from
 `runpod://skills/`; the plugin's other skills stay the lane for the CLIs, image
 builds and golden paths. A resource the user names by id is in scope for the
 change they asked for and is deleted only when they ask for the delete, and
