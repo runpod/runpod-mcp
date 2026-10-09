@@ -9,6 +9,9 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createSpecgenServer, curatedTools } from '../src/specgen/server.js';
 import { createToolContext } from '../src/specgen/context.js';
 import { generatedTools } from '../src/specgen/generated/tools.gen.js';
+import { knowledgeTools } from '../src/specgen/tools/knowledge.js';
+
+const knowledgeToolNames = new Set(knowledgeTools.map((tool) => tool.name));
 
 async function listTools() {
   const server = createSpecgenServer(
@@ -46,7 +49,8 @@ test('every tool reaches the client with a complete annotation set', async () =>
         `${tool.name}.${hint} must be a boolean`
       );
     }
-    assert.equal(annotations.openWorldHint, true);
+    // The knowledge tools read the bundled plugin package, not the Runpod API.
+    assert.equal(annotations.openWorldHint, !knowledgeToolNames.has(tool.name));
     if (annotations.readOnlyHint)
       assert.equal(
         annotations.destructiveHint,

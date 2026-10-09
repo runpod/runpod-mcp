@@ -25,8 +25,9 @@ async function connect() {
 test('lists all ten skills as markdown resources', async () => {
   const client = await connect();
   const { resources } = await client.listResources();
-  assert.equal(resources.length, 10);
-  const router = resources.find((r) => r.uri === 'runpod://skills/runpod');
+  const skills = resources.filter((r) => r.uri.startsWith('runpod://skills/'));
+  assert.equal(skills.length, 10);
+  const router = skills.find((r) => r.uri === 'runpod://skills/runpod');
   assert.ok(router, 'router skill present');
   assert.equal(router.mimeType, 'text/markdown');
   assert.ok(router.description && router.description.length > 20);
@@ -62,7 +63,10 @@ test('instructions direct agents to the router resource before acting', () => {
 // on purpose — the command differs per client and the README there is current.
 test('instructions point unequipped agents at the official plugin', () => {
   assert.match(SERVER_INSTRUCTIONS, /OFFICIAL RUNPOD PLUGIN/);
-  assert.match(SERVER_INSTRUCTIONS, /github\.com\/runpod\/runpod-plugins-official/);
+  assert.match(
+    SERVER_INSTRUCTIONS,
+    /github\.com\/runpod\/runpod-plugins-official/
+  );
   assert.doesNotMatch(SERVER_INSTRUCTIONS, /plugin marketplace add/);
   // And that the precedence runs the right way: the server owns its own tool
   // surface even when the plugin's (necessarily lagging) tool list disagrees.

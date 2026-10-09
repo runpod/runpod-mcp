@@ -14,6 +14,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.7.0
         version: 1.20.2
+      '@runpod/plugin-knowledge':
+        specifier: ^1.6.0
+        version: 1.6.0
       jsonc-parser:
         specifier: ^3.3.1
         version: 3.3.1
@@ -731,6 +734,10 @@ packages:
     resolution: {integrity: sha512-TAcgQh2sSkykPRWLrdyy2AiceMckNf5loITqXxFI5VuQjS5tSuw3WlwdN8qv8vzjLAUTvYaH/mVjSFpbkFbpTg==}
     cpu: [x64]
     os: [win32]
+
+  '@runpod/plugin-knowledge@1.6.0':
+    resolution: {integrity: sha512-Lep68D6kRQOuzbXx6drvkY6/ATmZkwUXDa5z6Xun0JZfjVpEXQDhCMoibSijkrxgcHxfwOZU7inx28UqPbs+RQ==}
+    engines: {node: '>=20.10'}
 
   '@runpod/typescript-api-sdk@0.2.0':
     resolution: {integrity: sha512-9f208vafEUP7v/LrAyPb7QnvGPAEAZOYO7mveOhWzAC3ImZkSZEvGMmoRBySg1aIt7LUtJ+k1SojWTw9xaMDoA==}
@@ -2808,6 +2815,8 @@ snapshots:
 
   '@rollup/rollup-win32-x64-msvc@4.52.5':
     optional: true
+
+  '@runpod/plugin-knowledge@1.6.0': {}
 
   '@runpod/typescript-api-sdk@0.2.0':
     dependencies:
