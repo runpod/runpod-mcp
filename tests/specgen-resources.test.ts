@@ -1,5 +1,5 @@
-// Skills served as MCP resources: list, read, unknown-uri error, and the
-// instructions briefing that steers agents to load them.
+// The plugin guides served as MCP resources: list, read, unknown-uri error, and
+// the instructions briefing that steers agents to the runpod-mcp playbook.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -9,7 +9,7 @@ import {
   SERVER_INSTRUCTIONS,
 } from '../src/specgen/server.js';
 import { createToolContext } from '../src/specgen/context.js';
-import { skillDocs } from '../src/specgen/generated/skills.gen.js';
+import { guideResources } from '../src/specgen/tools/knowledge.js';
 
 async function connect() {
   const server = createSpecgenServer(
@@ -22,39 +22,54 @@ async function connect() {
   return client;
 }
 
-test('lists all ten skills as markdown resources', async () => {
+const JOURNEYS = [
+  'runpod-mcp',
+  'discovery',
+  'lifecycle-crud',
+  'serverless-deploy',
+  'pod-deploy',
+  'pod-doctor',
+  'endpoint-ops',
+  'cost-audit',
+];
+
+test('lists only the plugin guides, the journey playbooks among them', async () => {
   const client = await connect();
   const { resources } = await client.listResources();
-  const skills = resources.filter((r) => r.uri.startsWith('runpod://skills/'));
-  assert.equal(skills.length, 10);
-  const router = skills.find((r) => r.uri === 'runpod://skills/runpod');
-  assert.ok(router, 'router skill present');
-  assert.equal(router.mimeType, 'text/markdown');
-  assert.ok(router.description && router.description.length > 20);
+  assert.equal(resources.length, guideResources.length);
+  assert.ok(resources.every((r) => r.uri.startsWith('runpod://guides/')));
+  for (const id of JOURNEYS) {
+    const guide = resources.find((r) => r.uri === `runpod://guides/${id}`);
+    assert.ok(guide, `${id} guide present`);
+    assert.equal(guide.mimeType, 'text/markdown');
+  }
   await client.close();
 });
 
-test('reads a skill body verbatim', async () => {
+test('reads a journey guide body verbatim', async () => {
   const client = await connect();
-  const res = await client.readResource({ uri: 'runpod://skills/pod-doctor' });
+  const uri = 'runpod://guides/pod-doctor';
+  const res = await client.readResource({ uri });
   const text = (res.contents[0] as { text: string }).text;
-  assert.equal(text, skillDocs.find((s) => s.name === 'pod-doctor')!.text);
+  assert.equal(text, guideResources.find((g) => g.uri === uri)!.text);
   assert.match(text, /Pod doctor/);
   await client.close();
 });
 
-test('unknown resource errors and names the available uris', async () => {
+test('unknown resource errors and points at list-guides', async () => {
   const client = await connect();
   await assert.rejects(
-    () => client.readResource({ uri: 'runpod://skills/nope' }),
-    /runpod:\/\/skills\/runpod/
+    () => client.readResource({ uri: 'runpod://skills/runpod' }),
+    /list-guides/
   );
   await client.close();
 });
 
-test('instructions direct agents to the router resource before acting', () => {
-  assert.match(SERVER_INSTRUCTIONS, /runpod:\/\/skills\/runpod/);
+test('instructions direct agents to the runpod-mcp playbook before acting', () => {
   assert.match(SERVER_INSTRUCTIONS, /READ BEFORE ACTING/);
+  assert.match(SERVER_INSTRUCTIONS, /read-guide runpod-mcp/);
+  assert.match(SERVER_INSTRUCTIONS, /plugin's runpod-mcp skill/);
+  assert.doesNotMatch(SERVER_INSTRUCTIONS, /runpod:\/\/skills\//);
 });
 
 // The plugin recommendation is worth pinning: a silent drop would leave agents
@@ -83,16 +98,9 @@ test('instructions name refreshing the tool list as the fix for a shape rejectio
   assert.match(SERVER_INSTRUCTIONS, /refresh the tool list/);
 });
 
-test('every embedded skill matches its on-disk source', async () => {
-  const { readFileSync } = await import('node:fs');
-  // Normalize line endings: git checks the sources out with CRLF on Windows,
-  // while the embedded text was generated from an LF checkout.
-  const lf = (text: string) => text.replace(/\r\n/g, '\n');
-  for (const skill of skillDocs) {
-    assert.equal(
-      lf(skill.text),
-      lf(readFileSync(`specgen/skills/${skill.name}/SKILL.md`, 'utf8')),
-      skill.name
-    );
-  }
+// Instructions only arrive at initialize, which the client sends on connect, so
+// an agent holding stale ones needs to be told that reconnecting is the refresh.
+test('instructions name reconnecting as the way to get current instructions', () => {
+  assert.match(SERVER_INSTRUCTIONS, /re-runs initialize/);
+  assert.match(SERVER_INSTRUCTIONS, /current instructions/);
 });

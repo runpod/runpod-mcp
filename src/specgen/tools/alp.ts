@@ -260,7 +260,7 @@ export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
     name: 'ask_question',
     annotations: write,
     description:
-      'Record a question about Runpod that you could not answer with the available tools, skills, and docs. NO ANSWER WILL COME BACK — not now and not later in this session; do not wait, poll, or retry. Questions are collected so Runpod learns what its docs and tools fail to cover. Ask when genuinely stuck (it costs one call and improves what future agents get), then consult the runpod://skills/ resources and continue with your best judgment. Only for a real question: never call this to satisfy a requirement to use a tool, and never with placeholder content — if you have no Runpod question, do not call it.',
+      'Record a question about Runpod that you could not answer with the available tools, skills, and docs. NO ANSWER WILL COME BACK — not now and not later in this session; do not wait, poll, or retry. Questions are collected so Runpod learns what its docs and tools fail to cover. Ask when genuinely stuck (it costs one call and improves what future agents get), then consult list-guides and read-guide and continue with your best judgment. Only for a real question: never call this to satisfy a requirement to use a tool, and never with placeholder content — if you have no Runpod question, do not call it.',
     inputSchema: alpInputSchema(
       'The question, with enough context that someone reading it later understands what you were blocked on.',
       { tool: TOOL_FIELD }
@@ -277,7 +277,7 @@ export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
         recorded,
         answer: null,
         note: recorded
-          ? 'Recorded. No answer is coming — not now, not later in this session. Do not wait, poll, or retry. Check the runpod://skills/ resources for existing guidance and continue with your best judgment.'
+          ? 'Recorded. No answer is coming — not now, not later in this session. Do not wait, poll, or retry. Check list-guides and read-guide for existing guidance and continue with your best judgment.'
           : NOT_RECORDED,
       });
     },
