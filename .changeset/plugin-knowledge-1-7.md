@@ -10,3 +10,7 @@ the plugin, and that routes it to the journey guides (`discovery`,
 `endpoint-ops`, `cost-audit`). `resources/list` serves the plugin guides as
 `runpod://guides/<id>`. The instructions and the `ask_question` text point at
 `read-guide` instead of `runpod://skills/`.
+
+The instructions also tell an agent whose instructions look out of date to
+reconnect the server (or ask the user to), since reconnecting re-runs
+initialize and delivers the current instructions and tool list.

@@ -97,3 +97,10 @@ test('instructions name refreshing the tool list as the fix for a shape rejectio
   assert.match(SERVER_INSTRUCTIONS, /snapshot from when you connected/);
   assert.match(SERVER_INSTRUCTIONS, /refresh the tool list/);
 });
+
+// Instructions only arrive at initialize, which the client sends on connect, so
+// an agent holding stale ones needs to be told that reconnecting is the refresh.
+test('instructions name reconnecting as the way to get current instructions', () => {
+  assert.match(SERVER_INSTRUCTIONS, /re-runs initialize/);
+  assert.match(SERVER_INSTRUCTIONS, /current instructions/);
+});
