@@ -33,7 +33,7 @@ export const generatedTools: GeneratedTool[] = [
     name: 'create-cluster',
     operationId: 'createCluster',
     description:
-      'Create an instant cluster (multiple pods with high-speed interconnect). BILLABLE from creation for every pod in the cluster: state the total hourly price before creating. Verify GPU stock first via the catalog tools; delete with delete-cluster when finished.',
+      "Create an instant cluster (multiple pods with high-speed interconnect). BILLABLE from creation for every pod in the cluster: it rents compute.podCount identical pods at once, each with compute.gpuCountPerPod GPUs of compute.gpuTypeId — state the hourly price for the total GPU count (podCount * gpuCountPerPod, priced from the catalog tools) and create only after the user's explicit go on that quoted shape and total hourly price. Verify GPU stock first via the catalog tools. The compute shape and type are fixed at creation; only the name can be changed later. The container configuration applies to every pod, and templateId is the only private-image path — a bare registry property is rejected. Delete with delete-cluster when finished.",
     method: 'POST',
     path: '/v2/clusters',
     params: [],
@@ -329,7 +329,7 @@ export const generatedTools: GeneratedTool[] = [
     name: 'create-endpoint',
     operationId: 'createEndpoint',
     description:
-      "Create a serverless endpoint. BILLABLE: state the GPU class's hourly price (from the catalog tools) before creating. GPU selection is the required gpu object: gpu.pools takes serverless pool ids from the catalog (e.g. ADA_24), never display names, and gpu.count sets GPUs per worker. type and scaling are required and fix the request-routing model. Workers cold-start on the first job: expect minutes, poll with get-job-status wait.",
+      "Create a serverless endpoint. BILLABLE: state the worker's hourly price (from the catalog tools) before creating. Worker hardware is one of two choices: the gpu object (gpu.pools takes serverless pool ids from the catalog, e.g. ADA_24, never display names; gpu.count sets GPUs per worker) or the cpu array of CPU flavor configurations for a CPU endpoint. type and scaling are required and fix the request-routing model. Workers cold-start on the first job: expect minutes, poll with get-job-status wait.",
     method: 'POST',
     path: '/v2/serverless',
     params: [],
@@ -1516,7 +1516,7 @@ export const generatedTools: GeneratedTool[] = [
     name: 'delete-cluster',
     operationId: 'deleteCluster',
     description:
-      'Delete a cluster. Permanently deletes a cluster and terminates all of its member pods.',
+      'Delete a cluster permanently: it terminates every member pod. Verify the id with get-cluster, and list-cluster-pods for what the delete takes down, before deleting; delete only clusters your own tool calls created in this conversation, or the one the user asked you to delete by id — a name found by listing is not attribution.',
     method: 'DELETE',
     path: '/v2/clusters/{id}',
     params: [
@@ -1547,7 +1547,7 @@ export const generatedTools: GeneratedTool[] = [
     name: 'delete-endpoint',
     operationId: 'deleteEndpoint',
     description:
-      'Delete a serverless endpoint permanently and immediately. Verify the id belongs to the intended endpoint (get-endpoint) before deleting; delete only endpoints your own tool calls created in this conversation — a name is not attribution.',
+      'Delete a serverless endpoint permanently and immediately. Verify the id belongs to the intended endpoint (get-endpoint) before deleting; delete only endpoints your own tool calls created in this conversation, or the one the user asked you to delete by id — a name found by listing is not attribution.',
     method: 'DELETE',
     path: '/v2/serverless/{id}',
     params: [
@@ -1609,7 +1609,7 @@ export const generatedTools: GeneratedTool[] = [
     name: 'delete-pod',
     operationId: 'deletePod',
     description:
-      'Terminate a pod permanently — its container disk is lost. Distinguish from stopping (pod-action stop) which releases the GPU but keeps volume data. Verify the id with get-pod first; terminate only pods your own tool calls created in this conversation — a name is not attribution.',
+      'Terminate a pod permanently — its container disk is lost. Distinguish from stopping (pod-action stop) which releases the GPU but keeps volume data. Verify the id with get-pod first; terminate only pods your own tool calls created in this conversation, or the one the user asked you to terminate by id — a name found by listing is not attribution.',
     method: 'DELETE',
     path: '/v2/pods/{id}',
     params: [
@@ -1670,7 +1670,7 @@ export const generatedTools: GeneratedTool[] = [
     name: 'delete-secret',
     operationId: 'deleteSecret',
     description:
-      "Delete a secret. Permanently deletes a secret. Environment variables referencing the deleted secret's name will no longer resolve to a value.",
+      'Delete a secret permanently. Environment variables referencing its name ({{ RUNPOD_SECRET_<name> }}) stop resolving at the next pod or worker boot; running instances keep the value they started with. Verify the id with get-secret first; delete only secrets your own tool calls created in this conversation, or the one the user asked you to delete by id — a name found by listing is not attribution.',
     method: 'DELETE',
     path: '/v2/account/secrets/{id}',
     params: [
@@ -3580,7 +3580,7 @@ export const generatedTools: GeneratedTool[] = [
     name: 'update-endpoint',
     operationId: 'updateEndpoint',
     description:
-      'Partially update a serverless endpoint (PATCH): only fields present in the body change, omitted ones are untouched. DESTRUCTIVE GOTCHA: sending gpu.pools replaces the GPU selection wholesale, which clears any gpu.excludedTypes pinned elsewhere (the console or set-endpoint-gpus) — read the endpoint first with get-endpoint and resend excludedTypes if you still want them. A CUDA-only or count-only change does not need pools at all, so omit it unless you mean to replace the selection. Mutable fields: name, gpu, cpu, workers (min/max), scaling (type/value/idleTimeout), dataCenterIds, networkVolumes, timeout, flashboot, and the container settings (image, args, disk, ports, env, registry). Compute family is immutable: gpu on a CPU endpoint, cpu on a GPU one, or both, returns 400. Effect timing differs by field — workers/scaling/timeout reach the autoscaler promptly, while container changes (image, env) cut a new release that rolls out as workers cycle, so in-flight workers keep the previous version. Track rollout with list-endpoint-releases.',
+      "Partially update a serverless endpoint (PATCH): only fields present in the body change, omitted ones are untouched, with one exception. DESTRUCTIVE GOTCHA: gpu.pools and gpu.excludedTypes are a single selection, so sending pools without excludedTypes clears any exclusions pinned elsewhere (the console or set-endpoint-gpus) — read the endpoint first with get-endpoint and resend excludedTypes if you still want them. An exclusion naming a type outside pools returns 400. A CUDA-only or count-only change does not need pools at all, so omit it unless you mean to replace the selection. Mutable fields: name, gpu, cpu, workers (min/max/idleTimeout), scaling (type plus queueDelay or requestCount), dataCenterIds, networkVolumes, timeout, flashboot, and the container settings (image, args, disk, ports, env, registry). cpu completely replaces a CPU endpoint's flavor selection. Compute family is immutable: gpu on a CPU endpoint, cpu on a GPU one, or both, returns 400. Effect timing differs by field — workers/scaling/timeout reach the autoscaler promptly, while container changes (image, env) cut a new release that rolls out as workers cycle, so in-flight workers keep the previous version. Track rollout with list-endpoint-releases.",
     method: 'PATCH',
     path: '/v2/serverless/{id}',
     params: [
