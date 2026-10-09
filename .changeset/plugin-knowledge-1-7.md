@@ -3,7 +3,7 @@
 ---
 
 The journey playbooks now come only from `@runpod/plugin-knowledge`, bumped to
-1.7.0. The server no longer keeps its own copy under `runpod://skills/`: an
+1.7.1. The server no longer keeps its own copy under `runpod://skills/`: an
 agent loads the plugin's `runpod-mcp` skill, or `read-guide runpod-mcp` without
 the plugin, and that routes it to the journey guides (`discovery`,
 `lifecycle-crud`, `serverless-deploy`, `pod-deploy`, `pod-doctor`,
