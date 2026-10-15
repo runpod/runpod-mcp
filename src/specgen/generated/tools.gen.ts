@@ -122,6 +122,21 @@ export const generatedTools: GeneratedTool[] = [
             },
           },
         },
+        BaseMounts: {
+          type: 'object',
+          properties: {
+            persistent: {
+              $ref: '#/$defs/PersistentMount',
+            },
+            network: {
+              type: 'array',
+              maxItems: 1,
+              items: {
+                $ref: '#/$defs/NetworkMount',
+              },
+            },
+          },
+        },
         ClusterCompute: {
           type: 'object',
           additionalProperties: false,
@@ -151,6 +166,16 @@ export const generatedTools: GeneratedTool[] = [
               examples: [4],
             },
           },
+        },
+        ClusterMounts: {
+          description:
+            'Storage mounts for a cluster create: `persistent` or `network`, not both. Clusters cannot mount global volumes, so `global` is rejected.',
+          allOf: [
+            {
+              $ref: '#/$defs/BaseMounts',
+            },
+          ],
+          unevaluatedProperties: false,
         },
         ClusterType: {
           type: 'string',
@@ -198,7 +223,7 @@ export const generatedTools: GeneratedTool[] = [
                   example: ['US-TX-3'],
                 },
                 mounts: {
-                  $ref: '#/$defs/Mounts',
+                  $ref: '#/$defs/ClusterMounts',
                 },
                 startJupyter: {
                   type: 'boolean',
@@ -216,24 +241,6 @@ export const generatedTools: GeneratedTool[] = [
             },
           ],
           unevaluatedProperties: false,
-        },
-        Mounts: {
-          type: 'object',
-          additionalProperties: false,
-          description:
-            "Storage mounts for the pod: at most one of `persistent` (size + path) or `network` (volumeId + path, a single entry) may be set, and every entry needs its full shape. On update, omit the field to leave the mount as it is; the mount kind and a network mount's volumeId cannot change, and mounts cannot be cleared.",
-          properties: {
-            persistent: {
-              $ref: '#/$defs/PersistentMount',
-            },
-            network: {
-              type: 'array',
-              maxItems: 1,
-              items: {
-                $ref: '#/$defs/NetworkMount',
-              },
-            },
-          },
         },
         NetworkMount: {
           type: 'object',
@@ -599,6 +606,11 @@ export const generatedTools: GeneratedTool[] = [
                   items: {
                     type: 'string',
                   },
+                  description: 'Network volume IDs.',
+                  deprecated: true,
+                },
+                mounts: {
+                  $ref: '#/$defs/EndpointMountsInput',
                 },
                 templateId: {
                   type: 'string',
@@ -648,6 +660,43 @@ export const generatedTools: GeneratedTool[] = [
             properties: {
               scaling: {
                 $ref: '#/$defs/RequestCountScaling',
+              },
+            },
+          },
+        },
+        EndpointMount: {
+          type: 'object',
+          required: ['volumeId'],
+          additionalProperties: false,
+          description:
+            'A volume mounted on every worker, always at `/runpod-volume`. Custom paths are not supported yet.',
+          properties: {
+            volumeId: {
+              type: 'string',
+              description:
+                'ID of a NetworkVolume (under `network`) or GlobalVolume (under `global`).',
+              examples: ['vol_abc'],
+            },
+          },
+        },
+        EndpointMountsInput: {
+          type: 'object',
+          additionalProperties: false,
+          description:
+            "Volumes to mount on the endpoint's workers. A `network` or `global` list that is present replaces the endpoint's current list of that kind; an empty list detaches it, and an omitted list is left unchanged.",
+          properties: {
+            network: {
+              type: 'array',
+              description: 'Network volumes, at most one per data center.',
+              items: {
+                $ref: '#/$defs/EndpointMount',
+              },
+            },
+            global: {
+              type: 'array',
+              maxItems: 1,
+              items: {
+                $ref: '#/$defs/EndpointMount',
               },
             },
           },
@@ -751,6 +800,49 @@ export const generatedTools: GeneratedTool[] = [
               description:
                 'Adjusts the number of workers based on active in-flight requests.',
               examples: [4],
+            },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: 'create-global-volume',
+    operationId: 'createGlobalVolume',
+    description:
+      'Create a global volume. Provisions a new global volume — storage that mounts into workloads in any data center. Only a `name` is required; storage is provisioned for you. Accounts have a cap on how many global volumes they can hold; creating one past it fails with `400`. Returns `201` with the created global volume, including its assigned `id`.',
+    method: 'POST',
+    path: '/v2/global-volumes',
+    params: [],
+    hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        body: {
+          $ref: '#/$defs/CreateGlobalVolumeRequest',
+        },
+      },
+      required: ['body'],
+      $defs: {
+        CreateGlobalVolumeRequest: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['name'],
+          properties: {
+            name: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 191,
+              pattern: '[^\\p{Z}\\t-\\r]',
+              description:
+                'Human-readable name, 1–191 characters with at least one non-whitespace character. Leading and trailing whitespace is trimmed.',
+              examples: ['training-data'],
             },
           },
         },
@@ -952,6 +1044,21 @@ export const generatedTools: GeneratedTool[] = [
             },
           },
         },
+        BaseMounts: {
+          type: 'object',
+          properties: {
+            persistent: {
+              $ref: '#/$defs/PersistentMount',
+            },
+            network: {
+              type: 'array',
+              maxItems: 1,
+              items: {
+                $ref: '#/$defs/NetworkMount',
+              },
+            },
+          },
+        },
         Cloud: {
           type: 'string',
           description:
@@ -1114,23 +1221,53 @@ export const generatedTools: GeneratedTool[] = [
             required: ['image'],
           },
         },
-        Mounts: {
+        GlobalMount: {
           type: 'object',
+          required: ['volumeId'],
           additionalProperties: false,
           description:
-            "Storage mounts for the pod: at most one of `persistent` (size + path) or `network` (volumeId + path, a single entry) may be set, and every entry needs its full shape. On update, omit the field to leave the mount as it is; the mount kind and a network mount's volumeId cannot change, and mounts cannot be cleared.",
+            'Reference to a GlobalVolume. Usage-billed, so it has no size. The underlying `volumeId` is immutable post-create; the mount `path` may be changed via PATCH.',
           properties: {
-            persistent: {
-              $ref: '#/$defs/PersistentMount',
+            volumeId: {
+              type: 'string',
+              description: 'ID of an existing GlobalVolume.',
+              examples: ['gsb_abc'],
             },
-            network: {
-              type: 'array',
-              maxItems: 1,
-              items: {
-                $ref: '#/$defs/NetworkMount',
-              },
+            path: {
+              type: 'string',
+              description:
+                'Mount path inside the container. Optional on create, where a default is chosen for you; a PATCH that omits it leaves the path unchanged.',
+              examples: ['/data'],
             },
           },
+        },
+        Mounts: {
+          description:
+            "Storage mounts for the pod: at most one of `persistent` (size + path) or `network` (volumeId + path, a single entry) may be set, and every entry needs its full shape. On update, omit the field to leave the mount as it is; the mount kind and a network mount's volumeId cannot change, and mounts cannot be cleared.",
+          allOf: [
+            {
+              $ref: '#/$defs/BaseMounts',
+              description:
+                "Storage mounts for the pod: at most one of `persistent` (size + path) or `network` (volumeId + path, a single entry) may be set, and every entry needs its full shape. On update, omit the field to leave the mount as it is; the mount kind and a network mount's volumeId cannot change, and mounts cannot be cleared.",
+            },
+            {
+              type: 'object',
+              properties: {
+                global: {
+                  type: 'array',
+                  maxItems: 1,
+                  description:
+                    'At most one global volume, on GPU and CPU pods, with no data center constraint. Combinable with `network` but not with `persistent` (rejected): upstream drops a persistent disk whenever a volume is attached.',
+                  items: {
+                    $ref: '#/$defs/GlobalMount',
+                  },
+                },
+              },
+              description:
+                "Storage mounts for the pod: at most one of `persistent` (size + path) or `network` (volumeId + path, a single entry) may be set, and every entry needs its full shape. On update, omit the field to leave the mount as it is; the mount kind and a network mount's volumeId cannot change, and mounts cannot be cleared.",
+            },
+          ],
+          unevaluatedProperties: false,
         },
         NetworkMount: {
           type: 'object',
@@ -1567,6 +1704,37 @@ export const generatedTools: GeneratedTool[] = [
     },
   },
   {
+    name: 'delete-global-volume',
+    operationId: 'deleteGlobalVolume',
+    description:
+      'Delete a global volume. Permanently deletes a global volume and its stored data. Fails with `409` while the volume is still mounted: terminate every pod that mounts it (stopped pods count) and detach it from every serverless endpoint first. Nothing is detached or terminated on your behalf.',
+    method: 'DELETE',
+    path: '/v2/global-volumes/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Global volume identifier',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
     name: 'delete-network-volume',
     operationId: 'deleteNetworkVolume',
     description:
@@ -1955,6 +2123,36 @@ export const generatedTools: GeneratedTool[] = [
     },
   },
   {
+    name: 'get-global-volume',
+    operationId: 'getGlobalVolume',
+    description: 'Get a global volume. Returns a single global volume by ID.',
+    method: 'GET',
+    path: '/v2/global-volumes/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Global volume identifier',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
     name: 'get-gpu-type',
     operationId: 'getGpuType',
     description:
@@ -2116,6 +2314,26 @@ export const generatedTools: GeneratedTool[] = [
         },
       },
       required: ['id'],
+    },
+  },
+  {
+    name: 'get-organization',
+    operationId: 'getOrganization',
+    description:
+      "Get your current organization. Returns the authenticated caller's current organization. Organization context comes from the caller's membership; no organization selector is required. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.",
+    method: 'GET',
+    path: '/v2/organization',
+    params: [],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {},
     },
   },
   {
@@ -2454,10 +2672,19 @@ export const generatedTools: GeneratedTool[] = [
     name: 'list-clusters',
     operationId: 'listClusters',
     description:
-      'List clusters. Returns all clusters owned by the authenticated user.',
+      'List clusters. Returns clusters owned by the authenticated user, cursor-paginated newest-first; an omitted `limit` defaults to 1000. Follow `pagination.nextCursor` until `hasNextPage` is false.',
     method: 'GET',
     path: '/v2/clusters',
-    params: [],
+    params: [
+      {
+        name: 'cursor',
+        location: 'query',
+      },
+      {
+        name: 'limit',
+        location: 'query',
+      },
+    ],
     hasBody: false,
     annotations: {
       readOnlyHint: true,
@@ -2467,7 +2694,20 @@ export const generatedTools: GeneratedTool[] = [
     },
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        cursor: {
+          type: 'string',
+          minLength: 1,
+          description:
+            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 1000,
+          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+        },
+      },
     },
   },
   {
@@ -2906,6 +3146,48 @@ export const generatedTools: GeneratedTool[] = [
     },
   },
   {
+    name: 'list-global-volumes',
+    operationId: 'listGlobalVolumes',
+    description:
+      'List global volumes. Returns global volumes owned by the authenticated user, cursor-paginated newest-first; an omitted `limit` defaults to 1000. Follow `pagination.nextCursor` until `hasNextPage` is false.',
+    method: 'GET',
+    path: '/v2/global-volumes',
+    params: [
+      {
+        name: 'cursor',
+        location: 'query',
+      },
+      {
+        name: 'limit',
+        location: 'query',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cursor: {
+          type: 'string',
+          minLength: 1,
+          description:
+            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 1000,
+          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+        },
+      },
+    },
+  },
+  {
     name: 'list-gpu-types',
     operationId: 'listGpuTypes',
     description:
@@ -3119,10 +3401,19 @@ export const generatedTools: GeneratedTool[] = [
     name: 'list-network-volumes',
     operationId: 'listNetworkVolumes',
     description:
-      'List network volumes. Returns all network volumes owned by the authenticated user.',
+      'List network volumes. Returns network volumes owned by the authenticated user, cursor-paginated newest-first; an omitted `limit` defaults to 1000. Follow `pagination.nextCursor` until `hasNextPage` is false.',
     method: 'GET',
     path: '/v2/network-volumes',
-    params: [],
+    params: [
+      {
+        name: 'cursor',
+        location: 'query',
+      },
+      {
+        name: 'limit',
+        location: 'query',
+      },
+    ],
     hasBody: false,
     annotations: {
       readOnlyHint: true,
@@ -3132,7 +3423,20 @@ export const generatedTools: GeneratedTool[] = [
     },
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        cursor: {
+          type: 'string',
+          minLength: 1,
+          description:
+            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 1000,
+          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+        },
+      },
     },
   },
   {
@@ -3223,7 +3527,7 @@ export const generatedTools: GeneratedTool[] = [
     name: 'list-pods',
     operationId: 'listPods',
     description:
-      'List pods. Returns pods owned by the authenticated user. Cluster member pods are excluded by default; set `includeClusterPods=true` to include them (each carries a non-null `cluster` membership block). Results are cursor-paginated newest-first; an omitted `limit` defaults to 1000. When cluster member pods are excluded, the exclusion applies to each page after it is cut, so a page may hold fewer than `limit` pods — follow `pagination.nextCursor` until `hasNextPage` is false rather than counting items.',
+      'List pods. Returns pods owned by the authenticated user. Cluster member pods are excluded by default; set `includeClusterPods=true` to include them (each carries a non-null `cluster` membership block). Results are cursor-paginated newest-first; an omitted `limit` defaults to 1000. The cluster-member exclusion is applied before the page is cut, so a page holds `limit` pods whenever that many remain. Follow `pagination.nextCursor` until `hasNextPage` is false.',
     method: 'GET',
     path: '/v2/pods',
     params: [
@@ -3747,6 +4051,43 @@ export const generatedTools: GeneratedTool[] = [
           ],
           unevaluatedProperties: false,
         },
+        EndpointMount: {
+          type: 'object',
+          required: ['volumeId'],
+          additionalProperties: false,
+          description:
+            'A volume mounted on every worker, always at `/runpod-volume`. Custom paths are not supported yet.',
+          properties: {
+            volumeId: {
+              type: 'string',
+              description:
+                'ID of a NetworkVolume (under `network`) or GlobalVolume (under `global`).',
+              examples: ['vol_abc'],
+            },
+          },
+        },
+        EndpointMountsInput: {
+          type: 'object',
+          additionalProperties: false,
+          description:
+            "Volumes to mount on the endpoint's workers. A `network` or `global` list that is present replaces the endpoint's current list of that kind; an empty list detaches it, and an omitted list is left unchanged.",
+          properties: {
+            network: {
+              type: 'array',
+              description: 'Network volumes, at most one per data center.',
+              items: {
+                $ref: '#/$defs/EndpointMount',
+              },
+            },
+            global: {
+              type: 'array',
+              maxItems: 1,
+              items: {
+                $ref: '#/$defs/EndpointMount',
+              },
+            },
+          },
+        },
         EndpointScaling: {
           description:
             "Autoscaling signal — a discriminated union on `type`: `QUEUE_DELAY` (queue-based endpoints only) or `REQUEST_COUNT`. The scaler is chosen independently of the endpoint's routing `type` and can be switched on update.",
@@ -3922,6 +4263,11 @@ export const generatedTools: GeneratedTool[] = [
                   items: {
                     type: 'string',
                   },
+                  description: 'Network volume IDs. Pass `[]` to detach.',
+                  deprecated: true,
+                },
+                mounts: {
+                  $ref: '#/$defs/EndpointMountsInput',
                 },
                 scaling: {
                   $ref: '#/$defs/EndpointScaling',
@@ -3942,6 +4288,60 @@ export const generatedTools: GeneratedTool[] = [
             },
           ],
           unevaluatedProperties: false,
+        },
+      },
+    },
+  },
+  {
+    name: 'update-global-volume',
+    operationId: 'updateGlobalVolume',
+    description:
+      'Update a global volume. Updates mutable fields on a global volume. Only provided fields are changed.',
+    method: 'PATCH',
+    path: '/v2/global-volumes/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Global volume identifier',
+        },
+        body: {
+          $ref: '#/$defs/UpdateGlobalVolumeRequest',
+        },
+      },
+      required: ['id', 'body'],
+      $defs: {
+        UpdateGlobalVolumeRequest: {
+          type: 'object',
+          additionalProperties: false,
+          minProperties: 1,
+          description:
+            'Only the provided fields are updated. At least one field must be present; an empty body is rejected.',
+          properties: {
+            name: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 191,
+              pattern: '[^\\p{Z}\\t-\\r]',
+              description:
+                'New human-readable name, 1–191 characters with at least one non-whitespace character. Leading and trailing whitespace is trimmed.',
+              examples: ['renamed-volume'],
+            },
+          },
         },
       },
     },
@@ -4105,6 +4505,21 @@ export const generatedTools: GeneratedTool[] = [
             },
           },
         },
+        BaseMounts: {
+          type: 'object',
+          properties: {
+            persistent: {
+              $ref: '#/$defs/PersistentMount',
+            },
+            network: {
+              type: 'array',
+              maxItems: 1,
+              items: {
+                $ref: '#/$defs/NetworkMount',
+              },
+            },
+          },
+        },
         ContainerConfig: {
           allOf: [
             {
@@ -4123,23 +4538,53 @@ export const generatedTools: GeneratedTool[] = [
             },
           ],
         },
-        Mounts: {
+        GlobalMount: {
           type: 'object',
+          required: ['volumeId'],
           additionalProperties: false,
           description:
-            "Storage mounts for the pod: at most one of `persistent` (size + path) or `network` (volumeId + path, a single entry) may be set, and every entry needs its full shape. On update, omit the field to leave the mount as it is; the mount kind and a network mount's volumeId cannot change, and mounts cannot be cleared.",
+            'Reference to a GlobalVolume. Usage-billed, so it has no size. The underlying `volumeId` is immutable post-create; the mount `path` may be changed via PATCH.',
           properties: {
-            persistent: {
-              $ref: '#/$defs/PersistentMount',
+            volumeId: {
+              type: 'string',
+              description: 'ID of an existing GlobalVolume.',
+              examples: ['gsb_abc'],
             },
-            network: {
-              type: 'array',
-              maxItems: 1,
-              items: {
-                $ref: '#/$defs/NetworkMount',
-              },
+            path: {
+              type: 'string',
+              description:
+                'Mount path inside the container. Optional on create, where a default is chosen for you; a PATCH that omits it leaves the path unchanged.',
+              examples: ['/data'],
             },
           },
+        },
+        Mounts: {
+          description:
+            "Storage mounts for the pod: at most one of `persistent` (size + path) or `network` (volumeId + path, a single entry) may be set, and every entry needs its full shape. On update, omit the field to leave the mount as it is; the mount kind and a network mount's volumeId cannot change, and mounts cannot be cleared.",
+          allOf: [
+            {
+              $ref: '#/$defs/BaseMounts',
+              description:
+                "Storage mounts for the pod: at most one of `persistent` (size + path) or `network` (volumeId + path, a single entry) may be set, and every entry needs its full shape. On update, omit the field to leave the mount as it is; the mount kind and a network mount's volumeId cannot change, and mounts cannot be cleared.",
+            },
+            {
+              type: 'object',
+              properties: {
+                global: {
+                  type: 'array',
+                  maxItems: 1,
+                  description:
+                    'At most one global volume, on GPU and CPU pods, with no data center constraint. Combinable with `network` but not with `persistent` (rejected): upstream drops a persistent disk whenever a volume is attached.',
+                  items: {
+                    $ref: '#/$defs/GlobalMount',
+                  },
+                },
+              },
+              description:
+                "Storage mounts for the pod: at most one of `persistent` (size + path) or `network` (volumeId + path, a single entry) may be set, and every entry needs its full shape. On update, omit the field to leave the mount as it is; the mount kind and a network mount's volumeId cannot change, and mounts cannot be cleared.",
+            },
+          ],
+          unevaluatedProperties: false,
         },
         NetworkMount: {
           type: 'object',

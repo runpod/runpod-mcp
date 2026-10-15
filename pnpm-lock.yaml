@@ -2032,8 +2032,8 @@ packages:
     resolution: {integrity: sha512-6fPc+R4ihwqP6N/aIv2f1gMH8lOVtWQHoqC4yK6oSDVVocumAsfCqjkXnqiYMhmMwS/mEHLp7Vehlt3ql6lEig==}
     engines: {node: '>=8'}
 
-  structured-headers@2.1.0:
-    resolution: {integrity: sha512-ClzykN+XQVaSW5UfpOdEWfDplZ1Th7mISdaFvaC2+GjLTeBhGMJw83D/Rw9jPkHOml4oYd3EXaZhbz3gnE5nBQ==}
+  structured-headers@2.1.1:
+    resolution: {integrity: sha512-Ub9mpW7mtzUC7yM7Vrl+CwvHvXa4WhKWROUM9YKmkOsI55dMSg2rhiA7Q5vwRixQk1ndQ2m8YiM6YhO+GJn9LQ==}
     engines: {node: '>=18', npm: '>=6'}
 
   sucrase@3.35.0:
@@ -2821,7 +2821,7 @@ snapshots:
   '@runpod/typescript-api-sdk@0.2.0':
     dependencies:
       openapi-fetch: 0.17.0
-      structured-headers: 2.1.0
+      structured-headers: 2.1.1
 
   '@ts-morph/common@0.11.1':
     dependencies:
@@ -4200,7 +4200,7 @@ snapshots:
 
   strip-json-comments@3.1.1: {}
 
-  structured-headers@2.1.0: {}
+  structured-headers@2.1.1: {}
 
   sucrase@3.35.0:
     dependencies:
