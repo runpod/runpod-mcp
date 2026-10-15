@@ -1,5 +1,55 @@
 # @runpod/mcp-server
 
+## 4.3.0
+
+### Minor Changes
+
+- 39d296f: Add `describe-tool`, which returns any tool's full definition, and list the tools with large request bodies (create/update endpoint, template and cluster, update-pod, create/update secret) with their call shape only: the top-level arguments with their types, nested objects collapsed. What each tool accepts is unchanged: the full schema still gates every call and is one `describe-tool` call away. Every client handshake carries about a quarter fewer bytes.
+- 40d9745: Resync the vendored v2 OpenAPI spec with production and update `@runpod/typescript-api-sdk` from 0.2.0 to 0.3.0 and `@runpod/plugin-knowledge` to 1.7.4. Adds the `list-global-volumes`, `get-global-volume`, `create-global-volume`, `update-global-volume`, `delete-global-volume` and `get-organization` tools, `global` mounts on `create-pod`, `mounts` on endpoints, and `pagination` on `list-clusters` and `list-network-volumes`. Those two list tools now return one page (default `limit` 1000); follow `pagination.nextCursor` until `hasNextPage` is false.
+
+  `tools/list` shrinks from 97 KB to 87 KB. `create-pod` is listed by its call shape, like `create-endpoint`; `describe-tool` serves its full schema. Tool annotations leave out `idempotentHint` when it is `false`, the MCP spec default. A description override on a composed schema is no longer repeated on each `allOf` member.
+
+- d2d12ef: The installer runs without prompts and supports opencode and Pi.
+  `npx @runpod/mcp-server@latest add --client <ids>` configures the named clients
+  with no prompts (`--hosted` by default, `--local` to read the key from
+  `RUNPOD_API_KEY`), `remove --client <ids>` undoes it, and `add --list` shows
+  which clients are detected and where each config lives. Run with no
+  `--client` and no terminal, the installer now exits 2 and says nothing was
+  configured, instead of exiting 0 having written nothing. Exit codes: 0
+  configured, 1 a client failed, 2 bad usage. `--help` and `--version` work at
+  the top level and on `add`/`remove`.
+
+  New clients: opencode (`~/.config/opencode/opencode.json`, or an existing
+  `opencode.jsonc`, under `mcp` with opencode's `remote`/`local` entry schema)
+  and Pi (`~/.pi/agent/mcp.json`, honouring `PI_CODING_AGENT_DIR`). Both config
+  formats were checked by running opencode 1.19.0 and Pi 1.2.0 against the files
+  the installer writes.
+
+### Patch Changes
+
+- 37dfc9b: Generated tool argument descriptions are compacted to what an agent needs: leading sentences up to a cap, constraints kept, REST paths replaced by tool names, response prose and status codes dropped. `tools/list` shrinks by roughly a fifth; a byte-budget test keeps it from regrowing.
+- a388ccb: Hosted usage analytics now record which guide or concept was requested: the `id`, `concept`, `query`, `kind` and `limit` arguments of `list-guides`, `read-guide`, `lookup-concept` and `search-concepts`. `read-guide` events also carry `guide_kind` (skill, reference or golden-path). Guide resource reads (`resources/read`) are recorded as a new `runpod_mcp_resource_call` event with the guide URI, or `unknown` when nothing matched. Other tools still send no arguments, stdio still sends nothing, and `X-Runpod-Analytics: off` still opts out.
+- a388ccb: The hosted server now breaks 404 loops: once a signed-in caller gets 50 404s from one tool within 10 minutes, that tool answers that caller with a retryable 429 for 1 hour. Counts live in the existing Convex sink, successful calls never touch it, and any sink failure lets calls through. Local (stdio) installs are unaffected. Each block emits one `runpod_mcp_loop_blocked` analytics event, and the 429s it serves carry `blocked_by: not_found_loop`.
+- 19cae9f: Hosted server: every request except `tools/call` now answers as `application/json` instead of an SSE stream, so the CDN compresses it (`tools/list` drops from ~65 KB to ~13 KB on the wire per handshake). `tools/call` keeps SSE because clients read it under their long stream timeout and some tools hold a response longer than the JSON request timeout.
+
+  The per-request `mcp_request` log line is sampled (`MCP_REQUEST_LOG_SAMPLE_RATE`, default `0.1`; `MCP_VERBOSE_LOGS=true` logs all) and now records the response status, duration, JSON-RPC method (with tool name), the client's `initialize` name/version, user agent, and hashed caller key and address, so traffic can be attributed by client.
+
+- c55d61a: Hosted server: the request body is validated once with the SDK's JSON-RPC schemas; `prefersJsonResponse` and `summarizeRpc` take the parsed messages, and the log line reports a client name/version only for a spec-valid `initialize`.
+- 6efc1b3: Accept the argument shapes strict-schema clients send. Clients such as Codex
+  and opencode must send every property, so an optional query filter they mean
+  to leave out arrives as `null`, `""` or `[]`. Those are now treated as omitted:
+  `cudaVersions: []` next to `minCudaVersion` on `get-gpu-type` and
+  `list-gpu-types`, `lastN: null` next to an explicit range on the billing tools,
+  and `cursor: ""` on a first page no longer fail upstream. Numbers and booleans
+  a client stringified inside a request body (`disk: "20"`, `workers.max: "1"`)
+  are converted back where the body schema asks for one; string fields stay
+  strings.
+
+  A 400 hint now names the upstream cause instead of always saying "Input shape
+  mismatch": no capacity for the requested hardware, no account balance, or two
+  conflicting arguments. Real validation failures (a 422, or field errors) keep
+  the shape hint.
+
 ## 4.2.0
 
 ### Minor Changes

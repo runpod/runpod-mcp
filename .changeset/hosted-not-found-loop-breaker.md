@@ -1,5 +1,0 @@
----
-'@runpod/mcp-server': patch
----
-
-The hosted server now breaks 404 loops: once a signed-in caller gets 50 404s from one tool within 10 minutes, that tool answers that caller with a retryable 429 for 1 hour. Counts live in the existing Convex sink, successful calls never touch it, and any sink failure lets calls through. Local (stdio) installs are unaffected. Each block emits one `runpod_mcp_loop_blocked` analytics event, and the 429s it serves carry `blocked_by: not_found_loop`.
