@@ -60,6 +60,25 @@ class RoundTrip(unittest.TestCase):
             )
         self.assertEqual(reloaded, spec)
 
+    def test_extra_yaml_line_breaks_survive_a_round_trip(self):
+        # The 2026-10 global-volume `name` pattern ends in a raw U+0085. YAML
+        # reads NEL, LS and PS as line breaks, so unescaped they fold to a
+        # space on reload and the pattern silently changes.
+        pattern = "[^\\p{Z}\\t-\\r\x85]"
+        spec = {
+            "openapi": "3.1.0",
+            "paths": {},
+            "components": {
+                "schemas": {
+                    "Name": {"type": "string", "pattern": pattern},
+                    "Prose": {"description": "a\u2028b\u2029c"},
+                }
+            },
+        }
+        text = dump_spec(spec)
+        for reader in (SpecLoader, yaml.SafeLoader):
+            self.assertEqual(yaml.load(text, Loader=reader), spec, reader.__name__)
+
     def test_stock_pyyaml_shows_why_the_loader_is_needed(self):
         # The bug this guards against, spelled out: plain `OFF` is false in 1.1.
         self.assertIs(yaml.safe_load("enum: [OFF]")["enum"][0], False)

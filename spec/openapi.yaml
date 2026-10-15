@@ -8,7 +8,30 @@ servers:
     description: Runpod API v2 production server
 security:
   - bearerAuth: []
+x-runpod-scopes:
+  pods:
+    levels: [read, write]
+  serverless:
+    levels: [read, write]
+  clusters:
+    levels: [read, write]
+  volumes:
+    levels: [read, write]
+  templates:
+    levels: [read, write]
+  secrets:
+    levels: [read, write]
+  authentication:
+    levels: [read, write]
+  membership:
+    levels: [read, write]
+  billing:
+    levels: [read, write]
+  catalog:
+    levels: [read]
 tags:
+  - name: Organization
+    description: Organization identity, membership, and access management.
   - name: Account
     description: Account-scoped settings and primitives (SSH public keys).
   - name: Pods
@@ -19,6 +42,9 @@ tags:
     description: Reusable pod and endpoint configuration templates.
   - name: Network Volumes
     description: Persistent network storage volumes for workloads.
+  - name: Global Volumes
+    description: Cross-data-center storage volumes that mount into workloads without pinning them to a
+      data center.
   - name: Registries
     description: Container registry credentials used to pull private images.
   - name: Catalog
@@ -31,10 +57,10 @@ components:
       type: http
       scheme: bearer
       bearerFormat: Runpod API Key
-      description: >
-        Runpod API key authentication. Generate an API key in the Runpod console and send it in the `Authorization`
-        header as `Bearer <api_key>`. Keys are scoped to the permissions granted when created; requests
-        may return `403` when a valid key lacks access to the requested resource or action.
+      description: |
+        Runpod API key authentication. Generate an API key in the Runpod console and send it in the `Authorization` header as `Bearer <api_key>`. Keys are scoped to the permissions granted when created; requests may return `403` when a valid key lacks access to the requested resource or action.
+
+        Console sessions (Clerk JWTs) act for the signed-in user. To act for a team instead, also send `X-Team-Id: <team_id>`; it applies only when the user owns or belongs to that team, otherwise the request runs against the user's own account. API keys created inside a team already act for that team and do not need the header.
   responses:
     UnauthorizedError:
       description: Authentication failed because the bearer token is missing, malformed, expired, or invalid.
@@ -423,6 +449,19 @@ components:
         type: string
         format: date-time
   schemas:
+    Organization:
+      type: object
+      description: The authenticated caller's current organization.
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          description: Organization ID.
+          examples: [org_id_abc_123]
+        name:
+          type: string
+          description: Organization name.
+          examples: [my-org]
     Pagination:
       type: object
       required: [nextCursor, hasNextPage]
@@ -524,13 +563,34 @@ components:
               type: [string, 'null']
               description: Container registry credential ID (for private images)
               examples: [null]
-    Mounts:
+    BaseMounts:
       type: object
-      additionalProperties: false
       description: |
-        Storage mounts attached to a pod. At most one of `persistent` or
-        `network` may be set: sending both is rejected with 400. The
-        `network` field is an array for forward compatibility with
+        The mount kinds every resource that takes `mounts` shares. At most one
+        of `persistent` or `network` may be set: combining them is rejected
+        with 400. The `network` field is an array for forward compatibility
+        with multi-network-volume support; `maxItems` is 1.
+      properties:
+        persistent:
+          $ref: '#/components/schemas/PersistentMount'
+        network:
+          type: array
+          maxItems: 1
+          items:
+            $ref: '#/components/schemas/NetworkMount'
+    ClusterMounts:
+      description: |
+        Storage mounts for a cluster create: `persistent` or `network`, not
+        both. Clusters cannot mount global volumes, so `global` is rejected
+        with 422.
+      allOf:
+        - $ref: '#/components/schemas/BaseMounts'
+      unevaluatedProperties: false
+    Mounts:
+      description: |
+        Storage mounts attached to a pod. `persistent` is mutually exclusive
+        with both `network` and `global`: combining them is rejected with 400.
+        The `network` field is an array for forward compatibility with
         multi-network-volume support; `maxItems` is 1.
 
         PATCH semantics:
@@ -547,14 +607,24 @@ components:
         - Partial mounts are not supported — every mount entry must
           include the full schema (`size` + `path` for persistent,
           `volumeId` + `path` for network). Missing required fields → 422.
-      properties:
-        persistent:
-          $ref: '#/components/schemas/PersistentMount'
-        network:
-          type: array
-          maxItems: 1
-          items:
-            $ref: '#/components/schemas/NetworkMount'
+      allOf:
+        - $ref: '#/components/schemas/BaseMounts'
+        - type: object
+          properties:
+            global:
+              type: array
+              maxItems: 1
+              description: |
+                At most one global volume, on GPU and CPU pods, with no data
+                center constraint. Combinable with `network` but not with
+                `persistent` (rejected with 400): upstream drops a persistent
+                disk whenever a volume is attached. Same PATCH rules as
+                `network`: global mounts are fixed at create, `global: []` is
+                rejected with 400, and `volumeId` is immutable; only `path` may
+                change.
+              items:
+                $ref: '#/components/schemas/GlobalMount'
+      unevaluatedProperties: false
     TemplateMounts:
       type: object
       additionalProperties: false
@@ -603,6 +673,24 @@ components:
           type: string
           description: Mount path inside the container. No default — must be specified explicitly.
           examples: [/runpod-volume]
+    GlobalMount:
+      type: object
+      required: [volumeId]
+      additionalProperties: false
+      description: |
+        Reference to a GlobalVolume. Usage-billed, so it has no size. The
+        underlying `volumeId` is immutable post-create; the mount `path` may be
+        changed via PATCH.
+      properties:
+        volumeId:
+          type: string
+          description: ID of an existing GlobalVolume.
+          examples: [gsb_abc]
+        path:
+          type: string
+          description: Mount path inside the container. Optional on create, where a default is chosen
+            for you; a PATCH that omits it leaves the path unchanged.
+          examples: [/data]
     BaseGpuConfig:
       type: object
       required: [id]
@@ -1091,6 +1179,7 @@ components:
             - scaling
             - dataCenterIds
             - networkVolumes
+            - mounts
             - timeout
             - flashboot
             - createdAt
@@ -1134,7 +1223,10 @@ components:
               type: array
               items:
                 type: string
+              deprecated: true
               examples: [[vol_abc]]
+            mounts:
+              $ref: '#/components/schemas/EndpointMounts'
             timeout:
               type: integer
               description: Per-request execution timeout in milliseconds
@@ -1524,6 +1616,10 @@ components:
               type: array
               items:
                 type: string
+              description: Network volume IDs.
+              deprecated: true
+            mounts:
+              $ref: '#/components/schemas/EndpointMountsInput'
             templateId:
               type: string
               minLength: 1
@@ -1604,6 +1700,10 @@ components:
               type: array
               items:
                 type: string
+              description: Network volume IDs. Pass `[]` to detach.
+              deprecated: true
+            mounts:
+              $ref: '#/components/schemas/EndpointMountsInput'
             scaling:
               $ref: '#/components/schemas/EndpointScaling'
             templateId:
@@ -2385,7 +2485,7 @@ components:
                 within a single data center.
               example: [US-TX-3]
             mounts:
-              $ref: '#/components/schemas/Mounts'
+              $ref: '#/components/schemas/ClusterMounts'
             startJupyter:
               type: boolean
               default: false
@@ -2412,12 +2512,14 @@ components:
           examples: [renamed-cluster]
     ListClustersResponse:
       type: object
-      required: [clusters]
+      required: [clusters, pagination]
       properties:
         clusters:
           type: array
           items:
             $ref: '#/components/schemas/Cluster'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
     Template:
       allOf:
         - $ref: '#/components/schemas/ContainerConfig'
@@ -2662,12 +2764,122 @@ components:
           examples: [100]
     ListNetworkVolumesResponse:
       type: object
-      required: [networkVolumes]
+      required: [networkVolumes, pagination]
       properties:
         networkVolumes:
           type: array
           items:
             $ref: '#/components/schemas/NetworkVolume'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+    GlobalVolume:
+      type: object
+      required: [id, name, createdAt, createdByUserId]
+      properties:
+        id:
+          type: string
+          description: Unique global volume identifier
+          examples: [gsb_abc]
+        name:
+          type: string
+          description: Human-readable name (not required to be unique)
+          examples: [training-data]
+        createdAt:
+          type: string
+          format: date-time
+          description: When the volume was created
+        createdByUserId:
+          type: [string, 'null']
+          description: ID of the user who created the volume, if known
+          examples: [user_123]
+    CreateGlobalVolumeRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 191
+          pattern: "[^\\p{Z}\\t-\\r\N]"
+          description: >
+            Human-readable name, 1–191 characters with at least one non-whitespace character. Leading
+            and trailing whitespace is trimmed.
+          examples: [training-data]
+    UpdateGlobalVolumeRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: |
+        Only the provided fields are updated. At least one field must be
+        present; an empty body is rejected.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 191
+          pattern: "[^\\p{Z}\\t-\\r\N]"
+          description: >
+            New human-readable name, 1–191 characters with at least one non-whitespace character. Leading
+            and trailing whitespace is trimmed.
+          examples: [renamed-volume]
+    ListGlobalVolumesResponse:
+      type: object
+      required: [globalVolumes, pagination]
+      properties:
+        globalVolumes:
+          type: array
+          items:
+            $ref: '#/components/schemas/GlobalVolume'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+    EndpointMount:
+      type: object
+      required: [volumeId]
+      additionalProperties: false
+      description: >
+        A volume mounted on every worker, always at `/runpod-volume`.
+      properties:
+        volumeId:
+          type: string
+          description: ID of a NetworkVolume (under `network`) or GlobalVolume (under `global`).
+          examples: [vol_abc]
+    EndpointMounts:
+      type: object
+      required: [network, global]
+      description: Volumes mounted on every worker of the endpoint.
+      properties:
+        network:
+          type: array
+          items:
+            $ref: '#/components/schemas/EndpointMount'
+        global:
+          type: array
+          items:
+            $ref: '#/components/schemas/EndpointMount'
+    EndpointMountsInput:
+      type: object
+      additionalProperties: false
+      description: |
+        Volumes to mount on the endpoint's workers. A `network` or `global`
+        list that is present replaces the endpoint's current list of that kind;
+        an empty list detaches it, and an omitted list is left unchanged. Both
+        kinds cannot be present on the endpoint at once, so to switch kinds send
+        `[]` for one and the new list for the other in the same request. Changes
+        apply to workers created afterwards. At most one global volume, GPU
+        endpoints only. `network` may accompany the deprecated `networkVolumes` field
+        only if the two agree exactly.
+      properties:
+        network:
+          type: array
+          description: Network volumes, at most one per data center.
+          items:
+            $ref: '#/components/schemas/EndpointMount'
+        global:
+          type: array
+          maxItems: 1
+          items:
+            $ref: '#/components/schemas/EndpointMount'
     Registry:
       type: object
       required: [id, name]
@@ -3725,9 +3937,59 @@ components:
       examples:
         - '"minute";q=60;w=60, "hour";q=3000;w=3600, "day";q=50000;w=86400'
 paths:
+  /v2/organization:
+    get:
+      operationId: getOrganization
+      x-runpod-scope: membership:read
+      summary: Get your current organization
+      x-mint:
+        metadata:
+          description: Get the ID and name of the organization you belong to.
+      description: Returns the authenticated caller's current organization. Organization context comes
+        from the caller's membership; no organization selector is required. Returns 404 when the caller
+        does not belong to an organization, or 403 when organizations are unavailable to the caller.
+      tags: [Organization]
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+              examples:
+                organization:
+                  summary: Current organization
+                  value:
+                    id: org_id_abc_123
+                    name: my-org
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v2/account/ssh-keys:
     get:
       operationId: getSshKeys
+      x-runpod-scope: authentication:read
       summary: List registered SSH public keys
       x-mint:
         metadata:
@@ -3774,6 +4036,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     put:
       operationId: updateSshKeys
+      x-runpod-scope: authentication:write
       summary: Replace registered SSH public keys
       x-mint:
         metadata:
@@ -3837,6 +4100,7 @@ paths:
   /v2/account/secrets:
     get:
       operationId: listSecrets
+      x-runpod-scope: secrets:read
       summary: List secrets
       x-mint:
         metadata:
@@ -3895,6 +4159,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     post:
       operationId: createSecret
+      x-runpod-scope: secrets:write
       summary: Create a secret
       x-mint:
         metadata:
@@ -3985,6 +4250,7 @@ paths:
         example: 2q9m7x4cavgd
     get:
       operationId: getSecret
+      x-runpod-scope: secrets:read
       summary: Get a secret
       x-mint:
         metadata:
@@ -4034,6 +4300,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     patch:
       operationId: updateSecret
+      x-runpod-scope: secrets:write
       summary: Update a secret
       x-mint:
         metadata:
@@ -4114,6 +4381,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     delete:
       operationId: deleteSecret
+      x-runpod-scope: secrets:write
       summary: Delete a secret
       x-mint:
         metadata:
@@ -4153,6 +4421,7 @@ paths:
   /v2/pods:
     get:
       operationId: listPods
+      x-runpod-scope: pods:read
       summary: List pods
       x-mint:
         metadata:
@@ -4164,10 +4433,9 @@ paths:
         them (each carries a non-null `cluster` membership block).
 
         Results are cursor-paginated newest-first; an omitted `limit`
-        defaults to 1000. When cluster member pods are excluded, the
-        exclusion applies to each page after it is cut, so a page may hold
-        fewer than `limit` pods — follow `pagination.nextCursor` until
-        `hasNextPage` is false rather than counting items.
+        defaults to 1000. The cluster-member exclusion is applied before the
+        page is cut, so a page holds `limit` pods whenever that many remain.
+        Follow `pagination.nextCursor` until `hasNextPage` is false.
       tags: [Pods]
       parameters:
         - name: includeClusterPods
@@ -4267,6 +4535,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     post:
       operationId: createPod
+      x-runpod-scope: pods:write
       summary: Create a pod
       x-mint:
         metadata:
@@ -4563,6 +4832,7 @@ paths:
         example: pod_abc123
     get:
       operationId: getPod
+      x-runpod-scope: pods:read
       summary: Get a pod
       x-mint:
         metadata:
@@ -4655,6 +4925,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     patch:
       operationId: updatePod
+      x-runpod-scope: pods:write
       summary: Update a pod
       x-mint:
         metadata:
@@ -4783,6 +5054,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     delete:
       operationId: deletePod
+      x-runpod-scope: pods:write
       summary: Terminate a pod
       x-mint:
         metadata:
@@ -4842,6 +5114,7 @@ paths:
         example: pod_abc123
     get:
       operationId: getPodLogs
+      x-runpod-scope: pods:read
       summary: Stream pod logs
       x-mint:
         metadata:
@@ -4922,6 +5195,7 @@ paths:
         example: pod_abc123
     post:
       operationId: podAction
+      x-runpod-scope: pods:write
       summary: Trigger a pod state transition
       x-mint:
         metadata:
@@ -5069,13 +5343,20 @@ paths:
   /v2/clusters:
     get:
       operationId: listClusters
+      x-runpod-scope: clusters:read
       summary: List clusters
       x-mint:
         metadata:
           description: List all Runpod Clusters owned by the authenticated user, including each Cluster's
             configuration, status, and aggregate Pod counts.
-      description: Returns all clusters owned by the authenticated user.
+      description: |
+        Returns clusters owned by the authenticated user, cursor-paginated
+        newest-first; an omitted `limit` defaults to 1000. Follow
+        `pagination.nextCursor` until `hasNextPage` is false.
       tags: [Clusters]
+      parameters:
+        - $ref: '#/components/parameters/PaginationCursor'
+        - $ref: '#/components/parameters/PaginationLimit'
       responses:
         '200':
           description: OK
@@ -5097,6 +5378,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     post:
       operationId: createCluster
+      x-runpod-scope: clusters:write
       summary: Create a cluster
       x-mint:
         metadata:
@@ -5147,6 +5429,7 @@ paths:
         example: cluster_abc123
     get:
       operationId: getCluster
+      x-runpod-scope: clusters:read
       summary: Get a cluster
       x-mint:
         metadata:
@@ -5182,6 +5465,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     patch:
       operationId: updateCluster
+      x-runpod-scope: clusters:write
       summary: Rename a cluster
       x-mint:
         metadata:
@@ -5229,6 +5513,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     delete:
       operationId: deleteCluster
+      x-runpod-scope: clusters:write
       summary: Delete a cluster
       x-mint:
         metadata:
@@ -5268,6 +5553,7 @@ paths:
         example: cluster_abc123
     get:
       operationId: listClusterPods
+      x-runpod-scope: clusters:read
       summary: List a cluster's pods
       x-mint:
         metadata:
@@ -5304,6 +5590,7 @@ paths:
   /v2/serverless:
     get:
       operationId: listEndpoints
+      x-runpod-scope: serverless:read
       summary: List serverless endpoints
       x-mint:
         metadata:
@@ -5367,6 +5654,10 @@ paths:
                           queueDelay: 4
                         dataCenterIds: [US-KS-2]
                         networkVolumes: [2q9m7x4c]
+                        mounts:
+                          network:
+                            - volumeId: 2q9m7x4c
+                          global: []
                         timeout: 300000
                         flashboot: 'OFF'
                         createdAt: '2026-06-01T12:00:00Z'
@@ -5392,6 +5683,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     post:
       operationId: createEndpoint
+      x-runpod-scope: serverless:write
       summary: Create a serverless endpoint
       x-mint:
         metadata:
@@ -5537,6 +5829,10 @@ paths:
                       queueDelay: 4
                     dataCenterIds: [US-KS-2]
                     networkVolumes: [2q9m7x4c]
+                    mounts:
+                      network:
+                        - volumeId: 2q9m7x4c
+                      global: []
                     timeout: 300000
                     flashboot: 'OFF'
                     createdAt: '2026-06-01T12:00:00Z'
@@ -5577,6 +5873,9 @@ paths:
                       queueDelay: 4
                     dataCenterIds: []
                     networkVolumes: []
+                    mounts:
+                      network: []
+                      global: []
                     timeout: 300000
                     flashboot: 'OFF'
                     createdAt: '2026-06-01T12:00:00Z'
@@ -5614,6 +5913,7 @@ paths:
         example: ep_abc123
     get:
       operationId: getEndpoint
+      x-runpod-scope: serverless:read
       summary: Get a serverless endpoint
       x-mint:
         metadata:
@@ -5664,6 +5964,10 @@ paths:
                       requestCount: 4
                     dataCenterIds: [US-KS-2]
                     networkVolumes: [2q9m7x4c]
+                    mounts:
+                      network:
+                        - volumeId: 2q9m7x4c
+                      global: []
                     timeout: 300000
                     flashboot: 'OFF'
                     createdAt: '2026-06-01T12:00:00Z'
@@ -5688,6 +5992,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     patch:
       operationId: updateEndpoint
+      x-runpod-scope: serverless:write
       summary: Update a serverless endpoint
       x-mint:
         metadata:
@@ -5700,8 +6005,9 @@ paths:
 
         Mutable fields: `name`, `gpu`, `cpu`, `workers` (`min`/`max`),
         `scaling` (`type`/`value`/`idleTimeout`), `dataCenterIds`,
-        `networkVolumes`, `timeout`, `flashboot`, and the container settings
-        (`image`, `args`, `disk`, `ports`, `env`, `registry`).
+        `networkVolumes`, `timeout`, `flashboot`, and the
+        container settings (`image`, `args`, `disk`, `ports`, `env`,
+        `registry`).
 
         Omitted compute preserves the current selection. `cpu` completely
         replaces a CPU endpoint's selection; compute family is immutable.
@@ -5803,6 +6109,10 @@ paths:
                       queueDelay: 8
                     dataCenterIds: [US-KS-2]
                     networkVolumes: [2q9m7x4c]
+                    mounts:
+                      network:
+                        - volumeId: 2q9m7x4c
+                      global: []
                     timeout: 300000
                     flashboot: 'OFF'
                     createdAt: '2026-06-01T12:00:00Z'
@@ -5831,6 +6141,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     delete:
       operationId: deleteEndpoint
+      x-runpod-scope: serverless:write
       summary: Delete a serverless endpoint
       x-mint:
         metadata:
@@ -5879,6 +6190,7 @@ paths:
         example: ep_abc123
     get:
       operationId: listEndpointWorkers
+      x-runpod-scope: serverless:read
       summary: List serverless endpoint workers
       x-mint:
         metadata:
@@ -5965,6 +6277,7 @@ paths:
         example: ep_abc123
     get:
       operationId: listEndpointReleases
+      x-runpod-scope: serverless:read
       summary: List serverless endpoint releases
       x-mint:
         metadata:
@@ -6051,6 +6364,7 @@ paths:
         example: ep_abc123
     get:
       operationId: listEndpointBuilds
+      x-runpod-scope: serverless:read
       summary: List serverless endpoint builds
       x-mint:
         metadata:
@@ -6134,6 +6448,7 @@ paths:
         example: build_abc123
     get:
       operationId: getEndpointBuild
+      x-runpod-scope: serverless:read
       summary: Get a serverless endpoint build
       x-mint:
         metadata:
@@ -6206,6 +6521,7 @@ paths:
         example: worker_abc
     get:
       operationId: getWorkerLogs
+      x-runpod-scope: serverless:read
       summary: Stream serverless worker logs
       x-mint:
         metadata:
@@ -6279,6 +6595,7 @@ paths:
   /v2/templates:
     get:
       operationId: listTemplates
+      x-runpod-scope: templates:read
       summary: List templates
       description: |
         Returns templates owned by the authenticated user (including
@@ -6351,6 +6668,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     post:
       operationId: createTemplate
+      x-runpod-scope: templates:write
       summary: Create a template
       x-mint:
         metadata:
@@ -6452,6 +6770,7 @@ paths:
         example: tpl_abc
     get:
       operationId: getTemplate
+      x-runpod-scope: templates:read
       summary: Get a template
       x-mint:
         metadata:
@@ -6518,6 +6837,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     patch:
       operationId: updateTemplate
+      x-runpod-scope: templates:write
       summary: Update a template
       x-mint:
         metadata:
@@ -6608,6 +6928,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     delete:
       operationId: deleteTemplate
+      x-runpod-scope: templates:write
       summary: Delete a template
       x-mint:
         metadata:
@@ -6660,13 +6981,20 @@ paths:
   /v2/network-volumes:
     get:
       operationId: listNetworkVolumes
+      x-runpod-scope: volumes:read
       summary: List network volumes
       x-mint:
         metadata:
           description: List all network volumes owned by the authenticated Runpod user, including each
             volume's size, data center, and storage tier.
-      description: Returns all network volumes owned by the authenticated user.
+      description: |
+        Returns network volumes owned by the authenticated user,
+        cursor-paginated newest-first; an omitted `limit` defaults to 1000.
+        Follow `pagination.nextCursor` until `hasNextPage` is false.
       tags: [Network Volumes]
+      parameters:
+        - $ref: '#/components/parameters/PaginationCursor'
+        - $ref: '#/components/parameters/PaginationLimit'
       responses:
         '200':
           headers:
@@ -6689,6 +7017,9 @@ paths:
                         size: 100
                         dataCenter: US-KS-2
                         type: HIGH_PERFORMANCE
+                    pagination:
+                      nextCursor: null
+                      hasNextPage: false
         '401':
           $ref: '#/components/responses/UnauthorizedError'
         '403':
@@ -6708,6 +7039,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     post:
       operationId: createNetworkVolume
+      x-runpod-scope: volumes:write
       summary: Create a network volume
       x-mint:
         metadata:
@@ -6792,6 +7124,7 @@ paths:
         example: agv6w2qcg7
     get:
       operationId: getNetworkVolume
+      x-runpod-scope: volumes:read
       summary: Get a network volume
       x-mint:
         metadata:
@@ -6841,6 +7174,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     patch:
       operationId: updateNetworkVolume
+      x-runpod-scope: volumes:write
       summary: Update a network volume
       x-mint:
         metadata:
@@ -6916,6 +7250,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     delete:
       operationId: deleteNetworkVolume
+      x-runpod-scope: volumes:write
       summary: Delete a network volume
       x-mint:
         metadata:
@@ -6950,9 +7285,309 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /v2/global-volumes:
+    get:
+      operationId: listGlobalVolumes
+      x-runpod-scope: volumes:read
+      summary: List global volumes
+      x-mint:
+        metadata:
+          description: List all global volumes owned by the authenticated Runpod user.
+      description: |
+        Returns global volumes owned by the authenticated user,
+        cursor-paginated newest-first; an omitted `limit` defaults to 1000.
+        Follow `pagination.nextCursor` until `hasNextPage` is false.
+      tags: [Global Volumes]
+      parameters:
+        - $ref: '#/components/parameters/PaginationCursor'
+        - $ref: '#/components/parameters/PaginationLimit'
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListGlobalVolumesResponse'
+              examples:
+                globalVolumes:
+                  summary: Successful response
+                  value:
+                    globalVolumes:
+                      - id: gsb_abc
+                        name: training-data
+                        createdAt: '2026-09-24T00:00:00Z'
+                        createdByUserId: user_123
+                    pagination:
+                      nextCursor: null
+                      hasNextPage: false
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      operationId: createGlobalVolume
+      x-runpod-scope: volumes:write
+      summary: Create a global volume
+      x-mint:
+        metadata:
+          description: Create a Runpod global volume for use by Pods and Serverless workers in any data
+            center.
+      description: |
+        Provisions a new global volume — storage that mounts into workloads
+        in any data center. Only a `name` is required; storage is provisioned
+        for you. Accounts have a cap on how many global volumes they can
+        hold; creating one past it fails with `400`.
+
+        Returns `201` with the created global volume, including its assigned
+        `id`.
+      tags: [Global Volumes]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateGlobalVolumeRequest'
+            examples:
+              globalVolume:
+                summary: Global volume
+                value:
+                  name: training-data
+      responses:
+        '201':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlobalVolume'
+              examples:
+                globalVolume:
+                  summary: Successful response
+                  value:
+                    id: gsb_abc
+                    name: training-data
+                    createdAt: '2026-09-24T00:00:00Z'
+                    createdByUserId: user_123
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/global-volumes/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Global volume identifier
+        example: gsb_abc
+    get:
+      operationId: getGlobalVolume
+      x-runpod-scope: volumes:read
+      summary: Get a global volume
+      x-mint:
+        metadata:
+          description: Retrieve a Runpod global volume by ID.
+      description: Returns a single global volume by ID.
+      tags: [Global Volumes]
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlobalVolume'
+              examples:
+                globalVolume:
+                  summary: Successful response
+                  value:
+                    id: gsb_abc
+                    name: training-data
+                    createdAt: '2026-09-24T00:00:00Z'
+                    createdByUserId: user_123
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    patch:
+      operationId: updateGlobalVolume
+      x-runpod-scope: volumes:write
+      summary: Update a global volume
+      x-mint:
+        metadata:
+          description: Rename a Runpod global volume.
+      description: Updates mutable fields on a global volume. Only provided fields are changed.
+      tags: [Global Volumes]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateGlobalVolumeRequest'
+            examples:
+              renameGlobalVolume:
+                summary: Rename global volume
+                value:
+                  name: renamed-volume
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlobalVolume'
+              examples:
+                globalVolume:
+                  summary: Successful response
+                  value:
+                    id: gsb_abc
+                    name: renamed-volume
+                    createdAt: '2026-09-24T00:00:00Z'
+                    createdByUserId: user_123
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      operationId: deleteGlobalVolume
+      x-runpod-scope: volumes:write
+      summary: Delete a global volume
+      x-mint:
+        metadata:
+          description: Permanently delete a Runpod global volume and its stored data.
+      description: |
+        Permanently deletes a global volume and its stored data. Fails with
+        `409` while the volume is still mounted: terminate every pod that
+        mounts it (stopped pods count) and detach it from every serverless
+        endpoint first. Nothing is detached or terminated on your behalf.
+      tags: [Global Volumes]
+      responses:
+        '204':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Deleted. Response has no body.
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: The volume is still mounted by a pod or serverless endpoint.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v2/registries:
     get:
       operationId: listRegistries
+      x-runpod-scope: secrets:read
       summary: List container registries
       x-mint:
         metadata:
@@ -6998,6 +7633,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     post:
       operationId: createRegistry
+      x-runpod-scope: secrets:write
       summary: Create a container registry credential
       x-mint:
         metadata:
@@ -7067,6 +7703,7 @@ paths:
         example: reg_abc
     get:
       operationId: getRegistry
+      x-runpod-scope: secrets:read
       summary: Get a container registry credential
       x-mint:
         metadata:
@@ -7116,6 +7753,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     delete:
       operationId: deleteRegistry
+      x-runpod-scope: secrets:write
       summary: Delete a container registry credential
       x-mint:
         metadata:
@@ -7169,6 +7807,7 @@ paths:
   /v2/registries/delegations:
     get:
       operationId: listDelegations
+      x-runpod-scope: secrets:read
       summary: List all ECR delegations
       x-mint:
         metadata:
@@ -7206,6 +7845,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     post:
       operationId: createDelegation
+      x-runpod-scope: secrets:write
       summary: Register an ECR delegation
       x-mint:
         metadata:
@@ -7257,6 +7897,7 @@ paths:
         example: deleg_abc
     delete:
       operationId: revokeDelegation
+      x-runpod-scope: secrets:write
       summary: Revoke an ECR delegation
       x-mint:
         metadata:
@@ -7302,6 +7943,7 @@ paths:
   /v2/catalog/gpus:
     get:
       operationId: listGpuTypes
+      x-runpod-scope: catalog:read
       summary: List GPU types
       x-mint:
         metadata:
@@ -7383,6 +8025,7 @@ paths:
         example: NVIDIA GeForce RTX 4090
     get:
       operationId: getGpuType
+      x-runpod-scope: catalog:read
       summary: Get a GPU type
       x-mint:
         metadata:
@@ -7456,6 +8099,7 @@ paths:
   /v2/catalog/cpus:
     get:
       operationId: listCpuTypes
+      x-runpod-scope: catalog:read
       summary: List CPU types
       x-mint:
         metadata:
@@ -7527,6 +8171,7 @@ paths:
         example: cpu5c
     get:
       operationId: getCpuType
+      x-runpod-scope: catalog:read
       summary: Get a CPU type
       x-mint:
         metadata:
@@ -7592,6 +8237,7 @@ paths:
   /v2/catalog/datacenters:
     get:
       operationId: listDataCenters
+      x-runpod-scope: catalog:read
       summary: List data centers
       x-mint:
         metadata:
@@ -7719,6 +8365,7 @@ paths:
         example: US-CA-2
     get:
       operationId: getDataCenter
+      x-runpod-scope: catalog:read
       summary: Get a data center
       x-mint:
         metadata:
@@ -7791,6 +8438,7 @@ paths:
   /v2/catalog/templates:
     get:
       operationId: listPublicTemplates
+      x-runpod-scope: catalog:read
       summary: List public templates
       x-mint:
         metadata:
@@ -7879,6 +8527,7 @@ paths:
   /v2/billing:
     get:
       operationId: listBilling
+      x-runpod-scope: billing:read
       summary: Get aggregated billing history
       x-mint:
         metadata:
@@ -7970,6 +8619,7 @@ paths:
   /v2/billing/pods:
     get:
       operationId: listPodBilling
+      x-runpod-scope: billing:read
       summary: Get pod billing history
       x-mint:
         metadata:
@@ -8051,6 +8701,7 @@ paths:
   /v2/billing/serverless:
     get:
       operationId: listServerlessBilling
+      x-runpod-scope: billing:read
       summary: Get serverless billing history
       x-mint:
         metadata:
@@ -8134,6 +8785,7 @@ paths:
   /v2/billing/endpoints:
     get:
       operationId: listEndpointBilling
+      x-runpod-scope: billing:read
       summary: Get public endpoint billing history
       x-mint:
         metadata:
@@ -8198,6 +8850,7 @@ paths:
   /v2/billing/network-volumes:
     get:
       operationId: listNetworkVolumeBilling
+      x-runpod-scope: billing:read
       summary: Get network volume billing history
       x-mint:
         metadata:
@@ -8277,6 +8930,7 @@ paths:
   /v2/billing/clusters:
     get:
       operationId: listClusterBilling
+      x-runpod-scope: billing:read
       summary: Get cluster billing history
       x-mint:
         metadata:

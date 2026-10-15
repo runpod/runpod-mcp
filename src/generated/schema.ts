@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    "/v2/organization": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get your current organization
+         * @description Returns the authenticated caller's current organization. Organization context comes from the caller's membership; no organization selector is required. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.
+         */
+        get: operations["getOrganization"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v2/account/ssh-keys": {
         parameters: {
             query?: never;
@@ -122,10 +142,9 @@ export interface paths {
          *     them (each carries a non-null `cluster` membership block).
          *
          *     Results are cursor-paginated newest-first; an omitted `limit`
-         *     defaults to 1000. When cluster member pods are excluded, the
-         *     exclusion applies to each page after it is cut, so a page may hold
-         *     fewer than `limit` pods — follow `pagination.nextCursor` until
-         *     `hasNextPage` is false rather than counting items.
+         *     defaults to 1000. The cluster-member exclusion is applied before the
+         *     page is cut, so a page holds `limit` pods whenever that many remain.
+         *     Follow `pagination.nextCursor` until `hasNextPage` is false.
          */
         get: operations["listPods"];
         put?: never;
@@ -349,7 +368,9 @@ export interface paths {
         };
         /**
          * List clusters
-         * @description Returns all clusters owned by the authenticated user.
+         * @description Returns clusters owned by the authenticated user, cursor-paginated
+         *     newest-first; an omitted `limit` defaults to 1000. Follow
+         *     `pagination.nextCursor` until `hasNextPage` is false.
          */
         get: operations["listClusters"];
         put?: never;
@@ -535,8 +556,9 @@ export interface paths {
          *
          *     Mutable fields: `name`, `gpu`, `cpu`, `workers` (`min`/`max`),
          *     `scaling` (`type`/`value`/`idleTimeout`), `dataCenterIds`,
-         *     `networkVolumes`, `timeout`, `flashboot`, and the container settings
-         *     (`image`, `args`, `disk`, `ports`, `env`, `registry`).
+         *     `networkVolumes`, `timeout`, `flashboot`, and the
+         *     container settings (`image`, `args`, `disk`, `ports`, `env`,
+         *     `registry`).
          *
          *     Omitted compute preserves the current selection. `cpu` completely
          *     replaces a CPU endpoint's selection; compute family is immutable.
@@ -813,7 +835,9 @@ export interface paths {
         };
         /**
          * List network volumes
-         * @description Returns all network volumes owned by the authenticated user.
+         * @description Returns network volumes owned by the authenticated user,
+         *     cursor-paginated newest-first; an omitted `limit` defaults to 1000.
+         *     Follow `pagination.nextCursor` until `hasNextPage` is false.
          */
         get: operations["listNetworkVolumes"];
         put?: never;
@@ -870,6 +894,75 @@ export interface paths {
          *     Note: `size` may only increase; attempts to reduce size will be rejected.
          */
         patch: operations["updateNetworkVolume"];
+        trace?: never;
+    };
+    "/v2/global-volumes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List global volumes
+         * @description Returns global volumes owned by the authenticated user,
+         *     cursor-paginated newest-first; an omitted `limit` defaults to 1000.
+         *     Follow `pagination.nextCursor` until `hasNextPage` is false.
+         */
+        get: operations["listGlobalVolumes"];
+        put?: never;
+        /**
+         * Create a global volume
+         * @description Provisions a new global volume — storage that mounts into workloads
+         *     in any data center. Only a `name` is required; storage is provisioned
+         *     for you. Accounts have a cap on how many global volumes they can
+         *     hold; creating one past it fails with `400`.
+         *
+         *     Returns `201` with the created global volume, including its assigned
+         *     `id`.
+         */
+        post: operations["createGlobalVolume"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/global-volumes/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Global volume identifier
+                 * @example gsb_abc
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get a global volume
+         * @description Returns a single global volume by ID.
+         */
+        get: operations["getGlobalVolume"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a global volume
+         * @description Permanently deletes a global volume and its stored data. Fails with
+         *     `409` while the volume is still mounted: terminate every pod that
+         *     mounts it (stopped pods count) and detach it from every serverless
+         *     endpoint first. Nothing is detached or terminated on your behalf.
+         */
+        delete: operations["deleteGlobalVolume"];
+        options?: never;
+        head?: never;
+        /**
+         * Update a global volume
+         * @description Updates mutable fields on a global volume. Only provided fields are changed.
+         */
+        patch: operations["updateGlobalVolume"];
         trace?: never;
     };
     "/v2/registries": {
@@ -1251,6 +1344,19 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description The authenticated caller's current organization. */
+        Organization: {
+            /**
+             * @description Organization ID.
+             * @example org_id_abc_123
+             */
+            id: string;
+            /**
+             * @description Organization name.
+             * @example my-org
+             */
+            name: string;
+        };
         /** @description Cursor-pagination metadata, uniform across list endpoints. Every response carries it: follow `nextCursor` while `hasNextPage` is true to walk the full result set. */
         Pagination: {
             /**
@@ -1336,9 +1442,25 @@ export interface components {
             registry?: string | null;
         };
         /**
-         * @description Storage mounts attached to a pod. At most one of `persistent` or
-         *     `network` may be set: sending both is rejected with 400. The
-         *     `network` field is an array for forward compatibility with
+         * @description The mount kinds every resource that takes `mounts` shares. At most one
+         *     of `persistent` or `network` may be set: combining them is rejected
+         *     with 400. The `network` field is an array for forward compatibility
+         *     with multi-network-volume support; `maxItems` is 1.
+         */
+        BaseMounts: {
+            persistent?: components["schemas"]["PersistentMount"];
+            network?: components["schemas"]["NetworkMount"][];
+        };
+        /**
+         * @description Storage mounts for a cluster create: `persistent` or `network`, not
+         *     both. Clusters cannot mount global volumes, so `global` is rejected
+         *     with 422.
+         */
+        ClusterMounts: components["schemas"]["BaseMounts"];
+        /**
+         * @description Storage mounts attached to a pod. `persistent` is mutually exclusive
+         *     with both `network` and `global`: combining them is rejected with 400.
+         *     The `network` field is an array for forward compatibility with
          *     multi-network-volume support; `maxItems` is 1.
          *
          *     PATCH semantics:
@@ -1356,9 +1478,17 @@ export interface components {
          *       include the full schema (`size` + `path` for persistent,
          *       `volumeId` + `path` for network). Missing required fields → 422.
          */
-        Mounts: {
-            persistent?: components["schemas"]["PersistentMount"];
-            network?: components["schemas"]["NetworkMount"][];
+        Mounts: components["schemas"]["BaseMounts"] & {
+            /**
+             * @description At most one global volume, on GPU and CPU pods, with no data
+             *     center constraint. Combinable with `network` but not with
+             *     `persistent` (rejected with 400): upstream drops a persistent
+             *     disk whenever a volume is attached. Same PATCH rules as
+             *     `network`: global mounts are fixed at create, `global: []` is
+             *     rejected with 400, and `volumeId` is immutable; only `path` may
+             *     change.
+             */
+            global?: components["schemas"]["GlobalMount"][];
         };
         /**
          * @description Storage mounts attached to a template. Templates support a single
@@ -1404,6 +1534,23 @@ export interface components {
              * @example /runpod-volume
              */
             path: string;
+        };
+        /**
+         * @description Reference to a GlobalVolume. Usage-billed, so it has no size. The
+         *     underlying `volumeId` is immutable post-create; the mount `path` may be
+         *     changed via PATCH.
+         */
+        GlobalMount: {
+            /**
+             * @description ID of an existing GlobalVolume.
+             * @example gsb_abc
+             */
+            volumeId: string;
+            /**
+             * @description Mount path inside the container. Optional on create, where a default is chosen for you; a PATCH that omits it leaves the path unchanged.
+             * @example /data
+             */
+            path?: string;
         };
         BaseGpuConfig: {
             /**
@@ -1886,11 +2033,13 @@ export interface components {
              */
             dataCenterIds: string[];
             /**
+             * @deprecated
              * @example [
              *       "vol_abc"
              *     ]
              */
             networkVolumes: string[];
+            mounts: components["schemas"]["EndpointMounts"];
             /**
              * @description Per-request execution timeout in milliseconds
              * @example 300000
@@ -2180,7 +2329,12 @@ export interface components {
             dataCenterIds?: string[];
             /** @default OFF */
             flashboot?: components["schemas"]["FlashBoot"];
+            /**
+             * @deprecated
+             * @description Network volume IDs.
+             */
             networkVolumes?: string[];
+            mounts?: components["schemas"]["EndpointMountsInput"];
             /**
              * @description ID of a serverless template to base this endpoint on. The
              *     template is resolved at create time into the same container
@@ -2224,7 +2378,12 @@ export interface components {
             flashboot?: components["schemas"]["FlashBoot"];
             gpu?: components["schemas"]["UpdateEndpointGpuConfig"];
             name?: string;
+            /**
+             * @deprecated
+             * @description Network volume IDs. Pass `[]` to detach.
+             */
             networkVolumes?: string[];
+            mounts?: components["schemas"]["EndpointMountsInput"];
             scaling?: components["schemas"]["EndpointScaling"];
             /**
              * @description ID of a serverless template whose container settings are
@@ -2803,7 +2962,7 @@ export interface components {
              *     ]
              */
             dataCenterIds?: string[];
-            mounts?: components["schemas"]["Mounts"];
+            mounts?: components["schemas"]["ClusterMounts"];
             /**
              * @description Start Jupyter on every member pod, as on pod create.
              * @default false
@@ -2826,6 +2985,7 @@ export interface components {
         };
         ListClustersResponse: {
             clusters: components["schemas"]["Cluster"][];
+            pagination: components["schemas"]["Pagination"];
         };
         Template: {
             /**
@@ -3047,6 +3207,79 @@ export interface components {
         };
         ListNetworkVolumesResponse: {
             networkVolumes: components["schemas"]["NetworkVolume"][];
+            pagination: components["schemas"]["Pagination"];
+        };
+        GlobalVolume: {
+            /**
+             * @description Unique global volume identifier
+             * @example gsb_abc
+             */
+            id: string;
+            /**
+             * @description Human-readable name (not required to be unique)
+             * @example training-data
+             */
+            name: string;
+            /**
+             * Format: date-time
+             * @description When the volume was created
+             */
+            createdAt: string;
+            /**
+             * @description ID of the user who created the volume, if known
+             * @example user_123
+             */
+            createdByUserId: string | null;
+        };
+        CreateGlobalVolumeRequest: {
+            /**
+             * @description Human-readable name, 1–191 characters with at least one non-whitespace character. Leading and trailing whitespace is trimmed.
+             * @example training-data
+             */
+            name: string;
+        };
+        /**
+         * @description Only the provided fields are updated. At least one field must be
+         *     present; an empty body is rejected.
+         */
+        UpdateGlobalVolumeRequest: {
+            /**
+             * @description New human-readable name, 1–191 characters with at least one non-whitespace character. Leading and trailing whitespace is trimmed.
+             * @example renamed-volume
+             */
+            name?: string;
+        };
+        ListGlobalVolumesResponse: {
+            globalVolumes: components["schemas"]["GlobalVolume"][];
+            pagination: components["schemas"]["Pagination"];
+        };
+        /** @description A volume mounted on every worker, always at `/runpod-volume`. */
+        EndpointMount: {
+            /**
+             * @description ID of a NetworkVolume (under `network`) or GlobalVolume (under `global`).
+             * @example vol_abc
+             */
+            volumeId: string;
+        };
+        /** @description Volumes mounted on every worker of the endpoint. */
+        EndpointMounts: {
+            network: components["schemas"]["EndpointMount"][];
+            global: components["schemas"]["EndpointMount"][];
+        };
+        /**
+         * @description Volumes to mount on the endpoint's workers. A `network` or `global`
+         *     list that is present replaces the endpoint's current list of that kind;
+         *     an empty list detaches it, and an omitted list is left unchanged. Both
+         *     kinds cannot be present on the endpoint at once, so to switch kinds send
+         *     `[]` for one and the new list for the other in the same request. Changes
+         *     apply to workers created afterwards. At most one global volume, GPU
+         *     endpoints only. `network` may accompany the deprecated `networkVolumes` field
+         *     only if the two agree exactly.
+         */
+        EndpointMountsInput: {
+            /** @description Network volumes, at most one per data center. */
+            network?: components["schemas"]["EndpointMount"][];
+            global?: components["schemas"]["EndpointMount"][];
         };
         Registry: {
             /** @example reg_abc */
@@ -3995,6 +4228,43 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getOrganization: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Organization"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     getSshKeys: {
         parameters: {
             query?: never;
@@ -4690,7 +4960,18 @@ export interface operations {
     };
     listClusters: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected with 422.
+                 * @example Y3JlYXRlZEF0PTE3NDg3ODA0MDA
+                 */
+                cursor?: components["parameters"]["PaginationCursor"];
+                /**
+                 * @description Page size, 1–1000. Defaults to 1000 when omitted.
+                 * @example 50
+                 */
+                limit?: components["parameters"]["PaginationLimit"];
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5675,7 +5956,18 @@ export interface operations {
     };
     listNetworkVolumes: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected with 422.
+                 * @example Y3JlYXRlZEF0PTE3NDg3ODA0MDA
+                 */
+                cursor?: components["parameters"]["PaginationCursor"];
+                /**
+                 * @description Page size, 1–1000. Defaults to 1000 when omitted.
+                 * @example 50
+                 */
+                limit?: components["parameters"]["PaginationLimit"];
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5876,6 +6168,240 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ErrorResponse"];
                 };
             };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    listGlobalVolumes: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected with 422.
+                 * @example Y3JlYXRlZEF0PTE3NDg3ODA0MDA
+                 */
+                cursor?: components["parameters"]["PaginationCursor"];
+                /**
+                 * @description Page size, 1–1000. Defaults to 1000 when omitted.
+                 * @example 50
+                 */
+                limit?: components["parameters"]["PaginationLimit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListGlobalVolumesResponse"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    createGlobalVolume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateGlobalVolumeRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GlobalVolume"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getGlobalVolume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Global volume identifier
+                 * @example gsb_abc
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GlobalVolume"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteGlobalVolume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Global volume identifier
+                 * @example gsb_abc
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. Response has no body. */
+            204: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            /** @description The volume is still mounted by a pod or serverless endpoint. */
+            409: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    updateGlobalVolume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Global volume identifier
+                 * @example gsb_abc
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateGlobalVolumeRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GlobalVolume"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
