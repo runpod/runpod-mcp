@@ -1,6 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import fetch from 'node-fetch';
-import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { getBaseUrl, handleMcpRequest } from '../src/http.js';
 import { handleAlpSubmit } from '../src/alp/ingest.js';
@@ -10,8 +9,13 @@ import {
   isLoopbackHost,
   validatePkceAuthorization,
   validatePkceVerifier,
-  verifyPkce,
 } from '../src/oauth/pkce.js';
+import {
+  createHandoffState,
+  readHandoffState,
+  registerClient,
+  registeredRedirects,
+} from '../src/oauth/registration.js';
 
 // Read the package version at runtime. tsup's build-time `__PACKAGE_VERSION__`
 // define does not run here because Vercel compiles api/index.ts itself, so the
@@ -27,8 +31,7 @@ const PACKAGE_VERSION: string = (() => {
   }
 })();
 
-// Verbose logging gate. The authorize/token flows log request ids (which are
-// live, single-use auth codes) only when MCP_VERBOSE_LOGS=true.
+// Verbose logging gate. Request IDs are sensitive approval handles.
 const VERBOSE = process.env.MCP_VERBOSE_LOGS === 'true';
 
 /**
@@ -54,6 +57,38 @@ const DEFAULT_ALLOWED_REDIRECT_URIS = [
   'https://claude.ai/api/mcp/auth_callback',
   'https://claude.com/api/mcp/auth_callback',
 ];
+const CHATGPT_CALLBACK =
+  /^https:\/\/chatgpt\.com\/connector\/oauth\/[A-Za-z0-9_-]+$/;
+
+function isRegistrationUriAllowed(uri: string): boolean {
+  if (uri.length > 2048) return false;
+  if (CHATGPT_CALLBACK.test(uri) || getAllowedRedirectUris().includes(uri))
+    return true;
+  try {
+    const url = new URL(uri);
+    return (
+      url.protocol === 'http:' && isLoopbackHost(url.hostname) && !url.hash
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isClientRedirectAllowed(
+  clientId: string | null,
+  uri: string | null
+): boolean {
+  if (!uri) return false;
+  const registered = clientId ? registeredRedirects(clientId) : null;
+  return registered ? registered.includes(uri) : isRedirectUriAllowed(uri);
+}
+
+function getCompletionUrl(): string {
+  return (
+    process.env.MCP_OAUTH_COMPLETE_URL ??
+    'https://mcp.getrunpod.io/oauth/complete'
+  );
+}
 
 function getAllowedRedirectUris(): string[] {
   const extra = (process.env.MCP_ALLOWED_REDIRECT_URIS ?? '')
@@ -82,10 +117,6 @@ function isRedirectUriAllowed(redirectUri: string | null): boolean {
   return getAllowedRedirectUris().includes(redirectUri);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 // node-fetch applies no timeout of its own, and this file runs under
 // vercel.json's 60s maxDuration for api/index.ts. A flash backend that accepts
 // the connection and goes quiet would otherwise hang the OAuth handshake until
@@ -95,21 +126,6 @@ function sleep(ms: number): Promise<void> {
 // build their own request, so they are bounded here.
 // Exported so the parsing test asserts the real fallback, not a copy of it.
 export const DEFAULT_FLASH_GRAPHQL_TIMEOUT_MS = 10_000;
-// Whole-poll budget for /token, below maxDuration so the OAuth error response
-// is serialized rather than reaped. 20 attempts spaced 2s apart can otherwise
-// reach the platform limit on latency alone, with or without a wedged socket.
-// Exported for the test that checks it against vercel.json — the same
-// cross-file invariant HTTP_LONG_POLL_BUDGET_MS is pinned by, and the same
-// silent failure if maxDuration moves and this does not.
-export const TOKEN_POLL_BUDGET_MS = 45_000;
-const TOKEN_POLL_INTERVAL_MS = 2_000;
-// Budget below which /token stops polling instead of squeezing in one more
-// read. Reading an APPROVED request consumes the code atomically upstream, so a
-// read we abandon mid-flight can burn it — the user's retry then gets "already
-// used" rather than a key. Stopping answers authorization_pending, which is
-// retryable and consumes nothing, so it is the better trade for the last few
-// seconds of a budget.
-const MIN_TOKEN_POLL_REMAINDER_MS = 5_000;
 // AbortSignal.timeout takes a uint32: a fractional or out-of-range delay throws
 // ERR_OUT_OF_RANGE synchronously, which would 500 BOTH OAuth routes and make
 // signing in impossible. Just above int32 it does not throw at all — it warns
@@ -133,14 +149,6 @@ export function getFlashTimeoutMs(): number {
     : DEFAULT_FLASH_GRAPHQL_TIMEOUT_MS;
 }
 
-// Deadline for one /token poll: the per-call deadline, never past what is left
-// of the whole poll. The sibling of streamPollTimeoutMs in src/specgen/tools/jobs.ts.
-// No floor is needed — the loop below will not start a read at all once the
-// budget is down to MIN_TOKEN_POLL_REMAINDER_MS.
-function tokenPollDeadlineMs(remainingMs: number): number {
-  return Math.min(getFlashTimeoutMs(), remainingMs);
-}
-
 /**
  * Name for the minted Runpod API key, shown in the user's dashboard. Defaults
  * to "runpod-mcp" so keys minted through this server are identifiable and
@@ -152,14 +160,6 @@ function tokenPollDeadlineMs(remainingMs: number): number {
  */
 function getApiKeyName(): string | null {
   return process.env.RUNPOD_API_KEY_NAME ?? 'runpod-mcp';
-}
-
-interface FlashAuthRequestStatus {
-  id: string;
-  status: 'PENDING' | 'APPROVED' | 'DENIED' | 'EXPIRED' | 'CONSUMED';
-  apiKey: string | null;
-  codeChallenge: string | null;
-  codeChallengeMethod: string | null;
 }
 
 /**
@@ -220,7 +220,7 @@ async function flashGraphql<T>(
 
 /**
  * Create a pending flash auth request (guest mutation, no auth header) and
- * return its id. The id doubles as the OAuth authorization code.
+ * return its id. Approval later issues a separate OAuth authorization code.
  */
 async function createFlashAuthRequest(codeChallenge: string): Promise<string> {
   const parts: string[] = [];
@@ -229,29 +229,13 @@ async function createFlashAuthRequest(codeChallenge: string): Promise<string> {
   // These fields require the PKCE-aware flash auth backend schema.
   parts.push(`codeChallenge: ${JSON.stringify(codeChallenge)}`);
   parts.push('codeChallengeMethod: "S256"');
+  parts.push('oauthCodeExchange: true');
   const args = parts.length ? `(${parts.join(', ')})` : '';
   const data = await flashGraphql<{ id: string }>(
     `mutation { createFlashAuthRequest${args} { id } }`,
     'createFlashAuthRequest'
   );
   return data.id;
-}
-
-/**
- * Read the current status of a flash auth request (guest query). Once the user
- * approves it in the console, the backend mints and returns a Runpod API key.
- */
-async function getFlashAuthStatus(
-  id: string,
-  timeoutMs?: number
-): Promise<FlashAuthRequestStatus> {
-  return flashGraphql<FlashAuthRequestStatus>(
-    `query { flashAuthRequestStatus(flashAuthRequestId: ${JSON.stringify(
-      id
-    )}) { id status apiKey codeChallenge codeChallengeMethod } }`,
-    'flashAuthRequestStatus',
-    timeoutMs
-  );
 }
 
 function encodeBody(body: VercelRequest['body']): string {
@@ -343,8 +327,8 @@ function handleAuthorizationServerMetadata(
  * Minimal OAuth 2.0 Dynamic Client Registration (RFC 7591). MCP clients such as
  * Claude register before starting the flow. We are a public client with no
  * client authentication, so we accept the request, echo back the client
- * metadata, and issue a client_id. Nothing is persisted — the token endpoint
- * does not authenticate the client (auth comes from the flash approval).
+ * metadata, and issue a signed client_id binding its exact redirect URIs.
+ * Nothing is persisted; the token endpoint also checks this signed binding.
  */
 function handleRegister(req: VercelRequest, res: VercelResponse): void {
   const body =
@@ -354,6 +338,30 @@ function handleRegister(req: VercelRequest, res: VercelResponse): void {
   const redirectUris = Array.isArray(body.redirect_uris)
     ? body.redirect_uris
     : [];
+  if (
+    redirectUris.length < 1 ||
+    redirectUris.length > 5 ||
+    !redirectUris.every(
+      (uri) => typeof uri === 'string' && isRegistrationUriAllowed(uri)
+    )
+  ) {
+    res.status(400).json({ error: 'invalid_redirect_uri' });
+    return;
+  }
+
+  let clientId: string;
+  try {
+    clientId = registerClient(
+      redirectUris as string[],
+      typeof body.client_name === 'string' ? body.client_name : 'mcp-client'
+    );
+  } catch (error) {
+    console.error('oauth_registration_unavailable', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    res.status(503).json({ error: 'temporarily_unavailable' });
+    return;
+  }
 
   console.log('oauth_register', {
     clientName: body.client_name,
@@ -361,7 +369,7 @@ function handleRegister(req: VercelRequest, res: VercelResponse): void {
   });
 
   res.status(201).json({
-    client_id: `mcp-${randomUUID()}`,
+    client_id: clientId,
     client_id_issued_at: Math.floor(Date.now() / 1000),
     redirect_uris: redirectUris,
     token_endpoint_auth_method: 'none',
@@ -384,10 +392,11 @@ async function handleAuthorize(
     const codeChallengeMethod = requestUrl.searchParams.get(
       'code_challenge_method'
     );
+    const clientId = requestUrl.searchParams.get('client_id');
 
     // Reject before doing anything: the authorization code redeems into a real
     // API key, so we only ever deliver it to an allowlisted redirect_uri.
-    if (!isRedirectUriAllowed(redirectUri)) {
+    if (!isClientRedirectAllowed(clientId, redirectUri)) {
       console.warn('oauth_authorize_rejected_redirect_uri', { redirectUri });
       res.status(400).json({
         error: 'invalid_request',
@@ -412,8 +421,8 @@ async function handleAuthorize(
       return;
     }
 
-    // 1. Create a guest flash auth request; its id is the OAuth code. The PKCE
-    //    challenge is persisted with it and verified at /token.
+    // 1. Create a guest flash auth request. The PKCE challenge is persisted
+    //    with it and verified when the separate authorization code is redeemed.
     const requestId = await createFlashAuthRequest(pkceRequest.codeChallenge);
 
     console.log('oauth_authorize', {
@@ -428,21 +437,24 @@ async function handleAuthorize(
 
     // 2. Hand off to the console login page. We carry the client's redirect_uri
     //    and state through so the login page can return the browser to the
-    //    client (redirect_uri?code=<requestId>&state=<state>) once approved.
-    const innerParams = new URLSearchParams({ request: requestId });
-    if (redirectUri) innerParams.set('redirect_uri', redirectUri);
-    if (state) innerParams.set('state', state);
+    //    MCP completion endpoint with a separate code once approved.
+    const innerParams = new URLSearchParams({
+      request: requestId,
+      redirect_uri: getCompletionUrl(),
+      state: createHandoffState(requestId, redirectUri!, state ?? ''),
+    });
     const innerRedirect = `/integrations/mcp/login?${innerParams.toString()}`;
     const handoffUrl = `${getConsoleBaseUrl()}/login?redirect=${encodeURIComponent(
       innerRedirect
     )}`;
 
-    // Don't log the full handoff URL (it embeds the auth code); log only the
-    // console host, and the code itself only when verbose.
+    // Don't log the full handoff URL (it embeds the approval request ID).
     console.log('oauth_authorize_handoff', {
       consoleHost: new URL(getConsoleBaseUrl()).host,
       ...(VERBOSE ? { requestId } : {}),
     });
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Referrer-Policy', 'no-referrer');
     res.redirect(302, handoffUrl);
   } catch (error) {
     console.error('oauth_authorize_failed', {
@@ -457,6 +469,39 @@ async function handleAuthorize(
   }
 }
 
+function handleOAuthComplete(req: VercelRequest, res: VercelResponse): void {
+  const url = new URL(req.url ?? '/', getBaseUrl(req));
+  const code = url.searchParams.get('code');
+  const handoff = readHandoffState(url.searchParams.get('state') ?? '');
+  if (
+    !code ||
+    !/^[a-f0-9]{64}$/.test(code) ||
+    !handoff ||
+    handoff.requestId !== url.searchParams.get('request')
+  ) {
+    res.status(400).json({ error: 'invalid_request' });
+    return;
+  }
+  const target = new URL(handoff.redirectUri);
+  target.searchParams.set('code', code);
+  if (handoff.state) target.searchParams.set('state', handoff.state);
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.redirect(302, target.toString());
+}
+
+function handleOAuthHandoff(req: VercelRequest, res: VercelResponse): void {
+  const url = new URL(req.url ?? '/', getBaseUrl(req));
+  const requestId = url.searchParams.get('request');
+  const handoff = readHandoffState(url.searchParams.get('state') ?? '');
+  if (!handoff || handoff.requestId !== requestId) {
+    res.status(400).json({ error: 'invalid_request' });
+    return;
+  }
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(200).json({ redirect_uri: handoff.redirectUri });
+}
+
 function tokenError(
   res: VercelResponse,
   httpStatus: number,
@@ -467,170 +512,57 @@ function tokenError(
 }
 
 /**
- * OAuth token endpoint. Claude exchanges the authorization code (the flash
- * request id) for an access token. We poll the flash request and, once the user
- * has approved it in the console, return the minted Runpod API key as the
- * access token. The MCP then forwards that key to the Runpod API on subsequent
- * requests.
+ * OAuth token endpoint. The client exchanges the separate authorization code
+ * and PKCE verifier for a Runpod API key. The backend atomically consumes the
+ * code after checking the verifier.
  */
 async function handleToken(
   req: VercelRequest,
   res: VercelResponse
 ): Promise<void> {
   const params = new URLSearchParams(encodeBody(req.body));
-  const grantType = params.get('grant_type');
   const code = params.get('code');
-  const codeVerifier = params.get('code_verifier');
+  const verifierRequest = validatePkceVerifier(params.get('code_verifier'));
+  const redirectUri = params.get('redirect_uri');
+  const clientId = params.get('client_id');
 
-  console.log('oauth_token_request', {
-    grantType,
-    hasCode: !!code,
-    redirectUri: params.get('redirect_uri'),
-    clientId: params.get('client_id'),
-    hasCodeVerifier: !!codeVerifier,
-  });
-
-  if (grantType !== 'authorization_code') {
+  if (params.get('grant_type') !== 'authorization_code') {
     tokenError(
       res,
       400,
       'unsupported_grant_type',
-      `Only authorization_code is supported, got ${grantType ?? 'none'}.`
+      'Only authorization_code is supported.'
     );
     return;
   }
-  if (!code) {
-    tokenError(res, 400, 'invalid_request', 'Missing code parameter.');
+  if (
+    !code ||
+    !/^[a-f0-9]{64}$/.test(code) ||
+    !isClientRedirectAllowed(clientId, redirectUri)
+  ) {
+    tokenError(res, 400, 'invalid_grant', 'Invalid code or redirect URI.');
     return;
   }
-  // Re-validate the redirect_uri here too: a token request must come from a
-  // client whose callback we trust (defense in depth alongside /authorize).
-  if (!isRedirectUriAllowed(params.get('redirect_uri'))) {
-    tokenError(
-      res,
-      400,
-      'invalid_grant',
-      'redirect_uri is missing or not allowed.'
-    );
-    return;
-  }
-
-  // Reject verifier syntax before reading backend status. An APPROVED status
-  // read consumes the authorization code, so malformed requests must fail first.
-  const verifierRequest = validatePkceVerifier(codeVerifier);
   if (!verifierRequest.ok) {
     tokenError(res, 400, 'invalid_grant', verifierRequest.error);
     return;
   }
 
   try {
-    // The user is redirected back to the client only after approval, so the
-    // request is usually already APPROVED. We poll for most of the function's
-    // budget (~45s, well under the 60s maxDuration) rather than returning a
-    // non-retryable `authorization_pending` early, since a browser-redirect
-    // client typically treats a token-endpoint 400 as terminal.
-    //
-    // Reading an APPROVED request via the guest `flashAuthRequestStatus` query
-    // atomically transitions it to CONSUMED and returns the minted key exactly
-    // once (backend: model/src/flash/authRequests.ts), so this poll cannot hand
-    // the same key out twice.
-    const maxAttempts = 20;
-    const startedAt = Date.now();
-    const remainingBudgetMs = () =>
-      TOKEN_POLL_BUDGET_MS - (Date.now() - startedAt);
-    // Stops on whichever comes first: the attempt count, or a budget too thin
-    // to cover a read we would rather not start (MIN_TOKEN_POLL_REMAINDER_MS).
-    // Both fall through to the authorization_pending answer below.
-    for (
-      let attempt = 0;
-      attempt < maxAttempts &&
-      remainingBudgetMs() >= MIN_TOKEN_POLL_REMAINDER_MS;
-      attempt++
-    ) {
-      // Deliberately NOT wrapped in try/continue: an APPROVED read consumes
-      // the code atomically upstream, so a read that failed on our side may
-      // already have minted and burned the key. Retrying would then read
-      // CONSUMED-with-no-key and report "already used" — a worse answer than
-      // the honest failure. One failed read ends the poll.
-      const status = await getFlashAuthStatus(
-        code,
-        tokenPollDeadlineMs(remainingBudgetMs())
-      );
-      console.log('oauth_token_poll', {
-        attempt,
-        status: status.status,
-        hasApiKey: !!status.apiKey,
-        hasCodeChallenge: !!status.codeChallenge,
-      });
-
-      // PKCE gate — run before honoring an APPROVED request so a missing/wrong
-      // verifier never yields a key. On a PENDING poll this rejects a bad
-      // verifier early, before the user approves. (An APPROVED read consumes the
-      // code atomically in the backend, so a failure there still burns the code;
-      // the key is never returned, which is the property PKCE protects.)
-      const pkceError = verifyPkce({
-        codeChallenge: status.codeChallenge,
-        codeChallengeMethod: status.codeChallengeMethod,
-        codeVerifier: verifierRequest.codeVerifier,
-      });
-      if (pkceError) {
-        console.warn('oauth_token_pkce_rejected', { attempt });
-        tokenError(res, 400, 'invalid_grant', pkceError);
-        return;
-      }
-
-      if (status.status === 'APPROVED' || status.status === 'CONSUMED') {
-        if (!status.apiKey) {
-          // CONSUMED with no key means it was already exchanged once.
-          tokenError(
-            res,
-            400,
-            'invalid_grant',
-            'Authorization code has already been used.'
-          );
-          return;
-        }
-        res.status(200).json({
-          access_token: status.apiKey,
-          token_type: 'Bearer',
-        });
-        return;
-      }
-      if (status.status === 'DENIED') {
-        tokenError(res, 400, 'access_denied', 'The user denied the request.');
-        return;
-      }
-      if (status.status === 'EXPIRED') {
-        tokenError(
-          res,
-          400,
-          'invalid_grant',
-          'The authorization request expired.'
-        );
-        return;
-      }
-
-      // PENDING — wait and retry. Always the full interval: skipping the sleep
-      // near the end of the budget bought the user no extra approval time and
-      // just re-read the backend back to back.
-      if (attempt < maxAttempts - 1) await sleep(TOKEN_POLL_INTERVAL_MS);
-    }
-
-    tokenError(
-      res,
-      400,
-      'authorization_pending',
-      'The authorization request has not been approved yet.'
+    const result = await flashGraphql<{ apiKey: string }>(
+      `mutation { redeemFlashOAuthCode(authorizationCode: ${JSON.stringify(code)}, codeVerifier: ${JSON.stringify(verifierRequest.codeVerifier)}) { apiKey } }`,
+      'redeemFlashOAuthCode'
     );
+    res.status(200).json({ access_token: result.apiKey, token_type: 'Bearer' });
   } catch (error) {
     console.error('oauth_token_failed', {
       error: error instanceof Error ? error.message : String(error),
     });
     tokenError(
       res,
-      500,
-      'server_error',
-      error instanceof Error ? error.message : 'Token exchange failed.'
+      400,
+      'invalid_grant',
+      'Authorization code is invalid, expired, or already used.'
     );
   }
 }
@@ -686,6 +618,16 @@ export default async function handler(
 
   if (req.method === 'GET' && pathname === '/authorize') {
     await handleAuthorize(req, res);
+    return;
+  }
+
+  if (req.method === 'GET' && pathname === '/oauth/complete') {
+    handleOAuthComplete(req, res);
+    return;
+  }
+
+  if (req.method === 'GET' && pathname === '/oauth/handoff') {
+    handleOAuthHandoff(req, res);
     return;
   }
 

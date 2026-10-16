@@ -14,27 +14,22 @@ class FakeResponse {
   body: JsonObject | undefined;
   location: string | undefined;
   headers = new Map<string, unknown>();
-
   setHeader(name: string, value: unknown) {
     this.headers.set(name.toLowerCase(), value);
   }
-
   status(code: number) {
     this.statusCode = code;
     return this;
   }
-
   json(body: JsonObject) {
     this.body = body;
     return this;
   }
-
   redirect(code: number, location: string) {
     this.statusCode = code;
     this.location = location;
     return this;
   }
-
   end() {
     return this;
   }
@@ -42,20 +37,23 @@ class FakeResponse {
 
 const VERIFIER = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
 const CHALLENGE = 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM';
+const CODE = 'c'.repeat(64);
+const REQUEST_ID = 'd'.repeat(64);
 const HOSTED_REDIRECT = 'https://claude.ai/api/mcp/auth_callback';
-const LOOPBACK_REDIRECT = 'http://127.0.0.1:8765/callback';
+const CHATGPT_REDIRECT =
+  'https://chatgpt.com/connector/oauth/connection_123-ABC';
+const OTHER_CHATGPT_REDIRECT =
+  'https://chatgpt.com/connector/oauth/another-connection';
 
-const originalGraphqlUrl = process.env.RUNPOD_GRAPHQL_URL;
-const originalConsoleBaseUrl = process.env.CONSOLE_BASE_URL;
-const originalApiKeyName = process.env.RUNPOD_API_KEY_NAME;
-const originalFlashTimeout = process.env.MCP_FLASH_TIMEOUT_MS;
-
+const original = {
+  graphql: process.env.RUNPOD_GRAPHQL_URL,
+  console: process.env.CONSOLE_BASE_URL,
+  keyName: process.env.RUNPOD_API_KEY_NAME,
+  signingKey: process.env.MCP_OAUTH_SIGNING_KEY,
+  timeout: process.env.MCP_FLASH_TIMEOUT_MS,
+};
 let backend: http.Server;
 let backendRequests: string[] = [];
-let flashStatus: JsonObject;
-// When set, the backend accepts the request and never answers — the wedged
-// socket this file's timeout test exists for. Held so they can be destroyed in
-// teardown; an open response would otherwise keep server.close() waiting.
 let backendStalls = false;
 const stalledResponses: http.ServerResponse[] = [];
 
@@ -75,251 +73,262 @@ before(async () => {
       res.setHeader('content-type', 'application/json');
       if (payload.query.includes('createFlashAuthRequest')) {
         res.end(
-          JSON.stringify({ data: { createFlashAuthRequest: { id: 'code-1' } } })
+          JSON.stringify({
+            data: { createFlashAuthRequest: { id: REQUEST_ID } },
+          })
         );
-        return;
+      } else if (payload.query.includes('redeemFlashOAuthCode')) {
+        res.end(
+          JSON.stringify({
+            data: { redeemFlashOAuthCode: { apiKey: 'rp_test_secret' } },
+          })
+        );
+      } else {
+        res.end(
+          JSON.stringify({
+            errors: [{ message: 'unexpected GraphQL operation' }],
+          })
+        );
       }
-      res.end(
-        JSON.stringify({ data: { flashAuthRequestStatus: flashStatus } })
-      );
     });
   });
-
   await new Promise<void>((resolve) => backend.listen(0, '127.0.0.1', resolve));
   const address = backend.address();
   assert(address && typeof address === 'object');
   process.env.RUNPOD_GRAPHQL_URL = `http://127.0.0.1:${address.port}/graphql`;
   process.env.CONSOLE_BASE_URL = 'https://console.example.test';
   process.env.RUNPOD_API_KEY_NAME = '';
+  process.env.MCP_OAUTH_SIGNING_KEY = 'a'.repeat(64);
 });
 
 beforeEach(() => {
   backendRequests = [];
   backendStalls = false;
-  flashStatus = {
-    id: 'code-1',
-    status: 'APPROVED',
-    apiKey: 'rp_test_secret',
-    codeChallenge: CHALLENGE,
-    codeChallengeMethod: 'S256',
-  };
 });
 
 after(async () => {
   for (const res of stalledResponses) res.destroy();
   stalledResponses.length = 0;
-
-  if (originalGraphqlUrl === undefined) delete process.env.RUNPOD_GRAPHQL_URL;
-  else process.env.RUNPOD_GRAPHQL_URL = originalGraphqlUrl;
-  if (originalConsoleBaseUrl === undefined) delete process.env.CONSOLE_BASE_URL;
-  else process.env.CONSOLE_BASE_URL = originalConsoleBaseUrl;
-  if (originalApiKeyName === undefined) delete process.env.RUNPOD_API_KEY_NAME;
-  else process.env.RUNPOD_API_KEY_NAME = originalApiKeyName;
-  if (originalFlashTimeout === undefined)
-    delete process.env.MCP_FLASH_TIMEOUT_MS;
-  else process.env.MCP_FLASH_TIMEOUT_MS = originalFlashTimeout;
-
+  for (const [key, value] of Object.entries({
+    RUNPOD_GRAPHQL_URL: original.graphql,
+    CONSOLE_BASE_URL: original.console,
+    RUNPOD_API_KEY_NAME: original.keyName,
+    MCP_OAUTH_SIGNING_KEY: original.signingKey,
+    MCP_FLASH_TIMEOUT_MS: original.timeout,
+  })) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   await new Promise<void>((resolve, reject) =>
     backend.close((error) => (error ? reject(error) : resolve()))
   );
 });
 
 async function request(method: string, url: string, body?: string) {
-  const req = {
-    method,
-    url,
-    body,
-    headers: { host: 'mcp.example.test' },
-  };
+  const req = { method, url, body, headers: { host: 'mcp.example.test' } };
   const res = new FakeResponse();
   await handler(req as never, res as never);
   return res;
 }
 
+async function register(redirectUris: string[]) {
+  return request('POST', '/register', {
+    redirect_uris: redirectUris,
+    client_name: 'ChatGPT',
+  } as never);
+}
+
 async function authorize(
   redirectUri: string,
-  codeChallenge?: string,
-  codeChallengeMethod?: string
+  clientId = 'legacy-client',
+  challenge = CHALLENGE
 ) {
   const params = new URLSearchParams({
     response_type: 'code',
-    client_id: 'test-client',
+    client_id: clientId,
     redirect_uri: redirectUri,
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+    state: 'original-state',
   });
-  if (codeChallenge !== undefined) {
-    params.set('code_challenge', codeChallenge);
-  }
-  if (codeChallengeMethod !== undefined) {
-    params.set('code_challenge_method', codeChallengeMethod);
-  }
   return request('GET', `/authorize?${params.toString()}`);
 }
 
-async function token(codeVerifier?: string) {
+async function token(
+  redirectUri: string,
+  clientId: string,
+  code = CODE,
+  verifier = VERIFIER
+) {
   const params = new URLSearchParams({
     grant_type: 'authorization_code',
-    code: 'code-1',
-    redirect_uri: HOSTED_REDIRECT,
+    code,
+    redirect_uri: redirectUri,
+    client_id: clientId,
+    code_verifier: verifier,
   });
-  if (codeVerifier !== undefined) {
-    params.set('code_verifier', codeVerifier);
-  }
   return request('POST', '/token', params.toString());
 }
 
-describe('OAuth PKCE endpoints', () => {
-  it('rejects missing PKCE for both hosted and loopback redirects', async () => {
-    for (const redirectUri of [HOSTED_REDIRECT, LOOPBACK_REDIRECT]) {
-      const res = await authorize(redirectUri);
-      assert.equal(res.statusCode, 400);
-      assert.deepEqual(res.body, {
-        error: 'invalid_request',
-        error_description: 'code_challenge is required.',
-      });
+describe('dynamic ChatGPT registration', () => {
+  it('registers each exact callback and uses a distinct signed client ID', async () => {
+    const first = await register([CHATGPT_REDIRECT]);
+    const second = await register([OTHER_CHATGPT_REDIRECT]);
+    assert.equal(first.statusCode, 201);
+    assert.equal(second.statusCode, 201);
+    assert.notEqual(first.body?.client_id, second.body?.client_id);
+    assert.equal(backendRequests.length, 0);
+
+    const clientId = String(first.body?.client_id);
+    const accepted = await authorize(CHATGPT_REDIRECT, clientId);
+    assert.equal(accepted.statusCode, 302);
+    assert.equal(backendRequests.length, 1);
+    assert.match(backendRequests[0], /oauthCodeExchange: true/);
+
+    const rejected = await authorize(OTHER_CHATGPT_REDIRECT, clientId);
+    assert.equal(rejected.statusCode, 400);
+    assert.equal(backendRequests.length, 1);
+  });
+
+  it('rejects a forged client ID and lookalike callbacks', async () => {
+    const registered = await register([CHATGPT_REDIRECT]);
+    const clientId = String(registered.body?.client_id);
+    const forged = `${clientId.slice(0, -1)}x`;
+    assert.equal((await authorize(CHATGPT_REDIRECT, forged)).statusCode, 400);
+    for (const uri of [
+      'http://chatgpt.com/connector/oauth/connection_123-ABC',
+      'https://chatgpt.com.evil.test/connector/oauth/connection_123-ABC',
+      'https://chatgpt.com@evil.test/connector/oauth/connection_123-ABC',
+      `${CHATGPT_REDIRECT}?next=https://evil.test`,
+      `${CHATGPT_REDIRECT}/extra`,
+    ]) {
+      assert.equal((await register([uri])).statusCode, 400, uri);
     }
     assert.equal(backendRequests.length, 0);
   });
 
-  it('rejects missing, plain, and malformed challenge methods before issuing a code', async () => {
-    const missing = await authorize(HOSTED_REDIRECT, CHALLENGE);
-    assert.equal(missing.statusCode, 400);
-
-    const plain = await authorize(HOSTED_REDIRECT, VERIFIER, 'plain');
-    assert.equal(plain.statusCode, 400);
-
-    const malformed = await authorize(HOSTED_REDIRECT, `${CHALLENGE}=`, 'S256');
-    assert.equal(malformed.statusCode, 400);
-    assert.equal(backendRequests.length, 0);
-  });
-
-  it('persists valid S256 parameters and starts authorization', async () => {
-    const res = await authorize(HOSTED_REDIRECT, CHALLENGE, 'S256');
-    assert.equal(res.statusCode, 302);
-    assert.match(res.location ?? '', /^https:\/\/console\.example\.test\//);
-    assert.equal(backendRequests.length, 1);
-    assert.match(
-      backendRequests[0],
-      new RegExp(`codeChallenge: "${CHALLENGE}"`)
+  it('returns through a fixed console callback, then forwards to registered ChatGPT URI', async () => {
+    const registered = await register([CHATGPT_REDIRECT]);
+    const auth = await authorize(
+      CHATGPT_REDIRECT,
+      String(registered.body?.client_id)
     );
-    assert.match(backendRequests[0], /codeChallengeMethod: "S256"/);
-  });
-
-  it('fails closed when an authorization code has no stored PKCE state', async () => {
-    flashStatus.codeChallenge = null;
-    flashStatus.codeChallengeMethod = null;
-
-    const res = await token(VERIFIER);
-    assert.equal(res.statusCode, 400);
-    assert.deepEqual(res.body, {
-      error: 'invalid_grant',
-      error_description:
-        'PKCE code_challenge is missing for this authorization code.',
-    });
-  });
-
-  it('rejects malformed verifiers without reading or consuming the code', async () => {
-    const missing = await token();
-    assert.equal(missing.statusCode, 400);
-    assert.equal(missing.body?.error, 'invalid_grant');
-    assert.equal(backendRequests.length, 0);
-
-    const malformed = await token('too-short');
-    assert.equal(malformed.statusCode, 400);
+    assert.equal(auth.statusCode, 302);
+    const handoff = new URL(auth.location!);
+    const inner = new URL(
+      decodeURIComponent(handoff.searchParams.get('redirect')!),
+      'https://console.example.test'
+    );
     assert.equal(
-      malformed.body?.error_description,
-      'code_verifier must be 43 to 128 unreserved characters.'
+      inner.searchParams.get('redirect_uri'),
+      'https://mcp.getrunpod.io/oauth/complete'
+    );
+    const state = inner.searchParams.get('state');
+    assert.ok(state);
+    assert.equal(inner.searchParams.get('request'), REQUEST_ID);
+    const verified = await request(
+      'GET',
+      `/oauth/handoff?${new URLSearchParams({ request: REQUEST_ID, state }).toString()}`
+    );
+    assert.equal(verified.statusCode, 200);
+    assert.equal(verified.body?.redirect_uri, CHATGPT_REDIRECT);
+    assert.equal(
+      (
+        await request(
+          'GET',
+          `/oauth/handoff?${new URLSearchParams({ request: 'e'.repeat(64), state }).toString()}`
+        )
+      ).statusCode,
+      400
+    );
+
+    const complete = await request(
+      'GET',
+      `/oauth/complete?${new URLSearchParams({ code: CODE, state, request: REQUEST_ID }).toString()}`
+    );
+    assert.equal(complete.statusCode, 302);
+    assert.equal(
+      complete.location,
+      `${CHATGPT_REDIRECT}?code=${CODE}&state=original-state`
+    );
+    assert.equal(
+      (await request('GET', `/oauth/complete?code=${CODE}&state=forged`))
+        .statusCode,
+      400
+    );
+    assert.equal(
+      (
+        await request(
+          'GET',
+          `/oauth/complete?${new URLSearchParams({ code: CODE, state, request: 'e'.repeat(64) }).toString()}`
+        )
+      ).statusCode,
+      400
+    );
+  });
+
+  it('redeems only for the registered callback and a syntactically valid verifier', async () => {
+    const registered = await register([CHATGPT_REDIRECT]);
+    const clientId = String(registered.body?.client_id);
+    assert.equal(
+      (await token(OTHER_CHATGPT_REDIRECT, clientId)).statusCode,
+      400
+    );
+    assert.equal(
+      (await token(CHATGPT_REDIRECT, clientId, CODE, 'short')).statusCode,
+      400
     );
     assert.equal(backendRequests.length, 0);
-
-    const wrong = await token('a'.repeat(43));
-    assert.equal(wrong.statusCode, 400);
-    assert.equal(wrong.body?.error_description, 'PKCE verification failed.');
+    const result = await token(CHATGPT_REDIRECT, clientId);
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body?.access_token, 'rp_test_secret');
     assert.equal(backendRequests.length, 1);
+    assert.match(backendRequests[0], /redeemFlashOAuthCode/);
+  });
+});
+
+describe('existing OAuth clients', () => {
+  it('keeps an exact hosted callback available and requires S256 PKCE', async () => {
+    const accepted = await authorize(HOSTED_REDIRECT);
+    assert.equal(accepted.statusCode, 302);
+    assert.equal(backendRequests.length, 1);
+    const missing = await authorize(HOSTED_REDIRECT, 'legacy-client', '');
+    assert.equal(missing.statusCode, 400);
+    const wrongHost = await authorize(
+      'https://claude.ai.evil.test/api/mcp/auth_callback'
+    );
+    assert.equal(wrongHost.statusCode, 400);
   });
 
-  it('returns the API key only for a matching verifier', async () => {
-    const res = await token(VERIFIER);
-    assert.equal(res.statusCode, 200);
-    assert.deepEqual(res.body, {
-      access_token: 'rp_test_secret',
-      token_type: 'Bearer',
-    });
-  });
-
-  // Bounded: without the deadline this hangs rather than fails, and node:test
-  // has no default timeout — one regression would stall the whole file.
-  it(
-    'answers with a named error when the flash backend accepts and goes silent',
-    { timeout: 10_000 },
-    async () => {
-      // node-fetch applies no timeout of its own, so before this deadline the
-      // poll below sat on a wedged socket until Vercel reaped the function at
-      // maxDuration: a blank 504 on the one flow with no credential yet, so the
-      // user cannot even retry into a working state.
-      backendStalls = true;
-      process.env.MCP_FLASH_TIMEOUT_MS = '150';
-      try {
-        const startedAt = Date.now();
-        const res = await token(VERIFIER);
-        const elapsed = Date.now() - startedAt;
-
-        assert.equal(res.statusCode, 500);
-        assert.equal(res.body?.error, 'server_error');
-        // Names the operation, the host and the deadline — a bare AbortError
-        // names none of them, and this string is what the client shows.
-        assert.match(
-          String(res.body?.error_description),
-          /flashAuthRequestStatus got no response from http:\/\/127\.0\.0\.1:\d+\/graphql after 150ms/
-        );
-        assert.ok(
-          elapsed < 5_000,
-          `took ${elapsed}ms — the deadline did not end the wedged poll`
-        );
-        // One attempt: a read that may have consumed the code upstream is not
-        // silently retried.
-        assert.equal(backendRequests.length, 1);
-      } finally {
-        delete process.env.MCP_FLASH_TIMEOUT_MS;
-      }
-    }
-  );
-
-  it('ignores a MCP_FLASH_TIMEOUT_MS that is not a positive number', () => {
-    // CLAUDE.md promises a typo cannot disable the deadline, which is only
-    // true while every non-positive parse falls back to the default.
+  it('bounds a stalled backend call', { timeout: 10_000 }, async () => {
+    backendStalls = true;
+    process.env.MCP_FLASH_TIMEOUT_MS = '150';
     try {
-      // Fractional and out-of-range values are the dangerous ones:
-      // AbortSignal.timeout takes a uint32, throws ERR_OUT_OF_RANGE on a
-      // fraction (500ing BOTH OAuth routes), and above int32 fires
-      // immediately instead — turning the dial up would turn it off.
-      const bads = [
-        'abc',
-        '0',
-        '-1',
-        '',
-        ' ',
-        'NaN',
-        'Infinity',
-        '10000.5',
-        '5000000000',
-        '3000000000',
-        '9007199254740993',
-      ];
-      for (const bad of bads) {
-        process.env.MCP_FLASH_TIMEOUT_MS = bad;
-        assert.equal(
-          getFlashTimeoutMs(),
-          DEFAULT_FLASH_GRAPHQL_TIMEOUT_MS,
-          `MCP_FLASH_TIMEOUT_MS=${JSON.stringify(bad)} must fall back to the default`
-        );
-      }
-      process.env.MCP_FLASH_TIMEOUT_MS = '250';
-      assert.equal(getFlashTimeoutMs(), 250, 'a positive integer is honored');
-      // What the accepted values are actually handed to. A value this rejects
-      // would throw here instead, synchronously, on every OAuth request.
-      assert.doesNotThrow(() => AbortSignal.timeout(getFlashTimeoutMs()));
+      const started = Date.now();
+      const result = await token(HOSTED_REDIRECT, 'legacy-client');
+      assert.equal(result.statusCode, 400);
+      assert.ok(Date.now() - started < 5_000);
+      assert.equal(backendRequests.length, 1);
     } finally {
       delete process.env.MCP_FLASH_TIMEOUT_MS;
     }
+  });
+
+  it('ignores invalid MCP_FLASH_TIMEOUT_MS values', () => {
+    for (const bad of [
+      'abc',
+      '0',
+      '-1',
+      'NaN',
+      'Infinity',
+      '10000.5',
+      '5000000000',
+    ]) {
+      process.env.MCP_FLASH_TIMEOUT_MS = bad;
+      assert.equal(getFlashTimeoutMs(), DEFAULT_FLASH_GRAPHQL_TIMEOUT_MS);
+    }
+    process.env.MCP_FLASH_TIMEOUT_MS = '250';
+    assert.equal(getFlashTimeoutMs(), 250);
+    delete process.env.MCP_FLASH_TIMEOUT_MS;
   });
 });
