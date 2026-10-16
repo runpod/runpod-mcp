@@ -15,7 +15,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { defaultCredentialChecker } from '../http.js';
-import { isSinkUrl } from './ingest.js';
+import { sinkRouteUrl } from './sink.js';
 
 export const DEFAULT_JOURNAL_LIMIT = 20;
 export const MAX_JOURNAL_LIMIT = 50;
@@ -43,10 +43,7 @@ export interface AlpReadOptions {
 
 /** The read door sits beside the write door on the same Convex deployment. */
 export function journalSinkUrl(submitUrl: string): string | null {
-  if (!isSinkUrl(submitUrl)) return null;
-  const url = new URL(submitUrl);
-  url.pathname = '/alp/journal';
-  return url.toString();
+  return sinkRouteUrl(submitUrl, '/alp/journal');
 }
 
 /** Clamp a caller-supplied limit; anything unusable becomes the default. */

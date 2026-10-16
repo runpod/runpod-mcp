@@ -8,7 +8,8 @@
 
 # Agent Learning Protocol — Phase 1 architecture
 
-Working design doc for the three agent-feedback tool calls described in the
+Working design doc for the agent-feedback tool calls (three at P0, a fourth
+write route added for CON-1762) described in the
 [Agent Feedback via Runpod MCP PRD](https://app.notion.com/p/3b4ff732fc3480e89ed5fda203a73841).
 Status: P0 implemented on `feat/specgen-server` (tools `src/specgen/tools/alp.ts`, ingest `src/alp/`). Decisions here supersede the PRD where noted; the KV rate-limiter sections were superseded on 2026-09-03 — see Rate limiting.
 
@@ -23,7 +24,7 @@ Project: `[ROCK] CON_2026 Q3: Stack Overflow for Agents (ALP)`, Console Experien
 
 ## Scope
 
-Phase 1 of the PRD: three push tool calls in this MCP server, a store behind
+Phase 1 of the PRD: three push tool calls at P0 in this MCP server, a store behind
 them, and an internal path to read the data. Convex is the store (a Convex
 deployment is already linked to the Vercel project hosting this server).
 
@@ -31,18 +32,19 @@ Phase 2 (agent-facing pull, consent model) and Phase 3 (published standard) are
 out of scope, but the schema below reserves the fields those phases need so they
 are not a migration.
 
-## The three routes
+## The routes
 
 The PRD specifies "same handler and same table underneath". That is right for
-storage and wrong for behavior: the three tools converge on one write path and
+storage and wrong for behavior: the tools converge on one write path and
 diverge completely on what happens downstream. Treat them as one table with
-three drains.
+one drain per route.
 
 | Route | Tool                               | Drains to                                        | Duplicates are                  |
 | ----- | ---------------------------------- | ------------------------------------------------ | ------------------------------- |
 | RT1   | `report_feedback`                  | Internal review — dashboard, then Linear         | Signal — frequency is priority  |
 | RT2   | `save_to_journal` / `read_journal` | The corpus, private per-identity first           | Confirmation — promotion signal |
 | RT3   | `ask_question`                     | The void — recorded only, offline docs-gap queue | Coverage gap evidence           |
+| RT4   | `report_how_user_found_runpod`     | Demand generation readout — AEO content themes   | Declined: one per account       |
 
 ### RT1 — `report_feedback`
 
@@ -142,7 +144,7 @@ and it does not resolve the current turn.
   is deliberately given up, so adoption is forced by the server instructions
   exactly as it is for RT1 and RT2.
 - **No latency budget.** With nothing to compute before responding, RT3 is fully
-  symmetric with the other two routes: fire the write, return a constant. This is
+  symmetric with the other write routes: fire the write, return a constant. This is
   the main reason skill matching stays out of Phase 1 — the hosted server is
   reaped at 60s and tool waits already clamp below that.
 - **Coverage-gap detection is offline.** There is no per-request "did a skill
@@ -151,6 +153,85 @@ and it does not resolve the current turn.
 
 Still worth recording per question: whether the same identity asked again
 afterward, which is the cheapest proxy for "the void was not good enough."
+
+### RT4 — `report_how_user_found_runpod`
+
+The referral ask ([CON-1762](https://linear.app/runpod/issue/CON-1762)), added
+2026-10 for the demand generation team. AEO (answer-engine optimization: content
+written so AI assistants cite it) needs to know what people asked an AI before
+it pointed them to Runpod, and no AEO tool exposes that; when an agent
+found Runpod in the same session, the agent has exactly that context. So the
+server asks the agent, once per account: what the user originally asked for,
+in their words or a close paraphrase, and why Runpod came up.
+
+This is the one route that asks about the **user's request** rather than
+Runpod's behavior, so the privacy line is drawn in the tool text itself: the
+ask, a sentence or two, nothing personal or confidential, nothing about the
+project beyond the ask. Structurally, `content` on this route is capped at
+2,000 characters (`MAX_REFERRAL_CONTENT_CHARS`) — an order of magnitude under
+the general cap — so a conversation log cannot fit, and it goes through the
+same scrub as every other submission. Expect most answers to be "no context":
+agent sessions usually start after the user signed up on the web. Those are
+recorded too, as `noContext: true`, because the share of answers with real
+context is the readout's first number.
+
+Fields beyond the shared ones: `source` (why Runpod came up: `searched`,
+`user_named`, `recommended`, `other`; off-enum values are dropped like
+`severity`) and `noContext` (always a boolean on this route, absent on the
+others). `intention` is not asked — it is a feedback/journal field.
+
+#### Once per account, in two places
+
+"Ask once per user, not every session" is enforced where each half can be:
+
+- **Storage keeps the first answer.** `submissions.create` checks
+  `by_identity_route` for the referral route inside the mutation (the only
+  place with a transaction) and declines a second write, returning the
+  existing row with `duplicate: true`. The ingest handler turns that into
+  `{ recorded: false, reason: 'already_submitted' }`, and the tool says so in
+  its own words: not the transient "not recorded, do not retry" wording, which
+  a later session would read as permission to try again. A `noContext` answer
+  closes the slot like any other — that is the literal rule, and it is what
+  gives the readout its denominator. The alternative (let a later session
+  with real context replace a no-context answer) was considered and left out:
+  it would make the prompt permanent for most accounts.
+- **The handshake stops asking.** The prompt lives in the `initialize`
+  instructions, so on `initialize` — and only when the credential pre-flight
+  resolved an account id — `src/http.ts` asks the sink whether the account
+  has answered (`src/alp/answered.ts` → `POST /alp/answered`, secret-gated,
+  one bit back, only for once-per-account routes) and omits the paragraph
+  when it has. Fail-soft toward asking: an unreachable or unrecognized sink
+  keeps the prompt, and the write-time dedupe is the backstop, so a wrong
+  guess costs one `already_submitted` tool call and never a duplicate row.
+  The lookup needs an account id, so under `MCP_SKIP_CREDENTIAL_CHECK`, the
+  environment-mismatch self-disable, or a failed-open pre-flight the prompt is
+  simply kept. The cost is one uncached sink round trip (2.5 s cap) per such
+  `initialize`. `tools/list` is a separate request and is not gated, so the
+  tool stays advertised; its description carries the once-only rule for a
+  direct call.
+
+#### Coordinating with the agent NPS ask
+
+[CON-1729](https://linear.app/runpod/issue/CON-1729) adds an NPS score tool
+that fires from the success response of an account's third resource creation
+and is also once per account, enforced in Convex on the same identity. It
+should reuse this machinery rather than add a second copy. The registry is
+`ONCE_PER_ACCOUNT_ROUTES` in `src/alp/sink.ts`: the Convex dedupe
+(`submissions.create`), the `/alp/answered` route and the hosted handshake all
+branch on it. A new once-per-account route is a literal there, in the
+`oncePerAccountRoute` Convex validator (`convex/submissions.ts`), in
+`ALP_ROUTES` (`src/alp/ingest.ts`) and the schema's `route` union, plus the
+tool itself and a `hasAnswered(accountId, '<route>')` call wherever its ask is
+delivered.
+
+To keep a single session from being asked both: the referral ask fires at
+session start, before any creation, and the NPS note fires on the third
+creation. Since the hosted transport is stateless there is no session to key
+on, so the cheap rule is time: when the NPS note would fire, skip it if the
+account's referral row has a `receivedAt` within the last few minutes. The
+note repeats on every later creation until answered, so skipping once costs
+nothing. The referral side needs no matching rule, because it cannot fire
+after an NPS ask in the same session.
 
 ## Ingest topology
 
@@ -168,7 +249,11 @@ Hosted MCP tool
 
 The read handler at `/api/alp/journal` resolves the caller's identity before
 querying the account-scoped journal. Neither handler accepts a caller-selected
-storage host. Embedding, clustering and public search are future work.
+storage host. The Convex deployment also serves `/alp/answered`, the
+once-per-account lookup: the hosted handshake calls it (`src/alp/answered.ts`)
+to decide whether to deliver the referral ask. It is server-internal, not an
+HTTP route of this server. Embedding, clustering and public search are future
+work.
 
 ## Enablement and local testing
 
@@ -178,7 +263,7 @@ application does not select a Convex deployment automatically.
 
 ### Disabled means absent, not broken
 
-When ALP is off the four tools must not appear in `tools/list` at all.
+When ALP is off none of the ALP tools may appear in `tools/list` at all.
 
 A registered tool costs context in every request, and a registered-but-failing
 tool is worse than an absent one: the agent pays to read the definition, calls it,
@@ -263,6 +348,8 @@ for them costs tokens to get a worse, inconsistent value.
 | `harness` + version | caller tracking | See caveat below                                                                                                                  |
 | `identity`          | auth session    | Resolved user/org ID                                                                                                              |
 | `transport`         | tool context    | `stdio` or `http`                                                                                                                 |
+| `source`            | tool arg        | RT4 only: why Runpod came up (`searched`, `user_named`, `recommended`, `other`). Off-enum values are dropped.                     |
+| `noContext`         | tool arg        | RT4 only: the agent had no context on how the user found Runpod. Always a boolean on that route, absent elsewhere.                |
 
 Two agent-supplied fields plus one self-report. Fewer required args means a
 higher call-through rate.
@@ -331,7 +418,7 @@ as a batch job over the corpus at review time. That keeps the ingest action to t
 steps and makes re-clustering with better parameters a re-run rather than a
 backfill.
 
-All three routes share this shape. RT3's static response means it has no
+All routes share this shape. RT3's static response means it has no
 request-time latency budget of its own, which is the main reason to keep skill
 matching out of Phase 1 — the hosted server is reaped at 60s and tool waits
 already clamp below that.
@@ -402,7 +489,7 @@ to be in this repo at all.
 
 | Repo              | Holds                                                                                                                                                                                    |
 | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| this one (public) | the four tool definitions in `src/`; a thin ingest handler (`src/alp/ingest.ts`, mounted at `/api/alp/submit`) that resolves identity, runs the courtesy scrub, and POSTs to the private sink; a thin read handler (`src/alp/read.ts`, mounted at `/api/alp/journal`) that resolves identity the same way and forwards only that id as the filter |
+| this one (public) | the five tool definitions in `src/`; a thin ingest handler (`src/alp/ingest.ts`, mounted at `/api/alp/submit`) that resolves identity, runs the courtesy scrub, and POSTs to the private sink; a thin read handler (`src/alp/read.ts`, mounted at `/api/alp/journal`) that resolves identity the same way and forwards only that id as the filter |
 | private           | `convex/` — schema, mutations, the ingest action (scrub, embed), the review-time clustering job, the dashboard                                                                           |
 
 That makes the boundary a GitHub permission rather than a directory convention,

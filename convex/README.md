@@ -1,7 +1,8 @@
 # ALP storage sink (Convex)
 
 The storage side of the Agent Learning Protocol (`docs/agent-learning-protocol.md`):
-schema, the secret-gated ingest HTTP action, and the write mutation. Deployed to
+schema, the secret-gated HTTP actions (submit, journal read, once-per-account
+lookup), and the write mutation. Deployed to
 the Convex project linked to the Vercel `runpod-mcp` project — NOT part of the
 npm package or the Vercel build.
 
@@ -48,3 +49,20 @@ Vercel: deploy it by hand when the shared module or a mutation changes.
 The same deployment also holds the hosted server's 404 counters
 (`notFoundCounters`, `convex/rateLimit.ts`, route `/ratelimit/not-found`). The
 server fails open until that route is deployed, so deploy order does not matter.
+
+## Deploy order for a new route or field
+
+Convex first, then Vercel. In production the build does this itself (see
+above); for the development sink, run `npx convex deploy` by hand before
+pointing a build at it. The `create` mutation's `route` argument validator
+rejects a route it does not know, so a server that sends `referral` before
+the sink accepts it makes every such submission fail soft
+(`recorded: false`) until the sink catches up. The reverse order is harmless: a
+sink that knows a field the server does not send yet stores rows without it.
+The `/alp/answered` lookup behaves the same way, since a missing route answers
+404 and the handshake treats that as unknown and keeps the prompt.
+
+The schema change is additive and must stay. Once any `referral` row exists, a
+rollback of `convex/` must keep `schema.ts` at this version or later and revert
+only `http.ts` and `submissions.ts`: Convex validates existing documents
+against the pushed schema, and the older `route` union would refuse the push.

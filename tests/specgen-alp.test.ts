@@ -9,7 +9,8 @@ import { createSpecgenServer, curatedTools } from '#src/specgen/server';
 import { createToolContext } from '#src/specgen/context';
 import { generatedTools } from '#src/specgen/generated/tools.gen';
 import { createAlpTools } from '#src/specgen/tools/alp';
-import { handleAlpSubmit, isSinkUrl } from '#src/alp/ingest';
+import { handleAlpSubmit } from '#src/alp/ingest';
+import { ALP_REFERRAL_SOURCES, isSinkUrl } from '#src/alp/sink';
 import {
   clampLimit,
   handleAlpJournalRead,
@@ -17,9 +18,15 @@ import {
 } from '#src/alp/read';
 import { journalReadUrl } from '#src/specgen/tools/alp';
 import { scrub, SCRUBBED_FIELDS, scrubSubmission } from '#src/alp/scrub';
-import { ALP_SEVERITIES } from '#src/alp/ingest';
+import { ALP_SEVERITIES, MAX_REFERRAL_CONTENT_CHARS } from '#src/alp/ingest';
+import { hasAnswered } from '#src/alp/answered';
 
-const ALP_WRITE_NAMES = ['report_feedback', 'save_to_journal', 'ask_question'];
+const ALP_WRITE_NAMES = [
+  'report_feedback',
+  'save_to_journal',
+  'ask_question',
+  'report_how_user_found_runpod',
+];
 const ALP_NAMES = [...ALP_WRITE_NAMES, 'read_journal'];
 
 async function connect(opts?: Parameters<typeof createSpecgenServer>[2]) {
@@ -45,7 +52,7 @@ test('disabled means absent: no ALP config, no ALP tools in tools/list', async (
   await client.close();
 });
 
-test('configured means present: the four ALP tools appear, with honest wording', async () => {
+test('configured means present: the five ALP tools appear, with honest wording', async () => {
   const client = await connect({
     alp: { ingestUrl: 'http://127.0.0.1:9/api/alp/submit', transport: 'stdio' },
   });
@@ -66,26 +73,44 @@ test('configured means present: the four ALP tools appear, with honest wording',
   const read = tools.find((t) => t.name === 'read_journal')!;
   assert.match(read.description ?? '', /cannot read any other account/);
   assert.deepEqual(Object.keys(read.inputSchema.properties ?? {}), ['limit']);
+  // The referral ask is about the USER'S request, the one route that is, so
+  // its description has to draw the privacy line and the once-only rule itself.
+  const referral = tools.find(
+    (t) => t.name === 'report_how_user_found_runpod'
+  )!;
+  assert.match(referral.description ?? '', /once per account/);
+  assert.match(referral.description ?? '', /Never ask the user/);
+  assert.match(referral.description ?? '', /personal or confidential/);
+  assert.match(referral.description ?? '', /already_submitted/);
+  assert.match(referral.description ?? '', /nothing is returned/);
   await client.close();
 });
 
-test('ask_question response repeats the no-answer contract even on failure', async () => {
+test('every write tool repeats the no-retry contract even on failure', async () => {
   // Unreachable ingest (port 9): the tool must fail soft — a successful,
   // non-error result that says the entry was not recorded and not to retry.
   const client = await connect({
     alp: { ingestUrl: 'http://127.0.0.1:9/api/alp/submit', transport: 'stdio' },
   });
-  const res = (await client.callTool({
-    name: 'ask_question',
-    arguments: { content: 'how do I frobnicate?' },
-  })) as { isError?: boolean; content: Array<{ text: string }> };
-  assert.ok(!res.isError, 'ALP failures must not be tool errors');
-  const body = JSON.parse(res.content[0].text) as {
-    recorded: boolean;
-    note: string;
-  };
-  assert.equal(body.recorded, false);
-  assert.match(body.note, /Do not retry/);
+  for (const name of ALP_WRITE_NAMES) {
+    const res = (await client.callTool({
+      name,
+      arguments: { content: 'how do I frobnicate?' },
+    })) as { isError?: boolean; content: Array<{ text: string }> };
+    assert.ok(!res.isError, `${name}: ALP failures must not be tool errors`);
+    const body = JSON.parse(res.content[0].text) as {
+      recorded: boolean;
+      reason?: string;
+      note: string;
+    };
+    assert.equal(body.recorded, false, name);
+    assert.equal(
+      body.reason,
+      undefined,
+      `${name}: unreachable is not already_submitted`
+    );
+    assert.match(body.note, /Do not retry/, name);
+  }
   await client.close();
 });
 
@@ -518,7 +543,10 @@ test('every agent-writable submission field is scrubbed', () => {
     block,
     'AlpSubmitBody not found — update this test with the rename'
   );
-  const fields = [...block[1].matchAll(/^\s{2}(\w+)\??:/gm)].map((m) => m[1]);
+  const fields = [...block[1].matchAll(/^\s{2}(\w+)\??:\s*([^;]+);/gm)]
+    // A boolean cannot carry a pasted credential; only text is scrubbed.
+    .filter((m) => m[2].trim() !== 'boolean')
+    .map((m) => m[1]);
   assert.ok(fields.length > 5, `parsed too few fields: ${fields.join(',')}`);
   // `route` is set by which tool was called, never agent prose, and is
   // validated against ALP_ROUTES before it is stored.
@@ -934,4 +962,436 @@ test('scrub catches Hugging Face tokens and URL query secrets idempotently', () 
   );
   assert.equal(result.redactions, 4);
   assert.deepEqual(scrub(result.text), { text: result.text, redactions: 0 });
+});
+
+// ---- the referral ask (RT4) ----
+
+test('the referral tool serves the shared source enum and keeps content the only required arg', async () => {
+  const client = await connect({
+    alp: { ingestUrl: 'https://ingest.invalid/x', transport: 'http' },
+  });
+  const { tools } = await client.listTools();
+  const tool = tools.find((t) => t.name === 'report_how_user_found_runpod')!;
+  const schema = tool.inputSchema as {
+    properties: Record<string, { enum?: string[]; type?: string }>;
+    required?: string[];
+  };
+  assert.deepEqual(schema.properties.source.enum, [...ALP_REFERRAL_SOURCES]);
+  assert.equal(schema.properties.noContext.type, 'boolean');
+  assert.deepEqual(schema.required, ['content']);
+  assert.equal(
+    schema.properties.intention,
+    undefined,
+    'intention is a feedback/journal field, not a referral one'
+  );
+  await client.close();
+});
+
+test('the referral submission carries source and noContext under route referral', async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (_i: RequestInfo | URL, init?: RequestInit) => {
+    seen.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return new Response(JSON.stringify({ recorded: true }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const tool = createAlpTools({
+      ingestUrl: 'https://sink.test/api/alp/submit',
+      transport: 'http',
+      harness: 'cursor',
+      harnessSource: 'user_agent',
+    }).find((t) => t.name === 'report_how_user_found_runpod')!;
+    const result = await tool.handler(
+      createToolContext({ apiKey: 'rpa_test' }),
+      {
+        content:
+          'They asked for a cheap A100 to fine-tune a 7B model; I searched and Runpod came up.',
+        source: 'searched',
+        noContext: false,
+      }
+    );
+    const payload = result.payload as { recorded: boolean; note: string };
+    assert.equal(payload.recorded, true);
+    assert.match(payload.note, /do not call this again/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].route, 'referral');
+  assert.equal(seen[0].source, 'searched');
+  assert.equal(seen[0].noContext, false);
+  assert.equal(seen[0].intention, undefined, 'no intention on this route');
+});
+
+// The one outcome that must not read as a transient failure: a later session
+// told "not recorded, do not retry" would still try again next session.
+test('the referral tool relays already_submitted as a no-retry outcome, not a failure', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        recorded: false,
+        reason: 'already_submitted',
+        note: 'Already answered. Do not call this again on this account.',
+      }),
+      { status: 200 }
+    )) as typeof fetch;
+  try {
+    const tool = createAlpTools({
+      ingestUrl: 'https://sink.test/api/alp/submit',
+      transport: 'http',
+    }).find((t) => t.name === 'report_how_user_found_runpod')!;
+    const result = await tool.handler(
+      createToolContext({ apiKey: 'rpa_test' }),
+      {
+        content: 'no context',
+        noContext: true,
+      }
+    );
+    const payload = result.payload as {
+      recorded: boolean;
+      reason?: string;
+      note: string;
+    };
+    assert.equal(result.ok, true, 'never an error result');
+    assert.equal(payload.recorded, false);
+    assert.equal(payload.reason, 'already_submitted');
+    assert.match(payload.note, /Do not call this again/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('ingest accepts the referral route, keeps source on the enum, and stores noContext as a boolean', async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const sinkFetch = (async (_u: RequestInfo | URL, init?: RequestInit) => {
+    seen.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return new Response(
+      JSON.stringify({ ok: true, id: 'row_1', duplicate: false }),
+      { status: 200 }
+    );
+  }) as typeof fetch;
+  const cases: Array<[unknown, unknown]> = [
+    ['searched', true],
+    ['user_named', 'yes'],
+    ['recommended', undefined],
+    ['other', false],
+    ['google', 1],
+    [42, true],
+    ['other', 'true'],
+    ['searched', ' TRUE '],
+    ['recommended', 1],
+  ];
+  for (const [source, noContext] of cases) {
+    const { req, res, written } = fakeReqRes(
+      { authorization: 'Bearer rpa_live' },
+      { route: 'referral', content: 'c', source, noContext }
+    );
+    await handleAlpSubmit(req, res, {
+      verify: async () => ({ status: 'valid', accountId: 'user_42' }),
+      sinkFetch,
+      env: READ_ENV,
+    });
+    assert.equal(JSON.parse(written.body!).recorded, true);
+  }
+  assert.deepEqual(
+    seen.map((r) => r.source),
+    // A no-context answer has no source by definition, so it is dropped
+    // wherever noContext normalizes to true.
+    [
+      undefined,
+      'user_named',
+      'recommended',
+      'other',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]
+  );
+  // `true`, `1` and any casing of "true" mean no context; anything else is a
+  // real answer. The field is always present on this route so the share is
+  // one filter, and the lenient forms matter because the first answer closes
+  // the account's slot.
+  assert.deepEqual(
+    seen.map((r) => r.noContext),
+    [true, false, false, false, true, true, true, true, true]
+  );
+  assert.ok(
+    seen.every((r) => r.route === 'referral' && r.identity === 'user_42'),
+    'keyed on the resolved account'
+  );
+});
+
+// The dominant expected answer is "no context". The tool asks for a few words
+// of content with it, but a terse agent may send noContext alone, and a 400
+// there would leave the account's slot open and the ask repeating every
+// session. So on this route a no-context answer needs no content.
+test('a no-context referral answer is accepted without content', async () => {
+  let stored: Record<string, unknown> = {};
+  const { req, res, written } = fakeReqRes(
+    { authorization: 'Bearer rpa_live' },
+    { route: 'referral', noContext: true }
+  );
+  await handleAlpSubmit(req, res, {
+    verify: async () => ({ status: 'valid', accountId: 'user_42' }),
+    sinkFetch: (async (_u: RequestInfo | URL, init?: RequestInit) => {
+      stored = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response('{"ok":true,"id":"row","duplicate":false}');
+    }) as typeof fetch,
+    env: READ_ENV,
+  });
+  assert.equal(JSON.parse(written.body!).recorded, true);
+  assert.equal(stored.noContext, true);
+  assert.equal(stored.content, '');
+  // Without noContext, empty content is still the 400 it always was.
+  const bad = fakeReqRes(
+    { authorization: 'Bearer rpa_live' },
+    { route: 'referral', source: 'searched' }
+  );
+  await handleAlpSubmit(bad.req, bad.res, {
+    verify: async () => ({ status: 'valid', accountId: 'user_42' }),
+    env: READ_ENV,
+  });
+  assert.equal(bad.written.statusCode, 400);
+});
+
+// The cap on this route is the whole data-minimization story, so nothing that
+// carries the general cap may ride along: the feedback/journal fields are
+// dropped on referral even though the tool is lenient about unknown keys.
+test('feedback and journal fields stay off the referral route even when sent', async () => {
+  let stored: Record<string, unknown> = {};
+  const { req, res, written } = fakeReqRes(
+    { authorization: 'Bearer rpa_live' },
+    {
+      route: 'referral',
+      content: 'they asked for a cheap GPU',
+      source: 'searched',
+      intention: 'deploying a pod',
+      severity: 'blocked',
+      tool: 'create-pod',
+      workaround: 'x'.repeat(5_000),
+      trigger: 'y'.repeat(5_000),
+    }
+  );
+  await handleAlpSubmit(req, res, {
+    verify: async () => ({ status: 'valid', accountId: 'user_42' }),
+    sinkFetch: (async (_u: RequestInfo | URL, init?: RequestInit) => {
+      stored = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response('{"ok":true,"id":"row"}');
+    }) as typeof fetch,
+    env: READ_ENV,
+  });
+  assert.equal(JSON.parse(written.body!).recorded, true);
+  assert.equal(stored.source, 'searched');
+  for (const field of [
+    'intention',
+    'severity',
+    'tool',
+    'workaround',
+    'trigger',
+  ]) {
+    assert.equal(
+      stored[field],
+      undefined,
+      `${field} must not be stored on referral`
+    );
+  }
+});
+
+test('source and noContext stay off the other routes even when sent', async () => {
+  let stored: Record<string, unknown> = {};
+  const { req, res, written } = fakeReqRes(
+    { authorization: 'Bearer rpa_live' },
+    { route: 'feedback', content: 'c', noContext: true, source: 'searched' }
+  );
+  await handleAlpSubmit(req, res, {
+    verify: async () => ({ status: 'valid', accountId: 'user_42' }),
+    sinkFetch: (async (_u: RequestInfo | URL, init?: RequestInit) => {
+      stored = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response('{"ok":true,"id":"row"}');
+    }) as typeof fetch,
+    env: READ_ENV,
+  });
+  assert.equal(JSON.parse(written.body!).recorded, true);
+  assert.equal(stored.noContext, undefined);
+  assert.equal(stored.source, undefined);
+});
+
+// "Do not collect full conversation logs" (CON-1762) is structural: the cap
+// is a sentence or two, an order of magnitude under the general one.
+test('referral content is capped well below the general content cap', async () => {
+  const long = 'x'.repeat(MAX_REFERRAL_CONTENT_CHARS + 500);
+  const lengths: Record<string, number> = {};
+  for (const route of ['referral', 'feedback']) {
+    const { req, res } = fakeReqRes(
+      { authorization: 'Bearer rpa_live' },
+      { route, content: long }
+    );
+    await handleAlpSubmit(req, res, {
+      verify: async () => ({ status: 'valid', accountId: 'user_42' }),
+      sinkFetch: (async (_u: RequestInfo | URL, init?: RequestInit) => {
+        const row = JSON.parse(String(init?.body)) as { content: string };
+        lengths[route] = row.content.length;
+        return new Response('{"ok":true,"id":"row"}');
+      }) as typeof fetch,
+      env: READ_ENV,
+    });
+  }
+  assert.equal(lengths.referral, MAX_REFERRAL_CONTENT_CHARS);
+  assert.equal(lengths.feedback, long.length);
+});
+
+test('a duplicate from the sink is reported as already_submitted, never as a write', async () => {
+  const logs: unknown[][] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => {
+    logs.push(args);
+  };
+  try {
+    const { req, res, written } = fakeReqRes(
+      { authorization: 'Bearer rpa_live' },
+      { route: 'referral', content: 'second answer', source: 'user_named' }
+    );
+    await handleAlpSubmit(req, res, {
+      verify: async () => ({ status: 'valid', accountId: 'user_42' }),
+      sinkFetch: (async () =>
+        new Response(
+          JSON.stringify({ ok: true, id: 'row_existing', duplicate: true }),
+          { status: 200 }
+        )) as typeof fetch,
+      env: READ_ENV,
+    });
+    assert.equal(written.statusCode, 200);
+    const body = JSON.parse(written.body!);
+    assert.equal(body.recorded, false);
+    assert.equal(body.reason, 'already_submitted');
+    assert.match(body.note, /Do not call this again/);
+    assert.doesNotMatch(body.note, /Do not retry/, 'not the transient wording');
+  } finally {
+    console.log = originalLog;
+  }
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0][0], 'alp_submit_duplicate');
+  assert.equal(JSON.parse(String(logs[0][1])).row, 'row_existing');
+  assert.ok(
+    !JSON.stringify(logs).includes('second answer'),
+    'the duplicate log line never carries content'
+  );
+});
+
+test('the referral prompt is in the instructions by default and gone once the account has answered; the tool stays', async () => {
+  const asked = await connect({
+    alp: { ingestUrl: 'https://ingest.invalid/x', transport: 'http' },
+  });
+  const askedText = asked.getInstructions() ?? '';
+  assert.match(askedText, /ONE QUESTION FOR YOU, ONCE PER ACCOUNT/);
+  assert.match(askedText, /report_how_user_found_runpod/);
+  assert.match(askedText, /never ask the user/);
+  assert.match(askedText, /noContext true/);
+  await asked.close();
+
+  const answered = await connect({
+    alp: { ingestUrl: 'https://ingest.invalid/x', transport: 'http' },
+    promptReferral: false,
+  });
+  const answeredText = answered.getInstructions() ?? '';
+  assert.doesNotMatch(answeredText, /ONE QUESTION FOR YOU/);
+  assert.match(
+    answeredText,
+    /CONTRIBUTING BACK IS OPTIONAL/,
+    'the rest of the ALP block stays'
+  );
+  const { tools } = await answered.listTools();
+  assert.ok(
+    tools.some((t) => t.name === 'report_how_user_found_runpod'),
+    'the tool is served regardless; tools/list is not gated'
+  );
+  await answered.close();
+});
+
+// ---- the once-per-account lookup ----
+
+test('hasAnswered sends the resolved identity and route to the derived sink route', async () => {
+  const sent: unknown[] = [];
+  const result = await hasAnswered('acct_me', 'referral', {
+    env: READ_ENV,
+    sinkFetch: (async (url: string | URL | Request, init?: RequestInit) => {
+      sent.push({
+        url: String(url),
+        headers: init?.headers,
+        body: JSON.parse(String(init?.body)),
+      });
+      return new Response(JSON.stringify({ ok: true, answered: true }));
+    }) as typeof fetch,
+  });
+  assert.equal(result, true);
+  assert.deepEqual(sent, [
+    {
+      url: 'https://sink.convex.site/alp/answered',
+      headers: { 'Content-Type': 'application/json', 'X-ALP-Secret': 'shh' },
+      body: { identity: 'acct_me', route: 'referral' },
+    },
+  ]);
+  const no = await hasAnswered('acct_me', 'referral', {
+    env: READ_ENV,
+    sinkFetch: (async () =>
+      new Response('{"ok":true,"answered":false}')) as typeof fetch,
+  });
+  assert.equal(no, false);
+});
+
+test('hasAnswered answers null, never a guess, when it cannot know', async () => {
+  const mustNotCall = (async () => {
+    throw new Error('must not be called');
+  }) as typeof fetch;
+  const cases: Array<[string, Parameters<typeof hasAnswered>[2]]> = [
+    [
+      'sink 500',
+      {
+        env: READ_ENV,
+        sinkFetch: (async () =>
+          new Response('x', { status: 500 })) as typeof fetch,
+      },
+    ],
+    [
+      'sink unrecognized',
+      {
+        env: READ_ENV,
+        sinkFetch: (async () => new Response('{"ok":true}')) as typeof fetch,
+      },
+    ],
+    [
+      'sink unreachable',
+      {
+        env: READ_ENV,
+        sinkFetch: (async () => {
+          throw new Error('ECONNREFUSED');
+        }) as typeof fetch,
+      },
+    ],
+    ['no sink configured', { env: {}, sinkFetch: mustNotCall }],
+    [
+      'misconfigured sink',
+      {
+        env: {
+          ALP_SINK_URL: 'https://evil.example/alp/submit',
+          ALP_SINK_SECRET: 'shh',
+        },
+        sinkFetch: mustNotCall,
+      },
+    ],
+  ];
+  for (const [label, opts] of cases) {
+    assert.equal(await hasAnswered('acct_me', 'referral', opts), null, label);
+  }
+  assert.equal(
+    await hasAnswered('', 'referral', {
+      env: READ_ENV,
+      sinkFetch: mustNotCall,
+    }),
+    null,
+    'no identity, no lookup'
+  );
 });

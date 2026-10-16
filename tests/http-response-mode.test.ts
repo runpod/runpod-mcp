@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { IncomingMessage, ServerResponse } from 'node:http';
@@ -401,5 +401,138 @@ describe('mcp_request log line', () => {
     assert.equal(lines.length, 1);
     assert.equal(lines[0].status, 401);
     assert.equal(lines[0].rpc, 'tools/list');
+  });
+});
+
+// ---- the referral ask on the handshake (CON-1762; docs/agent-learning-protocol.md, "RT4") ----
+// On initialize the handler asks the sink whether the account has already
+// answered and drops the ask from the instructions when it has. Covers when the
+// lookup runs, what it is keyed on, and that an unknown verdict keeps the ask.
+
+async function handshake(opts: {
+  body?: unknown;
+  accountId?: string;
+  answered: boolean | null;
+}) {
+  const calls: Array<[string, string]> = [];
+  const { req, res, written, finished } = fakeReqRes(opts.body ?? init());
+  await handleMcpRequest(req, res, {
+    verifyCredential: async () => ({
+      status: 'valid' as const,
+      ...(opts.accountId ? { accountId: opts.accountId } : {}),
+    }),
+    hasAnswered: async (identity, route) => {
+      calls.push([identity, route]);
+      return opts.answered;
+    },
+  });
+  await finished;
+  assert.equal(written.statusCode, 200);
+  const parsed = JSON.parse(written.chunks.join('')) as {
+    result: { instructions?: string };
+  };
+  return { calls, instructions: parsed.result.instructions ?? '' };
+}
+
+const PROMPT = /ONE QUESTION FOR YOU, ONCE PER ACCOUNT/;
+
+describe('the referral ask on the hosted handshake', () => {
+  // Self-contained env: the sink configured, and the pre-flight kill switch
+  // off so verifyCredential (and with it accountId) is reached.
+  const saved: Record<string, string | undefined> = {};
+  before(() => {
+    for (const key of [
+      'ALP_SINK_URL',
+      'ALP_SINK_SECRET',
+      'MCP_SKIP_CREDENTIAL_CHECK',
+    ]) {
+      saved[key] = process.env[key];
+      delete process.env[key];
+    }
+    process.env.ALP_SINK_URL = 'https://sink.convex.site/alp/submit';
+    process.env.ALP_SINK_SECRET = 'shh';
+  });
+  after(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  it('asks the sink once per initialize, keyed on the resolved account, and drops the prompt when answered', async () => {
+    const { calls, instructions } = await handshake({
+      accountId: 'acct_1',
+      answered: true,
+    });
+    assert.deepEqual(calls, [['acct_1', 'referral']]);
+    assert.doesNotMatch(instructions, PROMPT);
+    assert.match(
+      instructions,
+      /CONTRIBUTING BACK IS OPTIONAL/,
+      'the rest of the ALP briefing is unaffected'
+    );
+  });
+
+  it('keeps the prompt for an account that has not answered', async () => {
+    const { calls, instructions } = await handshake({
+      accountId: 'acct_2',
+      answered: false,
+    });
+    assert.deepEqual(calls, [['acct_2', 'referral']]);
+    assert.match(instructions, PROMPT);
+  });
+
+  it('an unknown verdict keeps the prompt: fail-soft toward asking', async () => {
+    const { instructions } = await handshake({
+      accountId: 'acct_3',
+      answered: null,
+    });
+    assert.match(instructions, PROMPT);
+  });
+
+  it('without a resolved account there is nothing to key on: no lookup, prompt kept', async () => {
+    const { calls, instructions } = await handshake({ answered: true });
+    assert.deepEqual(calls, []);
+    assert.match(instructions, PROMPT);
+  });
+
+  it('tools/list never triggers the lookup', async () => {
+    const { calls } = await handshake({
+      body: toolsList,
+      accountId: 'acct_4',
+      answered: true,
+    });
+    assert.deepEqual(calls, []);
+  });
+});
+
+describe('the referral ask when ALP is not configured', () => {
+  // The kill switch is cleared too, so a resolved account is what proves the
+  // gate is alpConfigured and not a skipped pre-flight.
+  const saved: Record<string, string | undefined> = {};
+  before(() => {
+    for (const key of [
+      'ALP_SINK_URL',
+      'ALP_SINK_SECRET',
+      'MCP_SKIP_CREDENTIAL_CHECK',
+    ]) {
+      saved[key] = process.env[key];
+      delete process.env[key];
+    }
+  });
+  after(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value !== undefined) process.env[key] = value;
+    }
+  });
+
+  it('makes no lookup and delivers no ask, even with a resolved account', async () => {
+    const { calls, instructions } = await handshake({
+      accountId: 'acct_5',
+      answered: true,
+    });
+    assert.deepEqual(calls, []);
+    assert.doesNotMatch(instructions, PROMPT);
+    assert.doesNotMatch(instructions, /CONTRIBUTING BACK IS OPTIONAL/);
   });
 });

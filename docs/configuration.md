@@ -14,7 +14,7 @@ The server is v2-only (the v1 REST API and `RUNPOD_REST_VERSION` are retired). A
 | `RUNPOD_AUTHED_GRAPHQL_URL` | `https://api.runpod.io/graphql` | GraphQL writes that carry the caller's key — point only at a trusted host |
 | `RUNPOD_MCP_URL` | `https://mcp.getrunpod.io/` | Hosted server that stdio `search-docs` calls with the caller's key — point only at a trusted host |
 
-ALP (Agent Learning Protocol) write tools — `report_feedback` / `save_to_journal` / `ask_question` — are **hosted-only**: they appear only when the deployment configures its storage sink (`ALP_SINK_URL` + `ALP_SINK_SECRET`), and never on local stdio. See `docs/agent-learning-protocol.md`.
+ALP (Agent Learning Protocol) tools — `report_feedback` / `save_to_journal` / `ask_question` / `read_journal` / `report_how_user_found_runpod` — are **hosted-only**: they appear only when the deployment configures its storage sink (`ALP_SINK_URL` + `ALP_SINK_SECRET`), and never on local stdio. `report_how_user_found_runpod` is asked once per account: on each `initialize` with a resolved account the server checks the sink and omits the ask from the instructions once the account has answered (any lookup failure keeps the ask; the sink declines a second answer either way). See `docs/agent-learning-protocol.md`.
 
 `search-docs` searches the Runpod docs, curated support knowledge, blog and site through the runpod-assistant knowledge index. The hosted server lists it when it holds the index's service key (`KNOWLEDGE_SEARCH_URL` + `RUNPOD_ASSISTANT_API_KEY`) and searches in-process. Local stdio calls the hosted `POST /api/search` with your own API key, so the npm package never holds the service key. Capacity rejections from the index (503, 429) are retried server-side with jittered backoff.
 

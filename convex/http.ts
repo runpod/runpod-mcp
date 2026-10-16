@@ -1,6 +1,9 @@
 import { httpRouter } from 'convex/server';
 import { httpAction } from './_generated/server';
 import { internal } from './_generated/api';
+import { isOncePerAccountRoute } from '../src/alp/sink';
+import type { Infer } from 'convex/values';
+import type { routeValidator } from './schema';
 
 const http = httpRouter();
 
@@ -27,8 +30,8 @@ http.route({
         headers: { 'Content-Type': 'application/json' },
       });
     }
-    const id = await ctx.runMutation(internal.submissions.create, {
-      route: body.route as 'feedback' | 'journal' | 'question',
+    const created = await ctx.runMutation(internal.submissions.create, {
+      route: body.route as Infer<typeof routeValidator>,
       content: String(body.content ?? ''),
       intention:
         typeof body.intention === 'string' ? body.intention : undefined,
@@ -43,6 +46,9 @@ http.route({
       workaround:
         typeof body.workaround === 'string' ? body.workaround : undefined,
       trigger: typeof body.trigger === 'string' ? body.trigger : undefined,
+      source: typeof body.source === 'string' ? body.source : undefined,
+      noContext:
+        typeof body.noContext === 'boolean' ? body.noContext : undefined,
       identity: String(body.identity ?? ''),
       harness: typeof body.harness === 'string' ? body.harness : undefined,
       harnessSource:
@@ -53,7 +59,57 @@ http.route({
       scrubVersion: Number(body.scrubVersion ?? 0),
       receivedAt: String(body.receivedAt ?? new Date().toISOString()),
     });
-    return new Response(JSON.stringify({ ok: true, id }), {
+    // `duplicate` is the once-per-account verdict (submissions.create): the
+    // row id is the existing row's, and the ingest handler reports
+    // already_submitted instead of a write.
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        id: created.id,
+        duplicate: created.duplicate,
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
+  }),
+});
+
+// The once-per-account lookup. Same secret, same single-caller property. It
+// answers one bit — does this identity have a row on this route — and only
+// for the routes that take one answer per account, so it cannot be turned
+// into a probe of what an account has submitted elsewhere.
+http.route({
+  path: '/alp/answered',
+  method: 'POST',
+  handler: httpAction(async (ctx, request) => {
+    const secret = process.env.ALP_SINK_SECRET;
+    if (!secret || request.headers.get('x-alp-secret') !== secret) {
+      return new Response(JSON.stringify({ error: 'unauthorized' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const body = await readObjectBody(request);
+    if (!body) {
+      return new Response(JSON.stringify({ error: 'expected a JSON object' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const identity = typeof body.identity === 'string' ? body.identity : '';
+    const route = body.route;
+    if (!identity || !isOncePerAccountRoute(route)) {
+      return new Response(
+        JSON.stringify({
+          error: 'identity and a once-per-account route are required',
+        }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+    const answered = await ctx.runQuery(internal.submissions.hasAnswered, {
+      identity,
+      route,
+    });
+    return new Response(JSON.stringify({ ok: true, answered }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });

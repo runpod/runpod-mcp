@@ -7,7 +7,7 @@
 // Successful calls never touch Convex, and every failure path fails open: a
 // slow or missing sink only means nothing gets blocked.
 
-import { isSinkUrl } from '../alp/ingest.js';
+import { sinkRouteUrl } from '../alp/sink.js';
 import type { RateLimiter } from './ops.js';
 
 const SINK_TIMEOUT_MS = 3_000;
@@ -22,10 +22,7 @@ const blocked = new Map<string, number>();
 
 /** The /ratelimit/not-found route on the same Convex site as the ALP sink. */
 export function notFoundSinkUrl(submitUrl: string): string | null {
-  if (!isSinkUrl(submitUrl)) return null;
-  const url = new URL(submitUrl);
-  url.pathname = '/ratelimit/not-found';
-  return url.toString();
+  return sinkRouteUrl(submitUrl, '/ratelimit/not-found');
 }
 
 export interface NotFoundLimiter {

@@ -1,6 +1,6 @@
 // ALP ingest endpoint: POST /api/alp/submit (see docs/agent-learning-protocol.md).
 //
-// The shared write path for the three hosted ALP submission tools.
+// The shared write path for the four hosted ALP write tools.
 // Local stdio does not register these tools.
 //
 // Behavior per request: authenticate → resolve the durable identity (never
@@ -19,11 +19,25 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { defaultCredentialChecker } from '../http.js';
 import { scrubSubmission, SCRUB_VERSION } from './scrub.js';
+import {
+  ALP_REFERRAL_SOURCES,
+  ALREADY_SUBMITTED_NOTE,
+  isSinkUrl,
+  type AlpReferralSource,
+} from './sink.js';
 
-export const ALP_ROUTES = ['feedback', 'journal', 'question'] as const;
+export const ALP_ROUTES = [
+  'feedback',
+  'journal',
+  'question',
+  'referral',
+] as const;
 export type AlpRoute = (typeof ALP_ROUTES)[number];
 
 const MAX_CONTENT_CHARS = 20_000;
+// The referral answer is a sentence or two by contract (CON-1762: never a
+// conversation log), so it gets a cap a log cannot fit in.
+export const MAX_REFERRAL_CONTENT_CHARS = 2_000;
 const MAX_FIELD_CHARS = 500;
 const SINK_TIMEOUT_MS = 5_000;
 
@@ -43,6 +57,10 @@ export interface AlpSubmitBody {
   workaround?: string;
   /** Journal route: the situation in which to recall the entry. */
   trigger?: string;
+  /** Referral route: why Runpod came up. Constrained so it stays countable. */
+  source?: AlpReferralSource;
+  /** Referral route: the agent had no context on how the user found Runpod. */
+  noContext?: boolean;
   harness?: string;
   harnessSource?: 'client_info' | 'user_agent';
   transport?: 'stdio' | 'http';
@@ -58,20 +76,6 @@ export interface AlpIngestOptions {
   verify?: (token: string) => Promise<VerifyResult>;
   sinkFetch?: typeof fetch;
   env?: Record<string, string | undefined>;
-}
-
-/** The sink is a Convex HTTP action, always. Anything else is a typo. */
-export function isSinkUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return (
-      url.protocol === 'https:' &&
-      url.hostname.endsWith('.convex.site') &&
-      url.pathname === '/alp/submit'
-    );
-  } catch {
-    return false;
-  }
 }
 
 function notRecorded(reason: string): Record<string, unknown> {
@@ -107,14 +111,28 @@ export async function handleAlpSubmit(
   const body = (
     req.body && typeof req.body === 'object' ? req.body : {}
   ) as Partial<AlpSubmitBody>;
+  const content = typeof body.content === 'string' ? body.content : '';
+  const referral = body.route === 'referral';
+  // Referral route only: a no-context answer is complete without content. The
+  // tool asks for a few words with it, but a terse agent may send noContext
+  // alone, and a 400 there would leave the account's one slot open and the
+  // ask repeating every session. The flag is normalized leniently (true, 1,
+  // any casing of "true") because the first answer closes the slot and a
+  // sloppy no-context call must not be stored as a real one.
+  const rawNoContext = body.noContext as unknown;
+  const noContextAnswer =
+    referral &&
+    (rawNoContext === true ||
+      rawNoContext === 1 ||
+      (typeof rawNoContext === 'string' &&
+        rawNoContext.trim().toLowerCase() === 'true'));
   if (
     !ALP_ROUTES.includes(body.route as AlpRoute) ||
-    typeof body.content !== 'string' ||
-    body.content.trim().length === 0
+    (content.trim().length === 0 && !noContextAnswer)
   ) {
     send(400, {
       recorded: false,
-      error: `Body must carry route (${ALP_ROUTES.join('|')}) and a non-empty content string.`,
+      error: `Body must carry route (${ALP_ROUTES.join('|')}) and a non-empty content string (or, on referral, noContext true).`,
     });
     return;
   }
@@ -156,20 +174,42 @@ export async function handleAlpSubmit(
 
   // Scrub before truncation so cutting a token cannot hide its shape.
   const clean = scrubSubmission({
-    content: body.content,
-    intention: typeof body.intention === 'string' ? body.intention : undefined,
+    content,
+    // Feedback/journal/question fields are not stored on the referral route
+    // even if a client sends them: the tool does not offer them, and the
+    // route's 2,000-character cap would mean nothing if a transcript could
+    // ride in `trigger` or `workaround` under the general cap instead.
+    intention:
+      !referral && typeof body.intention === 'string'
+        ? body.intention
+        : undefined,
     modelType: typeof body.modelType === 'string' ? body.modelType : undefined,
     // Drop an off-enum severity rather than storing it. The whole value of the
     // field is that it can be sorted and counted; one free-text variant
     // ("critical", "high") turns a dimension back into prose, and the loss of
     // one label costs less than that.
-    severity: ALP_SEVERITIES.includes(body.severity as AlpSeverity)
-      ? (body.severity as AlpSeverity)
-      : undefined,
-    tool: typeof body.tool === 'string' ? body.tool : undefined,
+    severity:
+      !referral && ALP_SEVERITIES.includes(body.severity as AlpSeverity)
+        ? (body.severity as AlpSeverity)
+        : undefined,
+    tool: !referral && typeof body.tool === 'string' ? body.tool : undefined,
     workaround:
-      typeof body.workaround === 'string' ? body.workaround : undefined,
-    trigger: typeof body.trigger === 'string' ? body.trigger : undefined,
+      !referral && typeof body.workaround === 'string'
+        ? body.workaround
+        : undefined,
+    trigger:
+      !referral && typeof body.trigger === 'string' ? body.trigger : undefined,
+    // Referral-only fields. source follows the severity rule (off-enum is
+    // dropped, not stored as prose) and is dropped on a no-context answer,
+    // which by definition has no source. noContext is always a boolean on the
+    // route so the share of answers with real context is one filter.
+    source:
+      referral &&
+      !noContextAnswer &&
+      ALP_REFERRAL_SOURCES.includes(body.source as AlpReferralSource)
+        ? (body.source as AlpReferralSource)
+        : undefined,
+    noContext: referral ? noContextAnswer : undefined,
     harness: typeof body.harness === 'string' ? body.harness : undefined,
     harnessSource:
       typeof body.harnessSource === 'string' ? body.harnessSource : undefined,
@@ -183,7 +223,10 @@ export async function handleAlpSubmit(
   const row = {
     ...clean,
     route: body.route,
-    content: clean.content.slice(0, MAX_CONTENT_CHARS),
+    content: clean.content.slice(
+      0,
+      referral ? MAX_REFERRAL_CONTENT_CHARS : MAX_CONTENT_CHARS
+    ),
     intention: clean.intention?.slice(0, MAX_FIELD_CHARS),
     modelType: clean.modelType?.slice(0, MAX_FIELD_CHARS),
     severity: clean.severity,
@@ -192,6 +235,8 @@ export async function handleAlpSubmit(
     // workaround worth reading is a paragraph, not a label.
     workaround: clean.workaround?.slice(0, MAX_CONTENT_CHARS),
     trigger: clean.trigger?.slice(0, MAX_CONTENT_CHARS),
+    source: clean.source,
+    noContext: clean.noContext,
     harness: clean.harness?.slice(0, MAX_FIELD_CHARS),
     harnessSource: clean.harnessSource?.slice(0, MAX_FIELD_CHARS),
     transport: clean.transport?.slice(0, MAX_FIELD_CHARS),
@@ -228,10 +273,32 @@ export async function handleAlpSubmit(
     const sinkBody = (await response.json().catch(() => null)) as {
       ok?: boolean;
       id?: string;
+      duplicate?: boolean;
     } | null;
     if (sinkBody?.ok !== true || typeof sinkBody.id !== 'string') {
       console.warn('alp_sink_unrecognized', { status: response.status });
       send(200, notRecorded('the store did not confirm the write'));
+      return;
+    }
+    if (sinkBody.duplicate === true) {
+      // A once-per-account route already holds this identity's answer; the
+      // sink kept the existing row and stored nothing. Named as its own
+      // reason rather than folded into the generic not-recorded note: that
+      // note reads as a transient failure, and this must not invite a later
+      // session to try again.
+      console.log(
+        'alp_submit_duplicate',
+        JSON.stringify({
+          route: body.route,
+          transport: row.transport,
+          row: sinkBody.id,
+        })
+      );
+      send(200, {
+        recorded: false,
+        reason: 'already_submitted',
+        note: ALREADY_SUBMITTED_NOTE,
+      });
       return;
     }
     storedId = sinkBody.id;

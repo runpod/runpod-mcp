@@ -1,16 +1,19 @@
 import { scrubSubmission } from '../src/alp/scrub';
+import { isOncePerAccountRoute } from '../src/alp/sink';
+import { routeValidator } from './schema';
 import { internalMutation, internalQuery } from './_generated/server';
 
 export const MAX_JOURNAL_READ = 50;
 import { v } from 'convex/values';
 
+// Validator twin of ONCE_PER_ACCOUNT_ROUTES (src/alp/sink.ts), which is what
+// the dedupe below and /alp/answered branch on. Convex validators are built by
+// hand, so a new once-per-account route is a literal in both places.
+const oncePerAccountRoute = v.literal('referral');
+
 export const create = internalMutation({
   args: {
-    route: v.union(
-      v.literal('feedback'),
-      v.literal('journal'),
-      v.literal('question')
-    ),
+    route: routeValidator,
     content: v.string(),
     intention: v.optional(v.string()),
     modelType: v.optional(v.string()),
@@ -18,6 +21,8 @@ export const create = internalMutation({
     tool: v.optional(v.string()),
     workaround: v.optional(v.string()),
     trigger: v.optional(v.string()),
+    source: v.optional(v.string()),
+    noContext: v.optional(v.boolean()),
     identity: v.string(),
     harness: v.optional(v.string()),
     harnessSource: v.optional(v.string()),
@@ -27,12 +32,52 @@ export const create = internalMutation({
     receivedAt: v.string(),
   },
   handler: async (ctx, args) => {
-    return await ctx.db.insert('submissions', {
+    // Once per account: keep the FIRST answer an identity gives on the
+    // referral route and decline the rest. Decided inside the mutation, the
+    // only place with a transaction, so two sessions landing at once cannot
+    // both store. The reply names the existing row and says it was a
+    // duplicate, so the server can tell the agent that instead of reporting
+    // a write that did not happen.
+    const route = args.route;
+    if (isOncePerAccountRoute(route) && args.identity) {
+      const existing = await ctx.db
+        .query('submissions')
+        .withIndex('by_identity_route', (q) =>
+          q.eq('identity', args.identity).eq('route', route)
+        )
+        .first();
+      if (existing) return { id: existing._id, duplicate: true };
+    }
+    const id = await ctx.db.insert('submissions', {
       ...scrubSubmission(args),
       status: 'stored',
       verified: false,
       visibility: 'private',
     });
+    return { id, duplicate: false };
+  },
+});
+
+// Has this identity already given its one answer on a once-per-account route?
+// Asked by the hosted handshake (src/alp/answered.ts) so the referral prompt
+// is delivered to an account once. Internal and secret-gated like the journal
+// read; `identity` is trusted only because the server is the single caller.
+// One bit comes back, and only for these routes, so it cannot become a probe
+// of what an account has submitted elsewhere.
+export const hasAnswered = internalQuery({
+  args: {
+    identity: v.string(),
+    route: oncePerAccountRoute,
+  },
+  handler: async (ctx, { identity, route }) => {
+    if (!identity) return false;
+    const row = await ctx.db
+      .query('submissions')
+      .withIndex('by_identity_route', (q) =>
+        q.eq('identity', identity).eq('route', route)
+      )
+      .first();
+    return row !== null;
   },
 });
 

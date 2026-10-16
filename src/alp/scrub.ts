@@ -384,6 +384,7 @@ export const SCRUBBED_FIELDS = [
   'tool',
   'workaround',
   'trigger',
+  'source',
   'harness',
   'harnessSource',
   'transport',
@@ -398,6 +399,7 @@ export function scrubSubmission<
     tool?: string;
     workaround?: string;
     trigger?: string;
+    source?: string;
     harness?: string;
     harnessSource?: string;
     transport?: string;
