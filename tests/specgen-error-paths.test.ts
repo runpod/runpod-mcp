@@ -427,14 +427,31 @@ function networkFailure(code: string): TypeError {
   });
 }
 
-async function callWithFetchFailure(
-  code: string,
+// undici's shape when the socket closes after the headers arrived: the body
+// read rejects with TypeError('terminated') whose cause carries the code.
+function respondThenTerminate(code: string): typeof fetch {
+  return async () =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"id":'));
+          controller.error(
+            new TypeError('terminated', {
+              cause: Object.assign(new Error(`${code} (test)`), { code }),
+            })
+          );
+        },
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } }
+    );
+}
+
+async function callWithFetch(
+  fetchImpl: typeof fetch,
   call: { name: string; arguments: Record<string, unknown> }
 ) {
   const original = globalThis.fetch;
-  globalThis.fetch = async () => {
-    throw networkFailure(code);
-  };
+  globalThis.fetch = fetchImpl;
   const server = createSpecgenServer(
     createToolContext({ apiKey: 'fake', sdkRetry: false }),
     'test'
@@ -469,7 +486,9 @@ test('a request that never reached Runpod is a retryable tool error, not a proto
     'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
   ]) {
     for (const call of networkCalls) {
-      const { isError, payload } = await callWithFetchFailure(code, call);
+      const { isError, payload } = await callWithFetch(async () => {
+        throw networkFailure(code);
+      }, call);
       assert.equal(isError, true, `${call.name} ${code}`);
       assert.equal(payload.cause, code);
       assert.match(payload.error, /could not reach/i);
@@ -481,7 +500,9 @@ test('a request that never reached Runpod is a retryable tool error, not a proto
 test('a connection dropped mid-request warns that a write may have been applied', async () => {
   for (const code of ['ECONNRESET', 'UND_ERR_SOCKET', 'EPIPE']) {
     for (const call of networkCalls) {
-      const { isError, payload } = await callWithFetchFailure(code, call);
+      const { isError, payload } = await callWithFetch(async () => {
+        throw networkFailure(code);
+      }, call);
       assert.equal(isError, true, `${call.name} ${code}`);
       assert.equal(payload.cause, code);
       assert.match(payload.hint, /may have been applied/);
@@ -491,48 +512,19 @@ test('a connection dropped mid-request warns that a write may have been applied'
 });
 
 test('a connection dropped while reading the response body is an ambiguous tool error', async () => {
-  // undici's shape when the socket closes after headers arrived: the body
-  // read rejects with TypeError('terminated') whose cause is a SocketError.
-  const terminated = () =>
-    new TypeError('terminated', {
-      cause: Object.assign(new Error('other side closed'), {
-        code: 'UND_ERR_SOCKET',
-      }),
-    });
-  const original = globalThis.fetch;
-  globalThis.fetch = async () =>
-    new Response(
-      new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(new TextEncoder().encode('{"id":'));
-          controller.error(terminated());
-        },
-      }),
-      { status: 200, headers: { 'content-type': 'application/json' } }
-    );
-  const server = createSpecgenServer(
-    createToolContext({ apiKey: 'fake', sdkRetry: false }),
-    'test'
-  );
-  const client = new Client({ name: 'test', version: '1' });
-  const [ct, st] = InMemoryTransport.createLinkedPair();
-  try {
-    await Promise.all([server.connect(st), client.connect(ct)]);
+  // A TLS code here is not a handshake failure: the headers already arrived.
+  for (const code of ['UND_ERR_SOCKET', 'ERR_TLS_CERT_ALTNAME_INVALID']) {
     for (const call of [
       ...networkCalls,
       { name: 'run-endpoint', arguments: { endpointId: 'ep', input: {} } },
     ]) {
-      const result = await client.callTool(call);
-      const payload = JSON.parse(
-        (result.content as Array<{ text: string }>)[0].text
+      const { isError, payload } = await callWithFetch(
+        respondThenTerminate(code),
+        call
       );
-      assert.equal(result.isError, true, call.name);
-      assert.equal(payload.cause, 'UND_ERR_SOCKET', call.name);
+      assert.equal(isError, true, `${call.name} ${code}`);
+      assert.equal(payload.cause, code, call.name);
       assert.match(payload.hint, /may have been applied/);
     }
-  } finally {
-    globalThis.fetch = original;
-    await client.close();
-    await server.close();
   }
 });
