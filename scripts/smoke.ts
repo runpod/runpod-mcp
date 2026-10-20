@@ -102,56 +102,56 @@ function requireOk(name: string, result: unknown): unknown {
   return parseToolText(result);
 }
 
-// v2 list responses wrap their array under a named key: list-gpu-types
-// answers `{ gpus }`, list-pods `{ pods, pagination }`.
-function listField(parsed: unknown, key: string): unknown[] | null {
-  if (!parsed || typeof parsed !== 'object') return null;
-  const value = (parsed as Record<string, unknown>)[key];
-  return Array.isArray(value) ? value : null;
+// A successful call with a drifted shape must fail the run too, or a renamed
+// key reads as "no GPUs" and exits 0. v2 list responses wrap their array under
+// a named key (list-gpu-types `{ gpus }`, list-pods `{ pods, pagination }`),
+// and every field summarized below is required by the v2 spec.
+function requireList(name: string, parsed: unknown, key: string): unknown[] {
+  const value =
+    parsed && typeof parsed === 'object'
+      ? (parsed as Record<string, unknown>)[key]
+      : undefined;
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `${name} returned no \`${key}\` array: ${JSON.stringify(parsed)}`
+    );
+  }
+  return value;
+}
+
+function pickRequired(
+  name: string,
+  item: unknown,
+  fields: readonly string[]
+): Record<string, unknown> {
+  const record =
+    item && typeof item === 'object' ? (item as Record<string, unknown>) : {};
+  const missing = fields.filter((field) => record[field] === undefined);
+  if (missing.length > 0) {
+    throw new Error(
+      `${name} item is missing ${missing.join(', ')}: ${JSON.stringify(item)}`
+    );
+  }
+  return Object.fromEntries(fields.map((field) => [field, record[field]]));
 }
 
 function summarizeGpuTypes(parsed: unknown) {
-  const gpuTypes = listField(parsed, 'gpus');
-  if (!gpuTypes) {
-    return [];
-  }
-
-  return gpuTypes.slice(0, 3).map((gpu) => {
-    if (!gpu || typeof gpu !== 'object') {
-      return gpu;
-    }
-
-    const item = gpu as Record<string, unknown>;
-    return {
-      id: item.id,
-      name: item.name,
-      memory: item.memory,
-      secure: item.secure,
-    };
-  });
+  return requireList('list-gpu-types', parsed, 'gpus')
+    .slice(0, 3)
+    .map((gpu) =>
+      pickRequired('list-gpu-types', gpu, ['id', 'name', 'memory', 'secure'])
+    );
 }
 
 function summarizePods(parsed: unknown) {
-  const pods = listField(parsed, 'pods');
-  if (!pods) {
-    return { podCount: null, samplePods: [] };
-  }
-
+  const pods = requireList('list-pods', parsed, 'pods');
   return {
     podCount: pods.length,
-    samplePods: pods.slice(0, 3).map((pod) => {
-      if (!pod || typeof pod !== 'object') {
-        return pod;
-      }
-
-      const item = pod as Record<string, unknown>;
-      return {
-        id: item.id,
-        name: item.name,
-        status: item.status,
-        image: item.image,
-      };
-    }),
+    samplePods: pods
+      .slice(0, 3)
+      .map((pod) =>
+        pickRequired('list-pods', pod, ['id', 'name', 'status', 'image'])
+      ),
   };
 }
 
