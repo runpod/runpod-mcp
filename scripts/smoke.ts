@@ -88,23 +88,31 @@ function parseToolText(result: unknown): unknown {
   }
 }
 
-// List tools now return a `{ items, pagination }` envelope (the context-overflow
-// cap); older bare-array responses are still handled. Reduce either to the array.
-function unwrapItems(parsed: unknown): unknown {
-  if (
-    parsed &&
-    typeof parsed === 'object' &&
-    'items' in parsed &&
-    Array.isArray((parsed as { items: unknown }).items)
-  ) {
-    return (parsed as { items: unknown[] }).items;
+// A smoke call that came back as a tool error must fail the run: a summary of
+// an error payload reads as "no GPUs, no pods" and exits 0, which is how stale
+// v1 arguments went unnoticed here.
+function requireOk(name: string, result: unknown): unknown {
+  if (result && typeof result === 'object' && 'isError' in result) {
+    if ((result as { isError?: boolean }).isError) {
+      throw new Error(
+        `${name} returned a tool error: ${JSON.stringify(parseToolText(result))}`
+      );
+    }
   }
-  return parsed;
+  return parseToolText(result);
 }
 
-function summarizeGpuTypes(result: unknown) {
-  const gpuTypes = unwrapItems(parseToolText(result));
-  if (!Array.isArray(gpuTypes)) {
+// v2 list responses wrap their array under a named key: list-gpu-types
+// answers `{ gpus }`, list-pods `{ pods, pagination }`.
+function listField(parsed: unknown, key: string): unknown[] | null {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const value = (parsed as Record<string, unknown>)[key];
+  return Array.isArray(value) ? value : null;
+}
+
+function summarizeGpuTypes(parsed: unknown) {
+  const gpuTypes = listField(parsed, 'gpus');
+  if (!gpuTypes) {
     return [];
   }
 
@@ -114,25 +122,18 @@ function summarizeGpuTypes(result: unknown) {
     }
 
     const item = gpu as Record<string, unknown>;
-    // v1/GraphQL and v2 REST use different field names for the same data:
-    //   v1: displayName / memoryGb / stockStatus
-    //   v2: name        / memory   / (secure flag, no stockStatus)
-    // Read whichever is present so the summary is non-empty on both surfaces.
     return {
       id: item.id,
-      displayName: item.displayName ?? item.name,
-      memoryGb: item.memoryGb ?? item.memory,
-      ...(item.stockStatus !== undefined
-        ? { stockStatus: item.stockStatus }
-        : {}),
-      ...(item.secure !== undefined ? { secure: item.secure } : {}),
+      name: item.name,
+      memory: item.memory,
+      secure: item.secure,
     };
   });
 }
 
-function summarizePods(result: unknown) {
-  const pods = unwrapItems(parseToolText(result));
-  if (!Array.isArray(pods)) {
+function summarizePods(parsed: unknown) {
+  const pods = listField(parsed, 'pods');
+  if (!pods) {
     return { podCount: null, samplePods: [] };
   }
 
@@ -147,8 +148,8 @@ function summarizePods(result: unknown) {
       return {
         id: item.id,
         name: item.name,
-        desiredStatus: item.desiredStatus,
-        imageName: item.imageName,
+        status: item.status,
+        image: item.image,
       };
     }),
   };
@@ -167,17 +168,14 @@ async function main() {
 
     const serverVersion = client.getServerVersion();
     const tools = await client.listTools();
-    const gpuTypes = await client.callTool({
-      name: 'list-gpu-types',
-      arguments: {
-        searchTerm: 'A100',
-        includeUnavailable: false,
-      },
-    });
-    const pods = await client.callTool({
-      name: 'list-pods',
-      arguments: {},
-    });
+    const gpuTypes = requireOk(
+      'list-gpu-types',
+      await client.callTool({ name: 'list-gpu-types', arguments: {} })
+    );
+    const pods = requireOk(
+      'list-pods',
+      await client.callTool({ name: 'list-pods', arguments: {} })
+    );
 
     console.log(
       JSON.stringify(
