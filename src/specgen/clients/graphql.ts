@@ -30,6 +30,30 @@ export interface GraphqlClientOptions {
   fetchImpl?: typeof fetch;
 }
 
+// Status for a GraphQL error delivered on a 2xx. Only the authed path sends a
+// key, and an invalid key is rejected at the gateway with a real 401, so a
+// field-level UNAUTHORIZED means the key was accepted but may not do this:
+// a permission problem (403), not a dead credential.
+function graphqlErrorStatus(code: unknown): number {
+  switch (code) {
+    case 'UNAUTHENTICATED':
+      return 401;
+    case 'UNAUTHORIZED':
+    case 'FORBIDDEN':
+      return 403;
+    // Runpod's own code for a rejected request: an unknown GPU pool, a missing
+    // template, no balance. The caller has to change the input, so it is a 400
+    // and gets the 400 detail hints, not a retry-the-same-call 502.
+    case 'RUNPOD':
+    case 'BAD_USER_INPUT':
+    case 'GRAPHQL_VALIDATION_FAILED':
+    case 'GRAPHQL_PARSE_FAILED':
+      return 400;
+    default:
+      return 502;
+  }
+}
+
 export function createGraphqlClient(
   options: GraphqlClientOptions = {}
 ): GraphqlClient {
@@ -68,17 +92,29 @@ export function createGraphqlClient(
 
     const result = (await response.json()) as {
       data?: T;
-      errors?: Array<{ message: string }>;
+      errors?: unknown;
     };
-    if (result.errors && result.errors.length > 0) {
+    // Runpod answers resolver failures with HTTP 200 and an errors array
+    // (an unauthenticated field reads `extensions.code: "UNAUTHORIZED"`), so
+    // the failure status comes from the error, never the 200: a failed call
+    // reported as 200 gets no recovery hint and is logged as a 200.
+    if (Array.isArray(result.errors) && result.errors.length > 0) {
+      const errors = result.errors as Array<{
+        message?: unknown;
+        extensions?: { code?: unknown };
+      }>;
       throw new HttpError(
-        `GraphQL error: ${result.errors.map((e) => e.message).join(', ')}`,
-        response.status,
-        result.errors
+        `GraphQL error: ${errors.map((e) => String(e?.message ?? JSON.stringify(e))).join(', ')}`,
+        graphqlErrorStatus(errors[0]?.extensions?.code),
+        errors
       );
     }
     if (result.data === undefined || result.data === null) {
-      throw new HttpError('GraphQL response carried no data', response.status);
+      throw new HttpError(
+        'GraphQL response carried no data',
+        502,
+        result.errors
+      );
     }
     return result.data;
   }
