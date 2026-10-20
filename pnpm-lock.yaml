@@ -15,8 +15,8 @@ importers:
         specifier: ^1.7.0
         version: 1.20.2
       '@runpod/plugin-knowledge':
-        specifier: ^1.7.4
-        version: 1.7.4
+        specifier: ^1.8.0
+        version: 1.8.0
       jsonc-parser:
         specifier: ^3.3.1
         version: 3.3.1
@@ -735,8 +735,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@runpod/plugin-knowledge@1.7.4':
-    resolution: {integrity: sha512-kXzagLIxhwaEUd0nHyamJ5CMLmcV8kSzTGPOhD9XTS0Q2fwOSnBNz/GB5h09ImobLbxTxcWs6yUkD5YdYifalg==}
+  '@runpod/plugin-knowledge@1.8.0':
+    resolution: {integrity: sha512-sR3hGOdZzPg1fiwZquTWWEdA+AWGzYmSpFH0l8OJk1qXby1l5OF+JvW+zu5e5lazTml+r/noeL7wOlgzqpuVaA==}
     engines: {node: '>=20.10'}
 
   '@runpod/typescript-api-sdk@0.3.0':
@@ -2816,7 +2816,7 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.52.5':
     optional: true
 
-  '@runpod/plugin-knowledge@1.7.4': {}
+  '@runpod/plugin-knowledge@1.8.0': {}
 
   '@runpod/typescript-api-sdk@0.3.0':
     dependencies:
