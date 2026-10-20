@@ -489,3 +489,50 @@ test('a connection dropped mid-request warns that a write may have been applied'
     }
   }
 });
+
+test('a connection dropped while reading the response body is an ambiguous tool error', async () => {
+  // undici's shape when the socket closes after headers arrived: the body
+  // read rejects with TypeError('terminated') whose cause is a SocketError.
+  const terminated = () =>
+    new TypeError('terminated', {
+      cause: Object.assign(new Error('other side closed'), {
+        code: 'UND_ERR_SOCKET',
+      }),
+    });
+  const original = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"id":'));
+          controller.error(terminated());
+        },
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } }
+    );
+  const server = createSpecgenServer(
+    createToolContext({ apiKey: 'fake', sdkRetry: false }),
+    'test'
+  );
+  const client = new Client({ name: 'test', version: '1' });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  try {
+    await Promise.all([server.connect(st), client.connect(ct)]);
+    for (const call of [
+      ...networkCalls,
+      { name: 'run-endpoint', arguments: { endpointId: 'ep', input: {} } },
+    ]) {
+      const result = await client.callTool(call);
+      const payload = JSON.parse(
+        (result.content as Array<{ text: string }>)[0].text
+      );
+      assert.equal(result.isError, true, call.name);
+      assert.equal(payload.cause, 'UND_ERR_SOCKET', call.name);
+      assert.match(payload.hint, /may have been applied/);
+    }
+  } finally {
+    globalThis.fetch = original;
+    await client.close();
+    await server.close();
+  }
+});

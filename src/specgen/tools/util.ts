@@ -38,11 +38,15 @@ const UNREACHED_CODES = new Set([
 ]);
 const TLS_CODE = /^(?:CERT_|ERR_TLS_|UNABLE_TO_|DEPTH_ZERO_|SELF_SIGNED_)/;
 
-// The system/undici error code behind a `fetch failed`, if there is one.
-// undici puts it on `cause`; happy-eyeballs connects wrap it in an
-// AggregateError whose own code is set too.
+// The system/undici error code behind a network failure, if there is one.
+// undici rejects fetch() itself with `fetch failed`, and a body read whose
+// socket closes after the headers arrived with `terminated`. Either way the
+// code is on `cause`; happy-eyeballs connects wrap it in an AggregateError.
 function networkErrorCode(error: unknown): string | undefined {
-  if (!(error instanceof TypeError) || error.message !== 'fetch failed')
+  if (
+    !(error instanceof TypeError) ||
+    (error.message !== 'fetch failed' && error.message !== 'terminated')
+  )
     return undefined;
   const cause = (error as { cause?: unknown }).cause;
   const code = (cause as { code?: unknown } | undefined)?.code;
@@ -65,7 +69,7 @@ function networkFailureResult(code: string): ToolResult {
         }
       : {
           error:
-            'The connection to the Runpod API dropped before a response arrived.',
+            'The connection to the Runpod API dropped before the full response arrived.',
           cause: code,
           hint: 'The request may have been applied. A read can be retried once. For a create, update, delete or job submission, check with the matching get- or list- tool whether it took effect before calling again; retrying blindly can create a duplicate billable resource.',
         },
