@@ -281,11 +281,13 @@ function operationParameters(
 // MCP tool annotations, derived from the HTTP method the tool wraps so they
 // cannot drift from the surface: hosts read these to decide what a human has
 // to approve. Every operation reaches the Runpod API, so openWorldHint is
-// always true. Writes that create or update (POST/PATCH) are additive, so
-// only DELETE is marked destructive; a repeated DELETE or PUT lands on the
-// same state, so those are idempotent — as does any GET. Operations whose
-// method understates them (a POST or PUT that deletes) are overridden in the
-// generator config's annotations.
+// always true. By default only DELETE is marked destructive, and a repeated
+// GET, DELETE or PUT lands on the same state, so those are idempotent. The
+// method is only a starting point: destructiveHint means "can delete a
+// resource, lose data that cannot be read back, or interrupt work in flight"
+// (src/specgen/tools/annotations.ts), and a POST or PATCH that does one of
+// those, or a write whose repeat is a no-op, is overridden in the generator
+// config's annotations.
 function annotationsFor(method: string): ToolAnnotations {
   return {
     readOnlyHint: method === 'GET',

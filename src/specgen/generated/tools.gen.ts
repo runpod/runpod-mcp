@@ -1388,7 +1388,7 @@ export const generatedTools: GeneratedTool[] = [
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,
-      idempotentHint: false,
+      idempotentHint: true,
       openWorldHint: true,
     },
     schemaOnDemand: true,
@@ -3893,7 +3893,7 @@ export const generatedTools: GeneratedTool[] = [
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,
-      idempotentHint: false,
+      idempotentHint: true,
       openWorldHint: true,
     },
     inputSchema: {
@@ -3943,7 +3943,7 @@ export const generatedTools: GeneratedTool[] = [
     hasBody: true,
     annotations: {
       readOnlyHint: false,
-      destructiveHint: false,
+      destructiveHint: true,
       idempotentHint: false,
       openWorldHint: true,
     },
@@ -4361,7 +4361,7 @@ export const generatedTools: GeneratedTool[] = [
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,
-      idempotentHint: false,
+      idempotentHint: true,
       openWorldHint: true,
     },
     inputSchema: {
@@ -4416,7 +4416,7 @@ export const generatedTools: GeneratedTool[] = [
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,
-      idempotentHint: false,
+      idempotentHint: true,
       openWorldHint: true,
     },
     inputSchema: {
@@ -4475,7 +4475,7 @@ export const generatedTools: GeneratedTool[] = [
     hasBody: true,
     annotations: {
       readOnlyHint: false,
-      destructiveHint: false,
+      destructiveHint: true,
       idempotentHint: false,
       openWorldHint: true,
     },
@@ -4735,7 +4735,7 @@ export const generatedTools: GeneratedTool[] = [
     hasBody: true,
     annotations: {
       readOnlyHint: false,
-      destructiveHint: false,
+      destructiveHint: true,
       idempotentHint: false,
       openWorldHint: true,
     },
@@ -4845,7 +4845,7 @@ export const generatedTools: GeneratedTool[] = [
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,
-      idempotentHint: false,
+      idempotentHint: true,
       openWorldHint: true,
     },
     schemaOnDemand: true,

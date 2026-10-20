@@ -10,7 +10,12 @@ import { HttpError } from '../clients/http-error.js';
 import type { CuratedTool } from '../types.js';
 import type { ToolContext } from '../context.js';
 import { badRequest, ok, runTool } from './util.js';
-import { destructive, readOnly, write } from './annotations.js';
+import {
+  destructive,
+  destructiveWrite,
+  readOnly,
+  write,
+} from './annotations.js';
 
 const ID_PATTERN = '^[a-zA-Z0-9_-]+$';
 const ID_REGEX = new RegExp(ID_PATTERN);
@@ -595,7 +600,9 @@ export const streamJob: CuratedTool = {
   name: 'stream-job',
   title: 'Stream job output',
   holdsResponse: true,
-  annotations: readOnly,
+  // Not a read: /stream hands out each chunk once, so a chunk collected by a
+  // call whose response is lost cannot be fetched again.
+  annotations: destructiveWrite,
   description: `Retrieve streaming output from a Serverless job. The worker must support streaming output. Polls /stream/{jobId} and collects chunks until the status is COMPLETED, FAILED, CANCELLED, or TIMED_OUT, for up to ${formatBudget(STREAM_BUDGET_MS)}. If the budget expires first, returns the chunks collected so far with pollingTimedOut: true — call stream-job again to resume where it left off, or get-job-status to check without streaming.`,
   inputSchema: {
     type: 'object',
@@ -658,7 +665,8 @@ export const cancelJob: CuratedTool = {
 export const retryJob: CuratedTool = {
   name: 'retry-job',
   title: 'Retry job',
-  annotations: write,
+  // Removes the previous output before requeueing.
+  annotations: destructiveWrite,
   description:
     'Retry a failed or timed-out Serverless job. Only works for jobs with FAILED or TIMED_OUT status. The previous output is removed and the job is requeued.',
   inputSchema: {

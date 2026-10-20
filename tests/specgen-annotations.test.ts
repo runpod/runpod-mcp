@@ -28,6 +28,9 @@ async function listTools() {
         ingestUrl: 'http://127.0.0.1:9/api/alp/submit',
         transport: 'stdio',
       },
+      // Serve search-docs too, so every optional tool is classified. The
+      // listing never calls it.
+      search: () => Promise.reject(new Error('not called')),
     }
   );
   const client = new Client({ name: 'test', version: '1' });
@@ -70,49 +73,143 @@ test('every tool reaches the client with its hints, idempotentHint false left ou
   }
 });
 
-test('generated annotations follow the HTTP method they wrap, plus config overrides', () => {
-  // Operations whose method understates them: a POST and a PUT that delete.
-  const overridden = new Set(['pod-action', 'update-ssh-keys']);
-  for (const tool of generatedTools) {
-    assert.equal(tool.annotations.readOnlyHint, tool.method === 'GET');
+// The reviewed hints for every served tool, as readOnly / destructive /
+// idempotent / openWorld (T or F). Pinned by name rather than derived from
+// the HTTP method, because the method is what got these wrong: a PATCH that
+// clears exclusions or restarts a container is not additive. A new tool fails
+// here until someone decides its row.
+const expectedHints = new Map<string, string>([
+  ['ask_question', 'FFFT'],
+  ['cancel-job', 'FTTT'],
+  ['create-cluster', 'FFFT'],
+  ['create-delegation', 'FFFT'],
+  ['create-endpoint', 'FFFT'],
+  ['create-global-volume', 'FFFT'],
+  ['create-network-volume', 'FFFT'],
+  ['create-pod', 'FFFT'],
+  ['create-registry', 'FFFT'],
+  ['create-secret', 'FFTT'],
+  ['create-template', 'FFFT'],
+  ['delete-cluster', 'FTTT'],
+  ['delete-endpoint', 'FTTT'],
+  ['delete-global-volume', 'FTTT'],
+  ['delete-network-volume', 'FTTT'],
+  ['delete-pod', 'FTTT'],
+  ['delete-registry', 'FTTT'],
+  ['delete-secret', 'FTTT'],
+  ['delete-template', 'FTTT'],
+  ['deploy-hub-repo', 'FFFT'],
+  ['describe-tool', 'TFTF'],
+  ['endpoint-health', 'TFTT'],
+  ['get-capacity', 'TFTT'],
+  ['get-cluster', 'TFTT'],
+  ['get-cpu-type', 'TFTT'],
+  ['get-data-center', 'TFTT'],
+  ['get-endpoint', 'TFTT'],
+  ['get-endpoint-build', 'TFTT'],
+  ['get-global-volume', 'TFTT'],
+  ['get-gpu-type', 'TFTT'],
+  ['get-job-status', 'TFTT'],
+  ['get-network-volume', 'TFTT'],
+  ['get-organization', 'TFTT'],
+  ['get-pod', 'TFTT'],
+  ['get-registry', 'TFTT'],
+  ['get-secret', 'TFTT'],
+  ['get-ssh-keys', 'TFTT'],
+  ['get-template', 'TFTT'],
+  ['list-billing', 'TFTT'],
+  ['list-cluster-billing', 'TFTT'],
+  ['list-cluster-pods', 'TFTT'],
+  ['list-clusters', 'TFTT'],
+  ['list-cpu-types', 'TFTT'],
+  ['list-data-centers', 'TFTT'],
+  ['list-delegations', 'TFTT'],
+  ['list-endpoint-billing', 'TFTT'],
+  ['list-endpoint-builds', 'TFTT'],
+  ['list-endpoint-releases', 'TFTT'],
+  ['list-endpoint-workers', 'TFTT'],
+  ['list-endpoints', 'TFTT'],
+  ['list-global-volumes', 'TFTT'],
+  ['list-gpu-types', 'TFTT'],
+  ['list-guides', 'TFTF'],
+  ['list-hub-repos', 'TFTT'],
+  ['list-network-volume-billing', 'TFTT'],
+  ['list-network-volumes', 'TFTT'],
+  ['list-pod-billing', 'TFTT'],
+  ['list-pods', 'TFTT'],
+  ['list-public-endpoints', 'TFTT'],
+  ['list-public-templates', 'TFTT'],
+  ['list-registries', 'TFTT'],
+  ['list-secrets', 'TFTT'],
+  ['list-serverless-billing', 'TFTT'],
+  ['list-templates', 'TFTT'],
+  ['lookup-concept', 'TFTF'],
+  ['pod-action', 'FTFT'],
+  ['purge-endpoint-queue', 'FTTT'],
+  ['read-guide', 'TFTF'],
+  ['read_journal', 'TFTT'],
+  ['report_feedback', 'FFFT'],
+  ['report_how_user_found_runpod', 'FFTT'],
+  ['retry-job', 'FTFT'],
+  ['revoke-delegation', 'FTTT'],
+  ['run-endpoint', 'FFFT'],
+  ['runsync-endpoint', 'FFFT'],
+  ['save_to_journal', 'FFFT'],
+  ['search-concepts', 'TFTF'],
+  ['search-docs', 'TFTT'],
+  ['set-endpoint-gpus', 'FTTT'],
+  ['stream-job', 'FTFT'],
+  ['stream-pod-logs', 'TFTT'],
+  ['stream-worker-logs', 'TFTT'],
+  ['update-cluster', 'FFTT'],
+  ['update-endpoint', 'FTFT'],
+  ['update-global-volume', 'FFTT'],
+  ['update-network-volume', 'FFTT'],
+  ['update-pod', 'FTFT'],
+  ['update-secret', 'FTFT'],
+  ['update-ssh-keys', 'FTTT'],
+  ['update-template', 'FFTT'],
+]);
+
+function hintsOf(annotations: {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}): string {
+  return [
+    annotations.readOnlyHint,
+    annotations.destructiveHint,
+    // tools/list omits idempotentHint when false.
+    annotations.idempotentHint ?? false,
+    annotations.openWorldHint,
+  ]
+    .map((hint) => (hint ? 'T' : 'F'))
+    .join('');
+}
+
+test('every served tool carries its reviewed hints', async () => {
+  const tools = await listTools();
+  assert.deepEqual(
+    tools.map((tool) => tool.name).sort(),
+    [...expectedHints.keys()].sort(),
+    'the served tool set changed: add or remove its row in expectedHints'
+  );
+  for (const tool of tools) {
     assert.equal(
-      tool.annotations.destructiveHint,
-      tool.method === 'DELETE' || overridden.has(tool.name),
+      hintsOf(tool.annotations ?? {}),
+      expectedHints.get(tool.name),
       tool.name
     );
   }
-  // The tools that can delete are the set a host most needs to gate.
-  assert.deepEqual(
-    generatedTools
-      .filter((tool) => tool.annotations.destructiveHint)
-      .map((tool) => tool.name),
-    [
-      'delete-cluster',
-      'delete-endpoint',
-      'delete-global-volume',
-      'delete-network-volume',
-      'delete-pod',
-      'delete-registry',
-      'delete-secret',
-      'delete-template',
-      'pod-action',
-      'revoke-delegation',
-      'update-ssh-keys',
-    ]
-  );
 });
 
-test('the curated overlay marks its reads read-only and its teardowns destructive', () => {
-  const byName = new Map(curatedTools.map((tool) => [tool.name, tool]));
-  for (const name of ['list-endpoints', 'list-templates', 'get-job-status']) {
-    assert.equal(byName.get(name)!.annotations.readOnlyHint, true, name);
-  }
-  for (const name of ['cancel-job', 'purge-endpoint-queue']) {
-    assert.equal(byName.get(name)!.annotations.destructiveHint, true, name);
-    assert.equal(byName.get(name)!.annotations.readOnlyHint, false, name);
-  }
-  for (const name of ['run-endpoint', 'runsync-endpoint', 'deploy-hub-repo']) {
-    assert.equal(byName.get(name)!.annotations.readOnlyHint, false, name);
-    assert.equal(byName.get(name)!.annotations.destructiveHint, false, name);
+test('the generated definitions carry the same hints as tools/list', () => {
+  for (const tool of [...generatedTools, ...curatedTools]) {
+    assert.equal(
+      hintsOf(tool.annotations),
+      expectedHints.get(tool.name),
+      tool.name
+    );
   }
 });
