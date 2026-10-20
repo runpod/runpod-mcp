@@ -4,11 +4,14 @@ import type {
   GeneratedToolParam,
   ToolAnnotations,
 } from '#src/specgen/generated/tools.gen';
+import { titleFromName } from '#src/specgen/titles';
 import { compactDescription, type OperationNameLookup } from './prose.js';
 
 export interface GeneratorConfig {
   exclude?: Record<string, { replacedBy?: string; reason: string }>;
   rename?: Record<string, string>;
+  /** operationId -> title overrides; default is derived from the tool name. */
+  titles?: Record<string, string>;
   descriptions?: Record<string, string>;
   /** Schema address -> description served instead of the spec's. Addresses are
    *  `DefName`, `DefName.prop` (composition is transparent, `[]` for items),
@@ -413,8 +416,10 @@ function buildTool(
     if (requestBody?.required) required.push('body');
   }
   const $defs = reachableDefs({ type: 'object', properties }, defs);
+  const name = toolName(op.operationId, config);
   return {
-    name: toolName(op.operationId, config),
+    name,
+    title: config.titles?.[op.operationId] ?? titleFromName(name),
     operationId: op.operationId,
     description:
       config.descriptions?.[op.operationId] ??
@@ -465,6 +470,7 @@ export function generateTools(
   const tools: GeneratedTool[] = [];
   const names = new Set<string>();
   const unmatchedExclusions = new Set(Object.keys(config.exclude ?? {}));
+  const unmatchedTitles = new Set(Object.keys(config.titles ?? {}));
   const unmatchedAnnotations = new Set(Object.keys(config.annotations ?? {}));
   const unmatchedOnDemand = new Set(config.schemaOnDemand ?? []);
   for (const [path, pathItem] of Object.entries(spec.paths)) {
@@ -475,6 +481,7 @@ export function generateTools(
         unmatchedExclusions.delete(op.operationId);
         continue;
       }
+      unmatchedTitles.delete(op.operationId);
       unmatchedAnnotations.delete(op.operationId);
       unmatchedOnDemand.delete(op.operationId);
       const tool = buildTool(
@@ -496,6 +503,10 @@ export function generateTools(
   if (unmatchedExclusions.size)
     throw new Error(
       `Excluded operations missing from spec: ${[...unmatchedExclusions].sort().join(', ')}`
+    );
+  if (unmatchedTitles.size)
+    throw new Error(
+      `Titled operations missing from spec: ${[...unmatchedTitles].sort().join(', ')}`
     );
   if (unmatchedAnnotations.size)
     throw new Error(

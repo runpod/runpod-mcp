@@ -43,6 +43,8 @@ export interface ToolAnnotations {
 
 export interface GeneratedTool {
   name: string;
+  /** Human-readable name hosts show in place of \`name\`. */
+  title: string;
   operationId: string;
   description: string;
   method: string;

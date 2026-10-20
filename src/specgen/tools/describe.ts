@@ -8,6 +8,7 @@ import { ok } from './util.js';
 export function createDescribeTool(served: () => ListableTool[]): CuratedTool {
   return {
     name: DESCRIBE_TOOL_NAME,
+    title: 'Describe tool',
     description:
       "Return one tool's full definition: its description, complete argument schema (every field, nested objects, constraints) and annotations. Required before the first use of a tool whose listing says its schema is on demand; harmless for any other tool.",
     inputSchema: {

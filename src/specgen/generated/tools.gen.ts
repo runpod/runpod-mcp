@@ -18,6 +18,8 @@ export interface ToolAnnotations {
 
 export interface GeneratedTool {
   name: string;
+  /** Human-readable name hosts show in place of `name`. */
+  title: string;
   operationId: string;
   description: string;
   method: string;
@@ -33,6 +35,7 @@ export interface GeneratedTool {
 export const generatedTools: GeneratedTool[] = [
   {
     name: 'create-cluster',
+    title: 'Create cluster',
     operationId: 'createCluster',
     description:
       "Create an instant cluster (multiple pods with high-speed interconnect). BILLABLE from creation for every pod in the cluster: it rents compute.podCount identical pods at once, each with compute.gpuCountPerPod GPUs of compute.gpuTypeId — state the hourly price for the total GPU count (podCount * gpuCountPerPod, priced from the catalog tools) and create only after the user's explicit go on that quoted shape and total hourly price. Verify GPU stock first via the catalog tools. The compute shape and type are fixed at creation; only the name can be changed later. The container configuration applies to every pod, and templateId is the only private-image path — a bare registry property is rejected. Delete with delete-cluster when finished.",
@@ -290,6 +293,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'create-delegation',
+    title: 'Create ECR delegation',
     operationId: 'createDelegation',
     description: 'Register an ECR delegation',
     method: 'POST',
@@ -335,6 +339,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'create-endpoint',
+    title: 'Create endpoint',
     operationId: 'createEndpoint',
     description:
       "Create a serverless endpoint. BILLABLE: state the worker's hourly price (from the catalog tools) before creating. Worker hardware is one of two choices: the gpu object (gpu.pools takes serverless pool ids from the catalog, e.g. ADA_24, never display names; gpu.count sets GPUs per worker) or the cpu array of CPU flavor configurations for a CPU endpoint. type and scaling are required and fix the request-routing model. Workers cold-start on the first job: expect minutes, poll with get-job-status wait.",
@@ -808,6 +813,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'create-global-volume',
+    title: 'Create global volume',
     operationId: 'createGlobalVolume',
     description:
       'Create a global volume. Provisions a new global volume — storage that mounts into workloads in any data center. Only a `name` is required; storage is provisioned for you. Accounts have a cap on how many global volumes they can hold; creating one past it fails with `400`. Returns `201` with the created global volume, including its assigned `id`.',
@@ -851,6 +857,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'create-network-volume',
+    title: 'Create network volume',
     operationId: 'createNetworkVolume',
     description:
       'Create a network volume. Provisions a new network volume — persistent, network-attached storage that can be mounted into pods and serverless workers. Required inputs are `name`, `size` (in GB), and `dataCenter`; an optional `type` selects the storage tier and is immutable after creation. See `CreateNetworkVolumeRequest` for the size bounds and tier options. This creates a billable persistent resource that keeps incurring storage charges until it is deleted. Returns `201` with the created network volume, including its assigned `id`.',
@@ -918,6 +925,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'create-pod',
+    title: 'Create Pod',
     operationId: 'createPod',
     description:
       'Rent a GPU/CPU pod. BILLABLE from creation until stop/terminate: state the hourly price before creating. GPU selection is the gpu object: gpu.id takes a catalog GPU type id (e.g. "NVIDIA GeForce RTX 4090"), verified via list-gpu-types, and gpu.count sets the GPU count; cloud/data-center choice constrains stock.',
@@ -1314,6 +1322,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'create-registry',
+    title: 'Create registry credential',
     operationId: 'createRegistry',
     description:
       'Create a container registry credential. Stores credentials for a private container registry. Credentials are write-only.',
@@ -1368,6 +1377,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'create-secret',
+    title: 'Create secret',
     operationId: 'createSecret',
     description:
       "Create a secret. Stores a new account-scoped encrypted string. `name` must be unique across the account's secrets and is immutable; `value` is write-only and can never be read back through the API. Use the secret from pods, serverless endpoints, and templates by setting an environment variable's value to `{{ RUNPOD_SECRET_<name> }}` — Runpod substitutes the stored value when the pod or worker boots. Returns `201` with the created secret's metadata, or `409` when the name is already taken.",
@@ -1426,6 +1436,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'create-template',
+    title: 'Create template',
     operationId: 'createTemplate',
     description:
       'Create a template. Creates a reusable container-configuration preset — image, disk, ports, env, registry, and mount settings — for pods and serverless endpoints. Pass its ID as `templateId` to `createPod` or `createEndpoint`, or spread its fields into the request body directly. Returns the created template.',
@@ -1640,6 +1651,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'delete-cluster',
+    title: 'Delete cluster',
     operationId: 'deleteCluster',
     description:
       'Delete a cluster permanently: it terminates every member pod. Verify the id with get-cluster, and list-cluster-pods for what the delete takes down, before deleting; delete only clusters your own tool calls created in this conversation, or the one the user asked you to delete by id — a name found by listing is not attribution.',
@@ -1671,6 +1683,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'delete-endpoint',
+    title: 'Delete endpoint',
     operationId: 'deleteEndpoint',
     description:
       'Delete a serverless endpoint permanently and immediately. Verify the id belongs to the intended endpoint (get-endpoint) before deleting; delete only endpoints your own tool calls created in this conversation, or the one the user asked you to delete by id — a name found by listing is not attribution.',
@@ -1702,6 +1715,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'delete-global-volume',
+    title: 'Delete global volume',
     operationId: 'deleteGlobalVolume',
     description:
       'Delete a global volume. Permanently deletes a global volume and its stored data. Fails with `409` while the volume is still mounted: terminate every pod that mounts it (stopped pods count) and detach it from every serverless endpoint first. Nothing is detached or terminated on your behalf.',
@@ -1733,6 +1747,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'delete-network-volume',
+    title: 'Delete network volume',
     operationId: 'deleteNetworkVolume',
     description:
       'Delete a network volume. Permanently deletes a network volume and releases its storage.',
@@ -1764,6 +1779,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'delete-pod',
+    title: 'Delete Pod',
     operationId: 'deletePod',
     description:
       'Terminate a pod permanently — its container disk is lost. Distinguish from stopping (pod-action stop) which releases the GPU but keeps volume data. Verify the id with get-pod first; terminate only pods your own tool calls created in this conversation, or the one the user asked you to terminate by id — a name found by listing is not attribution.',
@@ -1795,6 +1811,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'delete-registry',
+    title: 'Delete registry credential',
     operationId: 'deleteRegistry',
     description:
       'Delete a container registry credential. Permanently deletes a container registry credential by ID. Rejected if any pod currently uses this credential to pull its image. Templates that reference it are not part of that check — they silently lose the reference (`registry` becomes null) instead of blocking the delete.',
@@ -1825,6 +1842,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'delete-secret',
+    title: 'Delete secret',
     operationId: 'deleteSecret',
     description:
       'Delete a secret permanently. Environment variables referencing its name ({{ RUNPOD_SECRET_<name> }}) stop resolving at the next pod or worker boot; running instances keep the value they started with. Verify the id with get-secret first; delete only secrets your own tool calls created in this conversation, or the one the user asked you to delete by id — a name found by listing is not attribution.',
@@ -1856,6 +1874,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'delete-template',
+    title: 'Delete template',
     operationId: 'deleteTemplate',
     description:
       'Delete a template permanently. Verify with get-template first; a template referenced by a live endpoint should not be deleted.',
@@ -1886,6 +1905,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'get-cluster',
+    title: 'Get cluster',
     operationId: 'getCluster',
     description:
       'Get a cluster. Returns a single cluster by ID. The pods field is an aggregate summary (total + count by status); fetch the member pods themselves from /v2/clusters/{id}/pods.',
@@ -1917,6 +1937,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'get-cpu-type',
+    title: 'Get CPU type',
     operationId: 'getCpuType',
     description:
       'Get a CPU type. Returns a single CPU type with pricing. Availability details are included only when requested with include=AVAILABILITY, which requires `product` — stock differs by product context.',
@@ -1999,6 +2020,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'get-data-center',
+    title: 'Get data center',
     operationId: 'getDataCenter',
     description:
       'Get a data center. Returns a single data center. Availability is included only when requested with include=GPU_AVAILABILITY or include=CPU_AVAILABILITY.',
@@ -2050,6 +2072,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'get-endpoint',
+    title: 'Get endpoint',
     operationId: 'getEndpoint',
     description:
       'Get a serverless endpoint. Returns a single serverless endpoint by ID.',
@@ -2081,6 +2104,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'get-endpoint-build',
+    title: 'Get endpoint build',
     operationId: 'getEndpointBuild',
     description:
       "Get a serverless endpoint build. Returns one of the endpoint's GitHub builds by id, regardless of age — no need to page through `GET /v2/serverless/{id}/builds` to reach it.",
@@ -2121,6 +2145,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'get-global-volume',
+    title: 'Get global volume',
     operationId: 'getGlobalVolume',
     description: 'Get a global volume. Returns a single global volume by ID.',
     method: 'GET',
@@ -2151,6 +2176,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'get-gpu-type',
+    title: 'Get GPU type',
     operationId: 'getGpuType',
     description:
       'Get a GPU type. Returns a single GPU type with pricing. Availability details are included only when requested with include=AVAILABILITY, which requires `product` — stock differs by product context.',
@@ -2285,6 +2311,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'get-network-volume',
+    title: 'Get network volume',
     operationId: 'getNetworkVolume',
     description: 'Get a network volume. Returns a single network volume by ID.',
     method: 'GET',
@@ -2315,6 +2342,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'get-organization',
+    title: 'Get organization',
     operationId: 'getOrganization',
     description:
       "Get your current organization. Returns the authenticated caller's current organization. Organization context comes from the caller's membership; no organization selector is required. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.",
@@ -2335,6 +2363,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'get-pod',
+    title: 'Get Pod',
     operationId: 'getPod',
     description: 'Get a pod. Returns a single pod by ID.',
     method: 'GET',
@@ -2365,6 +2394,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'get-registry',
+    title: 'Get registry credential',
     operationId: 'getRegistry',
     description:
       'Get a container registry credential. Returns a single container registry credential by ID. `username` and `password` are never included in the response — credentials are write-only, matching `createRegistry`.',
@@ -2395,6 +2425,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'get-secret',
+    title: 'Get secret',
     operationId: 'getSecret',
     description:
       "Get a secret. Returns a single secret's metadata by ID. The value is write-only and never returned.",
@@ -2426,6 +2457,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'get-ssh-keys',
+    title: 'Get SSH keys',
     operationId: 'getSshKeys',
     description:
       "List registered SSH public keys. Returns the account's registered SSH public keys — the keys provisioned into pods created with `startSsh` and used to authenticate the SSH connections reported in a pod's `ssh` block.",
@@ -2446,6 +2478,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'get-template',
+    title: 'Get template',
     operationId: 'getTemplate',
     description:
       'Get a template. Returns the full configuration of a single template by ID. Serves both templates you own and public catalog templates — everything you can read. Updates and deletes remain restricted to templates you own.',
@@ -2476,6 +2509,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'list-billing',
+    title: 'List billing',
     operationId: 'listBilling',
     description:
       "Get aggregated billing history. Returns time-bucketed total spend across all billable Runpod resources for the authenticated user. Use startTime/endTime with bucketSize for an explicit range, or lastN with bucketSize for the most recent buckets. Each record reports one bucket's total plus pod, serverless, storage, public endpoint, and Instant Cluster cost components. The metadata block echoes the resolved query window, record count, and totals across all returned buckets.",
@@ -2552,6 +2586,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'list-cluster-billing',
+    title: 'List cluster billing',
     operationId: 'listClusterBilling',
     description:
       'Get cluster billing history. Returns Cluster billing history for the authenticated user, split into time buckets by startTime/endTime with bucketSize or by lastN recent buckets. Use clusterId to filter to one cluster; without it, records are emitted per cluster per bucket. Each record includes GPU compute, disk, inter-node networking, and total amounts. Clusters are GPU-only, so no CPU cost component is returned.',
@@ -2636,6 +2671,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'list-cluster-pods',
+    title: 'List cluster Pods',
     operationId: 'listClusterPods',
     description:
       "List a cluster's pods. Returns the full member pods of a cluster. The cluster summary (`GET /v2/clusters/{id}`) carries only aggregate pod counts; this endpoint returns each member as a complete Pod object.",
@@ -2667,6 +2703,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'list-clusters',
+    title: 'List clusters',
     operationId: 'listClusters',
     description:
       'List clusters. Returns clusters owned by the authenticated user, cursor-paginated newest-first; an omitted `limit` defaults to 1000. Follow `pagination.nextCursor` until `hasNextPage` is false.',
@@ -2709,6 +2746,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'list-cpu-types',
+    title: 'List CPU types',
     operationId: 'listCpuTypes',
     description:
       'List CPU types. Returns available CPU flavors. Availability is included only when requested with include=AVAILABILITY, which requires `product` — stock differs by product context.',
@@ -2783,6 +2821,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'list-data-centers',
+    title: 'List data centers',
     operationId: 'listDataCenters',
     description:
       'List data centers. Returns available data center locations with region, compliance, supported network volume tiers, and global networking support. Use include=GPU_AVAILABILITY or include=CPU_AVAILABILITY to add per-resource availability arrays to each data center. The regions, networkVolumeTypes, compliance, and globalNetwork query parameters filter the list before it is returned.',
@@ -2916,6 +2955,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'list-delegations',
+    title: 'List ECR delegations',
     operationId: 'listDelegations',
     description: 'List all ECR delegations',
     method: 'GET',
@@ -2935,6 +2975,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'list-endpoint-billing',
+    title: 'List endpoint billing',
     operationId: 'listEndpointBilling',
     description:
       'Get public endpoint billing history. Returns Runpod public endpoint billing history for the authenticated user, split into time buckets by startTime/endTime with bucketSize or by lastN recent buckets. Each record reports the endpoint total for one bucket, and metadata echoes the resolved query window, record count, and total endpoint amount across all returned records.',
@@ -3011,6 +3052,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'list-endpoint-builds',
+    title: 'List endpoint builds',
     operationId: 'listEndpointBuilds',
     description:
       "List serverless endpoint builds. Returns the endpoint's GitHub build history, newest first (Runpod GitHub-build integration), cursor-paginated; an omitted `limit` defaults to 100, so a bare request returns at most the 100 most recent builds. Any build can also be fetched by id via `GET /v2/serverless/{id}/builds/{buildId}`. Stream a build's logs via `/v2/serverless/{id}/builds/{buildId}/logs`.",
@@ -3062,6 +3104,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'list-endpoint-releases',
+    title: 'List endpoint releases',
     operationId: 'listEndpointReleases',
     description:
       "List serverless endpoint releases. Returns the endpoint's release history (newest first) plus a rollout summary of how many workers are running the current version. Each release is a versioned configuration snapshot with a `diff` of what changed; build-driven releases carry a `buildId` (fetch build detail via the builds sub-routes). Releases are cursor-paginated newest-first; an omitted `limit` defaults to 1000. The rollout summary always describes the endpoint's current state, independent of the page requested.",
@@ -3113,6 +3156,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'list-endpoint-workers',
+    title: 'List endpoint workers',
     operationId: 'listEndpointWorkers',
     description:
       "List serverless endpoint workers. Lists the active workers for a serverless endpoint. **Returns.** A `200` with a `ListEndpointWorkersResponse`: a `workers` array (one entry per active worker, each carrying its `id`, `status`, and runtime details) plus a `summary` of worker counts grouped by status. Only currently active workers are included; scaled-down workers are not returned. **How `status` is determined.** Each worker's `status` is derived by reconciling the worker pod's lifecycle status with the endpoint's live job-queue view (which workers are actively serving requests). When the job-queue view is unavailable, the response degrades gracefully: the shape is unchanged, but each `status` and the summary counts fall back to pod lifecycle alone.",
@@ -3144,6 +3188,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'list-global-volumes',
+    title: 'List global volumes',
     operationId: 'listGlobalVolumes',
     description:
       'List global volumes. Returns global volumes owned by the authenticated user, cursor-paginated newest-first; an omitted `limit` defaults to 1000. Follow `pagination.nextCursor` until `hasNextPage` is false.',
@@ -3186,6 +3231,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'list-gpu-types',
+    title: 'List GPU types',
     operationId: 'listGpuTypes',
     description:
       'List GPU types. Returns available GPU types with pricing. Availability is included only when requested with include=AVAILABILITY, which requires `product` — stock differs by product context. With countryCodes, the list is narrowed to GPU types deployable in those countries, so "this geography + this chip" resolves in one read.',
@@ -3312,6 +3358,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'list-network-volume-billing',
+    title: 'List network volume billing',
     operationId: 'listNetworkVolumeBilling',
     description:
       'Get network volume billing history. Returns network volume billing history for the authenticated user, split into time buckets by startTime/endTime with bucketSize or by lastN recent buckets. Use networkVolumeId to filter to one volume; without it, records are emitted per volume per bucket. Each record includes standard storage, high-performance storage, and total amounts, while metadata reports the resolved query, distinct volume count, and totals across the returned records.',
@@ -3396,6 +3443,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'list-network-volumes',
+    title: 'List network volumes',
     operationId: 'listNetworkVolumes',
     description:
       'List network volumes. Returns network volumes owned by the authenticated user, cursor-paginated newest-first; an omitted `limit` defaults to 1000. Follow `pagination.nextCursor` until `hasNextPage` is false.',
@@ -3438,6 +3486,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'list-pod-billing',
+    title: 'List Pod billing',
     operationId: 'listPodBilling',
     description:
       'Get pod billing history. Returns pod-only billing detail for the authenticated user, split into time buckets by startTime/endTime with bucketSize or by lastN recent buckets. Use podId to narrow the response to one GPU or CPU pod; without it, records are emitted per pod per bucket. Each record includes podId, GPU, CPU, disk, and total amounts, while metadata echoes the resolved query and totals across the pod records. Use listBilling when you need aggregate spend across every billable resource family.',
@@ -3522,6 +3571,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'list-pods',
+    title: 'List Pods',
     operationId: 'listPods',
     description:
       'List pods. Returns pods owned by the authenticated user. Cluster member pods are excluded by default; set `includeClusterPods=true` to include them (each carries a non-null `cluster` membership block). Results are cursor-paginated newest-first; an omitted `limit` defaults to 1000. The cluster-member exclusion is applied before the page is cut, so a page holds `limit` pods whenever that many remain. Follow `pagination.nextCursor` until `hasNextPage` is false.',
@@ -3574,6 +3624,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'list-public-templates',
+    title: 'List public templates',
     operationId: 'listPublicTemplates',
     description:
       "List public templates. Returns the public template catalog. `source` selects which slice: `official` (the default) is Runpod-curated templates, `verified` is community templates Runpod has verified, and `community` is everything else other users have shared publicly. Both pod and serverless templates appear — use each entry's `serverless` flag to tell them apart. `registry` is always null for templates you don't own. Your own templates (public or private) are managed under `/v2/templates`; fetch any individual template — catalog or owned — via `/v2/templates/{id}`. At most 100 templates are returned. Cursor pagination is not yet supported here; `pagination` is always the exhausted marker (`nextCursor: null`, `hasNextPage: false`).",
@@ -3607,6 +3658,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'list-registries',
+    title: 'List registry credentials',
     operationId: 'listRegistries',
     description:
       'List container registries. Returns all container registry credentials owned by the authenticated user.',
@@ -3627,6 +3679,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'list-secrets',
+    title: 'List secrets',
     operationId: 'listSecrets',
     description:
       "List secrets. Returns the account's secrets — encrypted strings referenced from pod, serverless, and template environment variables with the `{{ RUNPOD_SECRET_<name> }}` placeholder syntax, substituted with the secret's value when the pod or worker boots. Secret values are write-only and are never returned.",
@@ -3658,6 +3711,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'list-serverless-billing',
+    title: 'List Serverless billing',
     operationId: 'listServerlessBilling',
     description:
       'Get serverless billing history, split into time buckets. SIZE WARNING: with defaults this emits one record per endpoint PER BUCKET — on an account with many endpoints the response overflows the tool-result limit and becomes unusable. Always pass lastN: 1 (or a bucketSize spanning the whole window) for one record per endpoint, and serverlessId when you need one endpoint. Distinct from pod billing, which covers standalone pods.',
@@ -3742,6 +3796,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'pod-action',
+    title: 'Start, stop, restart, or terminate a Pod',
     operationId: 'podAction',
     description:
       'Trigger a pod state transition. Triggers a state transition on a pod. Send a JSON body with a single `action` field, e.g. `{ "action": "stop" }`. Valid actions: - `start` — boot a stopped pod (`EXITED` or `ERROR`) back toward `RUNNING`. - `stop` — stop a running or provisioning pod, releasing GPU/CPU compute while keeping its disk. The pod moves to `EXITED`. - `restart` — restart a `RUNNING` pod\'s container in place. - `terminate` — permanently delete the pod and release its resources (equivalent to `deletePod`). Which actions are valid depends on the pod\'s current status, and the currently permitted set is published in the pod\'s `actions` field: `RUNNING` allows `stop`/`restart`/`terminate`; `EXITED` and `ERROR` allow `start`/`terminate`; `PROVISIONING` and `STARTING` allow `stop`/`terminate`. `start`, `stop`, and `restart` return `200` with the updated pod. `terminate` returns `204` with no body. Requesting an action that is not valid for the pod\'s current status returns `409`.',
@@ -3792,6 +3847,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'revoke-delegation',
+    title: 'Revoke ECR delegation',
     operationId: 'revokeDelegation',
     description: 'Revoke an ECR delegation',
     method: 'DELETE',
@@ -3821,6 +3877,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'update-cluster',
+    title: 'Update cluster',
     operationId: 'updateCluster',
     description:
       'Rename a cluster. Renames a cluster. This endpoint only changes the cluster name — compute shape, type, and container configuration are fixed at creation and cannot be updated.',
@@ -3871,6 +3928,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'update-endpoint',
+    title: 'Update endpoint',
     operationId: 'updateEndpoint',
     description:
       "Partially update a serverless endpoint (PATCH): only fields present in the body change, omitted ones are untouched, with one exception. DESTRUCTIVE GOTCHA: gpu.pools and gpu.excludedTypes are a single selection, so sending pools without excludedTypes clears any exclusions pinned elsewhere (the console or set-endpoint-gpus) — read the endpoint first with get-endpoint and resend excludedTypes if you still want them. An exclusion naming a type outside pools returns 400. A CUDA-only or count-only change does not need pools at all, so omit it unless you mean to replace the selection. Mutable fields: name, gpu, cpu, workers (min/max/idleTimeout), scaling (type plus queueDelay or requestCount), dataCenterIds, networkVolumes, timeout, flashboot, and the container settings (image, args, disk, ports, env, registry). cpu completely replaces a CPU endpoint's flavor selection. Compute family is immutable: gpu on a CPU endpoint, cpu on a GPU one, or both, returns 400. Effect timing differs by field — workers/scaling/timeout reach the autoscaler promptly, while container changes (image, env) cut a new release that rolls out as workers cycle, so in-flight workers keep the previous version. Track rollout with list-endpoint-releases.",
@@ -4287,6 +4345,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'update-global-volume',
+    title: 'Update global volume',
     operationId: 'updateGlobalVolume',
     description:
       'Update a global volume. Updates mutable fields on a global volume. Only provided fields are changed.',
@@ -4341,6 +4400,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'update-network-volume',
+    title: 'Update network volume',
     operationId: 'updateNetworkVolume',
     description:
       'Update a network volume. Updates mutable fields on a network volume. Only provided fields are changed. Note: `size` may only increase; attempts to reduce size will be rejected.',
@@ -4400,6 +4460,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'update-pod',
+    title: 'Update Pod',
     operationId: 'updatePod',
     description:
       "Update a pod. Partially updates a pod's configuration. This is a PATCH: only the fields present in the body are changed, and omitted fields are left untouched. Use empty values only when you explicitly mean to clear a field (for example, set `registry` to `null` or set `ports` to `[]`). See `UpdatePodRequest` for the full body. Mutable fields: `name`, `image`, `args`, `disk`, `ports`, `env`, `registry`, `mounts`, `locked`, and `globalNetworking`. Some changes apply immediately while others (e.g. `globalNetworking`) take effect on the pod's next start/restart, as noted on the individual fields. Pods that belong to a Cluster cannot be updated here — manage them through `/v2/clusters/{id}`. Returns `200` with the full updated pod.",
@@ -4659,6 +4720,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'update-secret',
+    title: 'Update secret',
     operationId: 'updateSecret',
     description:
       "Update a secret. Rotates a secret's value and/or updates its description. Only the provided fields are changed and at least one field is required; the `name` is immutable. Pods and workers receive the new value at their next boot — running instances keep the value they were started with. When both fields are sent, the value is applied first, then the description. The two updates are not atomic: if the description update fails after the value was rotated, the response is an error but the new value has already taken effect. Send the fields in separate requests when that partial outcome matters.",
@@ -4718,6 +4780,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'update-ssh-keys',
+    title: 'Update SSH keys',
     operationId: 'updateSshKeys',
     description:
       "Replace registered SSH public keys. Replaces the account's full set of registered SSH public keys. Existing keys not present in the request are removed; send `[]` to remove all keys. Keys take effect for pods created afterwards with `startSsh` — running pods are not updated.",
@@ -4766,6 +4829,7 @@ export const generatedTools: GeneratedTool[] = [
   },
   {
     name: 'update-template',
+    title: 'Update template',
     operationId: 'updateTemplate',
     description:
       "Update a template. Partially updates a template. This is a PATCH: only the fields present in the body are changed; omitted fields are left untouched. See `UpdateTemplateRequest` for the full body. Mutable fields: `name`, `image`, `args`, `disk`, `ports`, `env`, `registry`, `mounts`, `serverless`, `public`, and `category`. Only the template's owner can update it (authenticated via the request's API key); public catalog templates are readable via GET but return `404` here. Returns `200` with the full updated template. Pods and endpoints already created from this template are not changed retroactively — the template is a snapshot applied at creation time.",

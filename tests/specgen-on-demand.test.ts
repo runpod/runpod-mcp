@@ -74,6 +74,7 @@ test('callShape keeps the top-level arguments and collapses everything beneath t
 test('listTool passes ordinary tools through and shortens flagged ones with a pointer', () => {
   const tool = {
     name: 'x',
+    title: 'X',
     description: 'Does x.',
     inputSchema: full,
     annotations,
@@ -85,6 +86,7 @@ test('listTool passes ordinary tools through and shortens flagged ones with a po
   assert.match(listed.description, new RegExp(DESCRIBE_TOOL_NAME));
   assert.deepEqual(listed.inputSchema, callShape(full));
   assert.deepEqual(listed.annotations, served.annotations);
+  assert.equal(listed.title, 'X');
   assert.equal('schemaOnDemand' in listed, false);
 });
 

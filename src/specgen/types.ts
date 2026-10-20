@@ -6,6 +6,10 @@ export type { ToolAnnotations };
 
 export interface CuratedTool {
   name: string;
+  /** Human-readable name hosts show in place of `name`, required so a new
+   *  curated tool cannot ship without one (directory reviews check every tool).
+   *  Sentence case, proper nouns kept (src/specgen/titles.ts). */
+  title: string;
   description: string;
   inputSchema: Record<string, unknown>;
   /** MCP behavioral hints, required so a new curated tool cannot ship without

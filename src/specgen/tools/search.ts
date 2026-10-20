@@ -22,6 +22,7 @@ import { badRequest } from './util.js';
 export function createSearchDocsTool(search: SearchFn): CuratedTool {
   return {
     name: 'search-docs',
+    title: 'Search docs',
     annotations: readOnly,
     recordedArguments: ['limit'],
     description:

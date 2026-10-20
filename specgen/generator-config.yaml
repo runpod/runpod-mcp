@@ -25,6 +25,20 @@ exclude:
 # operationId -> tool name overrides; default is the kebab-cased operationId.
 rename: {}
 
+# operationId -> title overrides (tools/list `title`, the human-readable name
+# hosts show). The default is derived from the tool name in sentence case with
+# proper nouns kept (src/specgen/titles.ts); override only where that reads
+# wrong. The generator rejects keys whose operationId is absent from the spec.
+titles:
+  podAction: Start, stop, restart, or terminate a Pod
+  createRegistry: Create registry credential
+  deleteRegistry: Delete registry credential
+  getRegistry: Get registry credential
+  listRegistries: List registry credentials
+  createDelegation: Create ECR delegation
+  listDelegations: List ECR delegations
+  revokeDelegation: Revoke ECR delegation
+
 # operationId -> annotation overrides, merged over the hints derived from the
 # HTTP method. Use for operations whose method understates what they do. The
 # generator rejects keys whose operationId is absent from the spec.

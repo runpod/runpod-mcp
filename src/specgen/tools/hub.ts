@@ -198,6 +198,7 @@ function randomSuffix(): string {
 
 export const listHubRepos: CuratedTool = {
   name: 'list-hub-repos',
+  title: 'List Hub repos',
   annotations: readOnly,
   description:
     'List repos published to the Runpod Hub (prebuilt Serverless workers and Pod templates, e.g. vLLM, ComfyUI). Public catalog — no auth required. Each result includes the currently listed release with its hubReleaseId and prebuilt image name. Results are sorted by deploy count (most popular first). Set includeConfig:true to also return the release config (hardware requirements and environment-variable schema) — it is large, so prefer requesting it for a single repo via the repoOwner/searchTerm filters.',
@@ -324,6 +325,7 @@ export const listHubRepos: CuratedTool = {
 
 export const deployHubRepo: CuratedTool = {
   name: 'deploy-hub-repo',
+  title: 'Deploy Hub repo',
   // Two sequential upstream calls: together they can outlast a client's request timeout.
   holdsResponse: true,
   annotations: write,

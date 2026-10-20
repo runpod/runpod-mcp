@@ -180,6 +180,7 @@ const source = {
 
 export const listGuides: CuratedTool = {
   name: 'list-guides',
+  title: 'List guides',
   annotations: bundledRead,
   recordedArguments: ['kind', 'query', 'concept'],
   description:
@@ -224,6 +225,7 @@ export const listGuides: CuratedTool = {
 
 export const readGuide: CuratedTool = {
   name: 'read-guide',
+  title: 'Read guide',
   annotations: bundledRead,
   recordedArguments: ['id'],
   recordedGuideKind: (args) =>
@@ -270,6 +272,7 @@ export const readGuide: CuratedTool = {
 
 export const lookupConcept: CuratedTool = {
   name: 'lookup-concept',
+  title: 'Look up a concept',
   annotations: bundledRead,
   recordedArguments: ['concept'],
   description:
@@ -341,6 +344,7 @@ export const lookupConcept: CuratedTool = {
 
 export const searchConcepts: CuratedTool = {
   name: 'search-concepts',
+  title: 'Search concepts',
   annotations: bundledRead,
   recordedArguments: ['query', 'limit'],
   description:

@@ -14,6 +14,7 @@ import { readOnly } from './annotations.js';
 
 export const listTemplates: CuratedTool = {
   name: 'list-templates',
+  title: 'List templates',
   annotations: readOnly,
   description:
     'List templates visible to the account. Returns id, name, image, and ' +

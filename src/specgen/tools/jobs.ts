@@ -431,6 +431,7 @@ function validateWait(wait: unknown): string | null {
 
 export const runEndpoint: CuratedTool = {
   name: 'run-endpoint',
+  title: 'Submit Serverless job',
   annotations: write,
   description:
     'Submit an asynchronous job to a Serverless endpoint. Returns a job ID immediately — use get-job-status to poll for results (pass its `wait` to block through a cold start instead of tight-looping). Async results are available for 30 minutes after completion.',
@@ -464,6 +465,7 @@ export const runEndpoint: CuratedTool = {
 
 export const runsyncEndpoint: CuratedTool = {
   name: 'runsync-endpoint',
+  title: 'Run Serverless job and wait',
   holdsResponse: true,
   annotations: write,
   description:
@@ -528,6 +530,7 @@ export const runsyncEndpoint: CuratedTool = {
 
 export const getJobStatus: CuratedTool = {
   name: 'get-job-status',
+  title: 'Get job status',
   holdsResponse: true,
   annotations: readOnly,
   description:
@@ -590,6 +593,7 @@ export const getJobStatus: CuratedTool = {
 
 export const streamJob: CuratedTool = {
   name: 'stream-job',
+  title: 'Stream job output',
   holdsResponse: true,
   annotations: readOnly,
   description: `Retrieve streaming output from a Serverless job. The worker must support streaming output. Polls /stream/{jobId} and collects chunks until the status is COMPLETED, FAILED, CANCELLED, or TIMED_OUT, for up to ${formatBudget(STREAM_BUDGET_MS)}. If the budget expires first, returns the chunks collected so far with pollingTimedOut: true — call stream-job again to resume where it left off, or get-job-status to check without streaming.`,
@@ -625,6 +629,7 @@ export const streamJob: CuratedTool = {
 
 export const cancelJob: CuratedTool = {
   name: 'cancel-job',
+  title: 'Cancel job',
   annotations: destructive,
   description: 'Cancel a Serverless job that is queued or in progress.',
   inputSchema: {
@@ -652,6 +657,7 @@ export const cancelJob: CuratedTool = {
 
 export const retryJob: CuratedTool = {
   name: 'retry-job',
+  title: 'Retry job',
   annotations: write,
   description:
     'Retry a failed or timed-out Serverless job. Only works for jobs with FAILED or TIMED_OUT status. The previous output is removed and the job is requeued.',
@@ -680,6 +686,7 @@ export const retryJob: CuratedTool = {
 
 export const endpointHealth: CuratedTool = {
   name: 'endpoint-health',
+  title: 'Get endpoint health',
   annotations: readOnly,
   description:
     "Get the endpoint-level health rollup for a Serverless endpoint: worker counts by state plus job queue statistics. This is the runtime plane's own /health view and it can lag or disagree with the per-worker truth — when a job is stuck IN_QUEUE, prefer list-endpoint-workers over this rollup for per-worker state — but treat neither as the authority on crash loops, because a container failing to start loops while its worker reports RUNNING or THROTTLED and unhealthy stays 0; stream-worker-logs is what settles it, and note that get-job-status already attaches that worker summary and a hint on every IN_QUEUE result. Zero workers here means the endpoint is waiting for GPU capacity.",
@@ -703,6 +710,7 @@ export const endpointHealth: CuratedTool = {
 
 export const purgeEndpointQueue: CuratedTool = {
   name: 'purge-endpoint-queue',
+  title: 'Purge endpoint queue',
   annotations: destructive,
   description:
     'Remove all pending jobs from a Serverless endpoint queue. Only affects queued jobs — in-progress jobs continue running. Use this for error recovery or clearing outdated requests.',

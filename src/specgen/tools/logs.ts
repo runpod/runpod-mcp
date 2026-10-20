@@ -72,6 +72,7 @@ function logParams(args: Record<string, unknown>): LogSnapshotParams {
 
 export const streamPodLogs: CuratedTool = {
   name: 'stream-pod-logs',
+  title: 'Stream Pod logs',
   holdsResponse: true,
   annotations: readOnly,
   description:
@@ -98,6 +99,7 @@ export const streamPodLogs: CuratedTool = {
 
 export const streamWorkerLogs: CuratedTool = {
   name: 'stream-worker-logs',
+  title: 'Stream worker logs',
   holdsResponse: true,
   annotations: readOnly,
   description:

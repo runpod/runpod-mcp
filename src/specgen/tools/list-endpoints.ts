@@ -16,6 +16,7 @@ import { readOnly } from './annotations.js';
 
 export const listEndpoints: CuratedTool = {
   name: 'list-endpoints',
+  title: 'List endpoints',
   annotations: readOnly,
   description:
     'List serverless endpoints owned by the account (trimmed: id, name, image, ' +

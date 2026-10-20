@@ -1,4 +1,4 @@
-// Every tool is listed by name, description and annotations, but a tool
+// Every tool is listed by name, title, description and annotations, but a tool
 // flagged `schemaOnDemand` lists only its call shape: the top-level arguments
 // with their types and a lead sentence each, nested objects collapsed. The
 // full schema is served by describe-tool and still gates every call, so what
@@ -15,6 +15,7 @@ type Schema = Record<string, unknown>;
 
 export interface ListedTool {
   name: string;
+  title: string;
   description: string;
   inputSchema: Schema;
   annotations: Partial<ToolAnnotations>;
@@ -38,12 +39,13 @@ export function listedAnnotations(
 }
 
 export function listTool(tool: ListableTool): ListedTool {
-  const { name, description, inputSchema } = tool;
+  const { name, title, description, inputSchema } = tool;
   const annotations = listedAnnotations(tool.annotations);
   if (!tool.schemaOnDemand)
-    return { name, description, inputSchema, annotations };
+    return { name, title, description, inputSchema, annotations };
   return {
     name,
+    title,
     description: description + ON_DEMAND_POINTER,
     inputSchema: callShape(inputSchema),
     annotations,

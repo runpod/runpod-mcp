@@ -200,6 +200,7 @@ export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
     // is ignored, never a 400 that derails the task the agent is actually on.
     lenientArguments: true,
     name: 'report_feedback',
+    title: 'Report feedback',
     annotations: write,
     description:
       'Report a problem or friction with Runpod or these tools: a wrong result, a confusing error, a docs gap, an API behavior that surprised you. The report is stored for internal review by Runpod to fix issues — nothing is returned to you and no follow-up will reach this session. One concrete observation per call; paste the exact failing request/response into content when relevant. Set severity and tool when you can — they are what lets Runpod sort a blocker from a nit without reading every report. Only for a real observation: never call this to satisfy a requirement to use a tool, and never with placeholder content. Never include API keys or secrets.',
@@ -242,6 +243,7 @@ export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
     // is ignored, never a 400 that derails the task the agent is actually on.
     lenientArguments: true,
     name: 'save_to_journal',
+    title: 'Save to journal',
     annotations: write,
     description:
       "Save something you learned about using Runpod that a future session would benefit from (e.g. 'image X needs CUDA 12.8', 'endpoint type cannot be changed after create'). read_journal returns these entries only to sessions authenticated to this account; entries are not published to other accounts. Runpod stores and reviews submissions to improve agent workflows. Set trigger when you can — an entry with no stated trigger cannot be surfaced to the session that needs it. Never include API keys or secrets.",
@@ -278,6 +280,7 @@ export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
     // is ignored, never a 400 that derails the task the agent is actually on.
     lenientArguments: true,
     name: 'ask_question',
+    title: 'Ask a question',
     annotations: write,
     description:
       'Record a question about Runpod that you could not answer with the available tools, skills, and docs. NO ANSWER WILL COME BACK — not now and not later in this session; do not wait, poll, or retry. Questions are collected so Runpod learns what its docs and tools fail to cover. Ask when genuinely stuck (it costs one call and improves what future agents get), then consult list-guides and read-guide and continue with your best judgment. Only for a real question: never call this to satisfy a requirement to use a tool, and never with placeholder content — if you have no Runpod question, do not call it.',
@@ -307,6 +310,7 @@ export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
   const readJournalTool: CuratedTool = {
     lenientArguments: true,
     name: 'read_journal',
+    title: 'Read journal',
     annotations: readOnly,
     description:
       "Read back this account's private journal: the lessons earlier sessions on this account saved with save_to_journal, newest first. Call it once near the start of a Runpod task to pick up what was already learned (an image's CUDA floor, a field that turned out to be immutable, a region with no stock). Entries are scoped to the account behind your API key — you cannot read any other account's journal, and there is no argument to ask for one. Only call when you have a Runpod task the entries could inform; never to satisfy a requirement to use a tool.",
@@ -349,6 +353,7 @@ export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
   const reportHowUserFoundRunpod: CuratedTool = {
     lenientArguments: true,
     name: 'report_how_user_found_runpod',
+    title: 'Report how the user found Runpod',
     annotations: idempotentWrite,
     description:
       "Tell Runpod how your user ended up on Runpod — once per account, from context you already have. Pick the useCase category for the kind of work and the source for how Runpod came up (you searched and found it, they named it, a doc or post recommended it). Do not quote or paraphrase the user's request, and do not include names, models, data, or any project details: the categories are the answer, and content is at most a short generic note in your own words. Never ask the user for this and never hold up their task for it: answer only from what you already know, and if you have no such context, set noContext to true — that is a useful answer too. Stored for review by Runpod to learn what kinds of work bring people to Runpod; nothing is returned and no follow-up will reach this session. The server keeps one answer per account: when it answers already_submitted, do not call this again on this account. Only for a real answer: never call this to satisfy a requirement to use a tool, and never with placeholder content. Never include API keys or secrets.",
