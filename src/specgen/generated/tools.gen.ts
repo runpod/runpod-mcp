@@ -59,6 +59,7 @@ export const generatedTools: GeneratedTool[] = [
       properties: {
         body: {
           $ref: '#/$defs/CreateClusterRequest',
+          type: 'object',
         },
       },
       required: ['body'],
@@ -366,6 +367,7 @@ export const generatedTools: GeneratedTool[] = [
       properties: {
         body: {
           $ref: '#/$defs/CreateEndpointRequest',
+          type: 'object',
         },
       },
       required: ['body'],
@@ -956,6 +958,7 @@ export const generatedTools: GeneratedTool[] = [
       properties: {
         body: {
           $ref: '#/$defs/CreatePodRequest',
+          type: 'object',
         },
       },
       required: ['body'],
@@ -1469,6 +1472,7 @@ export const generatedTools: GeneratedTool[] = [
       properties: {
         body: {
           $ref: '#/$defs/CreateTemplateRequest',
+          type: 'object',
         },
       },
       required: ['body'],
@@ -3994,6 +3998,7 @@ export const generatedTools: GeneratedTool[] = [
         },
         body: {
           $ref: '#/$defs/UpdateEndpointRequest',
+          type: 'object',
         },
       },
       required: ['id', 'body'],
@@ -4528,6 +4533,7 @@ export const generatedTools: GeneratedTool[] = [
         },
         body: {
           $ref: '#/$defs/UpdatePodRequest',
+          type: 'object',
         },
       },
       required: ['id', 'body'],
@@ -4898,6 +4904,7 @@ export const generatedTools: GeneratedTool[] = [
         },
         body: {
           $ref: '#/$defs/UpdateTemplateRequest',
+          type: 'object',
         },
       },
       required: ['id', 'body'],

@@ -407,10 +407,17 @@ test('the served tool surface stays within its byte budgets', () => {
 
 // Directory reviews read each top-level argument's type without following
 // $ref, and flag an argument that has none.
+// Both profiles: the default lists call shapes for schemaOnDemand tools, the
+// directory lists every full schema.
 test('every top-level argument declares a type', () => {
-  const untyped = [...stdioCuratedTools, ...generatedTools].flatMap((tool) =>
+  const tools = [...stdioCuratedTools, ...generatedTools];
+  const listed = [
+    ...tools.map((tool) => listTool(tool)),
+    ...tools.map((tool) => listTool(tool, 'directory')),
+  ];
+  const untyped = listed.flatMap((tool) =>
     Object.entries(
-      (listTool(tool).inputSchema.properties ?? {}) as Record<
+      (tool.inputSchema.properties ?? {}) as Record<
         string,
         Record<string, unknown>
       >

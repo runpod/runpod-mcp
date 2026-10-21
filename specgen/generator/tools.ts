@@ -422,14 +422,13 @@ function buildTool(
   }
   // A top-level argument that is a bare $ref carries no type of its own.
   // Directory reviews read each argument's type at the top level and flag the
-  // bare ref, so copy the referenced definition's type alongside it.
+  // bare ref, so copy the referenced definition's type alongside it (an
+  // allOf composition takes the type its members declare).
   for (const property of Object.values(properties)) {
     const schema = property as Record<string, unknown>;
     if (typeof schema.$ref !== 'string' || 'type' in schema) continue;
-    const def = defs[schema.$ref.split('/').pop() ?? ''] as
-      | Record<string, unknown>
-      | undefined;
-    if (def && 'type' in def) schema.type = def.type;
+    const type = defType(schema, defs);
+    if (type !== undefined) schema.type = type;
   }
   const $defs = reachableDefs({ type: 'object', properties }, defs);
   const name = toolName(op.operationId, config);
@@ -551,4 +550,29 @@ export function generateTools(
       `Property description overrides missing from spec: ${unmatchedOverrides.sort().join(', ')}`
     );
   return tools.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// The type a schema resolves to, following $ref and allOf. Request bodies are
+// often an allOf of a shared base and per-operation fields, with no type on the
+// composition itself.
+function defType(
+  schema: Record<string, unknown>,
+  defs: Record<string, unknown>,
+  seen = new Set<string>()
+): unknown {
+  if ('type' in schema) return schema.type;
+  if (typeof schema.$ref === 'string') {
+    const name = schema.$ref.split('/').pop() ?? '';
+    const def = defs[name] as Record<string, unknown> | undefined;
+    if (!def || seen.has(name)) return undefined;
+    seen.add(name);
+    return defType(def, defs, seen);
+  }
+  if (Array.isArray(schema.allOf))
+    for (const member of schema.allOf as Record<string, unknown>[]) {
+      const type = defType(member, defs, seen);
+      if (type !== undefined) return type;
+    }
+  if (schema.properties) return 'object';
+  return undefined;
 }
