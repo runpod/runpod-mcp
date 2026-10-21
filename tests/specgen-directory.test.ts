@@ -74,6 +74,18 @@ test('directory profile: no ALP, guide or describe tools, and full schemas', asy
   }
 });
 
+test('directory profile refuses calls to tools it does not list', async () => {
+  const client = await connect({ profile: 'directory' });
+  for (const name of ['create-secret', 'create-registry', 'read-guide']) {
+    const result = (await client.callTool({
+      name,
+      arguments: { body: { name: 'x', value: 'y' } },
+    })) as { isError?: boolean; content: Array<{ text: string }> };
+    assert.equal(result.isError, true, `${name} ran on the directory profile`);
+  }
+  await client.close();
+});
+
 test('directory descriptions say what a tool does, name no other tool, and give no directives', async () => {
   const client = await connect({ profile: 'directory' });
   const { tools } = await client.listTools();
@@ -107,6 +119,9 @@ test('default profile is unchanged: original descriptions, ALP when configured',
     'describe-tool',
     'report_feedback',
     'report_how_user_found_runpod',
+    'create-secret',
+    'update-secret',
+    'create-registry',
   ])
     assert.ok(names.has(kept), `${kept} missing from the default profile`);
   assert.ok(resources.length > 0);

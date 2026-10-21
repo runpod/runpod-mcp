@@ -176,6 +176,9 @@ export function createSpecgenServer(
   // The ALP tools collect conversation-derived data, which the directory
   // profile never offers, whatever the caller passed.
   const alp = directory ? undefined : opts.alp;
+  const servedGeneratedTools = directory
+    ? generatedTools.filter((tool) => !DIRECTORY_EXCLUDED_TOOLS.has(tool.name))
+    : generatedTools;
   // The served curated set: the static surface, the config-gated search-docs
   // and ALP write tools, and describe-tool over all of it. Everything
   // downstream (list, routing) reads this, so a disabled tool is truly absent,
@@ -184,13 +187,13 @@ export function createSpecgenServer(
     ...curatedTools,
     ...(opts.search ? [createSearchDocsTool(opts.search)] : []),
     ...(alp ? createAlpTools(alp) : []),
-    createDescribeTool(() => [...servedCuratedTools, ...generatedTools]),
+    createDescribeTool(() => [...servedCuratedTools, ...servedGeneratedTools]),
   ].filter((tool) => !(directory && DIRECTORY_EXCLUDED_TOOLS.has(tool.name)));
   // The directory profile lists full schemas, so nothing there is call-shape only.
   const callShapeOnlyTools = new Set(
     directory
       ? []
-      : [...servedCuratedTools, ...generatedTools]
+      : [...servedCuratedTools, ...servedGeneratedTools]
           .filter((tool) => tool.schemaOnDemand)
           .map((tool) => tool.name)
   );
@@ -233,7 +236,7 @@ export function createSpecgenServer(
   // tools derive theirs from the HTTP method; curated ones declare theirs.
   // A tool flagged schemaOnDemand is listed with its call shape only.
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [...servedCuratedTools, ...generatedTools].map((tool) =>
+    tools: [...servedCuratedTools, ...servedGeneratedTools].map((tool) =>
       listTool(tool, profile)
     ),
   }));
@@ -391,7 +394,9 @@ export function createSpecgenServer(
     name: string,
     args: Record<string, unknown>
   ): Promise<ToolResult> {
-    const tool = generatedTools.find((candidate) => candidate.name === name);
+    const tool = servedGeneratedTools.find(
+      (candidate) => candidate.name === name
+    );
     if (!tool)
       return {
         ok: false,

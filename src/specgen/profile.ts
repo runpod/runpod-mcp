@@ -9,13 +9,19 @@ export type ServerProfile = 'default' | 'directory';
 
 export const DIRECTORY_PATH = '/directory';
 
-/** Tools left out of the directory profile: the bundled guides are behavioral
- *  instructions for the model (playbooks), and describe-tool exists only to
- *  serve schemas the directory profile already lists in full. */
+/** Tools left out of the directory profile:
+ *  - the bundled guides are behavioral instructions for the model (playbooks);
+ *  - describe-tool exists only to serve schemas the directory profile already
+ *    lists in full, and directories reject schema fetching;
+ *  - create-secret, update-secret and create-registry take a secret or a
+ *    password as input, which OpenAI's directory forbids collecting. */
 export const DIRECTORY_EXCLUDED_TOOLS: ReadonlySet<string> = new Set([
   'list-guides',
   'read-guide',
   'describe-tool',
+  'create-secret',
+  'update-secret',
+  'create-registry',
 ]);
 
 export function profileForPath(pathname: string): ServerProfile {
