@@ -1,6 +1,7 @@
 # Alerts when the vendored OpenAPI spec no longer matches what the production
-# API serves — the signal that `specgen/spec/openapi.yaml` needs a re-vendor
-# and `pnpm generate:tools` a re-run (see specgen/README.md).
+# API serves — the signal that `packages/typescript-api-sdk/spec/openapi.yaml`
+# needs a re-vendor (`pnpm spec:pull`) and `pnpm generate` a re-run (see
+# specgen/README.md).
 #
 # Runs daily, on demand, and on every PR — any PR shows at a glance whether
 # the vendored spec is current. It reports as its own check (spec-drift), so
@@ -35,7 +36,11 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
       - run: pnpm install --frozen-lockfile
+      - run: python -m pip install -r packages/typescript-api-sdk/scripts/requirements.txt
       - name: Compare vendored spec against the live production spec
         run: pnpm spec:check
 

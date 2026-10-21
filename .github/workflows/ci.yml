@@ -50,8 +50,20 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: "pnpm"
 
+      # The spec drift check and its tests run the live spec through the SDK's
+      # patch layer (packages/typescript-api-sdk/scripts/fix_spec.py).
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Installing also builds packages/typescript-api-sdk (its `prepare`
+      # script), which everything below imports.
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Install the spec patch layer's Python dependencies
+        run: python -m pip install -r packages/typescript-api-sdk/scripts/requirements.txt
 
       - name: Check generated tools are current
         run: pnpm generate:check
@@ -94,11 +106,52 @@ jobs:
         if: runner.os != 'Windows'
         run: pnpm run build
 
+  # The published @runpod/typescript-api-sdk package. Its engines field allows
+  # Node 20+, so each supported major is checked.
+  sdk:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22, 24]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "pnpm"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install the spec patch layer's Python dependencies
+        run: python -m pip install -r packages/typescript-api-sdk/scripts/requirements.txt
+
+      # Generated schema freshness, patch layer, query contract, typecheck,
+      # unit tests, packed-package contents, and examples.
+      - name: SDK checks
+        run: pnpm sdk:check
+
   report-spec-update:
     # A workflow_dispatch job's own checks are not attached to the PR. Publish
     # the matrix result as a commit status on the PR head instead.
     if: always() && github.event_name == 'workflow_dispatch' && inputs.update_pr_head_sha != ''
-    needs: test
+    needs: [test, sdk]
     runs-on: ubuntu-latest
     permissions:
       statuses: write
@@ -108,7 +161,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           HEAD_SHA: ${{ inputs.update_pr_head_sha }}
-          MATRIX_RESULT: ${{ needs.test.result }}
+          MATRIX_RESULT: ${{ needs.test.result == 'success' && needs.sdk.result == 'success' && 'success' || 'failure' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           if [ "$MATRIX_RESULT" = success ]; then
