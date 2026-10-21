@@ -140,7 +140,7 @@ jobs:
             fi
             if [ "$KNOWLEDGE" = true ]; then
               # shellcheck disable=SC2016
-              printf 'Update `@runpod/plugin-knowledge` from %s to %s, so `list-guides` and `read-guide` serve the latest plugin guides.\n' "$KNOWLEDGE_BEFORE" "$KNOWLEDGE_AFTER"
+              printf 'Update `@runpod/plugin-knowledge` from %s to %s, so `list-guides` and `read-guide` serve the latest plugin guides.\n' "${KNOWLEDGE_BEFORE#^}" "${KNOWLEDGE_AFTER#^}"
             fi
             printf '\nUpdate run: %s\n' "$RUN_URL"
           } > .changeset/production-spec-update.md
@@ -272,7 +272,7 @@ jobs:
 
             If validation failed, read the run log. A new upstream operation must be generated or excluded with a reason (see `specgen/README.md`). Push the fix onto this branch.
 
-            The changeset is a minor bump when the spec or SDK changed and a patch bump for a knowledge-only update. Edit it to describe the tool changes before merging. CI is dispatched on this branch because PRs opened by the Actions token do not trigger it.
+            The changeset is a minor bump when the spec or SDK changed and a patch bump for a knowledge-only update. Edit it to describe the user-facing changes before merging. CI is dispatched on this branch because PRs opened by the Actions token do not trigger it.
 
             The workflow runs daily. While this branch has only bot commits, each run regenerates it from main. Once a person edits it, runs leave it alone and comment when production moves again. Updates resume after the PR merges.
       - name: Sync draft state with validation
