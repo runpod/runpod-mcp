@@ -113,7 +113,10 @@ test('spec-check CLI distinguishes network failures from drift and invalid specs
   const { parse } = await import('yaml');
   const cwd = new URL('../', import.meta.url);
   const spec = parse(
-    readFileSync(new URL('specgen/spec/openapi.yaml', cwd), 'utf8')
+    readFileSync(
+      new URL('packages/typescript-api-sdk/spec/openapi.yaml', cwd),
+      'utf8'
+    )
   );
   for (const mode of ['reset', 'partial', '503', 'match', 'drift', 'invalid']) {
     await t.test(mode, async () => {

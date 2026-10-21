@@ -1,4 +1,4 @@
-// Code generated from specgen/spec/openapi.yaml by specgen/generator/generate-tools.ts; DO NOT EDIT.
+// Code generated from packages/typescript-api-sdk/spec/openapi.yaml by specgen/generator/generate-tools.ts; DO NOT EDIT.
 
 export interface GeneratedToolParam {
   name: string;
@@ -111,7 +111,7 @@ export const generatedTools: GeneratedTool[] = [
               description: 'Environment variables as key-value pairs',
               examples: [
                 {
-                  JUPYTER_PASSWORD: 'hunter2',
+                  JUPYTER_PASSWORD: 'changeme',
                 },
               ],
             },
@@ -330,7 +330,7 @@ export const generatedTools: GeneratedTool[] = [
               type: 'string',
               description: 'ECR resource ARN',
               examples: [
-                'arn:aws:ecr:us-east-2:418399314813:repository/runpod/deployment',
+                'arn:aws:ecr:us-east-2:123456789012:repository/runpod/deployment',
               ],
             },
             name: {
@@ -419,7 +419,7 @@ export const generatedTools: GeneratedTool[] = [
               description: 'Environment variables as key-value pairs',
               examples: [
                 {
-                  JUPYTER_PASSWORD: 'hunter2',
+                  JUPYTER_PASSWORD: 'changeme',
                 },
               ],
             },
@@ -683,7 +683,7 @@ export const generatedTools: GeneratedTool[] = [
           required: ['volumeId'],
           additionalProperties: false,
           description:
-            'A volume mounted on every worker, always at `/runpod-volume`. Custom paths are not supported yet.',
+            'A volume mounted on every worker, always at `/runpod-volume`.',
           properties: {
             volumeId: {
               type: 'string',
@@ -737,8 +737,7 @@ export const generatedTools: GeneratedTool[] = [
         EndpointType: {
           type: 'string',
           description:
-            'Request-routing semantics for a modern serverless endpoint. `QUEUE` — submit asynchronous or synchronous jobs through the managed queue. `LOAD_BALANCER` — send requests directly to worker-defined HTTP paths.',
-          'x-enum-varnames': ['EndpointTypeQueue', 'EndpointTypeLoadBalancer'],
+            'Request-routing semantics for a serverless endpoint. `QUEUE` — submit asynchronous or synchronous jobs through the managed queue. `LOAD_BALANCER` — send requests directly to worker-defined HTTP paths.',
           enum: ['QUEUE', 'LOAD_BALANCER'],
         },
         EndpointWorkers: {
@@ -1009,7 +1008,7 @@ export const generatedTools: GeneratedTool[] = [
               description: 'Environment variables as key-value pairs',
               examples: [
                 {
-                  JUPYTER_PASSWORD: 'hunter2',
+                  JUPYTER_PASSWORD: 'changeme',
                 },
               ],
             },
@@ -1168,7 +1167,7 @@ export const generatedTools: GeneratedTool[] = [
               type: 'object',
               required: ['name'],
               description:
-                'Request body for creating a pod. Exactly one of `gpu` or `cpu` must be set — enforced at the handler layer.',
+                "Request body for creating a pod. Exactly one of `gpu` or `cpu` must be set. For CPU pods, memory is derived by the API from the selected flavor's RAM multiplier; clients provide only CPU flavor and vCPU count.",
               properties: {
                 name: {
                   type: 'string',
@@ -1200,7 +1199,7 @@ export const generatedTools: GeneratedTool[] = [
                   type: 'boolean',
                   default: false,
                   description:
-                    'Enable global networking, giving the pod a private IP reachable across data centers. Requires an NVIDIA GPU and a global-networking-enabled data center (both enforced upstream).',
+                    'Enable global networking, giving the pod a private IP reachable across data centers. Requires an NVIDIA GPU and a global-networking-enabled data center. See `list-data-centers` (`globalNetwork`) for eligible data centers.',
                   examples: [false],
                 },
                 gpu: {
@@ -1523,7 +1522,7 @@ export const generatedTools: GeneratedTool[] = [
               description: 'Environment variables as key-value pairs',
               examples: [
                 {
-                  JUPYTER_PASSWORD: 'hunter2',
+                  JUPYTER_PASSWORD: 'changeme',
                 },
               ],
             },
@@ -2009,7 +2008,7 @@ export const generatedTools: GeneratedTool[] = [
             $ref: '#/$defs/CatalogInclude',
           },
           description:
-            'Comma-separated optional expansions. Supported value today: AVAILABILITY. This may expand with more include values in the future.',
+            'Comma-separated optional expansions; see `CatalogInclude` for the supported values.',
         },
         product: {
           type: 'array',
@@ -2032,7 +2031,7 @@ export const generatedTools: GeneratedTool[] = [
         CatalogInclude: {
           type: 'string',
           description:
-            'Catalog include expansion. Only AVAILABILITY is supported today; additional include values may be added in the future.',
+            'Catalog include expansion. `AVAILABILITY` is the only supported value.',
           enum: ['AVAILABILITY'],
         },
         CpuProduct: {
@@ -2266,7 +2265,7 @@ export const generatedTools: GeneratedTool[] = [
             $ref: '#/$defs/CatalogInclude',
           },
           description:
-            'Comma-separated optional expansions. Supported value today: AVAILABILITY. This may expand with more include values in the future.',
+            'Comma-separated optional expansions; see `CatalogInclude` for the supported values.',
         },
         product: {
           type: 'array',
@@ -2319,7 +2318,7 @@ export const generatedTools: GeneratedTool[] = [
         CatalogInclude: {
           type: 'string',
           description:
-            'Catalog include expansion. Only AVAILABILITY is supported today; additional include values may be added in the future.',
+            'Catalog include expansion. `AVAILABILITY` is the only supported value.',
           enum: ['AVAILABILITY'],
         },
         GpuCloudFilter: {
@@ -2699,13 +2698,6 @@ export const generatedTools: GeneratedTool[] = [
         BillingBucketSize: {
           type: 'string',
           enum: ['hour', 'day', 'week', 'month', 'year'],
-          'x-enum-varnames': [
-            'BillingBucketSizeHour',
-            'BillingBucketSizeDay',
-            'BillingBucketSizeWeek',
-            'BillingBucketSizeMonth',
-            'BillingBucketSizeYear',
-          ],
           default: 'day',
           description: 'Length of each billing time bucket.',
           examples: ['day'],
@@ -2785,13 +2777,6 @@ export const generatedTools: GeneratedTool[] = [
         BillingBucketSize: {
           type: 'string',
           enum: ['hour', 'day', 'week', 'month', 'year'],
-          'x-enum-varnames': [
-            'BillingBucketSizeHour',
-            'BillingBucketSizeDay',
-            'BillingBucketSizeWeek',
-            'BillingBucketSizeMonth',
-            'BillingBucketSizeYear',
-          ],
           default: 'day',
           description: 'Length of each billing time bucket.',
           examples: ['day'],
@@ -2915,7 +2900,7 @@ export const generatedTools: GeneratedTool[] = [
             $ref: '#/$defs/CatalogInclude',
           },
           description:
-            'Comma-separated optional expansions. Supported value today: AVAILABILITY. This may expand with more include values in the future.',
+            'Comma-separated optional expansions; see `CatalogInclude` for the supported values.',
         },
         product: {
           type: 'array',
@@ -2937,7 +2922,7 @@ export const generatedTools: GeneratedTool[] = [
         CatalogInclude: {
           type: 'string',
           description:
-            'Catalog include expansion. Only AVAILABILITY is supported today; additional include values may be added in the future.',
+            'Catalog include expansion. `AVAILABILITY` is the only supported value.',
           enum: ['AVAILABILITY'],
         },
         CpuProduct: {
@@ -3167,13 +3152,6 @@ export const generatedTools: GeneratedTool[] = [
         BillingBucketSize: {
           type: 'string',
           enum: ['hour', 'day', 'week', 'month', 'year'],
-          'x-enum-varnames': [
-            'BillingBucketSizeHour',
-            'BillingBucketSizeDay',
-            'BillingBucketSizeWeek',
-            'BillingBucketSizeMonth',
-            'BillingBucketSizeYear',
-          ],
           default: 'day',
           description: 'Length of each billing time bucket.',
           examples: ['day'],
@@ -3419,7 +3397,7 @@ export const generatedTools: GeneratedTool[] = [
             $ref: '#/$defs/CatalogInclude',
           },
           description:
-            'Comma-separated optional expansions. Supported value today: AVAILABILITY. This may expand with more include values in the future.',
+            'Comma-separated optional expansions; see `CatalogInclude` for the supported values.',
         },
         product: {
           type: 'array',
@@ -3471,7 +3449,7 @@ export const generatedTools: GeneratedTool[] = [
         CatalogInclude: {
           type: 'string',
           description:
-            'Catalog include expansion. Only AVAILABILITY is supported today; additional include values may be added in the future.',
+            'Catalog include expansion. `AVAILABILITY` is the only supported value.',
           enum: ['AVAILABILITY'],
         },
         GpuCloudFilter: {
@@ -3560,13 +3538,6 @@ export const generatedTools: GeneratedTool[] = [
         BillingBucketSize: {
           type: 'string',
           enum: ['hour', 'day', 'week', 'month', 'year'],
-          'x-enum-varnames': [
-            'BillingBucketSizeHour',
-            'BillingBucketSizeDay',
-            'BillingBucketSizeWeek',
-            'BillingBucketSizeMonth',
-            'BillingBucketSizeYear',
-          ],
           default: 'day',
           description: 'Length of each billing time bucket.',
           examples: ['day'],
@@ -3689,13 +3660,6 @@ export const generatedTools: GeneratedTool[] = [
         BillingBucketSize: {
           type: 'string',
           enum: ['hour', 'day', 'week', 'month', 'year'],
-          'x-enum-varnames': [
-            'BillingBucketSizeHour',
-            'BillingBucketSizeDay',
-            'BillingBucketSizeWeek',
-            'BillingBucketSizeMonth',
-            'BillingBucketSizeYear',
-          ],
           default: 'day',
           description: 'Length of each billing time bucket.',
           examples: ['day'],
@@ -3917,13 +3881,6 @@ export const generatedTools: GeneratedTool[] = [
         BillingBucketSize: {
           type: 'string',
           enum: ['hour', 'day', 'week', 'month', 'year'],
-          'x-enum-varnames': [
-            'BillingBucketSizeHour',
-            'BillingBucketSizeDay',
-            'BillingBucketSizeWeek',
-            'BillingBucketSizeMonth',
-            'BillingBucketSizeYear',
-          ],
           default: 'day',
           description: 'Length of each billing time bucket.',
           examples: ['day'],
@@ -4150,7 +4107,7 @@ export const generatedTools: GeneratedTool[] = [
               description: 'Environment variables as key-value pairs',
               examples: [
                 {
-                  JUPYTER_PASSWORD: 'hunter2',
+                  JUPYTER_PASSWORD: 'changeme',
                 },
               ],
             },
@@ -4253,7 +4210,7 @@ export const generatedTools: GeneratedTool[] = [
           required: ['volumeId'],
           additionalProperties: false,
           description:
-            'A volume mounted on every worker, always at `/runpod-volume`. Custom paths are not supported yet.',
+            'A volume mounted on every worker, always at `/runpod-volume`.',
           properties: {
             volumeId: {
               type: 'string',
@@ -4684,7 +4641,7 @@ export const generatedTools: GeneratedTool[] = [
               description: 'Environment variables as key-value pairs',
               examples: [
                 {
-                  JUPYTER_PASSWORD: 'hunter2',
+                  JUPYTER_PASSWORD: 'changeme',
                 },
               ],
             },
@@ -4834,7 +4791,7 @@ export const generatedTools: GeneratedTool[] = [
                 globalNetworking: {
                   type: 'boolean',
                   description:
-                    'Enable (true) or disable (false) global networking. Takes effect on the next pod start/restart, not live. Requires an NVIDIA GPU and a global-networking-enabled data center (both enforced upstream).',
+                    'Enable (true) or disable (false) global networking. Takes effect on the next pod start/restart, not live. Requires an NVIDIA GPU and a global-networking-enabled data center.',
                 },
                 locked: {
                   type: 'boolean',
@@ -5055,7 +5012,7 @@ export const generatedTools: GeneratedTool[] = [
               description: 'Environment variables as key-value pairs',
               examples: [
                 {
-                  JUPYTER_PASSWORD: 'hunter2',
+                  JUPYTER_PASSWORD: 'changeme',
                 },
               ],
             },

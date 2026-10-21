@@ -51,7 +51,7 @@ def sync(url, destination, check=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", default=PRODUCTION_URL)
+    parser.add_argument("--url", default=os.environ.get("SPEC_URL") or PRODUCTION_URL)
     parser.add_argument("--spec", type=Path, default=ROOT / "spec/openapi.yaml")
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()

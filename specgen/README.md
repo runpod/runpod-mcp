@@ -12,7 +12,9 @@ resources. The only intended difference is wait budgets: 45 s hosted
 ## Layout
 
 ```
-specgen/spec/openapi.yaml       vendored v2 OpenAPI document (production generation)
+packages/typescript-api-sdk/spec/openapi.yaml
+                                vendored v2 OpenAPI document (production generation,
+                                after the SDK's patch layer) — shared with the SDK
 specgen/generator-config.yaml   exclusions / renames / description overrides
 specgen/generator/              the generator (pnpm generate:tools)
 specgen/old-mcp-tools.yaml      54-tool parity manifest vs. the old surface
@@ -24,9 +26,12 @@ src/specgen/ops.ts              tool-call logging + the rate-limit stub seam
 
 ## REST client dependency
 
-The management API client comes from
+The management API client is
 [`@runpod/typescript-api-sdk`](https://www.npmjs.com/package/@runpod/typescript-api-sdk),
-installed from npm and bundled into both MCP entrypoints. Node.js 20+ is required.
+which lives in this repository at `packages/typescript-api-sdk/`. The MCP takes it
+as a `workspace:*` dependency and bundles it into both entrypoints, so an SDK change
+reaches the MCP in the same PR, without a publish in between. The SDK is still
+published to npm on its own for other consumers. Node.js 20+ is required.
 Each tool context creates its own client with the caller's API key and tracking
 headers. The SDK owns retries, the whole-request deadline, and SSE event parsing;
 MCP owns bounded log snapshots, agent-facing error hints, and the separate
@@ -37,14 +42,22 @@ Serverless runtime and GraphQL clients.
 ```bash
 pnpm spec:pull         # re-vendor the spec (production; SPEC_URL=... overrides)
 pnpm spec:check        # diff the vendored spec against the live one
-pnpm generate:tools    # regenerate src/specgen/generated/tools.gen.ts
+pnpm generate          # regenerate the SDK schema and src/specgen/generated/tools.gen.ts
+pnpm generate:tools    # regenerate only the tools
 pnpm test              # includes the specgen drift gates
+pnpm sdk:check         # the SDK package's own checks
 ```
 
-New API endpoint: pull the unmodified production spec, then
-`pnpm generate:tools`. The gates fail if an operation is neither generated nor
-excluded with a reason, if a curated replacement disappears, or if the old
-54-tool surface loses a mapping.
+`spec:pull` and `spec:check` need Python 3 with PyYAML
+(`pip install -r packages/typescript-api-sdk/scripts/requirements.txt`; set
+`PYTHON` to choose the interpreter). The pull runs the production spec through
+the SDK's patch layer (`packages/typescript-api-sdk/scripts/fix_spec.py`), which
+fixes known spec errors and scrubs values that must not ship, such as real AWS
+account IDs. Fix the spec there, never by hand-editing the vendored file.
+
+New API endpoint: `pnpm spec:pull`, then `pnpm generate`. The gates fail if an
+operation is neither generated nor excluded with a reason, if a curated
+replacement disappears, or if the old 54-tool surface loses a mapping.
 
 ## Playbooks over MCP
 
