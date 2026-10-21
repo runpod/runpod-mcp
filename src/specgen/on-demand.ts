@@ -18,7 +18,7 @@ export interface ListedTool {
   title: string;
   description: string;
   inputSchema: Schema;
-  annotations: Partial<ToolAnnotations>;
+  annotations: Partial<ToolAnnotations> & { title?: string };
 }
 
 export interface ListableTool extends ListedTool {
@@ -38,9 +38,12 @@ export function listedAnnotations(
   return idempotentHint ? annotations : listed;
 }
 
+// The title is sent twice: top level per the current MCP spec, and as
+// annotations.title, where earlier spec revisions put it and where directory
+// reviews still look for it.
 export function listTool(tool: ListableTool): ListedTool {
   const { name, title, description, inputSchema } = tool;
-  const annotations = listedAnnotations(tool.annotations);
+  const annotations = { title, ...listedAnnotations(tool.annotations) };
   if (!tool.schemaOnDemand)
     return { name, title, description, inputSchema, annotations };
   return {

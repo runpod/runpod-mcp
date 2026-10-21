@@ -79,7 +79,10 @@ test('listTool passes ordinary tools through and shortens flagged ones with a po
     inputSchema: full,
     annotations,
   };
-  const served = { ...tool, annotations: listedAnnotations(annotations) };
+  const served = {
+    ...tool,
+    annotations: { title: 'X', ...listedAnnotations(annotations) },
+  };
   assert.deepEqual(listTool(tool), served);
   const listed = listTool({ ...tool, schemaOnDemand: true });
   assert.ok(listed.description.startsWith('Does x. '));

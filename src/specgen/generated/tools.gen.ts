@@ -311,6 +311,7 @@ export const generatedTools: GeneratedTool[] = [
       properties: {
         body: {
           $ref: '#/$defs/CreateDelegationRequest',
+          type: 'object',
         },
       },
       required: ['body'],
@@ -832,6 +833,7 @@ export const generatedTools: GeneratedTool[] = [
       properties: {
         body: {
           $ref: '#/$defs/CreateGlobalVolumeRequest',
+          type: 'object',
         },
       },
       required: ['body'],
@@ -876,6 +878,7 @@ export const generatedTools: GeneratedTool[] = [
       properties: {
         body: {
           $ref: '#/$defs/CreateNetworkVolumeRequest',
+          type: 'object',
         },
       },
       required: ['body'],
@@ -1341,6 +1344,7 @@ export const generatedTools: GeneratedTool[] = [
       properties: {
         body: {
           $ref: '#/$defs/CreateRegistryRequest',
+          type: 'object',
         },
       },
       required: ['body'],
@@ -1397,6 +1401,7 @@ export const generatedTools: GeneratedTool[] = [
       properties: {
         body: {
           $ref: '#/$defs/CreateSecretRequest',
+          type: 'object',
         },
       },
       required: ['body'],
@@ -2261,6 +2266,7 @@ export const generatedTools: GeneratedTool[] = [
           $ref: '#/$defs/GpuCloudFilter',
           description:
             'Cloud type for availability and lowest-price calculations. Valid only with include=AVAILABILITY. Supported values: SECURE, COMMUNITY. Upstream default when omitted: SECURE.',
+          type: 'string',
         },
         countryCodes: {
           type: 'array',
@@ -2558,6 +2564,7 @@ export const generatedTools: GeneratedTool[] = [
         bucketSize: {
           $ref: '#/$defs/BillingBucketSize',
           description: 'Length of each billing time bucket. Defaults to day.',
+          type: 'string',
         },
         lastN: {
           type: 'integer',
@@ -2639,6 +2646,7 @@ export const generatedTools: GeneratedTool[] = [
         bucketSize: {
           $ref: '#/$defs/BillingBucketSize',
           description: 'Length of each billing time bucket. Defaults to day.',
+          type: 'string',
         },
         lastN: {
           type: 'integer',
@@ -3024,6 +3032,7 @@ export const generatedTools: GeneratedTool[] = [
         bucketSize: {
           $ref: '#/$defs/BillingBucketSize',
           description: 'Length of each billing time bucket. Defaults to day.',
+          type: 'string',
         },
         lastN: {
           type: 'integer',
@@ -3309,6 +3318,7 @@ export const generatedTools: GeneratedTool[] = [
           $ref: '#/$defs/GpuCloudFilter',
           description:
             'Cloud type for availability and lowest-price calculations. Valid only with include=AVAILABILITY. Supported values: SECURE, COMMUNITY. Upstream default when omitted: SECURE.',
+          type: 'string',
         },
         countryCodes: {
           type: 'array',
@@ -3411,6 +3421,7 @@ export const generatedTools: GeneratedTool[] = [
         bucketSize: {
           $ref: '#/$defs/BillingBucketSize',
           description: 'Length of each billing time bucket. Defaults to day.',
+          type: 'string',
         },
         lastN: {
           type: 'integer',
@@ -3539,6 +3550,7 @@ export const generatedTools: GeneratedTool[] = [
         bucketSize: {
           $ref: '#/$defs/BillingBucketSize',
           description: 'Length of each billing time bucket. Defaults to day.',
+          type: 'string',
         },
         lastN: {
           type: 'integer',
@@ -3764,6 +3776,7 @@ export const generatedTools: GeneratedTool[] = [
         bucketSize: {
           $ref: '#/$defs/BillingBucketSize',
           description: 'Length of each billing time bucket. Defaults to day.',
+          type: 'string',
         },
         lastN: {
           type: 'integer',
@@ -3823,6 +3836,7 @@ export const generatedTools: GeneratedTool[] = [
         },
         body: {
           $ref: '#/$defs/PodActionRequest',
+          type: 'object',
         },
       },
       required: ['id', 'body'],
@@ -3905,6 +3919,7 @@ export const generatedTools: GeneratedTool[] = [
         },
         body: {
           $ref: '#/$defs/UpdateClusterRequest',
+          type: 'object',
         },
       },
       required: ['id', 'body'],
@@ -4373,6 +4388,7 @@ export const generatedTools: GeneratedTool[] = [
         },
         body: {
           $ref: '#/$defs/UpdateGlobalVolumeRequest',
+          type: 'object',
         },
       },
       required: ['id', 'body'],
@@ -4428,6 +4444,7 @@ export const generatedTools: GeneratedTool[] = [
         },
         body: {
           $ref: '#/$defs/UpdateNetworkVolumeRequest',
+          type: 'object',
         },
       },
       required: ['id', 'body'],
@@ -4749,6 +4766,7 @@ export const generatedTools: GeneratedTool[] = [
         },
         body: {
           $ref: '#/$defs/UpdateSecretRequest',
+          type: 'object',
         },
       },
       required: ['id', 'body'],
@@ -4799,6 +4817,7 @@ export const generatedTools: GeneratedTool[] = [
       properties: {
         body: {
           $ref: '#/$defs/UpdateSshKeysRequest',
+          type: 'object',
         },
       },
       required: ['body'],

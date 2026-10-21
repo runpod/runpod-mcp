@@ -417,6 +417,17 @@ function buildTool(
     );
     if (requestBody?.required) required.push('body');
   }
+  // A top-level argument that is a bare $ref carries no type of its own.
+  // Directory reviews read each argument's type at the top level and flag the
+  // bare ref, so copy the referenced definition's type alongside it.
+  for (const property of Object.values(properties)) {
+    const schema = property as Record<string, unknown>;
+    if (typeof schema.$ref !== 'string' || 'type' in schema) continue;
+    const def = defs[schema.$ref.split('/').pop() ?? ''] as
+      | Record<string, unknown>
+      | undefined;
+    if (def && 'type' in def) schema.type = def.type;
+  }
   const $defs = reachableDefs({ type: 'object', properties }, defs);
   const name = toolName(op.operationId, config);
   return {

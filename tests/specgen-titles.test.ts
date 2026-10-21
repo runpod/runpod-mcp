@@ -54,6 +54,11 @@ test('every served tool reaches the client with a distinct title', async () => {
       !seen.has(title!),
       `${name} and ${seen.get(title!)} share the title "${title}"`
     );
+    assert.equal(
+      tool.annotations?.title,
+      title,
+      `${name} must repeat its title in annotations.title`
+    );
     seen.set(title!, name);
   }
 });

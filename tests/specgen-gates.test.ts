@@ -405,6 +405,22 @@ test('the served tool surface stays within its byte budgets', () => {
   );
 });
 
+// Directory reviews read each top-level argument's type without following
+// $ref, and flag an argument that has none.
+test('every top-level argument declares a type', () => {
+  const untyped = [...stdioCuratedTools, ...generatedTools].flatMap((tool) =>
+    Object.entries(
+      (listTool(tool).inputSchema.properties ?? {}) as Record<
+        string,
+        Record<string, unknown>
+      >
+    )
+      .filter(([, schema]) => !('type' in schema))
+      .map(([name]) => `${tool.name}.${name}`)
+  );
+  assert.deepEqual(untyped, []);
+});
+
 test('no argument description exceeds the per-field cap', () => {
   assert.deepEqual(
     [
