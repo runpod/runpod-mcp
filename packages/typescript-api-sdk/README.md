@@ -59,14 +59,17 @@ required; Python and the source build tools are not needed to use the npm packag
 
 ## Build from source
 
-To build from source, install **Node.js 24** and **pnpm 11**. Python is only needed
-when regenerating types or running the spec tests.
-
-From the SDK checkout:
+The SDK's source lives in the
+[runpod-mcp repository](https://github.com/runpod/runpod-mcp) at
+`packages/typescript-api-sdk/`. To build it, install **Node.js 20+** and
+**pnpm 10**. Python is only needed when regenerating types or running the spec
+tests.
 
 ```bash
-pnpm install --frozen-lockfile
-pnpm build
+git clone https://github.com/runpod/runpod-mcp.git
+cd runpod-mcp
+pnpm install --frozen-lockfile    # also builds this package
+cd packages/typescript-api-sdk
 cp .env.example .env
 ```
 
@@ -78,7 +81,7 @@ node --env-file=.env examples/catalog.mjs
 
 ### Install a local build
 
-Create a local package from the SDK checkout:
+Create a local package from `packages/typescript-api-sdk/`:
 
 ```bash
 npm pack
