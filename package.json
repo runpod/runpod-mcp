@@ -36,7 +36,9 @@
     "generate:check": "tsx specgen/generator/generate-tools.ts --check",
     "generate:tools": "tsx specgen/generator/generate-tools.ts && prettier --write src/specgen/generated/tools.gen.ts",
     "spec:check": "tsx scripts/check-spec-drift.ts",
-    "spec:pull": "tsx scripts/pull-spec.ts"
+    "spec:pull": "pnpm --filter @runpod/typescript-api-sdk spec:pull",
+    "generate": "pnpm --filter @runpod/typescript-api-sdk generate && pnpm generate:tools",
+    "sdk:check": "pnpm --filter @runpod/typescript-api-sdk run generate:check && pnpm --filter @runpod/typescript-api-sdk run test:spec && pnpm --filter @runpod/typescript-api-sdk run test:scripts && pnpm --filter @runpod/typescript-api-sdk run typecheck && pnpm --filter @runpod/typescript-api-sdk run test && pnpm --filter @runpod/typescript-api-sdk run test:package && pnpm --filter @runpod/typescript-api-sdk run test:examples"
   },
   "exports": {
     "./package.json": "./package.json",
@@ -76,7 +78,7 @@
     "typescript": "^5.3.3",
     "yaml": "^2.9.0",
     "convex": "^1.16.0",
-    "@runpod/typescript-api-sdk": "0.3.0"
+    "@runpod/typescript-api-sdk": "workspace:*"
   },
   "engines": {
     "node": ">=20",
