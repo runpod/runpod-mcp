@@ -19,7 +19,11 @@ import {
 } from '#src/specgen/server';
 import { createToolContext } from '#src/specgen/context';
 import { generatedTools } from '#src/specgen/generated/tools.gen';
-import { DIRECTORY_EXCLUDED_TOOLS, profileForPath } from '#src/specgen/profile';
+import {
+  DIRECTORY_TOOLS,
+  directoryOmittedInputs,
+  profileForPath,
+} from '#src/specgen/profile';
 import { REDACTED, redactSecretEnv } from '#src/specgen/redact';
 
 const ALP = {
@@ -53,25 +57,111 @@ test('directory profile: no ALP, guide or describe tools, and full schemas', asy
   await client.close();
 
   const names = new Set(tools.map((tool) => tool.name));
-  for (const excluded of [
-    ...DIRECTORY_EXCLUDED_TOOLS,
-    'report_feedback',
-    'save_to_journal',
-    'ask_question',
-    'read_journal',
-    'report_how_user_found_runpod',
-  ])
-    assert.equal(names.has(excluded), false, `${excluded} is served`);
+  for (const [name, decision] of Object.entries(DIRECTORY_TOOLS))
+    assert.equal(names.has(name), decision.include, `${name}: wrong surface`);
   assert.deepEqual(resources, []);
   assert.equal(instructions, DIRECTORY_INSTRUCTIONS);
 
-  // Every tool is listed with its complete schema, never a call shape.
+  // Every tool is listed with its complete schema, never a call shape, less
+  // only the inputs it omits.
   for (const tool of tools) {
     const source = [...curatedTools, ...generatedTools].find(
       (candidate) => candidate.name === tool.name
     );
-    if (source) assert.deepEqual(tool.inputSchema, source.inputSchema);
+    if (!source) continue;
+    const omitted = directoryOmittedInputs(tool.name);
+    const properties = { ...(source.inputSchema.properties as object) };
+    for (const key of omitted)
+      delete (properties as Record<string, unknown>)[key];
+    assert.deepEqual(tool.inputSchema.properties, properties, tool.name);
   }
+});
+
+// Every tool the server can serve needs an explicit directory decision, so a
+// regenerated or newly written tool cannot reach the directory unreviewed.
+test('every tool has a directory decision, and every decision names a real tool', async () => {
+  const client = await connect(ALP);
+  const { tools } = await client.listTools();
+  await client.close();
+  const served = tools.map((tool) => tool.name);
+  const unclassified = served.filter((name) => !(name in DIRECTORY_TOOLS));
+  assert.deepEqual(
+    unclassified,
+    [],
+    'Classify these in DIRECTORY_TOOLS (src/specgen/profile.ts) per specgen/DIRECTORY_POLICY.md'
+  );
+  const stale = Object.keys(DIRECTORY_TOOLS).filter(
+    (name) => !served.includes(name)
+  );
+  assert.deepEqual(stale, [], 'Remove these from DIRECTORY_TOOLS');
+  for (const [name, decision] of Object.entries(DIRECTORY_TOOLS))
+    if (!decision.include)
+      assert.ok(decision.reason.trim(), `${name} needs an exclusion reason`);
+});
+
+// Input names that ask for an access credential, which OpenAI's directory
+// forbids collecting. Plural "tokens" (max_tokens) is a count, not a token.
+const CREDENTIAL_INPUT =
+  /pass(word|wd|phrase)?|secret|token(?!s)|api_?key|private_?key|credential/i;
+
+function credentialInputs(node: unknown, at: string, found: string[]) {
+  if (!node || typeof node !== 'object') return;
+  if (Array.isArray(node)) {
+    for (const item of node) credentialInputs(item, at, found);
+    return;
+  }
+  const schema = node as Record<string, unknown>;
+  const properties = (schema.properties ?? {}) as Record<string, unknown>;
+  for (const [key, value] of Object.entries(properties)) {
+    if (CREDENTIAL_INPUT.test(key)) found.push(`${at}.${key}`);
+    credentialInputs(value, `${at}.${key}`, found);
+  }
+  for (const key of [
+    'items',
+    'allOf',
+    'anyOf',
+    'oneOf',
+    'additionalProperties',
+  ])
+    credentialInputs(schema[key], at, found);
+  for (const [key, value] of Object.entries(
+    (schema.$defs ?? {}) as Record<string, unknown>
+  ))
+    credentialInputs(value, `${at}#${key}`, found);
+}
+
+test('no directory tool asks for a credential as input', async () => {
+  const client = await connect({ profile: 'directory' });
+  const { tools } = await client.listTools();
+  await client.close();
+  const found: string[] = [];
+  for (const tool of tools)
+    credentialInputs(tool.inputSchema, tool.name, found);
+  assert.deepEqual(
+    found,
+    [],
+    'Exclude the tool or omit the input in DIRECTORY_TOOLS (src/specgen/profile.ts)'
+  );
+});
+
+test('directory profile refuses an omitted input', async () => {
+  const client = await connect({ profile: 'directory' });
+  const result = (await client.callTool({
+    name: 'run-endpoint',
+    arguments: {
+      endpointId: 'e1',
+      input: {},
+      s3Config: {
+        accessId: 'a',
+        accessSecret: 'b',
+        bucketName: 'c',
+        endpointUrl: 'https://s3.test',
+      },
+    },
+  })) as { isError?: boolean; content: Array<{ text: string }> };
+  await client.close();
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /s3Config/);
 });
 
 test('directory profile refuses calls to tools it does not list', async () => {

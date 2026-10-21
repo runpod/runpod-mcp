@@ -17,7 +17,11 @@ import {
   type ToolResult,
 } from './dispatch.js';
 import { generatedTools } from './generated/tools.gen.js';
-import { DIRECTORY_EXCLUDED_TOOLS, type ServerProfile } from './profile.js';
+import {
+  directoryIncludes,
+  directoryOmittedInputs,
+  type ServerProfile,
+} from './profile.js';
 import { redactSecretEnv } from './redact.js';
 import { getCapacity } from './tools/capacity.js';
 import { setEndpointGpus } from './tools/endpoint-gpus.js';
@@ -176,8 +180,10 @@ export function createSpecgenServer(
   // The ALP tools collect conversation-derived data, which the directory
   // profile never offers, whatever the caller passed.
   const alp = directory ? undefined : opts.alp;
+  // The directory profile is opt-in: a tool is served there only when
+  // DIRECTORY_TOOLS includes it.
   const servedGeneratedTools = directory
-    ? generatedTools.filter((tool) => !DIRECTORY_EXCLUDED_TOOLS.has(tool.name))
+    ? generatedTools.filter((tool) => directoryIncludes(tool.name))
     : generatedTools;
   // The served curated set: the static surface, the config-gated search-docs
   // and ALP write tools, and describe-tool over all of it. Everything
@@ -188,7 +194,7 @@ export function createSpecgenServer(
     ...(opts.search ? [createSearchDocsTool(opts.search)] : []),
     ...(alp ? createAlpTools(alp) : []),
     createDescribeTool(() => [...servedCuratedTools, ...servedGeneratedTools]),
-  ].filter((tool) => !(directory && DIRECTORY_EXCLUDED_TOOLS.has(tool.name)));
+  ].filter((tool) => !directory || directoryIncludes(tool.name));
   // The directory profile lists full schemas, so nothing there is call-shape only.
   const callShapeOnlyTools = new Set(
     directory
@@ -242,7 +248,7 @@ export function createSpecgenServer(
   }));
 
   // The guides are playbooks for the model, so the directory profile serves
-  // none of them (see DIRECTORY_EXCLUDED_TOOLS).
+  // none of them (see DIRECTORY_TOOLS).
   const servedGuides = directory ? [] : guideResources;
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
@@ -332,8 +338,20 @@ export function createSpecgenServer(
     // their own inputSchema. Before this they read only the keys they knew,
     // so a misnamed argument produced a confident wrong answer (see
     // validateArguments). Generated tools run the gate inside dispatch.
-    const rejected =
-      curated && !curated.lenientArguments
+    // The directory profile does not list inputs it must not collect
+    // (DIRECTORY_TOOLS omitInputs), so it does not accept them either.
+    const omitted = directory
+      ? directoryOmittedInputs(request.params.name).filter((key) => key in args)
+      : [];
+    const rejected: ToolResult | null = omitted.length
+      ? {
+          ok: false,
+          status: 400,
+          payload: {
+            error: `Not accepted on this server: ${omitted.join(', ')}.`,
+          },
+        }
+      : curated && !curated.lenientArguments
         ? validateArguments(
             curated.inputSchema as { required?: unknown; properties?: unknown },
             args

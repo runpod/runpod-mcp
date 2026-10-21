@@ -5,7 +5,7 @@
 // a tool accepts does not change — only what every handshake carries.
 
 import type { ToolAnnotations } from './generated/tools.gen.js';
-import type { ServerProfile } from './profile.js';
+import { directoryOmittedInputs, type ServerProfile } from './profile.js';
 import { leadSentence } from './prose.js';
 
 export const DESCRIBE_TOOL_NAME = 'describe-tool';
@@ -47,7 +47,8 @@ export function listedAnnotations(
 // reviews still look for it.
 //
 // The directory profile lists every tool with its full schema (there is no
-// describe-tool to point at) and its directoryDescription where it has one.
+// describe-tool to point at), less any omitted inputs, and its
+// directoryDescription where it has one.
 export function listTool(
   tool: ListableTool,
   profile: ServerProfile = 'default'
@@ -59,7 +60,7 @@ export function listTool(
       name,
       title,
       description: tool.directoryDescription ?? tool.description,
-      inputSchema,
+      inputSchema: withoutInputs(inputSchema, directoryOmittedInputs(name)),
       annotations,
     };
   const { description } = tool;
@@ -72,6 +73,16 @@ export function listTool(
     inputSchema: callShape(inputSchema),
     annotations,
   };
+}
+
+function withoutInputs(schema: Schema, omit: readonly string[]): Schema {
+  if (!omit.length) return schema;
+  const properties = { ...((schema.properties ?? {}) as Schema) };
+  for (const key of omit) delete properties[key];
+  const required = Array.isArray(schema.required)
+    ? schema.required.filter((key) => !omit.includes(key as string))
+    : schema.required;
+  return { ...schema, properties, ...(required ? { required } : {}) };
 }
 
 export function callShape(schema: Schema): Schema {
