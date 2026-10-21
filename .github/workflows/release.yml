@@ -46,12 +46,20 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
+      # Installing builds packages/typescript-api-sdk through its `prepare`
+      # script; `pnpm publish` runs it again before packing.
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Build package
         run: pnpm run build
 
+      # Publishes every workspace package whose version is not on npm yet:
+      # @runpod/mcp-server (repo root) and @runpod/typescript-api-sdk
+      # (packages/typescript-api-sdk). Both authenticate through npm trusted
+      # publishing, so each package needs this repository and release.yml
+      # configured as its trusted publisher on npmjs.com. Tags are
+      # <package>@<version>.
       - name: Create Release Pull Request or Publish to npm (OIDC)
         id: changesets
         uses: changesets/action@v1

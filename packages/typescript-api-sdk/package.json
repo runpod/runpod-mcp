@@ -1,0 +1,72 @@
+{
+  "name": "@runpod/typescript-api-sdk",
+  "version": "0.3.0",
+  "description": "TypeScript SDK for the RunPod v2 REST API, generated from the OpenAPI spec",
+  "license": "MIT",
+  "homepage": "https://api.runpod.io/v2/docs",
+  "keywords": [
+    "runpod",
+    "gpu",
+    "serverless",
+    "openapi",
+    "sdk",
+    "typescript"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "THIRD_PARTY_NOTICES.txt"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "generate": "node scripts/generate.mjs",
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "generate:check": "node scripts/generate.mjs --check",
+    "spec:check": "python3 scripts/sync_spec.py --check",
+    "spec:pull": "python3 scripts/sync_spec.py",
+    "test:spec": "python3 -m unittest discover -s scripts -p \"test_*.py\"",
+    "test:scripts": "node --test scripts/test_query_contract.mjs",
+    "prepack": "npm run build",
+    "test:package": "node scripts/check_package.mjs",
+    "test:examples": "node --test scripts/test_examples.mjs",
+    "prepare": "tsup"
+  },
+  "dependencies": {
+    "openapi-fetch": "^0.17.0",
+    "structured-headers": "^2.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "openapi-typescript": "^7.13.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.10"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/runpod/runpod-mcp.git",
+    "directory": "packages/typescript-api-sdk"
+  }
+}
