@@ -61,6 +61,8 @@ function formatGpuIds(gpu: {
 export const setEndpointGpus: CuratedTool = {
   name: 'set-endpoint-gpus',
   title: 'Set endpoint GPUs',
+  directoryDescription:
+    "Set which GPUs a Serverless endpoint's workers run on, including pinning specific GPU types. Takes either a raw gpuIds string, or pools plus optional excludeGpuTypeIds, from which the exclusion string is built: a pool allows every GPU type in it, and excluding all but one pins that type. Changes only GPU settings and keeps the endpoint's other settings.",
   // Replaces the whole GPU selection: exclusions not resent are cleared.
   annotations: destructive,
   description:

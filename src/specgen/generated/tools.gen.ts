@@ -22,6 +22,8 @@ export interface GeneratedTool {
   title: string;
   operationId: string;
   description: string;
+  /** Served instead of `description` in the directory profile. */
+  directoryDescription?: string;
   method: string;
   path: string;
   params: GeneratedToolParam[];
@@ -39,6 +41,8 @@ export const generatedTools: GeneratedTool[] = [
     operationId: 'createCluster',
     description:
       "Create an instant cluster (multiple pods with high-speed interconnect). BILLABLE from creation for every pod in the cluster: it rents compute.podCount identical pods at once, each with compute.gpuCountPerPod GPUs of compute.gpuTypeId — state the hourly price for the total GPU count (podCount * gpuCountPerPod, priced from the catalog tools) and create only after the user's explicit go on that quoted shape and total hourly price. Verify GPU stock first via the catalog tools. The compute shape and type are fixed at creation; only the name can be changed later. The container configuration applies to every pod, and templateId is the only private-image path — a bare registry property is rejected. Delete with delete-cluster when finished.",
+    directoryDescription:
+      "Create an Instant Cluster: compute.podCount identical Pods joined by a high-speed interconnect, each with compute.gpuCountPerPod GPUs of compute.gpuTypeId. Billable from creation for every Pod in the cluster, at the GPU type's hourly price times the total GPU count. The compute shape and type are fixed at creation; only the name can change later. The container configuration applies to every Pod, and templateId is the only way to use a private image; a bare registry property is rejected.",
     method: 'POST',
     path: '/v2/clusters',
     params: [],
@@ -344,6 +348,8 @@ export const generatedTools: GeneratedTool[] = [
     operationId: 'createEndpoint',
     description:
       "Create a serverless endpoint. BILLABLE: state the worker's hourly price (from the catalog tools) before creating. Worker hardware is one of two choices: the gpu object (gpu.pools takes serverless pool ids from the catalog, e.g. ADA_24, never display names; gpu.count sets GPUs per worker) or the cpu array of CPU flavor configurations for a CPU endpoint. type and scaling are required and fix the request-routing model. Workers cold-start on the first job: expect minutes, poll with get-job-status wait.",
+    directoryDescription:
+      "Create a Serverless endpoint. Billable while its workers run, at the worker's hourly price. Worker hardware is either the gpu object (gpu.pools takes Serverless pool ids such as ADA_24, and gpu.count sets GPUs per worker) or the cpu array of CPU flavor configurations. type and scaling are required and set the request-routing model. Workers cold-start on their first job, which commonly takes minutes.",
     method: 'POST',
     path: '/v2/serverless',
     params: [],
@@ -932,6 +938,8 @@ export const generatedTools: GeneratedTool[] = [
     operationId: 'createPod',
     description:
       'Rent a GPU/CPU pod. BILLABLE from creation until stop/terminate: state the hourly price before creating. GPU selection is the gpu object: gpu.id takes a catalog GPU type id (e.g. "NVIDIA GeForce RTX 4090"), verified via list-gpu-types, and gpu.count sets the GPU count; cloud/data-center choice constrains stock.',
+    directoryDescription:
+      'Create a GPU or CPU Pod. Billable from creation until it is stopped or terminated. GPU selection is the gpu object: gpu.id takes a GPU type id such as "NVIDIA GeForce RTX 4090", and gpu.count sets the number of GPUs. Cloud tier and data center choices limit which machines can host it.',
     method: 'POST',
     path: '/v2/pods',
     params: [],
@@ -1660,6 +1668,8 @@ export const generatedTools: GeneratedTool[] = [
     operationId: 'deleteCluster',
     description:
       'Delete a cluster permanently: it terminates every member pod. Verify the id with get-cluster, and list-cluster-pods for what the delete takes down, before deleting; delete only clusters your own tool calls created in this conversation, or the one the user asked you to delete by id — a name found by listing is not attribution.',
+    directoryDescription:
+      'Delete an Instant Cluster permanently. Every member Pod is terminated and its container disk is lost.',
     method: 'DELETE',
     path: '/v2/clusters/{id}',
     params: [
@@ -1692,6 +1702,8 @@ export const generatedTools: GeneratedTool[] = [
     operationId: 'deleteEndpoint',
     description:
       'Delete a serverless endpoint permanently and immediately. Verify the id belongs to the intended endpoint (get-endpoint) before deleting; delete only endpoints your own tool calls created in this conversation, or the one the user asked you to delete by id — a name found by listing is not attribution.',
+    directoryDescription:
+      'Delete a Serverless endpoint permanently and immediately.',
     method: 'DELETE',
     path: '/v2/serverless/{id}',
     params: [
@@ -1788,6 +1800,8 @@ export const generatedTools: GeneratedTool[] = [
     operationId: 'deletePod',
     description:
       'Terminate a pod permanently — its container disk is lost. Distinguish from stopping (pod-action stop) which releases the GPU but keeps volume data. Verify the id with get-pod first; terminate only pods your own tool calls created in this conversation, or the one the user asked you to terminate by id — a name found by listing is not attribution.',
+    directoryDescription:
+      'Terminate a Pod permanently. Its container disk is lost; data on an attached network volume is kept. Stopping a Pod instead releases its compute but keeps its disk.',
     method: 'DELETE',
     path: '/v2/pods/{id}',
     params: [
@@ -1851,6 +1865,8 @@ export const generatedTools: GeneratedTool[] = [
     operationId: 'deleteSecret',
     description:
       'Delete a secret permanently. Environment variables referencing its name ({{ RUNPOD_SECRET_<name> }}) stop resolving at the next pod or worker boot; running instances keep the value they started with. Verify the id with get-secret first; delete only secrets your own tool calls created in this conversation, or the one the user asked you to delete by id — a name found by listing is not attribution.',
+    directoryDescription:
+      'Delete a secret permanently. Environment variables that reference it ({{ RUNPOD_SECRET_<name> }}) stop resolving at the next Pod or worker boot; running instances keep the value they started with.',
     method: 'DELETE',
     path: '/v2/account/secrets/{id}',
     params: [
@@ -1883,6 +1899,8 @@ export const generatedTools: GeneratedTool[] = [
     operationId: 'deleteTemplate',
     description:
       'Delete a template permanently. Verify with get-template first; a template referenced by a live endpoint should not be deleted.',
+    directoryDescription:
+      'Delete a template permanently. An endpoint that references the template can stop working once it is deleted.',
     method: 'DELETE',
     path: '/v2/templates/{id}',
     params: [
@@ -3727,6 +3745,8 @@ export const generatedTools: GeneratedTool[] = [
     operationId: 'listServerlessBilling',
     description:
       'Get serverless billing history, split into time buckets. SIZE WARNING: with defaults this emits one record per endpoint PER BUCKET — on an account with many endpoints the response overflows the tool-result limit and becomes unusable. Always pass lastN: 1 (or a bucketSize spanning the whole window) for one record per endpoint, and serverlessId when you need one endpoint. Distinct from pod billing, which covers standalone pods.',
+    directoryDescription:
+      'Get Serverless billing history, split into time buckets. By default the response has one record per endpoint per bucket, which can be very large on accounts with many endpoints; lastN: 1 (or one bucket spanning the whole window) returns one record per endpoint, and serverlessId narrows it to a single endpoint. Pod billing is reported separately.',
     method: 'GET',
     path: '/v2/billing/serverless',
     params: [
@@ -3947,6 +3967,8 @@ export const generatedTools: GeneratedTool[] = [
     operationId: 'updateEndpoint',
     description:
       "Partially update a serverless endpoint (PATCH): only fields present in the body change, omitted ones are untouched, with one exception. DESTRUCTIVE GOTCHA: gpu.pools and gpu.excludedTypes are a single selection, so sending pools without excludedTypes clears any exclusions pinned elsewhere (the console or set-endpoint-gpus) — read the endpoint first with get-endpoint and resend excludedTypes if you still want them. An exclusion naming a type outside pools returns 400. A CUDA-only or count-only change does not need pools at all, so omit it unless you mean to replace the selection. Mutable fields: name, gpu, cpu, workers (min/max/idleTimeout), scaling (type plus queueDelay or requestCount), dataCenterIds, networkVolumes, timeout, flashboot, and the container settings (image, args, disk, ports, env, registry). cpu completely replaces a CPU endpoint's flavor selection. Compute family is immutable: gpu on a CPU endpoint, cpu on a GPU one, or both, returns 400. Effect timing differs by field — workers/scaling/timeout reach the autoscaler promptly, while container changes (image, env) cut a new release that rolls out as workers cycle, so in-flight workers keep the previous version. Track rollout with list-endpoint-releases.",
+    directoryDescription:
+      "Partially update a Serverless endpoint (PATCH): only fields present in the body change. gpu.pools and gpu.excludedTypes are one selection, so sending pools without excludedTypes clears existing exclusions; an exclusion naming a type outside pools returns 400, and a CUDA-only or count-only change does not need pools. Mutable fields: name, gpu, cpu, workers (min/max/idleTimeout), scaling (type plus queueDelay or requestCount), dataCenterIds, networkVolumes, timeout, flashboot, and the container settings (image, args, disk, ports, env, registry). cpu replaces a CPU endpoint's whole flavor selection. The compute family is fixed: gpu on a CPU endpoint, cpu on a GPU one, or both returns 400. Worker, scaling and timeout changes apply promptly; container changes (image, env) create a new release that rolls out as workers cycle, so in-flight workers keep the previous version.",
     method: 'PATCH',
     path: '/v2/serverless/{id}',
     params: [

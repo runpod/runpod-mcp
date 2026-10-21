@@ -17,6 +17,8 @@ import {
   type ToolResult,
 } from './dispatch.js';
 import { generatedTools } from './generated/tools.gen.js';
+import { DIRECTORY_EXCLUDED_TOOLS, type ServerProfile } from './profile.js';
+import { redactSecretEnv } from './redact.js';
 import { getCapacity } from './tools/capacity.js';
 import { setEndpointGpus } from './tools/endpoint-gpus.js';
 import { hubTools } from './tools/hub.js';
@@ -100,6 +102,11 @@ THE OFFICIAL RUNPOD PLUGIN. Runpod ships an agent plugin that also covers the la
 
 The tool schemas are generated from the Runpod v2 OpenAPI contract, served as a machine-readable document at https://api.runpod.io/v2/openapi.json — consult it for fields beyond the tool surface. Some tools list only their call shape (their listing says so): describe-tool returns the full argument schema — call it before the first use of such a tool. This surface ships often, and the tool list you hold is a snapshot from when you connected: if a call is rejected for the SHAPE of its arguments rather than their values, treat your schema as possibly stale, refresh the tool list (in Claude Code, /mcp) and call again with what the server now advertises. Retrying variants of a rejected shape cannot succeed. These instructions are a snapshot from the same moment. If they seem out of date (they name a tool, guide or skill this server does not serve, or a guide you just read contradicts them), reconnect the server, or ask the user to (in Claude Code, /mcp): reconnecting re-runs initialize and delivers the current instructions with the current tool list. Guides are not a snapshot: read-guide always returns the version this server serves now.`;
 
+// The directory profile's briefing (src/specgen/profile.ts): what the server
+// covers and how its tools are marked, with no instructions to the model, no
+// pointer to guides or other software, and no ask for conversation data.
+export const DIRECTORY_INSTRUCTIONS = `These tools manage a Runpod account: the compute catalog (GPU and CPU types, data centers, live stock and pricing), Pods, Serverless endpoints and their jobs, Instant Clusters, templates, network and global volumes, secrets, SSH keys, container registry credentials, billing history, Public Endpoints, and the Runpod Hub. Read-only tools are annotated as such; tools that create billable resources or delete anything are annotated as writes or destructive. Creating Pods, endpoints, clusters and volumes bills the account at the prices the catalog tools report.`;
+
 // Appended to the initialize briefing only when the ALP tools are enabled.
 const ALP_INSTRUCTIONS = `
 
@@ -149,6 +156,12 @@ export interface SpecgenServerOptions {
   /** Backs search-docs (src/specgen/tools/search.ts). When absent, the tool
    *  is not listed. */
   search?: SearchFn;
+  /** Which tool surface to serve (src/specgen/profile.ts). `directory` lists
+   *  directoryDescription text and full schemas, leaves out the guide tools,
+   *  describe-tool, the ALP tools and the guide resources, briefs with
+   *  DIRECTORY_INSTRUCTIONS, and records no argument values in analytics.
+   *  Defaults to `default`, the full surface. */
+  profile?: ServerProfile;
 }
 
 export function createSpecgenServer(
@@ -158,6 +171,11 @@ export function createSpecgenServer(
 ): Server {
   const rateLimiter = opts.rateLimiter ?? noopRateLimiter;
   const caller = callerId(ctx.apiKey);
+  const profile: ServerProfile = opts.profile ?? 'default';
+  const directory = profile === 'directory';
+  // The ALP tools collect conversation-derived data, which the directory
+  // profile never offers, whatever the caller passed.
+  const alp = directory ? undefined : opts.alp;
   // The served curated set: the static surface, the config-gated search-docs
   // and ALP write tools, and describe-tool over all of it. Everything
   // downstream (list, routing) reads this, so a disabled tool is truly absent,
@@ -165,23 +183,28 @@ export function createSpecgenServer(
   const servedCuratedTools: CuratedTool[] = [
     ...curatedTools,
     ...(opts.search ? [createSearchDocsTool(opts.search)] : []),
-    ...(opts.alp ? createAlpTools(opts.alp) : []),
+    ...(alp ? createAlpTools(alp) : []),
     createDescribeTool(() => [...servedCuratedTools, ...generatedTools]),
-  ];
+  ].filter((tool) => !(directory && DIRECTORY_EXCLUDED_TOOLS.has(tool.name)));
+  // The directory profile lists full schemas, so nothing there is call-shape only.
   const callShapeOnlyTools = new Set(
-    [...servedCuratedTools, ...generatedTools]
-      .filter((tool) => tool.schemaOnDemand)
-      .map((tool) => tool.name)
+    directory
+      ? []
+      : [...servedCuratedTools, ...generatedTools]
+          .filter((tool) => tool.schemaOnDemand)
+          .map((tool) => tool.name)
   );
   const server = new Server(
     { name: SERVER_NAME, version: `${version} [specgen]` },
     {
       capabilities: { tools: {}, resources: {} },
-      instructions: opts.alp
-        ? SERVER_INSTRUCTIONS +
-          ALP_INSTRUCTIONS +
-          (opts.promptReferral === false ? '' : REFERRAL_INSTRUCTIONS)
-        : SERVER_INSTRUCTIONS,
+      instructions: directory
+        ? DIRECTORY_INSTRUCTIONS
+        : alp
+          ? SERVER_INSTRUCTIONS +
+            ALP_INSTRUCTIONS +
+            (opts.promptReferral === false ? '' : REFERRAL_INSTRUCTIONS)
+          : SERVER_INSTRUCTIONS,
     }
   );
 
@@ -195,11 +218,11 @@ export function createSpecgenServer(
       // ALP submissions attribute the harness the same way the tracking UA
       // does; the ALP tools read opts.alp at call time, so this late bind
       // reaches them.
-      if (opts.alp) {
-        opts.alp.harness = clientInfo.version
+      if (alp) {
+        alp.harness = clientInfo.version
           ? `${clientInfo.name}/${clientInfo.version}`
           : clientInfo.name;
-        opts.alp.harnessSource = 'client_info';
+        alp.harnessSource = 'client_info';
       }
     }
   };
@@ -210,11 +233,17 @@ export function createSpecgenServer(
   // tools derive theirs from the HTTP method; curated ones declare theirs.
   // A tool flagged schemaOnDemand is listed with its call shape only.
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [...servedCuratedTools, ...generatedTools].map(listTool),
+    tools: [...servedCuratedTools, ...generatedTools].map((tool) =>
+      listTool(tool, profile)
+    ),
   }));
 
+  // The guides are playbooks for the model, so the directory profile serves
+  // none of them (see DIRECTORY_EXCLUDED_TOOLS).
+  const servedGuides = directory ? [] : guideResources;
+
   server.setRequestHandler(ListResourcesRequestSchema, async () => ({
-    resources: guideResources.map(({ text: _text, ...resource }) => resource),
+    resources: servedGuides.map(({ text: _text, ...resource }) => resource),
   }));
 
   // Some clients probe templates unconditionally; answer empty instead of -32601.
@@ -223,7 +252,7 @@ export function createSpecgenServer(
   }));
 
   server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-    const guide = guideResources.find(
+    const guide = servedGuides.find(
       (candidate) => candidate.uri === request.params.uri
     );
     // Reads get their own usage event: a client reading runpod://guides/*
@@ -327,8 +356,13 @@ export function createSpecgenServer(
         ok: result.ok,
         status: result.status,
         durationMs: Date.now() - startedAt,
-        args: recordedArgumentValues(curated?.recordedArguments, args),
-        guideKind: curated?.recordedGuideKind?.(args),
+        // The directory profile records which tool ran, never what was asked.
+        ...(directory
+          ? {}
+          : {
+              args: recordedArgumentValues(curated?.recordedArguments, args),
+              guideKind: curated?.recordedGuideKind?.(args),
+            }),
         ...opts.analytics,
       });
     }
@@ -342,9 +376,11 @@ export function createSpecgenServer(
     // already on the payload wins: dispatch/runtime derive precise 429 wait
     // instructions from the response headers, and the generic "pause briefly"
     // text must not clobber them.
-    const payload = result.ok
-      ? result.payload
-      : withRecoveryHint(result, callShapeOnlyTools.has(request.params.name));
+    const payload = redactSecretEnv(
+      result.ok
+        ? result.payload
+        : withRecoveryHint(result, callShapeOnlyTools.has(request.params.name))
+    );
     return {
       content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
       isError: !result.ok,

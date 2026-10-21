@@ -273,6 +273,8 @@ export const readGuide: CuratedTool = {
 export const lookupConcept: CuratedTool = {
   name: 'lookup-concept',
   title: 'Look up a concept',
+  directoryDescription:
+    'Look up one Runpod concept (Pod, network volume, machine, worker, template and so on) by id, name or alias; case, plurals and small typos are tolerated, and matched_as shows the key used when the match was not exact. Returns its summary, fields, states, relations and rules, each rule with its public source, plus the concepts that point at it. Answers exact questions such as whether a volume disk is tied to one machine.',
   annotations: bundledRead,
   recordedArguments: ['concept'],
   description:
@@ -345,6 +347,8 @@ export const lookupConcept: CuratedTool = {
 export const searchConcepts: CuratedTool = {
   name: 'search-concepts',
   title: 'Search concepts',
+  directoryDescription:
+    'Search the rules of the Runpod concept graph by words, for example "restart stopped pod no gpu" or "network volume data center". Returns the best-matching rules with their concept and public evidence.',
   annotations: bundledRead,
   recordedArguments: ['query', 'limit'],
   description:

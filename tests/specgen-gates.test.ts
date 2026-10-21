@@ -364,7 +364,7 @@ const ARGUMENT_DESCRIPTION_CAP_BYTES = 400;
 
 type Served = ListableTool;
 const servedBytes = (tools: Served[]) =>
-  Buffer.byteLength(JSON.stringify(tools.map(listTool)));
+  Buffer.byteLength(JSON.stringify(tools.map((tool) => listTool(tool))));
 
 function longArgumentDescriptions(tools: Served[]): string[] {
   const offenders: string[] = [];

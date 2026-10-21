@@ -100,6 +100,8 @@ export const streamPodLogs: CuratedTool = {
 export const streamWorkerLogs: CuratedTool = {
   name: 'stream-worker-logs',
   title: 'Stream worker logs',
+  directoryDescription:
+    "Read a bounded snapshot of a Serverless worker's logs (container, system, or both). Holds the live stream open for maxWaitMs and returns the parsed log lines; truncated: true means the byte cap cut the output. A worker whose container keeps failing to start can report RUNNING or THROTTLED while its logs show the failure.",
   holdsResponse: true,
   annotations: readOnly,
   description:

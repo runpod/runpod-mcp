@@ -47,6 +47,8 @@ export interface GeneratedTool {
   title: string;
   operationId: string;
   description: string;
+  /** Served instead of \`description\` in the directory profile. */
+  directoryDescription?: string;
   method: string;
   path: string;
   params: GeneratedToolParam[];

@@ -5,6 +5,7 @@
 // a tool accepts does not change — only what every handshake carries.
 
 import type { ToolAnnotations } from './generated/tools.gen.js';
+import type { ServerProfile } from './profile.js';
 import { leadSentence } from './prose.js';
 
 export const DESCRIBE_TOOL_NAME = 'describe-tool';
@@ -24,6 +25,9 @@ export interface ListedTool {
 export interface ListableTool extends ListedTool {
   annotations: ToolAnnotations;
   schemaOnDemand?: boolean;
+  /** Served instead of `description` in the directory profile: what the tool
+   *  does, with no instructions to the model and no other tool named. */
+  directoryDescription?: string;
 }
 
 // Every tools/list carries the annotations of every tool, so idempotentHint is
@@ -41,9 +45,24 @@ export function listedAnnotations(
 // The title is sent twice: top level per the current MCP spec, and as
 // annotations.title, where earlier spec revisions put it and where directory
 // reviews still look for it.
-export function listTool(tool: ListableTool): ListedTool {
-  const { name, title, description, inputSchema } = tool;
+//
+// The directory profile lists every tool with its full schema (there is no
+// describe-tool to point at) and its directoryDescription where it has one.
+export function listTool(
+  tool: ListableTool,
+  profile: ServerProfile = 'default'
+): ListedTool {
+  const { name, title, inputSchema } = tool;
   const annotations = { title, ...listedAnnotations(tool.annotations) };
+  if (profile === 'directory')
+    return {
+      name,
+      title,
+      description: tool.directoryDescription ?? tool.description,
+      inputSchema,
+      annotations,
+    };
+  const { description } = tool;
   if (!tool.schemaOnDemand)
     return { name, title, description, inputSchema, annotations };
   return {

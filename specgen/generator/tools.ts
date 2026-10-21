@@ -13,6 +13,9 @@ export interface GeneratorConfig {
   /** operationId -> title overrides; default is derived from the tool name. */
   titles?: Record<string, string>;
   descriptions?: Record<string, string>;
+  /** operationId -> description served in the directory profile
+   *  (src/specgen/profile.ts) instead of the default one. */
+  directoryDescriptions?: Record<string, string>;
   /** Schema address -> description served instead of the spec's. Addresses are
    *  `DefName`, `DefName.prop` (composition is transparent, `[]` for items),
    *  `operationId.param`, or `operationId.body(.prop)`. */
@@ -443,6 +446,9 @@ function buildTool(
           .replaceAll(/\s+/g, ' ')
           .trim()
       ),
+    ...(config.directoryDescriptions?.[op.operationId]
+      ? { directoryDescription: config.directoryDescriptions[op.operationId] }
+      : {}),
     method: method.toUpperCase(),
     path,
     params,
@@ -484,6 +490,9 @@ export function generateTools(
   const names = new Set<string>();
   const unmatchedExclusions = new Set(Object.keys(config.exclude ?? {}));
   const unmatchedTitles = new Set(Object.keys(config.titles ?? {}));
+  const unmatchedDirectory = new Set(
+    Object.keys(config.directoryDescriptions ?? {})
+  );
   const unmatchedAnnotations = new Set(Object.keys(config.annotations ?? {}));
   const unmatchedOnDemand = new Set(config.schemaOnDemand ?? []);
   for (const [path, pathItem] of Object.entries(spec.paths)) {
@@ -495,6 +504,7 @@ export function generateTools(
         continue;
       }
       unmatchedTitles.delete(op.operationId);
+      unmatchedDirectory.delete(op.operationId);
       unmatchedAnnotations.delete(op.operationId);
       unmatchedOnDemand.delete(op.operationId);
       const tool = buildTool(
@@ -516,6 +526,10 @@ export function generateTools(
   if (unmatchedExclusions.size)
     throw new Error(
       `Excluded operations missing from spec: ${[...unmatchedExclusions].sort().join(', ')}`
+    );
+  if (unmatchedDirectory.size)
+    throw new Error(
+      `Directory-described operations missing from spec: ${[...unmatchedDirectory].sort().join(', ')}`
     );
   if (unmatchedTitles.size)
     throw new Error(

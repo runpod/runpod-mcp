@@ -11,6 +11,10 @@ export interface CuratedTool {
    *  Sentence case, proper nouns kept (src/specgen/titles.ts). */
   title: string;
   description: string;
+  /** Served instead of `description` in the directory profile
+   *  (src/specgen/profile.ts): what the tool does, with no instructions to
+   *  the model and no other tool named. Omit when `description` already is. */
+  directoryDescription?: string;
   inputSchema: Record<string, unknown>;
   /** MCP behavioral hints, required so a new curated tool cannot ship without
    *  them (the generated tools derive theirs from the HTTP method). */

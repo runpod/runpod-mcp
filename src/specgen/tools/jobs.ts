@@ -30,7 +30,8 @@ const UPSTREAM_HOLD_SLACK_MS = 5_000;
 // ?wait= is sent (the stdio path omits the query), per-poll floor, pause
 // between polls, and the consecutive-error cap that ends the run.
 // Hosted (Vercel) requests are reaped at 60s (vercel.json maxDuration), so
-// every server-side hold clamps to 45s there — the response must serialize
+// every server-side hold clamps to 45s there (and the directory profile,
+// served only there, describes those hosted limits) — the response must serialize
 // before the platform kills the invocation. stdio keeps the 5-minute budgets.
 export const HOSTED = process.env.VERCEL === '1';
 export const HTTP_LONG_POLL_BUDGET_MS = 45_000;
@@ -437,6 +438,8 @@ function validateWait(wait: unknown): string | null {
 export const runEndpoint: CuratedTool = {
   name: 'run-endpoint',
   title: 'Submit Serverless job',
+  directoryDescription:
+    'Submit an asynchronous job to a Serverless endpoint. Returns a job ID immediately; the result stays available for 30 minutes after the job completes.',
   annotations: write,
   description:
     'Submit an asynchronous job to a Serverless endpoint. Returns a job ID immediately — use get-job-status to poll for results (pass its `wait` to block through a cold start instead of tight-looping). Async results are available for 30 minutes after completion.',
@@ -471,6 +474,7 @@ export const runEndpoint: CuratedTool = {
 export const runsyncEndpoint: CuratedTool = {
   name: 'runsync-endpoint',
   title: 'Run Serverless job and wait',
+  directoryDescription: `Submit a synchronous job to a Serverless endpoint and wait up to ${HTTP_LONG_POLL_BUDGET_MS} ms for the result. If the job outlives the wait, the response carries the job ID and its current status (IN_QUEUE or IN_PROGRESS). Maximum payload 20 MB; results expire 1 minute after completion.`,
   holdsResponse: true,
   annotations: write,
   description:
@@ -536,6 +540,7 @@ export const runsyncEndpoint: CuratedTool = {
 export const getJobStatus: CuratedTool = {
   name: 'get-job-status',
   title: 'Get job status',
+  directoryDescription: `Get the status of a Serverless job, and its output once it completes. Statuses: IN_QUEUE, IN_PROGRESS, COMPLETED, FAILED, CANCELLED, TIMED_OUT. With wait (milliseconds, up to ${HTTP_LONG_POLL_BUDGET_MS}) the server polls until the job reaches a final status or the wait runs out, in which case it returns the latest status with pollingTimedOut: true; without wait it returns the current status at once. An IN_QUEUE result includes a workerHealth summary of the endpoint's workers.`,
   holdsResponse: true,
   annotations: readOnly,
   description:
@@ -599,6 +604,7 @@ export const getJobStatus: CuratedTool = {
 export const streamJob: CuratedTool = {
   name: 'stream-job',
   title: 'Stream job output',
+  directoryDescription: `Collect streaming output from a Serverless job whose worker streams its output. Polls the job's stream until it reaches COMPLETED, FAILED, CANCELLED or TIMED_OUT, for up to ${formatBudget(HTTP_LONG_POLL_BUDGET_MS)}; if time runs out first, it returns the chunks collected so far with pollingTimedOut: true, and a later call resumes where it left off.`,
   holdsResponse: true,
   // Not a read: /stream hands out each chunk once, so a chunk collected by a
   // call whose response is lost cannot be fetched again.
@@ -695,6 +701,8 @@ export const retryJob: CuratedTool = {
 export const endpointHealth: CuratedTool = {
   name: 'endpoint-health',
   title: 'Get endpoint health',
+  directoryDescription:
+    'Get the health rollup for a Serverless endpoint: worker counts by state and job queue statistics. The rollup can lag the per-worker state, and a worker whose container keeps failing to start can still report RUNNING or THROTTLED here. Zero workers means the endpoint is waiting for GPU capacity.',
   annotations: readOnly,
   description:
     "Get the endpoint-level health rollup for a Serverless endpoint: worker counts by state plus job queue statistics. This is the runtime plane's own /health view and it can lag or disagree with the per-worker truth — when a job is stuck IN_QUEUE, prefer list-endpoint-workers over this rollup for per-worker state — but treat neither as the authority on crash loops, because a container failing to start loops while its worker reports RUNNING or THROTTLED and unhealthy stays 0; stream-worker-logs is what settles it, and note that get-job-status already attaches that worker summary and a hint on every IN_QUEUE result. Zero workers here means the endpoint is waiting for GPU capacity.",
@@ -719,6 +727,8 @@ export const endpointHealth: CuratedTool = {
 export const purgeEndpointQueue: CuratedTool = {
   name: 'purge-endpoint-queue',
   title: 'Purge endpoint queue',
+  directoryDescription:
+    'Remove all queued jobs from a Serverless endpoint. Jobs already in progress keep running.',
   annotations: destructive,
   description:
     'Remove all pending jobs from a Serverless endpoint queue. Only affects queued jobs — in-progress jobs continue running. Use this for error recovery or clearing outdated requests.',

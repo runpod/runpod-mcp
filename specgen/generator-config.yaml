@@ -166,6 +166,70 @@ descriptions:
     conversation, or the one the user asked you to delete by id — a name found
     by listing is not attribution.
 
+# operationId -> description served only in the directory profile
+# (mcp.runpod.io/directory, src/specgen/profile.ts). App directories reject
+# descriptions that instruct the model or name other tools, so these state
+# what the operation does and keep billing and permanence as facts. Default
+# connections keep the descriptions above. The generator rejects keys whose
+# operationId is absent from the spec.
+directoryDescriptions:
+  createCluster: >-
+    Create an Instant Cluster: compute.podCount identical Pods joined by a
+    high-speed interconnect, each with compute.gpuCountPerPod GPUs of
+    compute.gpuTypeId. Billable from creation for every Pod in the cluster, at
+    the GPU type's hourly price times the total GPU count. The compute shape
+    and type are fixed at creation; only the name can change later. The
+    container configuration applies to every Pod, and templateId is the only
+    way to use a private image; a bare registry property is rejected.
+  createEndpoint: >-
+    Create a Serverless endpoint. Billable while its workers run, at the
+    worker's hourly price. Worker hardware is either the gpu object (gpu.pools
+    takes Serverless pool ids such as ADA_24, and gpu.count sets GPUs per
+    worker) or the cpu array of CPU flavor configurations. type and scaling
+    are required and set the request-routing model. Workers cold-start on
+    their first job, which commonly takes minutes.
+  createPod: >-
+    Create a GPU or CPU Pod. Billable from creation until it is stopped or
+    terminated. GPU selection is the gpu object: gpu.id takes a GPU type id
+    such as "NVIDIA GeForce RTX 4090", and gpu.count sets the number of GPUs.
+    Cloud tier and data center choices limit which machines can host it.
+  deleteCluster: >-
+    Delete an Instant Cluster permanently. Every member Pod is terminated and
+    its container disk is lost.
+  deleteEndpoint: >-
+    Delete a Serverless endpoint permanently and immediately.
+  deletePod: >-
+    Terminate a Pod permanently. Its container disk is lost; data on an
+    attached network volume is kept. Stopping a Pod instead releases its
+    compute but keeps its disk.
+  deleteSecret: >-
+    Delete a secret permanently. Environment variables that reference it
+    ({{ RUNPOD_SECRET_<name> }}) stop resolving at the next Pod or worker
+    boot; running instances keep the value they started with.
+  deleteTemplate: >-
+    Delete a template permanently. An endpoint that references the template
+    can stop working once it is deleted.
+  listServerlessBilling: >-
+    Get Serverless billing history, split into time buckets. By default the
+    response has one record per endpoint per bucket, which can be very large
+    on accounts with many endpoints; lastN: 1 (or one bucket spanning the
+    whole window) returns one record per endpoint, and serverlessId narrows it
+    to a single endpoint. Pod billing is reported separately.
+  updateEndpoint: >-
+    Partially update a Serverless endpoint (PATCH): only fields present in the
+    body change. gpu.pools and gpu.excludedTypes are one selection, so sending
+    pools without excludedTypes clears existing exclusions; an exclusion
+    naming a type outside pools returns 400, and a CUDA-only or count-only
+    change does not need pools. Mutable fields: name, gpu, cpu, workers
+    (min/max/idleTimeout), scaling (type plus queueDelay or requestCount),
+    dataCenterIds, networkVolumes, timeout, flashboot, and the container
+    settings (image, args, disk, ports, env, registry). cpu replaces a CPU
+    endpoint's whole flavor selection. The compute family is fixed: gpu on a
+    CPU endpoint, cpu on a GPU one, or both returns 400. Worker, scaling and
+    timeout changes apply promptly; container changes (image, env) create a
+    new release that rolls out as workers cycle, so in-flight workers keep the
+    previous version.
+
 # operationIds listed with their call shape only: top-level arguments with
 # their types, nested objects collapsed. describe-tool serves the full schema,
 # which still gates every call. For large request bodies that few sessions

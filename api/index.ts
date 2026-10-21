@@ -6,6 +6,7 @@ import { getBaseUrl, handleMcpRequest } from '../src/http.js';
 import { handleAlpSubmit } from '../src/alp/ingest.js';
 import { handleAlpJournalRead } from '../src/alp/read.js';
 import { handleSearch } from '../src/search/route.js';
+import { DIRECTORY_PATH } from '../src/specgen/profile.js';
 import {
   isLoopbackHost,
   validatePkceAuthorization,
@@ -298,14 +299,17 @@ const DISCOVERY_CACHE_CONTROL =
 
 function handleProtectedResourceMetadata(
   req: VercelRequest,
-  res: VercelResponse
+  res: VercelResponse,
+  // The MCP endpoint path this metadata describes: '/' for the default
+  // surface, DIRECTORY_PATH for the directory profile (src/specgen/profile.ts).
+  resourcePath = '/'
 ): void {
   const baseUrl = getBaseUrl(req);
   res.setHeader('Cache-Control', DISCOVERY_CACHE_CONTROL);
   // Advertise THIS server as the authorization server so Claude discovers our
   // /authorize and /token routes.
   res.status(200).json({
-    resource: `${baseUrl}/`,
+    resource: `${baseUrl}${resourcePath}`,
     authorization_servers: [baseUrl],
     bearer_methods_supported: ['header'],
     resource_name: 'Runpod MCP server',
@@ -673,6 +677,15 @@ export default async function handler(
     pathname === '/.well-known/oauth-protected-resource'
   ) {
     handleProtectedResourceMetadata(req, res);
+    return;
+  }
+
+  // RFC 9728 path-suffixed metadata for the directory profile's endpoint.
+  if (
+    req.method === 'GET' &&
+    pathname === `/.well-known/oauth-protected-resource${DIRECTORY_PATH}`
+  ) {
+    handleProtectedResourceMetadata(req, res, DIRECTORY_PATH);
     return;
   }
 

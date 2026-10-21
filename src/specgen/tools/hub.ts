@@ -199,6 +199,8 @@ function randomSuffix(): string {
 export const listHubRepos: CuratedTool = {
   name: 'list-hub-repos',
   title: 'List Hub repos',
+  directoryDescription:
+    "List repos published to the Runpod Hub (prebuilt Serverless workers and Pod templates, such as vLLM and ComfyUI), sorted by deploy count. Public catalog; no sign-in needed. Each result includes the listed release with its hubReleaseId and image name. includeConfig: true adds each release's config (hardware requirements and environment-variable schema), which is large; repoOwner and searchTerm narrow the list.",
   annotations: readOnly,
   description:
     'List repos published to the Runpod Hub (prebuilt Serverless workers and Pod templates, e.g. vLLM, ComfyUI). Public catalog — no auth required. Each result includes the currently listed release with its hubReleaseId and prebuilt image name. Results are sorted by deploy count (most popular first). Set includeConfig:true to also return the release config (hardware requirements and environment-variable schema) — it is large, so prefer requesting it for a single repo via the repoOwner/searchTerm filters.',
@@ -326,6 +328,8 @@ export const listHubRepos: CuratedTool = {
 export const deployHubRepo: CuratedTool = {
   name: 'deploy-hub-repo',
   title: 'Deploy Hub repo',
+  directoryDescription:
+    "Deploy a Runpod Hub repo's listed release as a new Serverless endpoint, the same as clicking Deploy on the Hub. Identifies the repo by repo (\"owner/name\") or hubReleaseId. The release supplies the image, container disk, CUDA constraints and environment-variable defaults; env overrides or fills in values, and keys the release requires without a default have to be supplied. GPUs come from the release config when it sets them, otherwise from gpuIds (pool names such as 'ADA_24'). Billable while the endpoint's workers run.",
   // Two sequential upstream calls: together they can outlast a client's request timeout.
   holdsResponse: true,
   annotations: write,

@@ -15,6 +15,8 @@ import { readOnly } from './annotations.js';
 export const listTemplates: CuratedTool = {
   name: 'list-templates',
   title: 'List templates',
+  directoryDescription:
+    'List the templates visible to the account, with id, name, image and Serverless flag for each. Returns 20 templates per page by default; pagination.nextCursor returns the next page, and a template missing from one page can be on a later one.',
   annotations: readOnly,
   description:
     'List templates visible to the account. Returns id, name, image, and ' +

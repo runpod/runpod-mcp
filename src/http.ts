@@ -23,6 +23,11 @@ import {
 } from './_shared/credential-check.js';
 import type { HandleMcpRequestOptions, RpcSummary } from './types.js';
 import {
+  DIRECTORY_PATH,
+  profileForPath,
+  type ServerProfile,
+} from './specgen/profile.js';
+import {
   sdkBase,
   serverlessBase,
   authedGraphqlBase,
@@ -68,6 +73,11 @@ export function getBaseUrl(req: {
   return `${proto}://${host}`;
 }
 
+// The tool surface a request gets, from its path (src/specgen/profile.ts).
+export function requestProfile(req: { url?: string }): ServerProfile {
+  return profileForPath(new URL(req.url ?? '/', 'http://localhost').pathname);
+}
+
 function writeUnauthorized(
   req: IncomingMessage,
   res: ServerResponse,
@@ -87,9 +97,11 @@ function writeUnauthorized(
           'error_description="The credential was rejected; re-authenticate."',
         ]
       : []),
-    `resource_metadata="${getBaseUrl(
-      req
-    )}/.well-known/oauth-protected-resource"`,
+    // RFC 9728: a resource served under a path advertises its metadata at the
+    // well-known URI with that path appended.
+    `resource_metadata="${getBaseUrl(req)}/.well-known/oauth-protected-resource${
+      requestProfile(req) === 'directory' ? DIRECTORY_PATH : ''
+    }"`,
   ].join(', ');
 
   res.writeHead(401, {
@@ -557,8 +569,13 @@ export async function handleMcpRequest(
   const alpConfigured = Boolean(
     process.env.ALP_SINK_URL && process.env.ALP_SINK_SECRET
   );
+  // The directory profile (mcp.runpod.io/directory) serves no ALP tools and no
+  // referral ask: app directories forbid collecting conversation data beyond
+  // what a tool needs.
+  const profile = requestProfile(req);
+  const alpServed = alpConfigured && profile === 'default';
   let promptReferral = true;
-  if (alpConfigured && accountId && messages.some(isInitialize)) {
+  if (alpServed && accountId && messages.some(isInitialize)) {
     // The production lookup never rejects; the catch makes the fail-soft
     // contract structural for the test seam too: a rejection is "unknown".
     const answered = await (opts.hasAnswered ?? hasAnswered)(
@@ -604,7 +621,8 @@ export async function handleMcpRequest(
       // store submissions (the sink is configured). The ingest endpoint is
       // this deployment's own /api/alp/submit — one write path, both
       // transports (docs/agent-learning-protocol.md).
-      ...(alpConfigured
+      profile,
+      ...(alpServed
         ? {
             alp: {
               ingestUrl: `${getBaseUrl(req)}/api/alp/submit`,

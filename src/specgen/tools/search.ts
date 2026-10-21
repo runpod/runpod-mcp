@@ -23,6 +23,8 @@ export function createSearchDocsTool(search: SearchFn): CuratedTool {
   return {
     name: 'search-docs',
     title: 'Search docs',
+    directoryDescription:
+      'Search Runpod documentation, curated support answers, the Runpod blog and runpod.io for passages that answer a question, for example "how do I attach a network volume to a Serverless endpoint". Returns ranked passages with their source URLs. Covers how-to and product questions, not account or resource state.',
     annotations: readOnly,
     recordedArguments: ['limit'],
     description:
