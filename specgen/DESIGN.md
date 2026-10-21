@@ -42,7 +42,8 @@ There is a third box that never runs in production:
 ```
    ┌──────────────────────────────────────────────┐
    │ BOX 3 — THE INGREDIENTS    (dev-time only)   │
-   │ specgen/spec/openapi.yaml   the API's menu   │
+   │ packages/typescript-api-sdk/spec/openapi.yaml│
+   │                             the API's menu   │
    │ specgen/generator-config.yaml  our judgment  │
    │ specgen/generator/          the script       │
    └──────────────────────────────────────────────┘
@@ -83,7 +84,8 @@ env key instead of a bearer token). Every request is independent:
    - fills the URL, splits args into path/query/body
    - calls the SDK:  ctx.sdk.GET('/v2/pods/{podId}', {...})
 
-5. the published `@runpod/typescript-api-sdk` package (bundled into the build)
+5. the `@runpod/typescript-api-sdk` package (packages/typescript-api-sdk,
+   bundled into the build)
    - a thin wrapper over fetch: fills the URL template, adds the
      Authorization header, retries safe requests on 429/5xx
    - sends the real HTTPS request to api.runpod.io/v2
@@ -107,9 +109,11 @@ each other's anything.
 The 49 generated tools are produced, not written:
 
 ```
-specgen/spec/openapi.yaml          the API's description of itself
+packages/typescript-api-sdk/spec/openapi.yaml
+                                   the API's description of itself
         +                          (vendored from
-specgen/generator-config.yaml       api.runpod.io/v2/openapi.json)
+specgen/generator-config.yaml       api.runpod.io/v2/openapi.json
+                                    through the SDK's patch layer)
   our judgment:
   - skip these operations (each skip needs a written reason)
   - override these descriptions ("BILLABLE: state the price first")
@@ -159,7 +163,7 @@ EVERY PR ─ "is the repo consistent with itself?"   (pnpm test, no network)
 
 WHEN DRIFT IS RED ─ the human update loop (two commands)
   pnpm spec:pull          re-vendor (production by default)
-  pnpm generate:tools
+  pnpm generate           SDK schema + tools
   ...then review generator-config.yaml: does the new operation need a
   billable warning? an exclusion? That judgment is deliberately manual.
 ```
@@ -168,7 +172,7 @@ One trap this caught already: the spec has a DEV generation
 (`v2-rest.runpod.dev`, paths like `/v2/gpu-types`) and a PROD generation
 (`api.runpod.io`, paths like `/v2/catalog/gpus`). Production is the
 default everywhere; to build against dev (or any host), override with an
-env var — the vendored file records its source in its header:
+env var:
 
     SPEC_URL=https://v2-rest.runpod.dev/v2/openapi.yaml pnpm spec:pull
     SPEC_URL=... pnpm spec:check      # judge drift against that host too
@@ -181,46 +185,43 @@ red is correct (you are deliberately drifted), not a bug.
 
 ### The other half of the update loop: the SDK
 
-`pnpm spec:pull && pnpm generate:tools` only finishes half the job, because
-two repositories generate from the same
-`https://api.runpod.io/v2/openapi.json` and they generate different things.
+Two generators read the one vendored spec, and they generate different
+things.
 
-This repo generates **tool definitions**: `src/specgen/generated/tools.gen.ts`
+The MCP generates **tool definitions**: `src/specgen/generated/tools.gen.ts`
 is an array of plain objects — tool name, description written for a language
 model, JSON Schema for the arguments, and the method and path to call. It is
 data, read at runtime to answer `tools/list` and to route a call.
 
-[`@runpod/typescript-api-sdk`](https://github.com/runpod/typescript-api-sdk)
+The SDK in `packages/typescript-api-sdk/`
 generates **types**: its `src/generated/schema.ts` is TypeScript declarations
 and no runtime code, which is what makes `ctx.sdk.GET('/v2/pods')` know the
 path exists, which query parameters it takes, and what comes back.
 
 The two are stacked. Our generated tools say what to call; the call itself
-goes out through the SDK, pinned as a devDependency and bundled into the
-build. So a new upstream parameter reaches the two halves of our surface at
-different times:
+goes out through the SDK, a `workspace:*` dependency bundled into the build.
+`pnpm generate` regenerates both from the same file, so a new upstream
+parameter reaches both halves of the surface in one PR:
 
 ```
 GENERATED TOOLS (src/specgen/generated/)
-  pnpm spec:pull + pnpm generate:tools  →  have it immediately.
   Dispatch reads the method and path from the spec, not from SDK types.
+  The tool has the new parameter as soon as it is regenerated.
 
 CURATED TOOLS (src/specgen/tools/)
-  Hand-written handlers calling ctx.sdk.GET(...). They stay on the old
-  contract until the SDK regenerates AND publishes AND we bump the pin.
+  Hand-written handlers calling ctx.sdk.GET(...). The regenerated SDK
+  types accept the new parameter at once; the handler still has to be
+  taught to pass it.
 ```
 
-This is not hypothetical: when the v2 API added cursor pagination,
-`list-pods` (generated) had `cursor`/`limit` the moment the spec was
-re-vendored, while `list-endpoints` and `list-templates` (curated, because
-they trim fat fields) could not pass those parameters at all — the pinned
-SDK's types did not know they existed. They gained them only after SDK 0.2.0
-shipped and the pin moved to it.
-
-So when a spec resync touches an endpoint a curated tool serves, the order is:
-regenerate and publish the SDK first, bump the pin here, then teach the
-curated handler the new parameter. Check `src/specgen/tools/` for a handler
-on the affected path before assuming a re-vendor was enough.
+When the SDK lived in its own repository, curated tools waited for an SDK
+release and a pin bump: after the v2 API added cursor pagination, `list-pods`
+(generated) had `cursor`/`limit` immediately, while `list-endpoints` and
+`list-templates` (curated, because they trim fat fields) gained them only
+after SDK 0.2.0 shipped. That wait is gone, but the last step is not: when a
+spec resync touches an endpoint a curated tool serves, check
+`src/specgen/tools/` for a handler on the affected path before assuming a
+re-vendor was enough.
 
 ---
 
@@ -269,8 +270,10 @@ plugin and this server serve one copy.
   limiting is the stub: `src/specgen/ops.ts` defines the seat (consulted
   before every call, denial → retryable error with a wait hint);
   enforcement is a later one-function swap to a KV-backed counter.
-- **The SDK comes from npm.** `@runpod/typescript-api-sdk` is a build
-  dependency bundled into both entrypoints. It owns management API retries,
+- **The SDK lives in this repo.** `@runpod/typescript-api-sdk`
+  (`packages/typescript-api-sdk/`) is a `workspace:*` build dependency
+  bundled into both entrypoints, and is still published to npm on its own.
+  It owns management API retries,
   request deadlines, and SSE parsing; MCP retains snapshot limits and
   agent-facing formatting. Node.js 20+ is required.
 - **One surface everywhere.** stdio and hosted serve the same tools and
@@ -292,7 +295,9 @@ src/specgen/context.ts           Box 2: per-request clients from the caller's ke
 src/specgen/tools/               Box 2: the 17 hand-written tools
 src/specgen/ops.ts               Box 2: log line + rate-limit stub
 src/specgen/generated/           Box 2: machine-written output (DO NOT EDIT)
-specgen/spec/openapi.yaml        Box 3: vendored production spec
+packages/typescript-api-sdk/     the REST SDK, published as @runpod/typescript-api-sdk
+packages/typescript-api-sdk/spec/openapi.yaml
+                                 Box 3: vendored production spec (patched)
 specgen/generator-config.yaml    Box 3: exclusions / description + argument overrides / on-demand schemas
 specgen/generator/               Box 3: the generator
 specgen/old-mcp-tools.yaml       parity map against the old 54-tool server
@@ -301,7 +306,8 @@ tests/specgen-*.test.ts          the gates described in level 4
 ```
 
 ```
-pnpm generate:tools    regenerate the tool surface from the spec
+pnpm generate          regenerate the SDK schema and the tool surface from the spec
+pnpm generate:tools    regenerate only the tool surface
 pnpm spec:check        am I drifted from the live API?
 pnpm test              all gates (no network, no credentials needed)
 npx vercel deploy      preview deployment (prod promotion is manual)

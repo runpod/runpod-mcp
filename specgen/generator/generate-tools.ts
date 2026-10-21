@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { parse } from 'yaml';
 import { generateTools, type GeneratorConfig } from './tools.js';
 
-const spec = parse(readFileSync('specgen/spec/openapi.yaml', 'utf8'));
+const spec = parse(readFileSync('packages/typescript-api-sdk/spec/openapi.yaml', 'utf8'));
 const config: GeneratorConfig =
   parse(readFileSync('specgen/generator-config.yaml', 'utf8')) ?? {};
 const tools = generateTools(spec, config);
@@ -23,7 +23,7 @@ if (process.argv.includes('--check')) {
   process.exit(0);
 }
 
-const header = `// Code generated from specgen/spec/openapi.yaml by specgen/generator/generate-tools.ts; DO NOT EDIT.
+const header = `// Code generated from packages/typescript-api-sdk/spec/openapi.yaml by specgen/generator/generate-tools.ts; DO NOT EDIT.
 
 export interface GeneratedToolParam {
   name: string;

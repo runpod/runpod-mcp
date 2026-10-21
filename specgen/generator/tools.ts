@@ -160,6 +160,9 @@ function normalizeSchema(
   return mapSchema(
     node,
     (schema, at, composed) => {
+      // Added by the SDK's patch layer to name generated enum constants; it
+      // tells an agent nothing and only costs tools/list bytes.
+      delete schema['x-enum-varnames'];
       if (typeof schema.title === 'string') schema.title = prose(schema.title);
       // A composition or prefixItems member shares its parent's address; the
       // override describes the whole, so it lands once, on the parent.
