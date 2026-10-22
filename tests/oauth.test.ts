@@ -192,6 +192,26 @@ describe('OAuth PKCE endpoints', () => {
     assert.equal(backendRequests.length, 0);
   });
 
+  it('accepts ChatGPT callbacks and rejects lookalikes', async () => {
+    for (const redirectUri of [
+      'https://chatgpt.com/connector_platform_oauth_redirect',
+      'https://chatgpt.com/connector/oauth/cb_AbC123-x_9',
+    ]) {
+      const res = await authorize(redirectUri, CHALLENGE, 'S256');
+      assert.equal(res.statusCode, 302, redirectUri);
+    }
+    for (const redirectUri of [
+      'https://chatgpt.com.evil.test/connector/oauth/abc',
+      'https://evil.test/chatgpt.com/connector/oauth/abc',
+      'https://chatgpt.com/connector/oauth/abc/../../steal',
+      'https://chatgpt.com/connector/oauth/',
+      'http://chatgpt.com/connector/oauth/abc',
+    ]) {
+      const res = await authorize(redirectUri, CHALLENGE, 'S256');
+      assert.equal(res.statusCode, 400, redirectUri);
+    }
+  });
+
   it('persists valid S256 parameters and starts authorization', async () => {
     const res = await authorize(HOSTED_REDIRECT, CHALLENGE, 'S256');
     assert.equal(res.statusCode, 302);

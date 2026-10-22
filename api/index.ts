@@ -54,7 +54,16 @@ function getConsoleBaseUrl(): string {
 const DEFAULT_ALLOWED_REDIRECT_URIS = [
   'https://claude.ai/api/mcp/auth_callback',
   'https://claude.com/api/mcp/auth_callback',
+  // ChatGPT and Codex: the stable callback, used once a server supports
+  // RFC 9207 issuer identification.
+  'https://chatgpt.com/connector_platform_oauth_redirect',
 ];
+
+// ChatGPT's per-connection callback, used until then:
+// https://chatgpt.com/connector/oauth/{callback_id}. The id varies per
+// connection, so it is matched by shape on chatgpt.com only.
+const CHATGPT_CALLBACK =
+  /^https:\/\/chatgpt\.com\/connector\/oauth\/[A-Za-z0-9_-]+$/;
 
 function getAllowedRedirectUris(): string[] {
   const extra = (process.env.MCP_ALLOWED_REDIRECT_URIS ?? '')
@@ -80,6 +89,7 @@ function isRedirectUriAllowed(redirectUri: string | null): boolean {
     return false;
   }
   if (url.protocol === 'http:' && isLoopbackHost(url.hostname)) return true;
+  if (CHATGPT_CALLBACK.test(redirectUri)) return true;
   return getAllowedRedirectUris().includes(redirectUri);
 }
 
