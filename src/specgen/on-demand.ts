@@ -87,7 +87,9 @@ export const DIRECTORY_API_REFERENCE =
 function withApiReference(description: string, schema: Schema): string {
   const properties = (schema.properties ?? {}) as Schema;
   if (!('body' in properties)) return description;
-  return `${description.replace(/\s*$/, '')} ${DIRECTORY_API_REFERENCE}`;
+  const trimmed = description.replace(/\s*$/, '');
+  const sentence = /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+  return `${sentence} ${DIRECTORY_API_REFERENCE}`;
 }
 
 function withoutInputs(schema: Schema, omit: readonly string[]): Schema {

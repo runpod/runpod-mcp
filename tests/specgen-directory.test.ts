@@ -158,6 +158,14 @@ test('directory tools that take a request body name the API they call', async ()
       tool.description?.endsWith(DIRECTORY_API_REFERENCE),
       `${tool.name} does not reference the API`
     );
+  // The reference starts a new sentence, even after a description that
+  // has no closing period (create-delegation).
+  for (const tool of withBody)
+    assert.match(
+      tool.description!,
+      /[.!?] Calls the Runpod REST API v2: /,
+      `${tool.name} runs into the API reference`
+    );
   const listPods = tools.find((tool) => tool.name === 'list-pods');
   assert.ok(!listPods?.description?.includes(DIRECTORY_API_REFERENCE));
 });
