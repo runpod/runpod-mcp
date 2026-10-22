@@ -18,6 +18,7 @@ import {
   type SpecgenServerOptions,
 } from '#src/specgen/server';
 import { createToolContext } from '#src/specgen/context';
+import { DIRECTORY_API_REFERENCE } from '#src/specgen/on-demand';
 import { generatedTools } from '#src/specgen/generated/tools.gen';
 import {
   DIRECTORY_TOOLS,
@@ -142,6 +143,23 @@ test('no directory tool asks for a credential as input', async () => {
     [],
     'Exclude the tool or omit the input in DIRECTORY_TOOLS (src/specgen/profile.ts)'
   );
+});
+
+test('directory tools that take a request body name the API they call', async () => {
+  const client = await connect({ profile: 'directory' });
+  const { tools } = await client.listTools();
+  await client.close();
+  const withBody = tools.filter(
+    (tool) => 'body' in ((tool.inputSchema.properties ?? {}) as object)
+  );
+  assert.ok(withBody.some((tool) => tool.name === 'create-pod'));
+  for (const tool of withBody)
+    assert.ok(
+      tool.description?.endsWith(DIRECTORY_API_REFERENCE),
+      `${tool.name} does not reference the API`
+    );
+  const listPods = tools.find((tool) => tool.name === 'list-pods');
+  assert.ok(!listPods?.description?.includes(DIRECTORY_API_REFERENCE));
 });
 
 test('directory profile refuses an omitted input', async () => {
