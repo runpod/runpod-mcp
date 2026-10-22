@@ -294,6 +294,12 @@ function encodeBody(body: VercelRequest['body']): string {
 // per-caller and CORS here is a static `*`, not a reflected Origin — so no
 // Vary is needed and no caller's response can be replayed to another. Never
 // put this on the MCP endpoint itself, whose responses are per-caller.
+// OpenAI's plugin portal verifies the MCP domain by fetching this token from
+// /.well-known/openai-apps-challenge. It is a public challenge value, not a
+// secret; the portal issues a new one if the plugin is reconnected.
+export const OPENAI_APPS_CHALLENGE_TOKEN =
+  'BmtBfR4bF_8xmbQeiES5yv98enJso58W3tjVuf7JL0k';
+
 const DISCOVERY_CACHE_CONTROL =
   'public, max-age=0, s-maxage=3600, stale-while-revalidate=86400';
 
@@ -671,6 +677,15 @@ export default async function handler(
   );
 
   const pathname = new URL(req.url ?? '/', getBaseUrl(req)).pathname;
+
+  if (
+    req.method === 'GET' &&
+    pathname === '/.well-known/openai-apps-challenge'
+  ) {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.status(200).send(OPENAI_APPS_CHALLENGE_TOKEN);
+    return;
+  }
 
   if (
     req.method === 'GET' &&
