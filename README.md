@@ -2,7 +2,7 @@
 
 The official Runpod Model Context Protocol (MCP) server. It lets MCP clients such as Claude Code, Claude Desktop, Cursor, Windsurf, VS Code, opencode, and Pi manage your Runpod Pods, Serverless endpoints, templates, network volumes, and more.
 
-**We host it for you at [`https://mcp.getrunpod.io/`](https://mcp.getrunpod.io/)** — point your client at that URL and sign in with Runpod. Nothing to install, no API key on disk. Or run it locally from npm as [`@runpod/mcp-server`](https://www.npmjs.com/package/@runpod/mcp-server).
+**We host it for you at [`https://mcp.runpod.io/`](https://mcp.runpod.io/)** — point your client at that URL and sign in with Runpod. Nothing to install, no API key on disk. Or run it locally from npm as [`@runpod/mcp-server`](https://www.npmjs.com/package/@runpod/mcp-server).
 
 ## Quick start
 
@@ -63,7 +63,7 @@ To configure a client by hand, point it at the hosted server over HTTP (no local
 **Claude Code:**
 
 ```bash
-claude mcp add --transport http runpod -s user https://mcp.getrunpod.io/
+claude mcp add --transport http runpod -s user https://mcp.runpod.io/
 ```
 
 **Other clients** (Cursor, VS Code, Claude Desktop connectors, …) — use a URL-based MCP entry:
@@ -72,7 +72,7 @@ claude mcp add --transport http runpod -s user https://mcp.getrunpod.io/
 {
   "mcpServers": {
     "runpod": {
-      "url": "https://mcp.getrunpod.io/"
+      "url": "https://mcp.runpod.io/"
     }
   }
 }
@@ -92,7 +92,7 @@ You can send your API key as a header instead of signing in with OAuth, as descr
 
 ```toml
 [mcp_servers.runpod]
-url = "https://mcp.getrunpod.io/"
+url = "https://mcp.runpod.io/"
 bearer_token_env_var = "RUNPOD_API_KEY"
 ```
 
