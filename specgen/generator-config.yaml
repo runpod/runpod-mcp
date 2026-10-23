@@ -78,8 +78,11 @@ annotations:
     idempotentHint: true
   updateNetworkVolume:
     idempotentHint: true
+  # PATCH, but it overwrites the image, env, registry and container settings
+  # and can flip a private template public; the old values are not kept.
   updateTemplate:
     idempotentHint: true
+    destructiveHint: true
 
 # operationId -> description overrides; default is the spec summary+description.
 # The mutation-tool overrides carry the critical gotchas inline so the

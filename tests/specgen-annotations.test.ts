@@ -168,7 +168,7 @@ const expectedHints = new Map<string, string>([
   ['update-pod', 'FTFT'],
   ['update-secret', 'FTFT'],
   ['update-ssh-keys', 'FTTT'],
-  ['update-template', 'FFTT'],
+  ['update-template', 'FTTT'],
 ]);
 
 function hintsOf(annotations: {

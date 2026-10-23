@@ -81,10 +81,14 @@ test('directory profile: no ALP, guide or describe tools, and full schemas', asy
 // Every tool the server can serve needs an explicit directory decision, so a
 // regenerated or newly written tool cannot reach the directory unreviewed.
 test('every tool has a directory decision, and every decision names a real tool', async () => {
-  const client = await connect(ALP);
-  const { tools } = await client.listTools();
-  await client.close();
-  const served = tools.map((tool) => tool.name);
+  // Both profiles: some directory tools (start-pod) exist only there.
+  const served: string[] = [];
+  for (const profile of ['default', 'directory'] as const) {
+    const client = await connect({ ...ALP, profile });
+    const { tools } = await client.listTools();
+    await client.close();
+    served.push(...tools.map((tool) => tool.name));
+  }
   const unclassified = served.filter((name) => !(name in DIRECTORY_TOOLS));
   assert.deepEqual(
     unclassified,
@@ -188,6 +192,26 @@ test('directory profile refuses an omitted input', async () => {
   await client.close();
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /s3Config/);
+});
+
+test('directory profile serves one tool per Pod transition instead of pod-action', async () => {
+  const client = await connect({ profile: 'directory' });
+  const { tools } = await client.listTools();
+  await client.close();
+  const byName = new Map(tools.map((tool) => [tool.name, tool]));
+  assert.equal(byName.has('pod-action'), false);
+  assert.ok(byName.has('delete-pod'));
+  for (const [name, destructive] of [
+    ['start-pod', false],
+    ['stop-pod', true],
+    ['restart-pod', true],
+  ] as const) {
+    const tool = byName.get(name);
+    assert.ok(tool, `${name} missing`);
+    assert.deepEqual(tool.inputSchema.required, ['id']);
+    assert.equal(tool.annotations?.destructiveHint, destructive, name);
+    assert.equal(tool.annotations?.readOnlyHint, false, name);
+  }
 });
 
 test('directory profile refuses calls to tools it does not list', async () => {

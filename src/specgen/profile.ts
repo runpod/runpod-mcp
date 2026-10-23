@@ -86,7 +86,6 @@ export const DIRECTORY_TOOLS: Readonly<Record<string, DirectoryDecision>> = {
   'list-serverless-billing': IN,
   'list-templates': IN,
   'lookup-concept': IN,
-  'pod-action': IN,
   'purge-endpoint-queue': IN,
   'retry-job': IN,
   'revoke-delegation': IN,
@@ -105,6 +104,14 @@ export const DIRECTORY_TOOLS: Readonly<Record<string, DirectoryDecision>> = {
   'update-template': IN,
   'run-endpoint': { include: true, omitInputs: ['s3Config'] },
   'runsync-endpoint': { include: true, omitInputs: ['s3Config'] },
+  'pod-action': {
+    include: false,
+    reason:
+      'Takes the transition as an argument; OpenAI asks for one tool per operation, so the directory serves start-pod, stop-pod and restart-pod (terminate is delete-pod).',
+  },
+  'start-pod': IN,
+  'stop-pod': IN,
+  'restart-pod': IN,
   'list-guides': {
     include: false,
     reason: 'Serves playbooks that instruct the model how to behave.',

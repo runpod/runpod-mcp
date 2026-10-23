@@ -17,6 +17,7 @@ import {
   type ToolResult,
 } from './dispatch.js';
 import { generatedTools } from './generated/tools.gen.js';
+import { podTransitionTools } from './tools/pod-transitions.js';
 import {
   directoryIncludes,
   directoryOmittedInputs,
@@ -193,6 +194,7 @@ export function createSpecgenServer(
     ...curatedTools,
     ...(opts.search ? [createSearchDocsTool(opts.search)] : []),
     ...(alp ? createAlpTools(alp) : []),
+    ...(directory ? podTransitionTools : []),
     createDescribeTool(() => [...servedCuratedTools, ...servedGeneratedTools]),
   ].filter((tool) => !directory || directoryIncludes(tool.name));
   // The directory profile lists full schemas, so nothing there is call-shape only.
