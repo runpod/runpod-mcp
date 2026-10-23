@@ -428,6 +428,31 @@ test('every top-level argument declares a type', () => {
   assert.deepEqual(untyped, []);
 });
 
+// Every served pattern must compile in the regex dialects clients and
+// directory scanners use. Unicode property escapes (\p{Z}) don't, and
+// OpenAI's tool scan rejects the whole tool over one.
+test('every schema pattern is portable', () => {
+  const found: string[] = [];
+  const walk = (node: unknown, at: string) => {
+    if (!node || typeof node !== 'object') return;
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'pattern' && typeof value === 'string') {
+        if (/\\[pP]\{/.test(value)) found.push(`${at}: ${value}`);
+        try {
+          new RegExp(value);
+          new RegExp(value, 'u');
+        } catch {
+          found.push(`${at}: ${value}`);
+        }
+      }
+      walk(value, `${at}.${key}`);
+    }
+  };
+  for (const tool of [...stdioCuratedTools, ...generatedTools])
+    walk(tool.inputSchema, tool.name);
+  assert.deepEqual(found, []);
+});
+
 test('no argument description exceeds the per-field cap', () => {
   assert.deepEqual(
     [

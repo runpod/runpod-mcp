@@ -155,6 +155,8 @@ interface ProseContext {
   compositionDefs: Set<string>;
 }
 
+const UNICODE_PROPERTY_ESCAPE = /\\[pP]\{/;
+
 function normalizeSchema(
   node: unknown,
   address: string,
@@ -178,6 +180,14 @@ function normalizeSchema(
         if (typeof schema[key] === 'string')
           schema[key] = rewriteRef(schema[key]);
       }
+      // Unicode property escapes (\p{Z}) are not portable: OpenAI's tool scan
+      // rejects the whole schema over one. The API still enforces the rule,
+      // and the field's description states it.
+      if (
+        typeof schema.pattern === 'string' &&
+        UNICODE_PROPERTY_ESCAPE.test(schema.pattern)
+      )
+        delete schema.pattern;
       const discriminator = schema.discriminator as
         | { mapping?: Record<string, string> }
         | undefined;

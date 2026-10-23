@@ -855,7 +855,6 @@ export const generatedTools: GeneratedTool[] = [
               type: 'string',
               minLength: 1,
               maxLength: 191,
-              pattern: '[^\\p{Z}\\t-\\r]',
               description:
                 'Human-readable name, 1–191 characters with at least one non-whitespace character. Leading and trailing whitespace is trimmed.',
               examples: ['training-data'],
@@ -4431,7 +4430,6 @@ export const generatedTools: GeneratedTool[] = [
               type: 'string',
               minLength: 1,
               maxLength: 191,
-              pattern: '[^\\p{Z}\\t-\\r]',
               description:
                 'New human-readable name, 1–191 characters with at least one non-whitespace character. Leading and trailing whitespace is trimmed.',
               examples: ['renamed-volume'],
