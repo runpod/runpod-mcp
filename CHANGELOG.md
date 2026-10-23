@@ -1,5 +1,22 @@
 # @runpod/mcp-server
 
+## 4.6.0
+
+### Minor Changes
+
+- 34bb467: Add a directory profile at `/directory` (hosted: `https://mcp.runpod.io/directory`) for app directories such as Anthropic's connector directory. It lists tool descriptions that only say what each tool does, full argument schemas, and a factual briefing, and leaves out the guide tools, `describe-tool`, the tools that take a secret or password as input (`create-secret`, `update-secret`, `create-registry`) and the S3 credentials argument of `run-endpoint` and `runsync-endpoint`, the agent-learning tools, the referral ask and the guide resources; its analytics record which tool ran but no argument values. A tool appears there only once it is classified in `DIRECTORY_TOOLS` per `specgen/DIRECTORY_POLICY.md`; tests fail on an unclassified tool or a directory tool that takes a credential. The default surface at `/` is unchanged. Separately, every profile now redacts secret-looking environment values (passwords, tokens, API keys) in tool results, keeping `{{ RUNPOD_SECRET_<name> }}` references.
+
+### Patch Changes
+
+- 02a8f0c: Correct the MCP annotations on tools whose HTTP method understated what they do, so hosts gate them on a human. `update-endpoint`, `update-pod`, `update-secret`, `set-endpoint-gpus` and `retry-job` are now marked destructive: each can clear settings it was not sent, restart a container, overwrite a value that cannot be read back, or remove prior job output. `stream-job` is no longer marked read-only, because the stream hands out each chunk once. `create-secret` and the field-setting updates (`update-cluster`, `update-network-volume`, `update-global-volume`, `update-template`) are now marked idempotent.
+- 8cfdf83: Accept ChatGPT's OAuth callbacks on the hosted server: the stable `https://chatgpt.com/connector_platform_oauth_redirect` and the per-connection `https://chatgpt.com/connector/oauth/{callback_id}`, so ChatGPT and Codex can sign in with Runpod.
+- e39441f: Declare `type: object` on the `body` argument of the create and update tools whose request body is an `allOf` composition (`create-cluster`, `create-endpoint`, `create-pod`, `create-template`, `update-endpoint`, `update-pod`, `update-template`), so directory reviews that read top-level argument types see one on the full schema served at `/directory`.
+
+  On `/directory`, every tool that takes a request body (`body`) now ends its description with a link to the Runpod REST API v2 reference, which the Claude directory portal suggests for these tools.
+
+- 31b1c7d: Every top-level tool argument now declares its `type` (arguments that referenced a shared definition, like `bucketSize`, `cloud` and several request bodies, carried only the reference), and each tool's title is also sent as `annotations.title`. Both were flagged by Anthropic's connector directory review.
+- 77c2af7: Serve OpenAI's domain-verification token at `/.well-known/openai-apps-challenge` on the hosted server, so the OpenAI plugin portal can verify `mcp.runpod.io`.
+
 ## 4.5.0
 
 ### Minor Changes
