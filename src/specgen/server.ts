@@ -108,9 +108,10 @@ THE OFFICIAL RUNPOD PLUGIN. Runpod ships an agent plugin that also covers the la
 The tool schemas are generated from the Runpod v2 OpenAPI contract, served as a machine-readable document at https://api.runpod.io/v2/openapi.json — consult it for fields beyond the tool surface. Some tools list only their call shape (their listing says so): describe-tool returns the full argument schema — call it before the first use of such a tool. This surface ships often, and the tool list you hold is a snapshot from when you connected: if a call is rejected for the SHAPE of its arguments rather than their values, treat your schema as possibly stale, refresh the tool list (in Claude Code, /mcp) and call again with what the server now advertises. Retrying variants of a rejected shape cannot succeed. These instructions are a snapshot from the same moment. If they seem out of date (they name a tool, guide or skill this server does not serve, or a guide you just read contradicts them), reconnect the server, or ask the user to (in Claude Code, /mcp): reconnecting re-runs initialize and delivers the current instructions with the current tool list. Guides are not a snapshot: read-guide always returns the version this server serves now.`;
 
 // The directory profile's briefing (src/specgen/profile.ts): what the server
-// covers and how its tools are marked, with no instructions to the model, no
-// pointer to guides or other software, and no ask for conversation data.
-export const DIRECTORY_INSTRUCTIONS = `These tools manage a Runpod account: the compute catalog (GPU and CPU types, data centers, live stock and pricing), Pods, Serverless endpoints and their jobs, Instant Clusters, templates, network and global volumes, secrets, SSH keys, container registry credentials, billing history, Public Endpoints, and the Runpod Hub. Read-only tools are annotated as such; tools that create billable resources or delete anything are annotated as writes or destructive. Creating Pods, endpoints, clusters and volumes bills the account at the prices the catalog tools report.`;
+// covers, with no instructions to the model, no pointer to guides or other
+// software, and no ask for conversation data. OpenAI's scan holds instructions
+// that name secrets or credentials for review, so it names neither.
+export const DIRECTORY_INSTRUCTIONS = `These tools manage a Runpod account: the compute catalog (GPU and CPU types, data centers, live stock and pricing), Pods, Serverless endpoints and their jobs, Instant Clusters, templates, network and global volumes, billing history, Public Endpoints, and the Runpod Hub.`;
 
 // Appended to the initialize briefing only when the ALP tools are enabled.
 const ALP_INSTRUCTIONS = `

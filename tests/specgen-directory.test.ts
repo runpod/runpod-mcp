@@ -245,6 +245,12 @@ test('directory descriptions say what a tool does, name no other tool, and give 
   assert.deepEqual(offenders, []);
   assert.doesNotMatch(DIRECTORY_INSTRUCTIONS, DIRECTIVE);
   assert.doesNotMatch(DIRECTORY_INSTRUCTIONS, /plugin|report_|journal/i);
+  // OpenAI's server-instruction scan holds text that names secrets or
+  // credentials for human review.
+  assert.doesNotMatch(
+    DIRECTORY_INSTRUCTIONS,
+    /secret|credential|password|token|ssh key|api key/i
+  );
 });
 
 test('default profile is unchanged: original descriptions, ALP when configured', async () => {
