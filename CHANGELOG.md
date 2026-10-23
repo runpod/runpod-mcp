@@ -1,5 +1,13 @@
 # @runpod/mcp-server
 
+## 4.6.1
+
+### Patch Changes
+
+- d527e91: Trim the `/directory` server instructions to one sentence listing what the tools cover, without naming secrets, SSH keys or registry credentials. OpenAI's plugin scan held the longer version for review.
+- 4b8b68e: Address OpenAI plugin review findings. On `/directory`, `pod-action` is replaced by separate `start-pod`, `stop-pod` and `restart-pod` tools (terminate is `delete-pod`); the default surface keeps `pod-action`. `update-template` is now marked destructive, since it overwrites the image, env and registry and can make a template public.
+- 0f519bf: Drop the non-portable `pattern` (a `\p{Z}` Unicode property escape) from the `name` argument of `create-global-volume` and `update-global-volume`. OpenAI's plugin tool scan rejected the schema; the API still enforces the rule and the field description states it.
+
 ## 4.6.0
 
 ### Minor Changes
