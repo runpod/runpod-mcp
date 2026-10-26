@@ -3,6 +3,7 @@ import {
   CallToolRequestSchema,
   InitializeRequestSchema,
   JSONRPCMessageSchema,
+  isJSONRPCRequest,
   type JSONRPCMessage,
 } from '@modelcontextprotocol/sdk/types.js';
 import { hasAnswered } from './alp/answered.js';
@@ -661,7 +662,7 @@ export async function handleMcpRequest(
   // request with a JSON response, so SSE and empty responses stay untouched.
   if (
     jsonResponse &&
-    messages.some((message) => 'method' in message && 'id' in message) &&
+    messages.some(isJSONRPCRequest) &&
     res instanceof ServerResponse
   ) {
     enableMcpCompression(req, res);
