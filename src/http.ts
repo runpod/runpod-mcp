@@ -34,6 +34,7 @@ import {
   type Env,
 } from './_shared/hosts.js';
 import { IncomingMessage, ServerResponse } from 'node:http';
+import { enableMcpCompression } from './http-compression.js';
 
 /**
  * Extract the bearer token from an HTTP request's Authorization header.
@@ -443,6 +444,9 @@ export async function handleMcpRequest(
   res: ServerResponse,
   opts: HandleMcpRequestOptions = {}
 ): Promise<void> {
+  // Keep the Node server and Vercel endpoint behavior identical. Test doubles
+  // that do not implement ServerResponse remain usable in unit tests.
+  if (res instanceof ServerResponse) enableMcpCompression(req, res);
   const bearerToken = extractBearerToken(req);
   const requestLog = startRequestLog(req, res, bearerToken);
   // Stateless server: there are no server-initiated messages, so the standalone
