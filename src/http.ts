@@ -3,6 +3,7 @@ import {
   CallToolRequestSchema,
   InitializeRequestSchema,
   JSONRPCMessageSchema,
+  isJSONRPCRequest,
   type JSONRPCMessage,
 } from '@modelcontextprotocol/sdk/types.js';
 import { hasAnswered } from './alp/answered.js';
@@ -34,6 +35,7 @@ import {
   type Env,
 } from './_shared/hosts.js';
 import { IncomingMessage, ServerResponse } from 'node:http';
+import { enableMcpCompression } from './http-compression.js';
 
 /**
  * Extract the bearer token from an HTTP request's Authorization header.
@@ -655,9 +657,20 @@ export async function handleMcpRequest(
     }
   );
 
+  const jsonResponse = prefersJsonResponse(messages);
+  // Notifications answer 202 with no body. Install compression only for a
+  // request with a JSON response, so SSE and empty responses stay untouched.
+  if (
+    jsonResponse &&
+    messages.some(isJSONRPCRequest) &&
+    res instanceof ServerResponse
+  ) {
+    enableMcpCompression(req, res);
+  }
+
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless — no session persistence
-    enableJsonResponse: prefersJsonResponse(messages),
+    enableJsonResponse: jsonResponse,
   });
 
   // This per-request server/transport pair is single-use; dispose it when the
