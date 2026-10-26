@@ -176,11 +176,6 @@ descriptions:
 # connections keep the descriptions above. The generator rejects keys whose
 # operationId is absent from the spec.
 directoryDescriptions:
-  listAuditLogs: >-
-    List the account's audit trail, newest first. Results are cursor-paginated
-    and record the actor, action, resource, timestamp, and change details.
-    Filters include actor IDs, actions, time range, and text search. The
-    account's retention window and plan determine which entries are available.
   createCluster: >-
     Create an Instant Cluster: compute.podCount identical Pods joined by a
     high-speed interconnect, each with compute.gpuCountPerPod GPUs of
@@ -217,6 +212,11 @@ directoryDescriptions:
   deleteTemplate: >-
     Delete a template permanently. An endpoint that references the template
     can stop working once it is deleted.
+  listAuditLogs: >-
+    List the account's audit trail, newest first. Results are cursor-paginated
+    and record the actor, action, resource, timestamp, and change details.
+    Filters include actor IDs, actions, time range, and text search. The
+    account's retention window and plan determine which entries are available.
   listServerlessBilling: >-
     Get Serverless billing history, split into time buckets. By default the
     response has one record per endpoint per bucket, which can be very large
