@@ -1,11 +1,18 @@
 import compression from 'compression';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-// Only installed for SDK requests configured to answer as JSON. The SDK puts
-// Content-Type directly in writeHead(), so the default getHeader()-based filter
-// cannot see it. The SDK also writes headers before the body, which means a
-// length threshold cannot be applied here without buffering the response.
-const compressJson = compression({ threshold: 0, filter: () => true });
+// Only installed for SDK requests configured to answer as JSON. on-headers
+// exposes the headers passed to writeHead() before this filter runs. The SDK
+// writes headers before the body, so a size threshold cannot be applied here
+// without buffering the response.
+const compressJson = compression({
+  threshold: 0,
+  filter: (_req, res) =>
+    res.statusCode === 200 &&
+    /^application\/json(?:\s*;|$)/i.test(
+      String(res.getHeader('Content-Type') ?? '')
+    ),
+});
 
 export function enableMcpCompression(
   req: IncomingMessage,

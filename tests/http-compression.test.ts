@@ -4,6 +4,7 @@ import { createServer, request, type IncomingHttpHeaders } from 'node:http';
 import { brotliDecompressSync, gunzipSync } from 'node:zlib';
 
 import { handleMcpRequest } from '#src/http';
+import { enableMcpCompression } from '#src/http-compression';
 import handler from '../api/index.js';
 
 const toolsList = JSON.stringify({
@@ -139,10 +140,60 @@ describe('hosted MCP JSON compression', () => {
   });
 
   it('does not compress a JSON authentication error', async () => {
+    // Compression is installed after the auth gate. With threshold zero, even
+    // this short body would compress if middleware leaked into this path.
     const response = await callMcp('gzip', toolsList, false, null);
     assert.equal(response.status, 401);
     assert.equal(response.headers['content-encoding'], undefined);
+    assert.equal(response.headers.vary, undefined);
     assert.match(response.body.toString(), /Authorization/);
+  });
+
+  it('does not compress a large non-200 JSON response', async () => {
+    const server = createServer((req, res) => {
+      enableMcpCompression(req, res);
+      res.writeHead(422, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ message: 'x'.repeat(4096) }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    try {
+      const address = server.address();
+      assert.ok(address && typeof address !== 'string');
+      const response = await new Promise<{
+        status: number | undefined;
+        headers: IncomingHttpHeaders;
+        body: Buffer;
+      }>((resolve, reject) => {
+        const req = request(
+          {
+            port: address.port,
+            headers: { 'accept-encoding': 'gzip' },
+          },
+          (res) => {
+            const chunks: Buffer[] = [];
+            res.on('data', (chunk: Buffer) => chunks.push(chunk));
+            res.on('end', () =>
+              resolve({
+                status: res.statusCode,
+                headers: res.headers,
+                body: Buffer.concat(chunks),
+              })
+            );
+            res.on('error', reject);
+          }
+        );
+        req.on('error', reject);
+        req.end();
+      });
+      assert.equal(response.status, 422);
+      assert.equal(response.headers['content-encoding'], undefined);
+      assert.ok(response.body.length > 4096);
+      assert.deepEqual(JSON.parse(response.body.toString()), {
+        message: 'x'.repeat(4096),
+      });
+    } finally {
+      server.close();
+    }
   });
 
   it('leaves an empty notification response untouched', async () => {
