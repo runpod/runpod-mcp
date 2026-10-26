@@ -86,6 +86,48 @@ async function callMcp(
   }
 }
 
+async function callWithCompressionMiddleware(
+  status: number,
+  contentType: string,
+  body: string
+): Promise<{
+  status: number | undefined;
+  headers: IncomingHttpHeaders;
+  body: Buffer;
+}> {
+  const server = createServer((req, res) => {
+    enableMcpCompression(req, res);
+    res.writeHead(status, { 'Content-Type': contentType });
+    res.end(body);
+  });
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    return await new Promise((resolve, reject) => {
+      const req = request(
+        { port: address.port, headers: { 'accept-encoding': 'gzip' } },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', () =>
+            resolve({
+              status: res.statusCode,
+              headers: res.headers,
+              body: Buffer.concat(chunks),
+            })
+          );
+          res.on('error', reject);
+        }
+      );
+      req.on('error', reject);
+      req.end();
+    });
+  } finally {
+    server.close();
+  }
+}
+
 describe('hosted MCP JSON compression', () => {
   it('gzips a real tools/list response when the client accepts gzip', async () => {
     const response = await callMcp('gzip');
@@ -150,50 +192,29 @@ describe('hosted MCP JSON compression', () => {
   });
 
   it('does not compress a large non-200 JSON response', async () => {
-    const server = createServer((req, res) => {
-      enableMcpCompression(req, res);
-      res.writeHead(422, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ message: 'x'.repeat(4096) }));
+    const response = await callWithCompressionMiddleware(
+      422,
+      'application/json',
+      JSON.stringify({ message: 'x'.repeat(4096) })
+    );
+    assert.equal(response.status, 422);
+    assert.equal(response.headers['content-encoding'], undefined);
+    assert.ok(response.body.length > 4096);
+    assert.deepEqual(JSON.parse(response.body.toString()), {
+      message: 'x'.repeat(4096),
     });
-    await new Promise<void>((resolve) => server.listen(0, resolve));
-    try {
-      const address = server.address();
-      assert.ok(address && typeof address !== 'string');
-      const response = await new Promise<{
-        status: number | undefined;
-        headers: IncomingHttpHeaders;
-        body: Buffer;
-      }>((resolve, reject) => {
-        const req = request(
-          {
-            port: address.port,
-            headers: { 'accept-encoding': 'gzip' },
-          },
-          (res) => {
-            const chunks: Buffer[] = [];
-            res.on('data', (chunk: Buffer) => chunks.push(chunk));
-            res.on('end', () =>
-              resolve({
-                status: res.statusCode,
-                headers: res.headers,
-                body: Buffer.concat(chunks),
-              })
-            );
-            res.on('error', reject);
-          }
-        );
-        req.on('error', reject);
-        req.end();
-      });
-      assert.equal(response.status, 422);
-      assert.equal(response.headers['content-encoding'], undefined);
-      assert.ok(response.body.length > 4096);
-      assert.deepEqual(JSON.parse(response.body.toString()), {
-        message: 'x'.repeat(4096),
-      });
-    } finally {
-      server.close();
-    }
+  });
+
+  it('does not compress a large non-JSON response', async () => {
+    const body = 'x'.repeat(4096);
+    const response = await callWithCompressionMiddleware(
+      200,
+      'text/plain',
+      body
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.headers['content-encoding'], undefined);
+    assert.equal(response.body.toString(), body);
   });
 
   it('leaves an empty notification response untouched', async () => {
