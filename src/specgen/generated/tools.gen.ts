@@ -2540,6 +2540,8 @@ export const generatedTools: GeneratedTool[] = [
     operationId: 'listAuditLogs',
     description:
       "List audit logs. Returns the account's audit trail, newest first, cursor-paginated; an omitted `limit` defaults to 200. Each entry records who acted (`actorId`, `email`), what they did (`action`), to which resource (`resourceType`, `resourceId`), and the details of the change (`value`). When the caller belongs to an organization the trail is the organization's, and `actorIds` narrows it to specific members; otherwise it is the trail of the account the request acts for. Filters combine with AND. Entries older than the account's audit log retention window are not returned, and an account whose plan does not include audit logs is answered 403. Follow `pagination.nextCursor` until `hasNextPage` is false.",
+    directoryDescription:
+      "List the account's audit trail, newest first. Results are cursor-paginated and record the actor, action, resource, timestamp, and change details. Filters include actor IDs, actions, time range, and text search. The account's retention window and plan determine which entries are available.",
     method: 'GET',
     path: '/v2/audit-logs',
     params: [

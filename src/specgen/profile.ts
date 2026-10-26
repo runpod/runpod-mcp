@@ -60,6 +60,7 @@ export const DIRECTORY_TOOLS: Readonly<Record<string, DirectoryDecision>> = {
   'get-secret': IN,
   'get-ssh-keys': IN,
   'get-template': IN,
+  'list-audit-logs': IN,
   'list-billing': IN,
   'list-cluster-billing': IN,
   'list-cluster-pods': IN,
