@@ -2535,6 +2535,105 @@ export const generatedTools: GeneratedTool[] = [
     },
   },
   {
+    name: 'list-audit-logs',
+    title: 'List audit logs',
+    operationId: 'listAuditLogs',
+    description:
+      "List audit logs. Returns the account's audit trail, newest first, cursor-paginated; an omitted `limit` defaults to 200. Each entry records who acted (`actorId`, `email`), what they did (`action`), to which resource (`resourceType`, `resourceId`), and the details of the change (`value`). When the caller belongs to an organization the trail is the organization's, and `actorIds` narrows it to specific members; otherwise it is the trail of the account the request acts for. Filters combine with AND. Entries older than the account's audit log retention window are not returned, and an account whose plan does not include audit logs is answered 403. Follow `pagination.nextCursor` until `hasNextPage` is false.",
+    method: 'GET',
+    path: '/v2/audit-logs',
+    params: [
+      {
+        name: 'actorIds',
+        location: 'query',
+        explode: false,
+      },
+      {
+        name: 'actions',
+        location: 'query',
+        explode: false,
+      },
+      {
+        name: 'startTime',
+        location: 'query',
+      },
+      {
+        name: 'endTime',
+        location: 'query',
+      },
+      {
+        name: 'search',
+        location: 'query',
+      },
+      {
+        name: 'cursor',
+        location: 'query',
+      },
+      {
+        name: 'limit',
+        location: 'query',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        actorIds: {
+          type: 'array',
+          items: {
+            type: 'string',
+          },
+          description:
+            'Only return entries performed by these users. Comma-separated user IDs. Available to organization accounts only; a personal or team account is answered 400.',
+        },
+        actions: {
+          type: 'array',
+          items: {
+            type: 'string',
+          },
+          description:
+            'Only return entries whose `action` is one of these names, matched exactly as recorded. Comma-separated.',
+        },
+        startTime: {
+          type: 'string',
+          format: 'date-time',
+          description:
+            "Earliest instant to include, inclusive (RFC 3339). The account's audit log retention window still applies: entries that have aged out are not returned even when this reaches further back.",
+        },
+        endTime: {
+          type: 'string',
+          format: 'date-time',
+          description:
+            'Latest instant to include, inclusive (RFC 3339). Must be after `startTime` when both are given; 400 otherwise.',
+        },
+        search: {
+          type: 'string',
+          minLength: 1,
+          description:
+            'Case-insensitive substring match against `email`, `resourceType`, `resourceId`, `action` and `value`; `actorId` is not searched. Surrounding whitespace is ignored.',
+        },
+        cursor: {
+          type: 'string',
+          minLength: 1,
+          description:
+            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 200,
+          description: 'Page size, 1–200. Defaults to 200 when omitted.',
+        },
+      },
+    },
+  },
+  {
     name: 'list-billing',
     title: 'List billing',
     operationId: 'listBilling',
