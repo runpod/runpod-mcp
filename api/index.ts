@@ -74,8 +74,8 @@ const CHATGPT_CALLBACK =
 // way forward, since the client cannot fix this by retrying.
 const REDIRECT_URI_HELP =
   'redirect_uri is not allowed. It must be a registered client callback or a loopback address. ' +
-  'If your MCP client cannot use a loopback callback, connect with a Runpod API key instead: ' +
-  'send "Authorization: Bearer <key>" to this server, or run npx -y @runpod/mcp-server@latest with RUNPOD_API_KEY set. ' +
+  "This MCP client can't sign in with OAuth here. Connect with a Runpod API key instead: " +
+  'send the header "Authorization: Bearer <key>", or run npx -y @runpod/mcp-server@latest locally with RUNPOD_API_KEY set. ' +
   'See https://docs.runpod.io/get-started/mcp-servers.';
 
 function getAllowedRedirectUris(): string[] {
