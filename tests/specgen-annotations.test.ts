@@ -117,6 +117,7 @@ const expectedHints = new Map<string, string>([
   ['get-secret', 'TFTT'],
   ['get-ssh-keys', 'TFTT'],
   ['get-template', 'TFTT'],
+  ['list-audit-logs', 'TFTT'],
   ['list-billing', 'TFTT'],
   ['list-cluster-billing', 'TFTT'],
   ['list-cluster-pods', 'TFTT'],
