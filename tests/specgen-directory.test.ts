@@ -274,7 +274,7 @@ test('directory descriptions say what a tool does, name no other tool, and give 
   );
 });
 
-test('default profile is unchanged: original descriptions, ALP when configured', async () => {
+test('default profile keeps its tools and guards REST fallback credentials', async () => {
   const client = await connect(ALP);
   const { tools } = await client.listTools();
   const { resources } = await client.listResources();
@@ -283,6 +283,12 @@ test('default profile is unchanged: original descriptions, ALP when configured',
   assert.match(
     instructions ?? '',
     /https:\/\/docs\.runpod\.io\/api-reference-v2\/overview/
+  );
+  assert.match(instructions ?? '', /Never read a client's credential store/);
+  assert.match(instructions ?? '', /Do not send non-GET requests/);
+  assert.doesNotMatch(
+    instructions ?? '',
+    /Claude Code-credentials|\.claude\.json|mcpOAuth/
   );
   const names = new Set(tools.map((tool) => tool.name));
   for (const kept of [

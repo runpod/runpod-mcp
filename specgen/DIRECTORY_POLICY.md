@@ -20,6 +20,8 @@ The default surface (`/`) is not affected by anything here.
 
 Every tool needs a `DIRECTORY_TOOLS` entry. `tests/specgen-directory.test.ts` fails on a tool without one, so nothing reaches the directory by default. `pnpm directory:unclassified` lists the tools that still need a decision.
 
+The `/directory` initialize briefing may link the official REST API reference as a factual pointer for users whose requested operation is outside this tool list. It does not ask for credentials or tell an agent to read client credential stores or make direct API calls. Directory clients may have no shell, so this link is informational rather than an executable fallback.
+
 ## Exclude the tool when
 
 1. **It takes a credential as input.** A password, secret value, API key, access token or private key (OpenAI: no access credentials as input). If only one optional argument is a credential and the tool is useful without it, include the tool and put that argument in `omitInputs` instead. Example: `run-endpoint` omits `s3Config`.
