@@ -1,0 +1,111 @@
+name: SDK release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Validate an approved release without publishing or tagging
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: sdk-version-pr
+  cancel-in-progress: false
+jobs:
+  version:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      has_changesets: ${{ steps.changesets.outputs.hasChangesets }}
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile
+      - name: Prepare version and changelog PR
+        id: changesets
+        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1
+        with:
+          version: pnpm changeset:version
+          title: 'chore: version SDK'
+          commit: 'chore: version SDK'
+          createGithubReleases: false
+          # Publication is handled separately after verifying a merged release PR.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check the version PR on all supported runtimes
+        if: steps.changesets.outputs.pullRequestNumber != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION_PR: ${{ steps.changesets.outputs.pullRequestNumber }}
+        run: |
+          branch=$(gh pr view "$VERSION_PR" --json headRefName --jq .headRefName)
+          gh workflow run ci.yml --ref "$branch"
+
+  # Evaluated on every push: release.mjs only approves the merge commit of a
+  # release-branch PR, and a spec PR merge can publish while changesets from
+  # other PRs are still pending.
+  eligibility:
+    needs: version
+    runs-on: ubuntu-latest
+    outputs:
+      eligible: ${{ steps.plan.outputs.eligible }}
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - id: plan
+        run: node scripts/release.mjs plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  validate:
+    needs: eligibility
+    if: needs.eligibility.outputs.eligible == 'true'
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: [eligibility, validate]
+    if: needs.eligibility.outputs.eligible == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: npm
+    permissions:
+      contents: write
+      pull-requests: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - uses: pnpm/action-setup@v4
+      # Publish with npm directly; pnpm is used only for dependency installation.
+      - run: npm install --global npm@11.6.2
+      - run: pnpm install --frozen-lockfile
+      - name: Validate packed consumers
+        run: npm run test:package
+      - name: Publish or dry run the approved version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Optional bootstrap credential for the first publish; later use OIDC.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          RELEASE_MODE: ${{ inputs.dry_run && 'dry-run' || 'publish' }}
+        run: node scripts/release.mjs "$RELEASE_MODE"

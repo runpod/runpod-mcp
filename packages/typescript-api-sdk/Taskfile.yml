@@ -1,0 +1,57 @@
+version: '3'
+
+silent: true
+
+# RUNPOD_API_KEY (and optional RUNPOD_API_BASE_URL) live in .env — gitignored;
+# see .env.example. Offline tasks don't need it.
+dotenv: ['.env']
+
+vars:
+  # Production source; override SPEC_URL only for deliberate contract testing.
+  SPEC_URL: 'https://api.runpod.io/v2/openapi.json'
+  SPEC_PATH: 'spec/openapi.yaml'
+
+tasks:
+  install:
+    desc: Install dependencies
+    cmds:
+      - pnpm install --frozen-lockfile
+
+  spec-pull:
+    desc: Fetch the latest v2 OpenAPI spec and run the patch layer over it
+    cmds:
+      - python3 scripts/sync_spec.py --url "{{.SPEC_URL}}" --spec "{{.SPEC_PATH}}"
+
+  spec-fix:
+    desc: Apply the patch layer to the vendored spec in place
+    cmds:
+      - python3 scripts/fix_spec.py "{{.SPEC_PATH}}"
+
+  spec-test:
+    desc: Check the patch layer and the vendored spec (offline, no Node needed)
+    cmds:
+      - pnpm run test:spec
+
+  generate:
+    desc: Regenerate src/generated/schema.ts from the vendored spec
+    cmds:
+      - pnpm run generate
+
+  build:
+    desc: Build dist (ESM + CJS + types)
+    cmds:
+      - pnpm run build
+
+  test:
+    desc: Run the test suite (offline units; live smoke requires RUNPOD_LIVE_TESTS=1 and a key)
+    cmds:
+      - pnpm run typecheck
+      - pnpm run test
+
+  all:
+    desc: Install, regenerate, build, and test
+    cmds:
+      - task: install
+      - task: generate
+      - task: build
+      - task: test
