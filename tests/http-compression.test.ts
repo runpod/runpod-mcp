@@ -145,6 +145,16 @@ describe('hosted MCP JSON compression', () => {
     assert.match(response.body.toString(), /Authorization/);
   });
 
+  it('leaves an empty notification response untouched', async () => {
+    const response = await callMcp(
+      'gzip',
+      JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })
+    );
+    assert.equal(response.status, 202);
+    assert.equal(response.headers['content-encoding'], undefined);
+    assert.equal(response.body.length, 0);
+  });
+
   it('enables compression through the hosted Vercel route', async () => {
     const previous = process.env.MCP_SKIP_CREDENTIAL_CHECK;
     process.env.MCP_SKIP_CREDENTIAL_CHECK = 'true';

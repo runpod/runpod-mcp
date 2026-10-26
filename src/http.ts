@@ -444,9 +444,6 @@ export async function handleMcpRequest(
   res: ServerResponse,
   opts: HandleMcpRequestOptions = {}
 ): Promise<void> {
-  // Keep the Node server and Vercel endpoint behavior identical. Test doubles
-  // that do not implement ServerResponse remain usable in unit tests.
-  if (res instanceof ServerResponse) enableMcpCompression(req, res);
   const bearerToken = extractBearerToken(req);
   const requestLog = startRequestLog(req, res, bearerToken);
   // Stateless server: there are no server-initiated messages, so the standalone
@@ -659,9 +656,20 @@ export async function handleMcpRequest(
     }
   );
 
+  const jsonResponse = prefersJsonResponse(messages);
+  // Notifications answer 202 with no body. Install compression only for a
+  // request with a JSON response, so SSE and empty responses stay untouched.
+  if (
+    jsonResponse &&
+    messages.some((message) => 'method' in message && 'id' in message) &&
+    res instanceof ServerResponse
+  ) {
+    enableMcpCompression(req, res);
+  }
+
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless — no session persistence
-    enableJsonResponse: prefersJsonResponse(messages),
+    enableJsonResponse: jsonResponse,
   });
 
   // This per-request server/transport pair is single-use; dispose it when the
