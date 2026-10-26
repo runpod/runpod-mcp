@@ -111,7 +111,7 @@ The tool schemas are generated from the Runpod v2 OpenAPI contract, served as a 
 // covers, with no instructions to the model, no pointer to guides or other
 // software, and no ask for conversation data. OpenAI's scan holds instructions
 // that name secrets or credentials for review, so it names neither.
-export const DIRECTORY_INSTRUCTIONS = `These tools manage a Runpod account: the compute catalog (GPU and CPU types, data centers, live stock and pricing), Pods, Serverless endpoints and their jobs, Instant Clusters, templates, network and global volumes, billing history, Public Endpoints, and the Runpod Hub.`;
+export const DIRECTORY_INSTRUCTIONS = `These tools manage a Runpod account: the compute catalog (GPU and CPU types, data centers, live stock and pricing), Pods, Serverless endpoints and their jobs, Instant Clusters, templates, network and global volumes, billing history, Public Endpoints, and the Runpod Hub. For operations outside this tool list, the production REST API v2 reference is https://api.runpod.io/v2/docs; it describes direct API calls from the user's own environment.`;
 
 // Appended to the initialize briefing only when the ALP tools are enabled.
 const ALP_INSTRUCTIONS = `

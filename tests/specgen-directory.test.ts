@@ -62,6 +62,7 @@ test('directory profile: no ALP, guide or describe tools, and full schemas', asy
     assert.equal(names.has(name), decision.include, `${name}: wrong surface`);
   assert.deepEqual(resources, []);
   assert.equal(instructions, DIRECTORY_INSTRUCTIONS);
+  assert.match(instructions ?? '', /https:\/\/api\.runpod\.io\/v2\/docs/);
 
   // Every tool is listed with its complete schema, never a call shape, less
   // only the inputs it omits.
