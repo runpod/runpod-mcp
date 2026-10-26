@@ -62,7 +62,10 @@ test('directory profile: no ALP, guide or describe tools, and full schemas', asy
     assert.equal(names.has(name), decision.include, `${name}: wrong surface`);
   assert.deepEqual(resources, []);
   assert.equal(instructions, DIRECTORY_INSTRUCTIONS);
-  assert.match(instructions ?? '', /https:\/\/api\.runpod\.io\/v2\/docs/);
+  assert.match(
+    instructions ?? '',
+    /https:\/\/docs\.runpod\.io\/api-reference-v2\/overview/
+  );
 
   // Every tool is listed with its complete schema, never a call shape, less
   // only the inputs it omits.
@@ -277,7 +280,10 @@ test('default profile is unchanged: original descriptions, ALP when configured',
   const { resources } = await client.listResources();
   const instructions = client.getInstructions();
   await client.close();
-  assert.match(instructions ?? '', /https:\/\/api\.runpod\.io\/v2\/docs/);
+  assert.match(
+    instructions ?? '',
+    /https:\/\/docs\.runpod\.io\/api-reference-v2\/overview/
+  );
   const names = new Set(tools.map((tool) => tool.name));
   for (const kept of [
     'list-guides',
