@@ -480,9 +480,14 @@ const runEndpoint = {
   name: 'run-endpoint',
   arguments: { endpointId: 'ep', input: {} },
 };
+const jobCalls = [
+  runEndpoint,
+  { name: 'runsync-endpoint', arguments: { endpointId: 'ep', input: {} } },
+  { name: 'retry-job', arguments: { endpointId: 'ep', jobId: 'job' } },
+];
 
 test('ambiguous timeouts on generated and curated creates never advise resubmission', async () => {
-  for (const call of [createPod, runEndpoint]) {
+  for (const call of [createPod, ...jobCalls]) {
     let requests = 0;
     const { isError, payload } = await callWithFetch(async () => {
       requests++;
@@ -492,8 +497,16 @@ test('ambiguous timeouts on generated and curated creates never advise resubmiss
     assert.equal(requests, 1, call.name);
     assert.equal(isError, true, call.name);
     assert.equal(payload.code, 'outcome_unknown', call.name);
-    assert.match(payload.hint, /do not submit it again/i);
-    assert.match(payload.hint, /lists can lag/i);
+    assert.match(payload.hint, /do not (submit|retry) it again/i);
+    if (call.name === 'create-pod') {
+      assert.match(payload.hint, /lists can lag/i);
+    } else if (call.name === 'retry-job') {
+      assert.match(payload.hint, /get-job-status/i);
+      assert.doesNotMatch(payload.hint, /job-list tool/i);
+    } else {
+      assert.match(payload.hint, /no job-list tool/i);
+      assert.match(payload.hint, /Runpod console/i);
+    }
     assert.doesNotMatch(payload.hint, /retry the same call/i);
   }
 
@@ -505,7 +518,8 @@ test('ambiguous timeouts on generated and curated creates never advise resubmiss
   );
   assert.equal(read.isError, true);
   assert.equal(read.payload.code, undefined);
-  assert.match(read.payload.hint, /retry once/i);
+  assert.match(read.payload.hint, /retry the same call once/i);
+  assert.match(read.payload.hint, /uptime\.runpod\.io/);
 });
 
 test('a 5xx on a create overrides upstream retry advice but a read remains retryable', async () => {

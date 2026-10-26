@@ -105,6 +105,7 @@ export async function runTool(
         requestDelivery: 'uncertain',
         payload: {
           error: 'The Runpod API did not respond before the request deadline.',
+          hint: 'Transient upstream stall: retry the same call once; if it persists, check https://uptime.runpod.io.',
         },
       };
     }

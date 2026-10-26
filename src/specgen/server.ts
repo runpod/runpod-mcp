@@ -16,7 +16,7 @@ import {
   validateArguments,
   type ToolResult,
 } from './dispatch.js';
-import { generatedTools } from './generated/tools.gen.js';
+import { generatedTools, type GeneratedTool } from './generated/tools.gen.js';
 import { podTransitionTools } from './tools/pod-transitions.js';
 import {
   directoryIncludes,
@@ -334,6 +334,9 @@ export function createSpecgenServer(
     const curated = servedCuratedTools.find(
       (tool) => tool.name === request.params.name
     );
+    const generated = servedGeneratedTools.find(
+      (tool) => tool.name === request.params.name
+    );
     // runTool here as well as inside the curated handlers: it maps an HttpError
     // raised outside a handler body — a missing API key when the SDK client is
     // first built (src/specgen/context.ts) — onto a 401 tool result instead of a
@@ -366,7 +369,7 @@ export function createSpecgenServer(
       (await runTool(() =>
         curated
           ? curated.handler(ctx, args)
-          : dispatchTool(request.params.name, args)
+          : dispatchTool(generated, request.params.name, args)
       ));
     logToolCall({
       tool: request.params.name,
@@ -399,16 +402,14 @@ export function createSpecgenServer(
     // Recovery advice depends on whether repeating this tool can have another
     // effect. An ambiguous server failure must override even an upstream hint
     // that recommends retrying a non-idempotent write.
-    const annotations =
-      curated?.annotations ??
-      servedGeneratedTools.find((tool) => tool.name === request.params.name)
-        ?.annotations;
+    const annotations = curated?.annotations ?? generated?.annotations;
     const payload = redactSecretEnv(
       result.ok
         ? result.payload
         : withRecoveryHint(
             result,
             annotations?.idempotentHint === true,
+            request.params.name,
             callShapeOnlyTools.has(request.params.name)
           )
     );
@@ -419,12 +420,10 @@ export function createSpecgenServer(
   });
 
   async function dispatchTool(
+    tool: GeneratedTool | undefined,
     name: string,
     args: Record<string, unknown>
   ): Promise<ToolResult> {
-    const tool = servedGeneratedTools.find(
-      (candidate) => candidate.name === name
-    );
     if (!tool)
       return {
         ok: false,
@@ -487,17 +486,24 @@ function errorHint(status: number, detail?: string): string | undefined {
 
 const CALL_SHAPE_ONLY_HINT = `This tool lists its call shape only; ${DESCRIBE_TOOL_NAME} serves the full argument schema.`;
 const OUTCOME_UNKNOWN_HINT =
-  'Runpod may have completed this operation even though its response failed. Do not submit it again yet. Check the matching get- or list- tool or the Runpod console for the resource or job using the original request details and time. Lists can lag; if you cannot confirm the outcome, stop and ask the user to verify before retrying.';
+  'Runpod may have completed this operation even though its response failed. Do not submit it again yet. Check the matching get- or list- tool or the Runpod console using the original request details and time. Lists can lag; if you cannot confirm the outcome, stop and ask the user to verify before retrying.';
+const JOB_OUTCOME_UNKNOWN_HINT =
+  'Runpod may have submitted this Serverless job even though its response failed. Do not submit it again yet. No job-list tool is available, and get-job-status requires a job ID that this failed response may not have returned. Check the endpoint in the Runpod console or ask the user to verify the submission. If the outcome remains uncertain, stop instead of retrying.';
+const RETRY_JOB_OUTCOME_UNKNOWN_HINT =
+  'Runpod may have requeued this Serverless job even though its response failed. Do not retry it again yet. Check get-job-status with the endpoint and job IDs you supplied, or check the Runpod console. If you cannot confirm the outcome, stop and ask the user to verify before retrying.';
+const JOB_SUBMISSION_TOOLS = new Set(['run-endpoint', 'runsync-endpoint']);
 
 function withRecoveryHint(
   result: ToolResult,
   idempotent: boolean,
+  toolName: string,
   listsCallShapeOnly = false
 ): Record<string, unknown> {
   const payload = asRecord(result.payload) ?? { error: result.payload };
   // A 5xx response, timeout or dropped connection can arrive after the write
-  // took effect. The one exception is a connection failure known to have
-  // happened before the request reached Runpod.
+  // took effect. Multi-call tools can also fail before their mutation; absent
+  // phase evidence we still treat their outcome as uncertain. The one exception
+  // is a connection failure known to have happened before reaching Runpod.
   if (
     !idempotent &&
     result.status >= 500 &&
@@ -511,9 +517,16 @@ function withRecoveryHint(
       ...(safeDetail ? { detail: safeDetail } : {}),
       ...(payload.code !== undefined ? { upstreamCode: payload.code } : {}),
       code: 'outcome_unknown',
-      hint: OUTCOME_UNKNOWN_HINT,
+      hint:
+        toolName === 'retry-job'
+          ? RETRY_JOB_OUTCOME_UNKNOWN_HINT
+          : JOB_SUBMISSION_TOOLS.has(toolName)
+            ? JOB_OUTCOME_UNKNOWN_HINT
+            : OUTCOME_UNKNOWN_HINT,
     };
   }
+  // Preserve precise payload hints, especially Retry-After timing on 429s,
+  // instead of replacing them with generic status-based advice.
   const hint =
     payload.hint ??
     asRecord(payload.detail)?.hint ??
