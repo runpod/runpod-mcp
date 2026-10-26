@@ -1,5 +1,35 @@
 # @runpod/mcp-server
 
+## 4.7.0
+
+### Minor Changes
+
+- 506e813: Resync the vendored v2 OpenAPI spec with production as of 2026-10-26 and add
+  `list-audit-logs` for reading the account audit trail with filters and pagination.
+  `list-pods` no longer returns live utilization or the direct SSH mapping; use
+  `get-pod` to read those fields for an individual Pod.
+
+  Update run: https://github.com/runpod/runpod-mcp/actions/runs/40308747009
+
+### Patch Changes
+
+- e669dca: Accept Cursor's OAuth callbacks on the hosted server (`cursor://anysphere.cursor-mcp/oauth/callback` and the `https://www.cursor.com/agents/...` and `/bot/...` web callbacks), so Cursor cloud agents and bot integrations can sign in with Runpod. `/register` now rejects a client up front (`invalid_redirect_uri`) when none of its callbacks can be used, and both errors explain how to connect with an API key instead. The install wizard and stdio `search-docs` now default to `https://mcp.runpod.io/` instead of the legacy `https://mcp.getrunpod.io/`.
+- d527e91: Trim the `/directory` server instructions to one sentence listing what the tools cover, without naming secrets, SSH keys or registry credentials. OpenAI's plugin scan held the longer version for review.
+- b7c0525: On `/directory`, stop showing credentials: schema examples that name or hold one (such as `{"JUPYTER_PASSWORD": "hunter2"}` on the `env` field) are dropped, and the secret and registry-credential tools (`list-secrets`, `get-secret`, `delete-secret`, `list-registries`, `get-registry`, `delete-registry`) are left out. OpenAI's plugin review rejected the submission for soliciting access credentials. The default surface is unchanged.
+- 08ddd89: Point both MCP initialize profiles at the Runpod REST API v2 (the OpenAPI spec at
+  https://api.runpod.io/v2/openapi.json and the reference at
+  https://docs.runpod.io/api-reference-v2/overview) for operations outside their tool
+  lists. The default profile permits read-only GET calls when `RUNPOD_API_KEY` is
+  already in the environment and the response cannot expose secret environment
+  values, without accessing client credential stores or making writes outside the
+  MCP tool approval flow. The directory profile names
+  no credentials and presents the reference as informational.
+- 4b8b68e: Address OpenAI plugin review findings. On `/directory`, `pod-action` is replaced by separate `start-pod`, `stop-pod` and `restart-pod` tools (terminate is `delete-pod`); the default surface keeps `pod-action`. `update-template` is now marked destructive, since it overwrites the image, env and registry and can make a template public.
+- 0f519bf: Drop the non-portable `pattern` (a `\p{Z}` Unicode property escape) from the `name` argument of `create-global-volume` and `update-global-volume`. OpenAI's plugin tool scan rejected the schema; the API still enforces the rule and the field description states it.
+- a274524: Generate the tools from the TypeScript SDK's patched copy of the v2 spec, now that the SDK lives in this repository. Argument examples use a placeholder AWS account ID and `changeme` instead of `hunter2` as the example Jupyter password, several argument descriptions drop internal or version-relative wording, and input schemas no longer carry the `x-enum-varnames` code-generation hint.
+
+  Resync the shared spec with production after rebasing, adding the audit logs operation to the SDK's generated types.
+
 ## 4.6.0
 
 ### Minor Changes

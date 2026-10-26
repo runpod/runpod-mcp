@@ -1,5 +1,13 @@
 # @runpod/typescript-api-sdk
 
+## 0.4.0
+
+### Minor Changes
+
+- a274524: Generate the tools from the TypeScript SDK's patched copy of the v2 spec, now that the SDK lives in this repository. Argument examples use a placeholder AWS account ID and `changeme` instead of `hunter2` as the example Jupyter password, several argument descriptions drop internal or version-relative wording, and input schemas no longer carry the `x-enum-varnames` code-generation hint.
+
+  Resync the shared spec with production after rebasing, adding the audit logs operation to the SDK's generated types.
+
 ## 0.3.0
 
 ### Minor Changes
