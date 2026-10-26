@@ -1,6 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer, request, type IncomingHttpHeaders } from 'node:http';
+import {
+  createServer,
+  request,
+  type IncomingHttpHeaders,
+  type RequestOptions,
+} from 'node:http';
 import { brotliDecompressSync, gunzipSync } from 'node:zlib';
 
 import { handleMcpRequest } from '#src/http';
@@ -14,16 +19,41 @@ const toolsList = JSON.stringify({
   params: {},
 });
 
+type HttpResponse = {
+  status: number | undefined;
+  headers: IncomingHttpHeaders;
+  body: Buffer;
+};
+
+function send(
+  port: number,
+  options: RequestOptions,
+  body?: string
+): Promise<HttpResponse> {
+  return new Promise((resolve, reject) => {
+    const req = request({ port, ...options }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () =>
+        resolve({
+          status: res.statusCode,
+          headers: res.headers,
+          body: Buffer.concat(chunks),
+        })
+      );
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
 async function callMcp(
   acceptEncoding?: string,
   body = toolsList,
   useVercelRoute = false,
   bearerToken: string | null = 'rpa_test'
-): Promise<{
-  status: number | undefined;
-  headers: IncomingHttpHeaders;
-  body: Buffer;
-}> {
+): Promise<HttpResponse> {
   const server = createServer((req, res) => {
     if (useVercelRoute) {
       const chunks: Buffer[] = [];
@@ -52,35 +82,20 @@ async function callMcp(
   try {
     const address = server.address();
     assert.ok(address && typeof address !== 'string');
-    return await new Promise((resolve, reject) => {
-      const req = request(
-        {
-          port: address.port,
-          method: 'POST',
-          path: '/',
-          headers: {
-            ...(bearerToken ? { authorization: `Bearer ${bearerToken}` } : {}),
-            'content-type': 'application/json',
-            accept: 'application/json, text/event-stream',
-            ...(acceptEncoding ? { 'accept-encoding': acceptEncoding } : {}),
-          },
+    return await send(
+      address.port,
+      {
+        method: 'POST',
+        path: '/',
+        headers: {
+          ...(bearerToken ? { authorization: `Bearer ${bearerToken}` } : {}),
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          ...(acceptEncoding ? { 'accept-encoding': acceptEncoding } : {}),
         },
-        (res) => {
-          const chunks: Buffer[] = [];
-          res.on('data', (chunk: Buffer) => chunks.push(chunk));
-          res.on('end', () =>
-            resolve({
-              status: res.statusCode,
-              headers: res.headers,
-              body: Buffer.concat(chunks),
-            })
-          );
-          res.on('error', reject);
-        }
-      );
-      req.on('error', reject);
-      req.end(body);
-    });
+      },
+      body
+    );
   } finally {
     server.close();
   }
@@ -90,11 +105,7 @@ async function callWithCompressionMiddleware(
   status: number,
   contentType: string,
   body: string
-): Promise<{
-  status: number | undefined;
-  headers: IncomingHttpHeaders;
-  body: Buffer;
-}> {
+): Promise<HttpResponse> {
   const server = createServer((req, res) => {
     enableMcpCompression(req, res);
     res.writeHead(status, { 'Content-Type': contentType });
@@ -104,24 +115,8 @@ async function callWithCompressionMiddleware(
   try {
     const address = server.address();
     assert.ok(address && typeof address !== 'string');
-    return await new Promise((resolve, reject) => {
-      const req = request(
-        { port: address.port, headers: { 'accept-encoding': 'gzip' } },
-        (res) => {
-          const chunks: Buffer[] = [];
-          res.on('data', (chunk: Buffer) => chunks.push(chunk));
-          res.on('end', () =>
-            resolve({
-              status: res.statusCode,
-              headers: res.headers,
-              body: Buffer.concat(chunks),
-            })
-          );
-          res.on('error', reject);
-        }
-      );
-      req.on('error', reject);
-      req.end();
+    return await send(address.port, {
+      headers: { 'accept-encoding': 'gzip' },
     });
   } finally {
     server.close();
