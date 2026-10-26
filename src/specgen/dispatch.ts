@@ -23,6 +23,8 @@ export interface ToolResult {
   ok: boolean;
   status: number;
   payload: unknown;
+  /** Internal delivery evidence for recovery hints; never sent to MCP clients. */
+  requestDelivery?: 'not_sent' | 'uncertain';
 }
 
 // Argument-shape gate, shared by every tool on the server. Two checks, both

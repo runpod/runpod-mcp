@@ -62,6 +62,7 @@ function networkFailureResult(error: unknown): ToolResult | undefined {
   return {
     ok: false,
     status: unreached ? 503 : 502,
+    requestDelivery: unreached ? 'not_sent' : 'uncertain',
     payload: unreached
       ? {
           error: 'Could not reach the Runpod API.',
@@ -94,16 +95,16 @@ export async function runTool(
       };
     }
     // A request deadline firing (boundedFetch on the SDK/GraphQL/runtime paths,
-    // or the SSE reader's own controller) must come back as a retryable tool error,
+    // or the SSE reader's own controller) must come back as a tool error,
     // not a protocol-level crash. undici surfaces it either as the abort
     // reason itself (TimeoutError) or wrapped as `fetch failed` with a cause.
     if (isTimeout(error)) {
       return {
         ok: false,
         status: 504,
+        requestDelivery: 'uncertain',
         payload: {
           error: 'The Runpod API did not respond before the request deadline.',
-          hint: 'Transient upstream stall: retry the same call once; if it persists, check https://uptime.runpod.io.',
         },
       };
     }

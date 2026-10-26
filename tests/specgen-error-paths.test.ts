@@ -472,6 +472,74 @@ async function callWithFetch(
   }
 }
 
+const createPod = {
+  name: 'create-pod',
+  arguments: { body: { name: 'retry-safety-test' } },
+};
+const runEndpoint = {
+  name: 'run-endpoint',
+  arguments: { endpointId: 'ep', input: {} },
+};
+
+test('ambiguous timeouts on generated and curated creates never advise resubmission', async () => {
+  for (const call of [createPod, runEndpoint]) {
+    let requests = 0;
+    const { isError, payload } = await callWithFetch(async () => {
+      requests++;
+      // The upstream may have accepted the request before its response timed out.
+      throw new DOMException('Request timed out', 'TimeoutError');
+    }, call);
+    assert.equal(requests, 1, call.name);
+    assert.equal(isError, true, call.name);
+    assert.equal(payload.code, 'outcome_unknown', call.name);
+    assert.match(payload.hint, /do not submit it again/i);
+    assert.match(payload.hint, /lists can lag/i);
+    assert.doesNotMatch(payload.hint, /retry the same call/i);
+  }
+
+  const read = await callWithFetch(
+    async () => {
+      throw new DOMException('Request timed out', 'TimeoutError');
+    },
+    { name: 'list-pods', arguments: {} }
+  );
+  assert.equal(read.isError, true);
+  assert.equal(read.payload.code, undefined);
+  assert.match(read.payload.hint, /retry once/i);
+});
+
+test('a 5xx on a create overrides upstream retry advice but a read remains retryable', async () => {
+  for (const status of [500, 503]) {
+    for (const call of [createPod, runEndpoint]) {
+      const { isError, payload } = await callWithFetch(
+        async () =>
+          new Response(JSON.stringify({ hint: 'retry the same call once' }), {
+            status,
+            headers: { 'content-type': 'application/json' },
+          }),
+        call
+      );
+      assert.equal(isError, true, `${call.name} ${status}`);
+      assert.equal(payload.code, 'outcome_unknown', `${call.name} ${status}`);
+      assert.match(payload.hint, /do not submit it again/i);
+      assert.doesNotMatch(JSON.stringify(payload), /retry the same call once/i);
+    }
+  }
+
+  for (const call of [
+    { name: 'list-pods', arguments: {} },
+    { name: 'cancel-job', arguments: { endpointId: 'ep', jobId: 'job' } },
+  ]) {
+    const safe = await callWithFetch(
+      async () => new Response(null, { status: 503 }),
+      call
+    );
+    assert.equal(safe.isError, true, call.name);
+    assert.equal(safe.payload.code, undefined, call.name);
+    assert.match(safe.payload.hint, /retry once/i);
+  }
+});
+
 const networkCalls = [
   { name: 'get-pod', arguments: { id: 'pod' } },
   { name: 'list-endpoints', arguments: {} },
@@ -511,6 +579,22 @@ test('a connection dropped mid-request warns that a write may have been applied'
   }
 });
 
+test('delivery evidence distinguishes an unsent create from an uncertain create', async () => {
+  const unsent = await callWithFetch(async () => {
+    throw networkFailure('ECONNREFUSED');
+  }, createPod);
+  assert.equal(unsent.isError, true);
+  assert.equal(unsent.payload.code, undefined);
+  assert.match(unsent.payload.hint, /retrying the same call is safe/i);
+
+  const uncertain = await callWithFetch(async () => {
+    throw networkFailure('ECONNRESET');
+  }, createPod);
+  assert.equal(uncertain.isError, true);
+  assert.equal(uncertain.payload.code, 'outcome_unknown');
+  assert.match(uncertain.payload.hint, /do not submit it again/i);
+});
+
 test('a connection dropped while reading the response body is an ambiguous tool error', async () => {
   // A TLS code here is not a handshake failure: the headers already arrived.
   for (const code of ['UND_ERR_SOCKET', 'ERR_TLS_CERT_ALTNAME_INVALID']) {
@@ -524,7 +608,12 @@ test('a connection dropped while reading the response body is an ambiguous tool 
       );
       assert.equal(isError, true, `${call.name} ${code}`);
       assert.equal(payload.cause, code, call.name);
-      assert.match(payload.hint, /may have been applied/);
+      if (call.name === 'run-endpoint') {
+        assert.equal(payload.code, 'outcome_unknown');
+        assert.match(payload.hint, /do not submit it again/i);
+      } else {
+        assert.match(payload.hint, /may have been applied/);
+      }
     }
   }
 });

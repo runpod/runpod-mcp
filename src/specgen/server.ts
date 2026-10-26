@@ -396,15 +396,21 @@ export function createSpecgenServer(
     // before its TTL — let the shell drop it.
     if (!result.ok && result.status === 401) opts.onUnauthorized?.();
 
-    // On errors, attach a recovery hint by status class — the bare-client
-    // (no-skills) path self-corrects from these instead of dead-ending. A hint
-    // already on the payload wins: dispatch/runtime derive precise 429 wait
-    // instructions from the response headers, and the generic "pause briefly"
-    // text must not clobber them.
+    // Recovery advice depends on whether repeating this tool can have another
+    // effect. An ambiguous server failure must override even an upstream hint
+    // that recommends retrying a non-idempotent write.
+    const annotations =
+      curated?.annotations ??
+      servedGeneratedTools.find((tool) => tool.name === request.params.name)
+        ?.annotations;
     const payload = redactSecretEnv(
       result.ok
         ? result.payload
-        : withRecoveryHint(result, callShapeOnlyTools.has(request.params.name))
+        : withRecoveryHint(
+            result,
+            annotations?.idempotentHint === true,
+            callShapeOnlyTools.has(request.params.name)
+          )
     );
     return {
       content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
@@ -480,12 +486,34 @@ function errorHint(status: number, detail?: string): string | undefined {
 }
 
 const CALL_SHAPE_ONLY_HINT = `This tool lists its call shape only; ${DESCRIBE_TOOL_NAME} serves the full argument schema.`;
+const OUTCOME_UNKNOWN_HINT =
+  'Runpod may have completed this operation even though its response failed. Do not submit it again yet. Check the matching get- or list- tool or the Runpod console for the resource or job using the original request details and time. Lists can lag; if you cannot confirm the outcome, stop and ask the user to verify before retrying.';
 
 function withRecoveryHint(
   result: ToolResult,
+  idempotent: boolean,
   listsCallShapeOnly = false
 ): Record<string, unknown> {
   const payload = asRecord(result.payload) ?? { error: result.payload };
+  // A 5xx response, timeout or dropped connection can arrive after the write
+  // took effect. The one exception is a connection failure known to have
+  // happened before the request reached Runpod.
+  if (
+    !idempotent &&
+    result.status >= 500 &&
+    result.requestDelivery !== 'not_sent'
+  ) {
+    const detail = asRecord(payload.detail);
+    const safeDetail = detail ? { ...detail } : undefined;
+    if (safeDetail) delete safeDetail.hint;
+    return {
+      ...payload,
+      ...(safeDetail ? { detail: safeDetail } : {}),
+      ...(payload.code !== undefined ? { upstreamCode: payload.code } : {}),
+      code: 'outcome_unknown',
+      hint: OUTCOME_UNKNOWN_HINT,
+    };
+  }
   const hint =
     payload.hint ??
     asRecord(payload.detail)?.hint ??
