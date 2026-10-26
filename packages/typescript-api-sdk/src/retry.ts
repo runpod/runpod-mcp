@@ -1,7 +1,7 @@
 import { getRateLimitInfo } from "./rate-limit.js";
 export { parseRetryAfter } from "./rate-limit.js";
 
-// Shared retry policy for every RunPod API call, as a fetch wrapper.
+// Shared retry policy for every Runpod API call, as a fetch wrapper.
 //
 // Policy: idempotent requests (GET, HEAD, PUT, DELETE, OPTIONS) retry on 429,
 // on 500/502/503/504, and on network errors. Non-idempotent requests (POST,
@@ -77,7 +77,7 @@ function sleepWithSignal(ms: number, signal: AbortSignal, custom?: RetryOptions[
   });
 }
 
-/** Wraps a fetch implementation with the RunPod retry policy. */
+/** Wraps a fetch implementation with the Runpod retry policy. */
 export function createRetryFetch(options: RetryOptions = {}): typeof fetch {
   const maxAttempts = options.maxAttempts ?? DEFAULTS.maxAttempts;
   const minBackoffMs = options.minBackoffMs ?? DEFAULTS.minBackoffMs;

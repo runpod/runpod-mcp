@@ -31,7 +31,7 @@ export default defineConfig([
     format: ['cjs', 'esm'],
     dts: true,
     sourcemap: true,
-    // Bundle the published SDK in both entrypoints; it is a build dependency.
+    // Bundle the workspace SDK in both entrypoints; it is a build dependency.
     noExternal: ['@runpod/typescript-api-sdk'],
     define: {
       __PACKAGE_VERSION__: JSON.stringify(version),

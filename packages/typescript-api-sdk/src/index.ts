@@ -1,4 +1,4 @@
-// @runpod/typescript-api-sdk — TypeScript client for the RunPod v2 REST API.
+// @runpod/typescript-api-sdk — TypeScript client for the Runpod v2 REST API.
 //
 // The typed API surface under src/generated/ is openapi-typescript output from
 // spec/openapi.yaml; `pnpm generate` rebuilds it.
@@ -27,7 +27,7 @@ export interface RunpodClientOptions {
 export type RunpodClient = Client<paths>;
 
 /**
- * Creates a typed RunPod API client with the shared retry policy wired in.
+ * Creates a typed Runpod API client with the shared retry policy wired in.
  *
  * The API key comes from `options.apiKey` or `RUNPOD_API_KEY`; without either,
  * this throws. A blank `baseUrl` or `RUNPOD_API_BASE_URL` is treated as unset

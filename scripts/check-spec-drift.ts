@@ -89,13 +89,12 @@ function applyPatchLayer(spec: unknown): OpenApiSpec {
   const dir = mkdtempSync(join(tmpdir(), 'spec-drift-'));
   try {
     const file = join(dir, 'openapi.yaml');
-    // The patch layer reads YAML. Escape non-ASCII so PyYAML (YAML 1.1) does
-    // not fold a raw U+0085 inside a string, which the live spec has in a
-    // regex pattern, into a space. Escaped JSON is still valid YAML.
+    // The patch layer reads YAML. Escape only the characters PyYAML treats as
+    // extra line breaks; escaping every non-ASCII code unit corrupts emoji.
     writeFileSync(
       file,
       JSON.stringify(spec).replace(
-        /[\u007f-\uffff]/g,
+        /[\u0085\u2028\u2029]/g,
         (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`
       )
     );

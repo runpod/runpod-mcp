@@ -10,12 +10,11 @@ messages. Manual squash merges are supported.
 3. Commit the generated `.changeset/*.md` file with your implementation.
 4. Review the compatibility impact and changeset before merging the PR.
 
-Use `pnpm changeset:status` to inspect pending releases. It needs the local `main`
-ref and reports an error when package changes have no changeset. For an intentional
+Use `pnpm changeset status` to inspect pending releases. For an intentional
 change without a release, `pnpm changeset --empty` records that decision.
 Repository-only documentation, CI, and tests normally need no package release.
-The version workflow validates changesets when preparing the release PR; ordinary
-SDK CI does not require a changeset on every PR.
+The release workflow opens or updates a version PR from pending changesets;
+ordinary SDK CI does not require a changeset on every PR.
 
 ## Choosing a version bump
 
@@ -36,9 +35,8 @@ patch simply because the change came from generation.
 During 0.x development, select **minor** for breaking changes and new features,
 and **patch** for compatible fixes. Document breaking changes and migration steps
 in the changeset. Select **major** only for the deliberate transition to 1.0.0.
-After 1.0.0, follow the table above. The publisher currently accepts normal
-three-part versions only; prerelease publishing requires a separate reviewed
-change to select a version suffix and a non-`latest` npm tag.
+After 1.0.0, follow the table above. Prerelease publishing requires a separate
+reviewed change to select a version suffix and a non-`latest` npm tag.
 
 ## Release flow
 

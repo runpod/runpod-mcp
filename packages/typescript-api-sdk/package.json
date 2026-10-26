@@ -1,7 +1,7 @@
 {
   "name": "@runpod/typescript-api-sdk",
   "version": "0.3.0",
-  "description": "TypeScript SDK for the RunPod v2 REST API, generated from the OpenAPI spec",
+  "description": "TypeScript SDK for the Runpod v2 REST API, generated from the OpenAPI spec",
   "license": "MIT",
   "homepage": "https://api.runpod.io/v2/docs",
   "keywords": [

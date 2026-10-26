@@ -118,7 +118,15 @@ test('spec-check CLI distinguishes network failures from drift and invalid specs
       'utf8'
     )
   );
-  for (const mode of ['reset', 'partial', '503', 'match', 'drift', 'invalid']) {
+  for (const mode of [
+    'reset',
+    'partial',
+    '503',
+    'match',
+    'unicode',
+    'drift',
+    'invalid',
+  ]) {
     await t.test(mode, async () => {
       const server = createServer((req, res) => {
         if (mode === 'reset') {
@@ -130,9 +138,20 @@ test('spec-check CLI distinguishes network failures from drift and invalid specs
         } else if (mode === '503') {
           res.writeHead(503).end('unavailable');
         } else {
+          const matching = mode === 'match' || mode === 'unicode';
+          const servedSpec =
+            mode === 'unicode'
+              ? {
+                  ...spec,
+                  info: {
+                    ...spec.info,
+                    description: 'emoji 😀 and YAML breaks \u0085\u2028\u2029',
+                  },
+                }
+              : spec;
           res.end(
-            mode === 'match'
-              ? JSON.stringify(spec)
+            matching
+              ? JSON.stringify(servedSpec)
               : mode === 'drift'
                 ? '{"paths":{}}'
                 : 'invalid JSON'
@@ -167,7 +186,11 @@ test('spec-check CLI distinguishes network failures from drift and invalid specs
           child.on('close', resolve);
         });
         const unavailable = ['reset', 'partial', '503'].includes(mode);
-        assert.equal(code, unavailable ? 2 : mode === 'match' ? 0 : 1, stderr);
+        assert.equal(
+          code,
+          unavailable ? 2 : ['match', 'unicode'].includes(mode) ? 0 : 1,
+          stderr
+        );
         if (unavailable) assert.match(stderr, /cannot judge drift/);
         if (mode === 'drift') assert.match(stderr, /out of date/);
       } finally {

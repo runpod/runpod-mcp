@@ -59,6 +59,8 @@ The default whole-operation deadline is **30 seconds**. Configure it with
 the SDK timer. A caller-provided `signal` can cancel earlier. The same budget
 covers all retry attempts, sleeps, headers, and response-body consumption.
 Cancellation preserves the caller's reason; the SDK deadline raises `TimeoutError`.
+The deadline can expire before a longer `Retry-After` wait finishes; increase
+`timeoutMs` when you need to allow those waits.
 Even an injected fetch/body that ignores cancellation cannot keep the caller
 waiting past the deadline, though underlying custom work may continue.
 

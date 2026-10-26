@@ -49,8 +49,9 @@ pnpm sdk:check         # the SDK package's own checks
 ```
 
 `spec:pull` and `spec:check` need Python 3 with PyYAML
-(`pip install -r packages/typescript-api-sdk/scripts/requirements.txt`; set
-`PYTHON` to choose the interpreter). The pull runs the production spec through
+(`pip install -r packages/typescript-api-sdk/scripts/requirements.txt`).
+`spec:pull` invokes `python3` from `PATH`; `spec:check` also accepts `PYTHON`
+to choose an interpreter. The pull runs the production spec through
 the SDK's patch layer (`packages/typescript-api-sdk/scripts/fix_spec.py`), which
 fixes known spec errors and scrubs values that must not ship, such as real AWS
 account IDs. Fix the spec there, never by hand-editing the vendored file.

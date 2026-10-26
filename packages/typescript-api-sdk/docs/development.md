@@ -47,7 +47,8 @@ pnpm generate                   # regenerate src/generated/schema.ts and the MCP
 From this directory, `pnpm spec:check` compares whole normalized documents,
 including referenced schemas and descriptions, and `pnpm generate` regenerates
 only `src/generated/schema.ts`. The root `spec:check` reports drift per
-operation, which is what the MCP's tools depend on.
+operation and is the authoritative CI drift gate for both packages. The SDK's
+check is useful when reviewing the complete normalized document locally.
 
 The source is `https://api.runpod.io/v2/openapi.json`; set `SPEC_URL` to pull
 from another host. The checks never rewrite files, and network failures fail the
