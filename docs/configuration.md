@@ -12,7 +12,7 @@ The server is v2-only (the v1 REST API and `RUNPOD_REST_VERSION` are retired). A
 | `RUNPOD_SERVERLESS_API_URL` | `https://api.runpod.ai/v2` | Serverless runtime plane (run/status/stream jobs) |
 | `RUNPOD_PUBLIC_GRAPHQL_URL` | `https://api.runpod.io/graphql` | Credential-free discovery (capacity, Hub, public endpoints) |
 | `RUNPOD_AUTHED_GRAPHQL_URL` | `https://api.runpod.io/graphql` | GraphQL writes that carry the caller's key — point only at a trusted host |
-| `RUNPOD_MCP_URL` | `https://mcp.getrunpod.io/` | Hosted server that stdio `search-docs` calls with the caller's key — point only at a trusted host |
+| `RUNPOD_MCP_URL` | `https://mcp.runpod.io/` | Hosted server that stdio `search-docs` calls with the caller's key — point only at a trusted host |
 
 ALP (Agent Learning Protocol) tools — `report_feedback` / `save_to_journal` / `ask_question` / `read_journal` / `report_how_user_found_runpod` — are **hosted-only**: they appear only when the deployment configures its storage sink (`ALP_SINK_URL` + `ALP_SINK_SECRET`), and never on local stdio. `report_how_user_found_runpod` is asked once per account: on each `initialize` with a resolved account the server checks the sink and omits the ask from the instructions once the account has answered (any lookup failure keeps the ask; the sink declines a second answer either way). See `docs/agent-learning-protocol.md`.
 

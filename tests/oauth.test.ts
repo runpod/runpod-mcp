@@ -212,6 +212,64 @@ describe('OAuth PKCE endpoints', () => {
     }
   });
 
+  it('accepts Cursor callbacks and rejects lookalikes', async () => {
+    for (const redirectUri of [
+      'cursor://anysphere.cursor-mcp/oauth/callback',
+      'https://www.cursor.com/agents/mcp/oauth/callback',
+      'https://www.cursor.com/bot/mcp/oauth/callback',
+    ]) {
+      const res = await authorize(redirectUri, CHALLENGE, 'S256');
+      assert.equal(res.statusCode, 302, redirectUri);
+    }
+    for (const redirectUri of [
+      'https://www.cursor.com.evil.test/agents/mcp/oauth/callback',
+      'https://www.cursor.com/agents/mcp/oauth/callback/../steal',
+      'http://www.cursor.com/agents/mcp/oauth/callback',
+      'cursor://evil/oauth/callback',
+    ]) {
+      const res = await authorize(redirectUri, CHALLENGE, 'S256');
+      assert.equal(res.statusCode, 400, redirectUri);
+    }
+  });
+
+  it('rejects a registration whose redirect_uris are all disallowed', async () => {
+    const register = async (body: JsonObject) => {
+      const res = new FakeResponse();
+      await handler(
+        {
+          method: 'POST',
+          url: '/register',
+          body,
+          headers: { host: 'mcp.example.test' },
+        } as never,
+        res as never
+      );
+      return res;
+    };
+
+    const rejected = await register({
+      client_name: 'unknown',
+      redirect_uris: ['https://evil.test/callback'],
+    });
+    assert.equal(rejected.statusCode, 400);
+    assert.equal(rejected.body?.error, 'invalid_redirect_uri');
+    assert.match(
+      String(rejected.body?.error_description),
+      /Authorization: Bearer/
+    );
+
+    for (const redirect_uris of [
+      [LOOPBACK_REDIRECT],
+      [HOSTED_REDIRECT],
+      ['https://evil.test/callback', LOOPBACK_REDIRECT],
+      [],
+    ]) {
+      const ok = await register({ client_name: 'ok', redirect_uris });
+      assert.equal(ok.statusCode, 201, JSON.stringify(redirect_uris));
+      assert.match(String(ok.body?.client_id), /^mcp-/);
+    }
+  });
+
   it('persists valid S256 parameters and starts authorization', async () => {
     const res = await authorize(HOSTED_REDIRECT, CHALLENGE, 'S256');
     assert.equal(res.statusCode, 302);

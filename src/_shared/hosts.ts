@@ -31,7 +31,7 @@ export function authedGraphqlBase(env: Env): string {
 }
 /** The hosted MCP server: install target, and stdio's search-docs backend. */
 export function hostedMcpBase(env: Env): string {
-  return pick(env.RUNPOD_MCP_URL, 'https://mcp.getrunpod.io');
+  return pick(env.RUNPOD_MCP_URL, 'https://mcp.runpod.io');
 }
 /** The runpod-assistant Convex site serving /v1/search. No default: unset
  *  means search is not configured. */

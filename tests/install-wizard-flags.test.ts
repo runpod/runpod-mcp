@@ -138,14 +138,14 @@ describe('the wizard without a terminal', () => {
       );
       assert.deepEqual(opencode.mcp.runpod, {
         type: 'remote',
-        url: 'https://mcp.getrunpod.io/',
+        url: 'https://mcp.runpod.io/',
         enabled: true,
       });
       const pi = JSON.parse(
         fs.readFileSync(path.join(root, 'pi', 'mcp.json'), 'utf8')
       );
       assert.deepEqual(pi.mcpServers.runpod, {
-        url: 'https://mcp.getrunpod.io/',
+        url: 'https://mcp.runpod.io/',
       });
       assert.match(out.join('\n'), /opencode mcp auth runpod/);
       assert.match(out.join('\n'), /pi mcp login runpod/);

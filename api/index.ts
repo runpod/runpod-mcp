@@ -57,6 +57,11 @@ const DEFAULT_ALLOWED_REDIRECT_URIS = [
   // ChatGPT and Codex: the stable callback, used once a server supports
   // RFC 9207 issuer identification.
   'https://chatgpt.com/connector_platform_oauth_redirect',
+  // Cursor: the desktop app's custom scheme, and the web callbacks its cloud
+  // agents and bot integrations send (they register these through /register).
+  'cursor://anysphere.cursor-mcp/oauth/callback',
+  'https://www.cursor.com/agents/mcp/oauth/callback',
+  'https://www.cursor.com/bot/mcp/oauth/callback',
 ];
 
 // ChatGPT's per-connection callback, used until then:
@@ -64,6 +69,14 @@ const DEFAULT_ALLOWED_REDIRECT_URIS = [
 // connection, so it is matched by shape on chatgpt.com only.
 const CHATGPT_CALLBACK =
   /^https:\/\/chatgpt\.com\/connector\/oauth\/[A-Za-z0-9_-]+$/;
+
+// Returned when a client's callback is not one we deliver codes to. Names the
+// way forward, since the client cannot fix this by retrying.
+const REDIRECT_URI_HELP =
+  'redirect_uri is not allowed. It must be a registered client callback or a loopback address. ' +
+  'If your MCP client cannot use a loopback callback, connect with a Runpod API key instead: ' +
+  'send "Authorization: Bearer <key>" to this server, or run npx -y @runpod/mcp-server@latest with RUNPOD_API_KEY set. ' +
+  'See https://docs.runpod.io/get-started/mcp-servers.';
 
 function getAllowedRedirectUris(): string[] {
   const extra = (process.env.MCP_ALLOWED_REDIRECT_URIS ?? '')
@@ -380,6 +393,24 @@ function handleRegister(req: VercelRequest, res: VercelResponse): void {
     redirectUris,
   });
 
+  // /authorize only ever accepts allowlisted or loopback callbacks. Saying so
+  // here, where a client registers them, turns a later opaque /authorize 400
+  // into an error the client can act on (RFC 7591 invalid_redirect_uri).
+  // A registration that lists no redirect_uris is still accepted.
+  if (
+    redirectUris.length > 0 &&
+    !redirectUris.some(
+      (uri) => typeof uri === 'string' && isRedirectUriAllowed(uri)
+    )
+  ) {
+    console.warn('oauth_register_rejected_redirect_uris', { redirectUris });
+    res.status(400).json({
+      error: 'invalid_redirect_uri',
+      error_description: REDIRECT_URI_HELP,
+    });
+    return;
+  }
+
   res.status(201).json({
     client_id: `mcp-${randomUUID()}`,
     client_id_issued_at: Math.floor(Date.now() / 1000),
@@ -411,8 +442,7 @@ async function handleAuthorize(
       console.warn('oauth_authorize_rejected_redirect_uri', { redirectUri });
       res.status(400).json({
         error: 'invalid_request',
-        error_description:
-          'redirect_uri is not allowed. It must be a registered client callback or a loopback address.',
+        error_description: REDIRECT_URI_HELP,
       });
       return;
     }
