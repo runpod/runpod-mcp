@@ -20,6 +20,8 @@ export type DirectoryDecision =
   | { include: false; reason: string };
 
 const IN = { include: true } as const;
+const CREDENTIAL_MANAGEMENT =
+  'Manages stored credentials; OpenAI restricts plugins that handle access credentials, so the directory leaves the whole credential family out.';
 const CREDENTIAL_INPUT =
   'Takes a secret or password as input; directories forbid collecting credentials.';
 const ALP =
@@ -39,8 +41,6 @@ export const DIRECTORY_TOOLS: Readonly<Record<string, DirectoryDecision>> = {
   'delete-global-volume': IN,
   'delete-network-volume': IN,
   'delete-pod': IN,
-  'delete-registry': IN,
-  'delete-secret': IN,
   'delete-template': IN,
   'deploy-hub-repo': IN,
   'endpoint-health': IN,
@@ -56,8 +56,6 @@ export const DIRECTORY_TOOLS: Readonly<Record<string, DirectoryDecision>> = {
   'get-network-volume': IN,
   'get-organization': IN,
   'get-pod': IN,
-  'get-registry': IN,
-  'get-secret': IN,
   'get-ssh-keys': IN,
   'get-template': IN,
   'list-audit-logs': IN,
@@ -82,8 +80,6 @@ export const DIRECTORY_TOOLS: Readonly<Record<string, DirectoryDecision>> = {
   'list-pods': IN,
   'list-public-endpoints': IN,
   'list-public-templates': IN,
-  'list-registries': IN,
-  'list-secrets': IN,
   'list-serverless-billing': IN,
   'list-templates': IN,
   'lookup-concept': IN,
@@ -127,6 +123,12 @@ export const DIRECTORY_TOOLS: Readonly<Record<string, DirectoryDecision>> = {
       'Fetches schemas the directory already lists in full; directories reject schema fetching.',
   },
   'create-secret': { include: false, reason: CREDENTIAL_INPUT },
+  'get-secret': { include: false, reason: CREDENTIAL_MANAGEMENT },
+  'list-secrets': { include: false, reason: CREDENTIAL_MANAGEMENT },
+  'delete-secret': { include: false, reason: CREDENTIAL_MANAGEMENT },
+  'get-registry': { include: false, reason: CREDENTIAL_MANAGEMENT },
+  'list-registries': { include: false, reason: CREDENTIAL_MANAGEMENT },
+  'delete-registry': { include: false, reason: CREDENTIAL_MANAGEMENT },
   'update-secret': { include: false, reason: CREDENTIAL_INPUT },
   'create-registry': { include: false, reason: CREDENTIAL_INPUT },
   report_feedback: { include: false, reason: ALP },

@@ -63,7 +63,9 @@ export function listTool(
         tool.directoryDescription ?? tool.description,
         inputSchema
       ),
-      inputSchema: withoutInputs(inputSchema, directoryOmittedInputs(name)),
+      inputSchema: withoutCredentialExamples(
+        withoutInputs(inputSchema, directoryOmittedInputs(name))
+      ),
       annotations,
     };
   const { description } = tool;
@@ -90,6 +92,27 @@ function withApiReference(description: string, schema: Schema): string {
   const trimmed = description.replace(/\s*$/, '');
   const sentence = /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
   return `${sentence} ${DIRECTORY_API_REFERENCE}`;
+}
+
+// OpenAI's plugin policy restricts collecting credentials, and an example such
+// as {"JUPYTER_PASSWORD": "hunter2"} reads as asking for one. The directory
+// profile drops any example that names or holds a credential.
+const CREDENTIAL =
+  /pass(word|wd|phrase)?|secret|token(?!s)|api_?key|private_?key|credential/i;
+
+function withoutCredentialExamples(schema: Schema): Schema {
+  const strip = (node: unknown): unknown => {
+    if (Array.isArray(node)) return node.map(strip);
+    if (!node || typeof node !== 'object') return node;
+    const out: Schema = {};
+    for (const [key, value] of Object.entries(node as Schema)) {
+      if (key === 'examples' && CREDENTIAL.test(JSON.stringify(value)))
+        continue;
+      out[key] = strip(value);
+    }
+    return out;
+  };
+  return strip(schema) as Schema;
 }
 
 function withoutInputs(schema: Schema, omit: readonly string[]): Schema {

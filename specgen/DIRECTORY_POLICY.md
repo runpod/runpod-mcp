@@ -23,6 +23,7 @@ Every tool needs a `DIRECTORY_TOOLS` entry. `tests/specgen-directory.test.ts` fa
 ## Exclude the tool when
 
 1. **It takes a credential as input.** A password, secret value, API key, access token or private key (OpenAI: no access credentials as input). If only one optional argument is a credential and the tool is useful without it, include the tool and put that argument in `omitInputs` instead. Example: `run-endpoint` omits `s3Config`.
+   Tools that manage stored credentials (secrets, registry credentials) are excluded too, even read and delete: OpenAI rejected the plugin for handling access credentials. The directory profile also drops any schema example that names or holds a credential (for example `{"JUPYTER_PASSWORD": "hunter2"}`).
 2. **It collects conversation data beyond its job.** Feedback, journals, surveys, attribution or analytics about the user or the chat, even for logging (Anthropic 1.D).
 3. **It serves instructions for the model.** Playbooks, guides, prompts or anything else that tells the model how to behave or pulls instructions from an external source (Anthropic 2.A, 2.B, 2.F).
 4. **It fetches schemas or other tools' definitions.** A generic executor or schema lookup (OpenAI: no schema fetching). The directory lists every schema in full.
