@@ -206,8 +206,9 @@ export interface paths {
          *     | `429` | Rate limited. | Back off using `Retry-After`, then resume. |
          *     | `5xx` | Transient upstream failure. | Retry the same candidate with backoff. |
          *
-         *     Requests larger than 102400 bytes receive `413` before authentication
-         *     or processing. Reduce the serialized JSON request body and retry.
+         *     Requests larger than 102400 bytes receive `413` after authentication
+         *     and rate limiting, before deployment processing. Reduce the serialized
+         *     JSON request body and retry.
          *
          *     This limit also applies to the deployment request built from your input
          *     and any referenced template. A small request can therefore receive `413`
@@ -1212,6 +1213,26 @@ export interface paths {
          *     (`nextCursor: null`, `hasNextPage: false`).
          */
         get: operations["listPublicTemplates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/audit-logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List audit logs
+         * @description Returns the account's audit trail, newest first, cursor-paginated; an omitted `limit` defaults to 200. Each entry records who acted (`actorId`, `email`), what they did (`action`), to which resource (`resourceType`, `resourceId`), and the details of the change (`value`). When the caller belongs to an organization the trail is the organization's, and `actorIds` narrows it to specific members; otherwise it is the trail of the account the request acts for. Filters combine with AND. Entries older than the account's audit log retention window are not returned, and an account whose plan does not include audit logs is answered 403. Follow `pagination.nextCursor` until `hasNextPage` is false.
+         */
+        get: operations["listAuditLogs"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2519,7 +2540,7 @@ export interface components {
         PodSsh: {
             /** @description Connection through Runpod's SSH proxy. Works without exposing a port and without a public IP, but carries an interactive shell only — SCP, SFTP, rsync, and port forwarding need `direct`. Null until the pod has a machine assignment. */
             proxy: components["schemas"]["PodSshEndpoint"] | null;
-            /** @description Connection straight to the pod's sshd over its published `22/tcp` mapping. Supports the full SSH feature set. Null unless `22/tcp` is in `ports` and the running pod has been assigned a public port for it — so it is absent while the pod is provisioning or stopped. */
+            /** @description Connection straight to the pod's sshd over its published `22/tcp` mapping. Supports the full SSH feature set. Null unless `22/tcp` is in `ports` and the running pod has been assigned a public port for it — so it is absent while the pod is provisioning or stopped. Also null when listing pods with `GET /v2/pods`; fetch a single pod by ID to obtain the live mapping. */
             direct: components["schemas"]["PodSshEndpoint"] | null;
         };
         SshKeys: {
@@ -2689,7 +2710,7 @@ export interface components {
              */
             locked: boolean;
             globalNetworking: components["schemas"]["PodGlobalNetworking"];
-            /** @description Live utilization metrics. Null when the pod is not RUNNING. */
+            /** @description Live utilization metrics. Null when the pod is not RUNNING, and when listing pods with `GET /v2/pods`; fetch a single pod by ID to obtain metrics. */
             runtime: components["schemas"]["PodRuntime"] | null;
             /**
              * Format: date-time
@@ -3649,6 +3670,55 @@ export interface components {
         ListDataCentersResponse: {
             dataCenters: components["schemas"]["DataCenter"][];
         };
+        /** @description One recorded action on the account. */
+        AuditLog: {
+            /**
+             * @description ID of the user who performed the action. Null when the action was not attributable to a user.
+             * @example user_id_abc_123
+             */
+            actorId: string | null;
+            /**
+             * @description Email of the actor when the action was recorded. Null when unknown.
+             * @example actor@example.com
+             */
+            email: string | null;
+            /**
+             * @description Kind of resource the action applied to, as recorded at write time. Not an enum: values are free-form, mostly lower camel case, and new kinds appear without an API version change. Current writers record values such as `pod`, `apiKey`, `sharedApiKey`, `secret`, `costCenter`, `paymentMethod`, `billingAccount`, `registryCredential`, `organization` and `group`, and `unknown` when the writer recorded no kind.
+             * @example pod
+             * @example apiKey
+             * @example costCenter
+             */
+            resourceType: string;
+            /**
+             * @description ID of the affected resource. Empty when the action was not about one resource; a bulk action lists every affected ID, comma-separated.
+             * @example abc123
+             */
+            resourceId: string;
+            /**
+             * @description Name of the action, as recorded at write time. Not an enum: values are free-form, mostly lower case verbs, and new actions appear without an API version change. Current writers record values such as `create`, `update`, `delete`, `rename`, `lock`, `unlock`, `start`, `reset`, `add` and `setBillingMode`.
+             * @example create
+             * @example delete
+             * @example rename
+             */
+            action: string;
+            /**
+             * @description Details of the change as a JSON-encoded string. The structure varies by action; parse it as JSON for a structured view. A bulk action split across several entries adds an `auditChunk` object with `index` and `of`. Null when the action recorded no details.
+             * @example {"status":"TERMINATED"}
+             * @example {"name":"training-run-7"}
+             * @example {"id":"sec_789","name":"HF_TOKEN","sharedWithOrganization":true}
+             */
+            value: string | null;
+            /**
+             * Format: date-time
+             * @description When the action happened (UTC, whole seconds).
+             * @example 2026-09-02T00:00:00Z
+             */
+            timestamp: string;
+        };
+        ListAuditLogsResponse: {
+            auditLogs: components["schemas"]["AuditLog"][];
+            pagination: components["schemas"]["Pagination"];
+        };
         /** @description Half-open time range [startTime, endTime) in RFC 3339. On a record it is the time bucket; on a query echo it is the resolved window. */
         BillingTimeRange: {
             /**
@@ -4081,6 +4151,24 @@ export interface components {
                 "application/problem+json": components["schemas"]["ErrorResponse"];
             };
         };
+        /**
+         * @description The incoming request body exceeds 1048576 bytes (1 MiB). Body size is
+         *     checked after authentication and rate limiting. GET and DELETE reject
+         *     any nonempty request body with `422` instead.
+         *
+         *     An operation can also return this status when its expanded upstream
+         *     request is too large, even if the incoming body is within the limit.
+         */
+        RequestTooLargeError: {
+            headers: {
+                RateLimit: components["headers"]["RateLimit"];
+                "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["ErrorResponse"];
+            };
+        };
         /** @description The request method is not supported for the target path. */
         MethodNotAllowedError: {
             headers: {
@@ -4147,6 +4235,42 @@ export interface components {
          * @example 50
          */
         PaginationLimitBuilds: number;
+        /**
+         * @description Page size, 1–200. Defaults to 200 when omitted.
+         * @example 50
+         */
+        PaginationLimitAuditLogs: number;
+        /**
+         * @description Only return entries performed by these users. Comma-separated user IDs. Available to organization accounts only; a personal or team account is answered 400.
+         * @example [
+         *       "user_id_abc_123",
+         *       "user_id_def_456"
+         *     ]
+         */
+        AuditLogActorIdsFilter: string[];
+        /**
+         * @description Only return entries whose `action` is one of these names, matched exactly as recorded. Comma-separated.
+         * @example [
+         *       "create",
+         *       "delete"
+         *     ]
+         */
+        AuditLogActionsFilter: string[];
+        /**
+         * @description Earliest instant to include, inclusive (RFC 3339). The account's audit log retention window still applies: entries that have aged out are not returned even when this reaches further back.
+         * @example 2026-09-01T00:00:00Z
+         */
+        AuditLogStartTime: string;
+        /**
+         * @description Latest instant to include, inclusive (RFC 3339). Must be after `startTime` when both are given; 400 otherwise.
+         * @example 2026-09-30T23:59:59Z
+         */
+        AuditLogEndTime: string;
+        /**
+         * @description Case-insensitive substring match against `email`, `resourceType`, `resourceId`, `action` and `value`; `actorId` is not searched. Surrounding whitespace is ignored.
+         * @example abc123
+         */
+        AuditLogSearch: string;
         /**
          * @description Comma-separated optional expansions; see `CatalogInclude` for the supported values.
          * @example [
@@ -4325,8 +4449,10 @@ export interface operations {
                     "application/json": components["schemas"]["SshKeys"];
                 };
             };
+            400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["RequestTooLargeError"];
             422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
@@ -4417,6 +4543,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ErrorResponse"];
                 };
             };
+            413: components["responses"]["RequestTooLargeError"];
             422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
@@ -4550,6 +4677,7 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
+            413: components["responses"]["RequestTooLargeError"];
             422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
@@ -4648,6 +4776,8 @@ export interface operations {
             /** @description The incoming request body or expanded upstream request exceeds the 102400 byte limit, or the upstream rejects the request as too large. */
             413: {
                 headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
                     [name: string]: unknown;
                 };
                 content: {
@@ -4805,6 +4935,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ErrorResponse"];
                 };
             };
+            413: components["responses"]["RequestTooLargeError"];
             422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
@@ -4943,6 +5074,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ErrorResponse"];
                 };
             };
+            413: components["responses"]["RequestTooLargeError"];
             422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
@@ -5026,6 +5158,7 @@ export interface operations {
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["RequestTooLargeError"];
             422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
@@ -5171,6 +5304,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ErrorResponse"];
                 };
             };
+            413: components["responses"]["RequestTooLargeError"];
             422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
@@ -5306,6 +5440,7 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
+            413: components["responses"]["RequestTooLargeError"];
             422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
@@ -5439,6 +5574,7 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
+            413: components["responses"]["RequestTooLargeError"];
             422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
@@ -5804,6 +5940,7 @@ export interface operations {
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["RequestTooLargeError"];
             422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
@@ -5939,6 +6076,7 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
+            413: components["responses"]["RequestTooLargeError"];
             422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
@@ -6028,6 +6166,7 @@ export interface operations {
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["RequestTooLargeError"];
             422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
@@ -6171,6 +6310,7 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
+            413: components["responses"]["RequestTooLargeError"];
             422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
@@ -6261,6 +6401,7 @@ export interface operations {
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["RequestTooLargeError"];
             422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
@@ -6405,6 +6546,7 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
+            413: components["responses"]["RequestTooLargeError"];
             422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
@@ -6483,6 +6625,7 @@ export interface operations {
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["RequestTooLargeError"];
             422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
@@ -6647,8 +6790,10 @@ export interface operations {
                     "application/json": components["schemas"]["EcrDelegation"];
                 };
             };
+            400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["RequestTooLargeError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
             default: {
@@ -7105,6 +7250,86 @@ export interface operations {
             };
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    listAuditLogs: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Only return entries performed by these users. Comma-separated user IDs. Available to organization accounts only; a personal or team account is answered 400.
+                 * @example [
+                 *       "user_id_abc_123",
+                 *       "user_id_def_456"
+                 *     ]
+                 */
+                actorIds?: components["parameters"]["AuditLogActorIdsFilter"];
+                /**
+                 * @description Only return entries whose `action` is one of these names, matched exactly as recorded. Comma-separated.
+                 * @example [
+                 *       "create",
+                 *       "delete"
+                 *     ]
+                 */
+                actions?: components["parameters"]["AuditLogActionsFilter"];
+                /**
+                 * @description Earliest instant to include, inclusive (RFC 3339). The account's audit log retention window still applies: entries that have aged out are not returned even when this reaches further back.
+                 * @example 2026-09-01T00:00:00Z
+                 */
+                startTime?: components["parameters"]["AuditLogStartTime"];
+                /**
+                 * @description Latest instant to include, inclusive (RFC 3339). Must be after `startTime` when both are given; 400 otherwise.
+                 * @example 2026-09-30T23:59:59Z
+                 */
+                endTime?: components["parameters"]["AuditLogEndTime"];
+                /**
+                 * @description Case-insensitive substring match against `email`, `resourceType`, `resourceId`, `action` and `value`; `actorId` is not searched. Surrounding whitespace is ignored.
+                 * @example abc123
+                 */
+                search?: components["parameters"]["AuditLogSearch"];
+                /**
+                 * @description Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected with 422.
+                 * @example Y3JlYXRlZEF0PTE3NDg3ODA0MDA
+                 */
+                cursor?: components["parameters"]["PaginationCursor"];
+                /**
+                 * @description Page size, 1–200. Defaults to 200 when omitted.
+                 * @example 50
+                 */
+                limit?: components["parameters"]["PaginationLimitAuditLogs"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListAuditLogsResponse"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
             default: {

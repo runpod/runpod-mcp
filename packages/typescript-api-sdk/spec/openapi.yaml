@@ -25,6 +25,8 @@ x-runpod-scopes:
     levels: [read, write]
   membership:
     levels: [read, write]
+  audit:
+    levels: [read]
   billing:
     levels: [read, write]
   catalog:
@@ -51,6 +53,8 @@ tags:
     description: Available GPU, CPU, data center, and public template catalog metadata.
   - name: Billing
     description: Billing history and usage cost records across resource types.
+  - name: Audit Logs
+    description: Record of who did what to which resource on the account.
 components:
   securitySchemes:
     bearerAuth:
@@ -149,6 +153,30 @@ components:
                 title: Unprocessable Entity
                 status: 422
                 detail: Request validation failed.
+    RequestTooLargeError:
+      headers:
+        RateLimit:
+          $ref: '#/components/headers/RateLimit'
+        RateLimit-Policy:
+          $ref: '#/components/headers/RateLimit-Policy'
+      description: |
+        The incoming request body exceeds 1048576 bytes (1 MiB). Body size is
+        checked after authentication and rate limiting. GET and DELETE reject
+        any nonempty request body with `422` instead.
+
+        An operation can also return this status when its expanded upstream
+        request is too large, even if the incoming body is within the limit.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            requestTooLarge:
+              summary: Request body exceeds the limit
+              value:
+                title: Request Entity Too Large
+                status: 413
+                detail: Request body exceeds the 1048576 byte limit.
     MethodNotAllowedError:
       description: The request method is not supported for the target path.
       headers:
@@ -283,6 +311,73 @@ components:
         minimum: 1
         maximum: 100
       example: 50
+    PaginationLimitAuditLogs:
+      name: limit
+      in: query
+      required: false
+      description: Page size, 1–200. Defaults to 200 when omitted.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+      example: 50
+    AuditLogActorIdsFilter:
+      name: actorIds
+      in: query
+      required: false
+      description: Only return entries performed by these users. Comma-separated user IDs. Available to
+        organization accounts only; a personal or team account is answered 400.
+      style: form
+      explode: false
+      schema:
+        type: array
+        items:
+          type: string
+      example: [user_id_abc_123, user_id_def_456]
+    AuditLogActionsFilter:
+      name: actions
+      in: query
+      required: false
+      description: Only return entries whose `action` is one of these names, matched exactly as recorded.
+        Comma-separated.
+      style: form
+      explode: false
+      schema:
+        type: array
+        items:
+          type: string
+      example: [create, delete]
+    AuditLogStartTime:
+      name: startTime
+      in: query
+      required: false
+      description: 'Earliest instant to include, inclusive (RFC 3339). The account''s audit log retention
+        window still applies: entries that have aged out are not returned even when this reaches further
+        back.'
+      schema:
+        type: string
+        format: date-time
+      example: '2026-09-01T00:00:00Z'
+    AuditLogEndTime:
+      name: endTime
+      in: query
+      required: false
+      description: Latest instant to include, inclusive (RFC 3339). Must be after `startTime` when both
+        are given; 400 otherwise.
+      schema:
+        type: string
+        format: date-time
+      example: '2026-09-30T23:59:59Z'
+    AuditLogSearch:
+      name: search
+      in: query
+      required: false
+      description: Case-insensitive substring match against `email`, `resourceType`, `resourceId`, `action`
+        and `value`; `actorId` is not searched. Surrounding whitespace is ignored.
+      schema:
+        type: string
+        minLength: 1
+      example: abc123
     CatalogIncludeParam:
       name: include
       in: query
@@ -1899,6 +1994,8 @@ components:
           description: Connection straight to the pod's sshd over its published `22/tcp` mapping. Supports
             the full SSH feature set. Null unless `22/tcp` is in `ports` and the running pod has been
             assigned a public port for it — so it is absent while the pod is provisioning or stopped.
+            Also null when listing pods with `GET /v2/pods`; fetch a single pod by ID to obtain the live
+            mapping.
           anyOf:
             - $ref: '#/components/schemas/PodSshEndpoint'
             - type: 'null'
@@ -2106,7 +2203,8 @@ components:
             globalNetworking:
               $ref: '#/components/schemas/PodGlobalNetworking'
             runtime:
-              description: Live utilization metrics. Null when the pod is not RUNNING.
+              description: Live utilization metrics. Null when the pod is not RUNNING, and when listing
+                pods with `GET /v2/pods`; fetch a single pod by ID to obtain metrics.
               anyOf:
                 - $ref: '#/components/schemas/PodRuntime'
                 - type: 'null'
@@ -3390,6 +3488,71 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DataCenter'
+    AuditLog:
+      type: object
+      description: One recorded action on the account.
+      required:
+        - actorId
+        - email
+        - resourceType
+        - resourceId
+        - action
+        - value
+        - timestamp
+      properties:
+        actorId:
+          type: [string, 'null']
+          description: ID of the user who performed the action. Null when the action was not attributable
+            to a user.
+          examples: [user_id_abc_123]
+        email:
+          type: [string, 'null']
+          description: Email of the actor when the action was recorded. Null when unknown.
+          examples: [actor@example.com]
+        resourceType:
+          type: string
+          description: 'Kind of resource the action applied to, as recorded at write time. Not an enum:
+            values are free-form, mostly lower camel case, and new kinds appear without an API version
+            change. Current writers record values such as `pod`, `apiKey`, `sharedApiKey`, `secret`, `costCenter`,
+            `paymentMethod`, `billingAccount`, `registryCredential`, `organization` and `group`, and `unknown`
+            when the writer recorded no kind.'
+          examples: [pod, apiKey, costCenter]
+        resourceId:
+          type: string
+          description: ID of the affected resource. Empty when the action was not about one resource;
+            a bulk action lists every affected ID, comma-separated.
+          examples: [abc123]
+        action:
+          type: string
+          description: 'Name of the action, as recorded at write time. Not an enum: values are free-form,
+            mostly lower case verbs, and new actions appear without an API version change. Current writers
+            record values such as `create`, `update`, `delete`, `rename`, `lock`, `unlock`, `start`, `reset`,
+            `add` and `setBillingMode`.'
+          examples: [create, delete, rename]
+        value:
+          type: [string, 'null']
+          description: Details of the change as a JSON-encoded string. The structure varies by action;
+            parse it as JSON for a structured view. A bulk action split across several entries adds an
+            `auditChunk` object with `index` and `of`. Null when the action recorded no details.
+          examples:
+            - '{"status":"TERMINATED"}'
+            - '{"name":"training-run-7"}'
+            - '{"id":"sec_789","name":"HF_TOKEN","sharedWithOrganization":true}'
+        timestamp:
+          type: string
+          format: date-time
+          description: When the action happened (UTC, whole seconds).
+          examples: ['2026-09-02T00:00:00Z']
+    ListAuditLogsResponse:
+      type: object
+      required: [auditLogs, pagination]
+      properties:
+        auditLogs:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditLog'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
     BillingTimeRange:
       type: object
       description: >
@@ -4082,6 +4245,10 @@ paths:
           $ref: '#/components/responses/UnauthorizedError'
         '403':
           $ref: '#/components/responses/ForbiddenError'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
         '422':
           $ref: '#/components/responses/UnprocessableEntityError'
         '429':
@@ -4224,6 +4391,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
         '422':
           $ref: '#/components/responses/UnprocessableEntityError'
         '429':
@@ -4364,6 +4533,8 @@ paths:
           $ref: '#/components/responses/ForbiddenError'
         '404':
           $ref: '#/components/responses/NotFoundError'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
         '422':
           $ref: '#/components/responses/UnprocessableEntityError'
         '429':
@@ -4494,23 +4665,13 @@ paths:
                             port: 22
                             username: 7h9k2m4n6p-64411eb2
                             command: ssh 7h9k2m4n6p-64411eb2@ssh.runpod.io
-                          direct:
-                            host: 195.26.233.3
-                            port: 34446
-                            username: root
-                            command: ssh root@195.26.233.3 -p 34446
+                          direct: null
                         template: 9x4m2p7v
                         cost: 0.44
                         locked: false
                         globalNetworking:
                           enabled: false
-                        runtime:
-                          uptime: 3600
-                          ports:
-                            - private: 22
-                              public: 34446
-                              type: tcp
-                              ip: 195.26.233.3
+                        runtime: null
                         createdAt: '2026-06-01T12:00:00Z'
                         startedAt: '2026-06-01T12:02:00Z'
                     pagination:
@@ -4598,8 +4759,9 @@ paths:
         | `429` | Rate limited. | Back off using `Retry-After`, then resume. |
         | `5xx` | Transient upstream failure. | Retry the same candidate with backoff. |
 
-        Requests larger than 102400 bytes receive `413` before authentication
-        or processing. Reduce the serialized JSON request body and retry.
+        Requests larger than 102400 bytes receive `413` after authentication
+        and rate limiting, before deployment processing. Reduce the serialized
+        JSON request body and retry.
 
         This limit also applies to the deployment request built from your input
         and any referenced template. A small request can therefore receive `413`
@@ -4788,7 +4950,7 @@ paths:
                     locked: false
                     globalNetworking:
                       enabled: false
-                    runtime: {}
+                    runtime: null
                     createdAt: '2026-06-01T12:00:00Z'
                     startedAt: null
         '401':
@@ -4802,6 +4964,11 @@ paths:
         '413':
           description: The incoming request body or expanded upstream request exceeds the 102400 byte
             limit, or the upstream rejects the request as too large.
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
           content:
             application/problem+json:
               schema:
@@ -5037,6 +5204,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
         '422':
           $ref: '#/components/responses/UnprocessableEntityError'
         '429':
@@ -5325,6 +5494,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '400':
           $ref: '#/components/responses/BadRequestError'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
         '422':
           $ref: '#/components/responses/UnprocessableEntityError'
         '429':
@@ -5408,6 +5579,8 @@ paths:
           $ref: '#/components/responses/UnauthorizedError'
         '403':
           $ref: '#/components/responses/ForbiddenError'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
         '422':
           $ref: '#/components/responses/UnprocessableEntityError'
         '429':
@@ -5501,6 +5674,8 @@ paths:
           $ref: '#/components/responses/UnauthorizedError'
         '403':
           $ref: '#/components/responses/ForbiddenError'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
         '422':
           $ref: '#/components/responses/UnprocessableEntityError'
         '429':
@@ -5887,6 +6062,8 @@ paths:
           $ref: '#/components/responses/BadRequestError'
         '404':
           $ref: '#/components/responses/NotFoundError'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
         '422':
           $ref: '#/components/responses/UnprocessableEntityError'
         '429':
@@ -6124,6 +6301,8 @@ paths:
           $ref: '#/components/responses/NotFoundError'
         '400':
           $ref: '#/components/responses/BadRequestError'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
         '422':
           $ref: '#/components/responses/UnprocessableEntityError'
         '429':
@@ -6745,6 +6924,8 @@ paths:
           $ref: '#/components/responses/ForbiddenError'
         '400':
           $ref: '#/components/responses/BadRequestError'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
         '422':
           $ref: '#/components/responses/UnprocessableEntityError'
         '429':
@@ -6911,6 +7092,8 @@ paths:
           $ref: '#/components/responses/NotFoundError'
         '400':
           $ref: '#/components/responses/BadRequestError'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
         '422':
           $ref: '#/components/responses/UnprocessableEntityError'
         '429':
@@ -7098,6 +7281,8 @@ paths:
           $ref: '#/components/responses/ForbiddenError'
         '400':
           $ref: '#/components/responses/BadRequestError'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
         '422':
           $ref: '#/components/responses/UnprocessableEntityError'
         '429':
@@ -7233,6 +7418,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           $ref: '#/components/responses/NotFoundError'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
         '422':
           $ref: '#/components/responses/UnprocessableEntityError'
         '429':
@@ -7398,6 +7585,8 @@ paths:
           $ref: '#/components/responses/UnauthorizedError'
         '403':
           $ref: '#/components/responses/ForbiddenError'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
         '422':
           $ref: '#/components/responses/UnprocessableEntityError'
         '429':
@@ -7518,6 +7707,8 @@ paths:
           $ref: '#/components/responses/ForbiddenError'
         '404':
           $ref: '#/components/responses/NotFoundError'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
         '422':
           $ref: '#/components/responses/UnprocessableEntityError'
         '429':
@@ -7678,6 +7869,8 @@ paths:
           $ref: '#/components/responses/ForbiddenError'
         '400':
           $ref: '#/components/responses/BadRequestError'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
         '422':
           $ref: '#/components/responses/UnprocessableEntityError'
         '429':
@@ -7874,6 +8067,10 @@ paths:
           $ref: '#/components/responses/UnauthorizedError'
         '403':
           $ref: '#/components/responses/ForbiddenError'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
         default:
@@ -8511,6 +8708,94 @@ paths:
           $ref: '#/components/responses/UnauthorizedError'
         '403':
           $ref: '#/components/responses/ForbiddenError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/audit-logs:
+    get:
+      operationId: listAuditLogs
+      x-runpod-scope: audit:read
+      summary: List audit logs
+      x-mint:
+        metadata:
+          description: 'List the audit trail of your Runpod account: who performed which action on which
+            resource, newest first, with actor, action, time-range, and text filters.'
+      description: Returns the account's audit trail, newest first, cursor-paginated; an omitted `limit`
+        defaults to 200. Each entry records who acted (`actorId`, `email`), what they did (`action`),
+        to which resource (`resourceType`, `resourceId`), and the details of the change (`value`). When
+        the caller belongs to an organization the trail is the organization's, and `actorIds` narrows
+        it to specific members; otherwise it is the trail of the account the request acts for. Filters
+        combine with AND. Entries older than the account's audit log retention window are not returned,
+        and an account whose plan does not include audit logs is answered 403. Follow `pagination.nextCursor`
+        until `hasNextPage` is false.
+      tags: [Audit Logs]
+      parameters:
+        - $ref: '#/components/parameters/AuditLogActorIdsFilter'
+        - $ref: '#/components/parameters/AuditLogActionsFilter'
+        - $ref: '#/components/parameters/AuditLogStartTime'
+        - $ref: '#/components/parameters/AuditLogEndTime'
+        - $ref: '#/components/parameters/AuditLogSearch'
+        - $ref: '#/components/parameters/PaginationCursor'
+        - $ref: '#/components/parameters/PaginationLimitAuditLogs'
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListAuditLogsResponse'
+              examples:
+                auditLogs:
+                  summary: Successful response
+                  value:
+                    auditLogs:
+                      - actorId: user_id_abc_123
+                        email: actor@example.com
+                        resourceType: pod
+                        resourceId: abc123
+                        action: delete
+                        value: '{"status":"TERMINATED"}'
+                        timestamp: '2026-09-02T00:00:00Z'
+                      - actorId: user_id_abc_123
+                        email: actor@example.com
+                        resourceType: pod
+                        resourceId: abc123
+                        action: rename
+                        value: '{"name":"training-run-7"}'
+                        timestamp: '2026-09-01T18:30:00Z'
+                      - actorId: user_id_def_456
+                        email: admin@example.com
+                        resourceType: secret
+                        resourceId: sec_789
+                        action: update
+                        value: '{"id":"sec_789","name":"HF_TOKEN","sharedWithOrganization":true}'
+                        timestamp: '2026-09-01T09:15:00Z'
+                    pagination:
+                      nextCursor: eyJ0cyI6IjIwMjYtMDktMDFUMDk6MTU6MDBaIn0=
+                      hasNextPage: true
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
         default:
