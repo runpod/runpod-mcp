@@ -286,6 +286,22 @@ test('default profile keeps its tools and guards REST fallback credentials', asy
   );
   assert.match(instructions ?? '', /Never read a client's credential store/);
   assert.match(instructions ?? '', /Do not send non-GET requests/);
+  assert.match(
+    instructions ?? '',
+    /Prefer the MCP tools for reads because their results redact secret environment values/
+  );
+  assert.match(
+    instructions ?? '',
+    /do not fetch responses that may contain secret environment values/
+  );
+  assert.match(
+    instructions ?? '',
+    /never display environment values from a direct response/
+  );
+  assert.match(
+    instructions ?? '',
+    /https:\/\/api\.runpod\.io \(spec paths include \/v2\/\)/
+  );
   assert.doesNotMatch(
     instructions ?? '',
     /Claude Code-credentials|\.claude\.json|mcpOAuth/
