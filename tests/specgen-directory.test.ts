@@ -174,6 +174,23 @@ test('directory tools that take a request body name the API they call', async ()
   assert.ok(!listPods?.description?.includes(DIRECTORY_API_REFERENCE));
 });
 
+test('no directory schema shows a credential as an example', async () => {
+  const client = await connect({ profile: 'directory' });
+  const { tools } = await client.listTools();
+  await client.close();
+  const found: string[] = [];
+  const walk = (node: unknown, at: string) => {
+    if (!node || typeof node !== 'object') return;
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'examples' && CREDENTIAL_INPUT.test(JSON.stringify(value)))
+        found.push(at);
+      walk(value, `${at}.${key}`);
+    }
+  };
+  for (const tool of tools) walk(tool.inputSchema, tool.name);
+  assert.deepEqual(found, []);
+});
+
 test('directory profile refuses an omitted input', async () => {
   const client = await connect({ profile: 'directory' });
   const result = (await client.callTool({
