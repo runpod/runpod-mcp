@@ -275,7 +275,9 @@ test('default profile is unchanged: original descriptions, ALP when configured',
   const client = await connect(ALP);
   const { tools } = await client.listTools();
   const { resources } = await client.listResources();
+  const instructions = client.getInstructions();
   await client.close();
+  assert.match(instructions ?? '', /https:\/\/api\.runpod\.io\/v2\/docs/);
   const names = new Set(tools.map((tool) => tool.name));
   for (const kept of [
     'list-guides',
