@@ -1,5 +1,17 @@
 # @runpod/mcp-server
 
+## 4.8.0
+
+### Minor Changes
+
+- 8f53070: Export the server profile module as `@runpod/mcp-server/profile` (`ServerProfile`, `DIRECTORY_PATH`, `DIRECTORY_TOOLS`, `profileForPath`, `directoryIncludes`, `directoryOmittedInputs`) so an HTTP host can resolve the directory profile from the package instead of reaching into `src/`.
+- 4c51d2a: Resync the vendored v2 OpenAPI spec with production as of 2026-10-27 and regenerate the SDK schema and the tools. Adds `list-organization-users` and `get-organization-user`, documents the 413 response on list operations, and requires a non-empty mount `path`.
+
+### Patch Changes
+
+- 2658966: Record the tool surface on each `runpod_mcp_tool_call` analytics event as `profile` (`directory` for `mcp.runpod.io/directory`, `default` otherwise), so directory traffic (the ChatGPT plugin and the Claude connector) can be told apart from custom connectors on `/`.
+- f3efa2e: Avoid suggesting immediate retries when a timed-out or failed create may already have completed upstream.
+
 ## 4.7.0
 
 ### Minor Changes
