@@ -177,6 +177,26 @@ components:
                 title: Request Entity Too Large
                 status: 413
                 detail: Request body exceeds the 1048576 byte limit.
+    ResponseTooLargeError:
+      headers:
+        RateLimit:
+          $ref: '#/components/headers/RateLimit'
+        RateLimit-Policy:
+          $ref: '#/components/headers/RateLimit-Policy'
+      description: |
+        The response would exceed the upstream response size cap. Request
+        fewer items and retry; on paginated operations, lower `limit`.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            responseTooLarge:
+              summary: Response exceeds the size cap
+              value:
+                title: Request Entity Too Large
+                status: 413
+                detail: Response too large for one request. Request fewer items and retry.
     MethodNotAllowedError:
       description: The request method is not supported for the target path.
       headers:
@@ -557,6 +577,51 @@ components:
           type: string
           description: Organization name.
           examples: [my-org]
+    OrganizationRoleRef:
+      type: object
+      description: An organization role, by ID.
+      required: [id, type]
+      properties:
+        id:
+          type: string
+          description: Role ID. A built-in role's ID is `builtin:` followed by its name; a custom role
+            carries its own ID.
+          examples: ['builtin:dev']
+        type:
+          $ref: '#/components/schemas/OrganizationRoleType'
+    OrganizationRoleType:
+      type: string
+      description: 'Who defines the role. `builtin` roles are Runpod''s: `builtin:admin`, `builtin:dev`,
+        `builtin:billing` and `builtin:basic`. A `custom` role is one the organization defined, under
+        its own ID.'
+      x-enum-varnames:
+        - OrganizationRoleTypeBuiltin
+        - OrganizationRoleTypeCustom
+      enum: [builtin, custom]
+    OrganizationUser:
+      type: object
+      description: A member of the caller's organization. `id` is the member's user ID.
+      required: [id, email, role]
+      properties:
+        id:
+          type: string
+          description: User ID.
+          examples: [user_id_abc_123]
+        email:
+          type: [string, 'null']
+          description: The member's email address. Null for an account that has none.
+          examples: [member@example.com]
+        role:
+          $ref: '#/components/schemas/OrganizationRoleRef'
+    ListOrganizationUsersResponse:
+      type: object
+      required: [users]
+      properties:
+        users:
+          type: array
+          description: Every member of the organization, in upstream's order.
+          items:
+            $ref: '#/components/schemas/OrganizationUser'
     Pagination:
       type: object
       required: [nextCursor, hasNextPage]
@@ -677,9 +742,28 @@ components:
       description: |
         Storage mounts for a cluster create: `persistent` or `network`, not
         both. Clusters cannot mount global volumes, so `global` is rejected
-        with 422.
+        with 422. A mount `path` must not be empty (rejected with 422):
+        upstream reads an empty path as unset and would mount the volume at
+        the template's path, or `/workspace` without a template.
+      x-go-type: BaseMounts
       allOf:
         - $ref: '#/components/schemas/BaseMounts'
+        - type: object
+          properties:
+            persistent:
+              type: object
+              properties:
+                path:
+                  type: string
+                  minLength: 1
+            network:
+              type: array
+              items:
+                type: object
+                properties:
+                  path:
+                    type: string
+                    minLength: 1
       unevaluatedProperties: false
     Mounts:
       description: |
@@ -1993,7 +2077,8 @@ components:
         direct:
           description: Connection straight to the pod's sshd over its published `22/tcp` mapping. Supports
             the full SSH feature set. Null unless `22/tcp` is in `ports` and the running pod has been
-            assigned a public port for it — so it is absent while the pod is provisioning or stopped.
+            assigned a public port for it — so it is usually absent while the pod is provisioning or stopped.
+            It can still appear on a stopped pod, so check that `status` is `RUNNING` before connecting.
             Also null when listing pods with `GET /v2/pods`; fetch a single pod by ID to obtain the live
             mapping.
           anyOf:
@@ -2194,7 +2279,9 @@ components:
             cost:
               type: number
               format: float
-              description: Current cost in USD per hour (0.0 when EXITED or TERMINATED)
+              description: 'The pod''s hourly compute rate in USD. It''s returned in every status, including
+                `EXITED`, so it isn''t what you''re paying right now: a stopped pod isn''t billed for
+                compute, only for its volume disk.'
               examples: [0.35]
             locked:
               type: boolean
@@ -2225,8 +2312,9 @@ components:
             Request body for creating a pod. Exactly one of `gpu` or `cpu`
             must be set. For CPU pods, memory is derived by the API from the
             selected flavor's RAM multiplier; clients provide only CPU flavor
-            and vCPU count. CPU pods support container disk and network
-            volumes only; `mounts.persistent` is invalid when `cpu` is set.
+            and vCPU count. CPU pods support
+            container disk, network volumes, and a global volume;
+            `mounts.persistent` is invalid when `cpu` is set.
 
             `image` is required unless `templateId` is set.
           properties:
@@ -2569,7 +2657,9 @@ components:
                 env, ports) and the container registry credential for private
                 images — the only private-image path for clusters. Mutually
                 exclusive with `image`, `args`, `entrypoint`, `cmd`, `disk`,
-                `env`, `ports`, and `mounts` (rejected with 400). The cluster
+                `env`, and `ports` (rejected with 400). `mounts` combines with
+                it: the volume in `mounts` is attached to every member pod,
+                overriding the template's volume settings. The cluster
                 retains the link: the `template` response field is set. Must be
                 a non-serverless pod template accessible to the caller.
               examples: [30zmvf89kd]
@@ -4097,8 +4187,14 @@ components:
         A structured-field list with one member per window (`minute`, `hour`,
         `day`), each carrying the quota `q` and the window length in seconds `w`.
         Returned on responses to authenticated requests, not only on 429s.
+
+        Limits are per user, and every `/v2` route counts toward the same
+        limits; creating pods has no separate limit. Read the current quotas from
+        this header instead of hard-coding them, because they can change and some
+        accounts have higher limits. A 429 only slows you down: wait for the
+        `Retry-After` time and retry. Your account isn't suspended.
       examples:
-        - '"minute";q=60;w=60, "hour";q=3000;w=3600, "day";q=50000;w=86400'
+        - '"minute";q=180;w=60, "hour";q=3600;w=3600, "day";q=43200;w=86400'
 paths:
   /v2/organization:
     get:
@@ -4107,7 +4203,8 @@ paths:
       summary: Get your current organization
       x-mint:
         metadata:
-          description: Get the ID and name of the organization you belong to.
+          description: Retrieve the ID and name of your current Runpod organization through the REST API,
+            including membership requirements and error responses.
       description: Returns the authenticated caller's current organization. Organization context comes
         from the caller's membership; no organization selector is required. Returns 404 when the caller
         does not belong to an organization, or 403 when organizations are unavailable to the caller.
@@ -4264,6 +4361,126 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /v2/organization/users:
+    get:
+      operationId: listOrganizationUsers
+      x-runpod-scope: membership:read
+      summary: List organization members
+      x-mint:
+        metadata:
+          description: List the members of your organization and the role each one holds.
+      description: Returns every member of the authenticated caller's organization with the role each
+        holds. Any member can read the roster. The list is complete and takes no pagination parameters.
+        Returns 404 when the caller does not belong to an organization, or 403 when organizations are
+        unavailable to the caller.
+      tags: [Organization]
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListOrganizationUsersResponse'
+              examples:
+                users:
+                  summary: Organization members
+                  value:
+                    users:
+                      - id: user_id_abc_123
+                        email: owner@example.com
+                        role:
+                          id: builtin:admin
+                          type: builtin
+                      - id: user_id_def_456
+                        email: member@example.com
+                        role:
+                          id: builtin:dev
+                          type: builtin
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/organization/users/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: User identifier
+        example: user_id_abc_123
+    get:
+      operationId: getOrganizationUser
+      x-runpod-scope: membership:read
+      summary: Get an organization member
+      x-mint:
+        metadata:
+          description: Get one member of your organization by user ID.
+      description: Returns one member of the authenticated caller's organization by user ID, with the
+        role they hold. Any member can read it. A user who is not a member, including one from another
+        organization, returns 404. Returns 404 when the caller does not belong to an organization, or
+        403 when organizations are unavailable to the caller.
+      tags: [Organization]
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationUser'
+              examples:
+                user:
+                  summary: Organization member
+                  value:
+                    id: user_id_abc_123
+                    email: owner@example.com
+                    role:
+                      id: builtin:admin
+                      type: builtin
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v2/account/secrets:
     get:
       operationId: listSecrets
@@ -4271,8 +4488,8 @@ paths:
       summary: List secrets
       x-mint:
         metadata:
-          description: List the encrypted secrets on your Runpod account that Pods, Serverless endpoints,
-            and templates reference from environment variables. Values are never returned.
+          description: List encrypted secrets referenced by Runpod Pods, Serverless endpoints, and templates
+            through environment variables. Secret values are never returned.
       description: Returns the account's secrets — encrypted strings referenced from pod, serverless,
         and template environment variables with the `{{ RUNPOD_SECRET_<name> }}` placeholder syntax, substituted
         with the secret's value when the pod or worker boots. Secret values are write-only and are never
@@ -4681,6 +4898,8 @@ paths:
           $ref: '#/components/responses/UnauthorizedError'
         '403':
           $ref: '#/components/responses/ForbiddenError'
+        '413':
+          $ref: '#/components/responses/ResponseTooLargeError'
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
         default:
@@ -5539,6 +5758,8 @@ paths:
           $ref: '#/components/responses/UnauthorizedError'
         '403':
           $ref: '#/components/responses/ForbiddenError'
+        '413':
+          $ref: '#/components/responses/ResponseTooLargeError'
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
         default:
@@ -5843,6 +6064,8 @@ paths:
           $ref: '#/components/responses/UnauthorizedError'
         '403':
           $ref: '#/components/responses/ForbiddenError'
+        '413':
+          $ref: '#/components/responses/ResponseTooLargeError'
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
         default:
@@ -6519,6 +6742,8 @@ paths:
           $ref: '#/components/responses/ForbiddenError'
         '404':
           $ref: '#/components/responses/NotFoundError'
+        '413':
+          $ref: '#/components/responses/ResponseTooLargeError'
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
         default:
@@ -6596,6 +6821,8 @@ paths:
           $ref: '#/components/responses/ForbiddenError'
         '404':
           $ref: '#/components/responses/NotFoundError'
+        '413':
+          $ref: '#/components/responses/ResponseTooLargeError'
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
         default:
@@ -6832,6 +7059,8 @@ paths:
           $ref: '#/components/responses/UnauthorizedError'
         '403':
           $ref: '#/components/responses/ForbiddenError'
+        '413':
+          $ref: '#/components/responses/ResponseTooLargeError'
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
         default:
@@ -7207,6 +7436,8 @@ paths:
           $ref: '#/components/responses/UnauthorizedError'
         '403':
           $ref: '#/components/responses/ForbiddenError'
+        '413':
+          $ref: '#/components/responses/ResponseTooLargeError'
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
         default:
@@ -7479,7 +7710,8 @@ paths:
       summary: List global volumes
       x-mint:
         metadata:
-          description: List all global volumes owned by the authenticated Runpod user.
+          description: List global volumes owned by your Runpod account through the REST API, using cursor
+            pagination to retrieve additional results.
       description: |
         Returns global volumes owned by the authenticated user,
         cursor-paginated newest-first; an omitted `limit` defaults to 1000.
@@ -7516,6 +7748,8 @@ paths:
           $ref: '#/components/responses/UnauthorizedError'
         '403':
           $ref: '#/components/responses/ForbiddenError'
+        '413':
+          $ref: '#/components/responses/ResponseTooLargeError'
         '422':
           $ref: '#/components/responses/UnprocessableEntityError'
         '429':
@@ -7537,8 +7771,8 @@ paths:
       summary: Create a global volume
       x-mint:
         metadata:
-          description: Create a Runpod global volume for use by Pods and Serverless workers in any data
-            center.
+          description: Create a named Runpod global volume through the REST API for storage that Pods
+            and Serverless workers can access across data centers.
       description: |
         Provisions a new global volume — storage that mounts into workloads
         in any data center. Only a `name` is required; storage is provisioned
@@ -7617,7 +7851,8 @@ paths:
       summary: Get a global volume
       x-mint:
         metadata:
-          description: Retrieve a Runpod global volume by ID.
+          description: Retrieve a Runpod global volume by its ID through the REST API, including its name,
+            creation time, and the user who created it.
       description: Returns a single global volume by ID.
       tags: [Global Volumes]
       responses:
@@ -7665,7 +7900,8 @@ paths:
       summary: Update a global volume
       x-mint:
         metadata:
-          description: Rename a Runpod global volume.
+          description: Rename an existing Runpod global volume by ID through the REST API, updating its
+            name while leaving omitted fields unchanged.
       description: Updates mutable fields on a global volume. Only provided fields are changed.
       tags: [Global Volumes]
       requestBody:
@@ -7730,7 +7966,8 @@ paths:
       summary: Delete a global volume
       x-mint:
         metadata:
-          description: Permanently delete a Runpod global volume and its stored data.
+          description: Permanently delete a Runpod global volume and its stored data through the REST
+            API after removing Pod and Serverless attachments.
       description: |
         Permanently deletes a global volume and its stored data. Fails with
         `409` while the volume is still mounted: terminate every pod that
@@ -8728,8 +8965,8 @@ paths:
       summary: List audit logs
       x-mint:
         metadata:
-          description: 'List the audit trail of your Runpod account: who performed which action on which
-            resource, newest first, with actor, action, time-range, and text filters.'
+          description: List your Runpod audit trail to see who acted on each resource, with filters for
+            actor, action, time range, and text, newest first.
       description: Returns the account's audit trail, newest first, cursor-paginated; an omitted `limit`
         defaults to 200. Each entry records who acted (`actorId`, `email`), what they did (`action`),
         to which resource (`resourceType`, `resourceId`), and the details of the change (`value`). When
@@ -8794,6 +9031,8 @@ paths:
           $ref: '#/components/responses/UnauthorizedError'
         '403':
           $ref: '#/components/responses/ForbiddenError'
+        '413':
+          $ref: '#/components/responses/ResponseTooLargeError'
         '422':
           $ref: '#/components/responses/UnprocessableEntityError'
         '429':

@@ -48,6 +48,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v2/organization/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List organization members
+         * @description Returns every member of the authenticated caller's organization with the role each holds. Any member can read the roster. The list is complete and takes no pagination parameters. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.
+         */
+        get: operations["listOrganizationUsers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/organization/users/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description User identifier
+                 * @example user_id_abc_123
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get an organization member
+         * @description Returns one member of the authenticated caller's organization by user ID, with the role they hold. Any member can read it. A user who is not a member, including one from another organization, returns 404. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.
+         */
+        get: operations["getOrganizationUser"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v2/account/secrets": {
         parameters: {
             query?: never;
@@ -1378,6 +1424,38 @@ export interface components {
              */
             name: string;
         };
+        /** @description An organization role, by ID. */
+        OrganizationRoleRef: {
+            /**
+             * @description Role ID. A built-in role's ID is `builtin:` followed by its name; a custom role carries its own ID.
+             * @example builtin:dev
+             */
+            id: string;
+            type: components["schemas"]["OrganizationRoleType"];
+        };
+        /**
+         * @description Who defines the role. `builtin` roles are Runpod's: `builtin:admin`, `builtin:dev`, `builtin:billing` and `builtin:basic`. A `custom` role is one the organization defined, under its own ID.
+         * @enum {string}
+         */
+        OrganizationRoleType: "builtin" | "custom";
+        /** @description A member of the caller's organization. `id` is the member's user ID. */
+        OrganizationUser: {
+            /**
+             * @description User ID.
+             * @example user_id_abc_123
+             */
+            id: string;
+            /**
+             * @description The member's email address. Null for an account that has none.
+             * @example member@example.com
+             */
+            email: string | null;
+            role: components["schemas"]["OrganizationRoleRef"];
+        };
+        ListOrganizationUsersResponse: {
+            /** @description Every member of the organization, in upstream's order. */
+            users: components["schemas"]["OrganizationUser"][];
+        };
         /** @description Cursor-pagination metadata, uniform across list endpoints. Every response carries it: follow `nextCursor` while `hasNextPage` is true to walk the full result set. */
         Pagination: {
             /**
@@ -1475,9 +1553,18 @@ export interface components {
         /**
          * @description Storage mounts for a cluster create: `persistent` or `network`, not
          *     both. Clusters cannot mount global volumes, so `global` is rejected
-         *     with 422.
+         *     with 422. A mount `path` must not be empty (rejected with 422):
+         *     upstream reads an empty path as unset and would mount the volume at
+         *     the template's path, or `/workspace` without a template.
          */
-        ClusterMounts: components["schemas"]["BaseMounts"];
+        ClusterMounts: components["schemas"]["BaseMounts"] & {
+            persistent?: {
+                path?: string;
+            };
+            network?: {
+                path?: string;
+            }[];
+        };
         /**
          * @description Storage mounts attached to a pod. `persistent` is mutually exclusive
          *     with both `network` and `global`: combining them is rejected with 400.
@@ -2540,7 +2627,7 @@ export interface components {
         PodSsh: {
             /** @description Connection through Runpod's SSH proxy. Works without exposing a port and without a public IP, but carries an interactive shell only — SCP, SFTP, rsync, and port forwarding need `direct`. Null until the pod has a machine assignment. */
             proxy: components["schemas"]["PodSshEndpoint"] | null;
-            /** @description Connection straight to the pod's sshd over its published `22/tcp` mapping. Supports the full SSH feature set. Null unless `22/tcp` is in `ports` and the running pod has been assigned a public port for it — so it is absent while the pod is provisioning or stopped. Also null when listing pods with `GET /v2/pods`; fetch a single pod by ID to obtain the live mapping. */
+            /** @description Connection straight to the pod's sshd over its published `22/tcp` mapping. Supports the full SSH feature set. Null unless `22/tcp` is in `ports` and the running pod has been assigned a public port for it — so it is usually absent while the pod is provisioning or stopped. It can still appear on a stopped pod, so check that `status` is `RUNNING` before connecting. Also null when listing pods with `GET /v2/pods`; fetch a single pod by ID to obtain the live mapping. */
             direct: components["schemas"]["PodSshEndpoint"] | null;
         };
         SshKeys: {
@@ -2700,7 +2787,7 @@ export interface components {
             template: string | null;
             /**
              * Format: float
-             * @description Current cost in USD per hour (0.0 when EXITED or TERMINATED)
+             * @description The pod's hourly compute rate in USD. It's returned in every status, including `EXITED`, so it isn't what you're paying right now: a stopped pod isn't billed for compute, only for its volume disk.
              * @example 0.35
              */
             cost: number;
@@ -2968,7 +3055,9 @@ export interface components {
              *     env, ports) and the container registry credential for private
              *     images — the only private-image path for clusters. Mutually
              *     exclusive with `image`, `args`, `entrypoint`, `cmd`, `disk`,
-             *     `env`, `ports`, and `mounts` (rejected with 400). The cluster
+             *     `env`, and `ports` (rejected with 400). `mounts` combines with
+             *     it: the volume in `mounts` is attached to every member pod,
+             *     overriding the template's volume settings. The cluster
              *     retains the link: the `template` response field is set. Must be
              *     a non-serverless pod template accessible to the caller.
              * @example 30zmvf89kd
@@ -4093,7 +4182,13 @@ export interface components {
          *     A structured-field list with one member per window (`minute`, `hour`,
          *     `day`), each carrying the quota `q` and the window length in seconds `w`.
          *     Returned on responses to authenticated requests, not only on 429s.
-         * @example "minute";q=60;w=60, "hour";q=3000;w=3600, "day";q=50000;w=86400
+         *
+         *     Limits are per user, and every `/v2` route counts toward the same
+         *     limits; creating pods has no separate limit. Read the current quotas from
+         *     this header instead of hard-coding them, because they can change and some
+         *     accounts have higher limits. A 429 only slows you down: wait for the
+         *     `Retry-After` time and retry. Your account isn't suspended.
+         * @example "minute";q=180;w=60, "hour";q=3600;w=3600, "day";q=43200;w=86400
          */
         RateLimitPolicyHeader: string;
     };
@@ -4160,6 +4255,20 @@ export interface components {
          *     request is too large, even if the incoming body is within the limit.
          */
         RequestTooLargeError: {
+            headers: {
+                RateLimit: components["headers"]["RateLimit"];
+                "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["ErrorResponse"];
+            };
+        };
+        /**
+         * @description The response would exceed the upstream response size cap. Request
+         *     fewer items and retry; on paginated operations, lower `limit`.
+         */
+        ResponseTooLargeError: {
             headers: {
                 RateLimit: components["headers"]["RateLimit"];
                 "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
@@ -4468,6 +4577,86 @@ export interface operations {
             };
         };
     };
+    listOrganizationUsers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListOrganizationUsersResponse"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getOrganizationUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description User identifier
+                 * @example user_id_abc_123
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganizationUser"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     listSecrets: {
         parameters: {
             query?: {
@@ -4731,6 +4920,7 @@ export interface operations {
             };
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["ResponseTooLargeError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
             default: {
@@ -5121,6 +5311,7 @@ export interface operations {
             };
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["ResponseTooLargeError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
             default: {
@@ -5398,6 +5589,7 @@ export interface operations {
             };
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["ResponseTooLargeError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
             default: {
@@ -5673,6 +5865,7 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
+            413: components["responses"]["ResponseTooLargeError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
             default: {
@@ -5727,6 +5920,7 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
+            413: components["responses"]["ResponseTooLargeError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
             default: {
@@ -5899,6 +6093,7 @@ export interface operations {
             };
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["ResponseTooLargeError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
             default: {
@@ -6125,6 +6320,7 @@ export interface operations {
             };
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["ResponseTooLargeError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
             default: {
@@ -6359,6 +6555,7 @@ export interface operations {
             };
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["ResponseTooLargeError"];
             422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
@@ -7329,6 +7526,7 @@ export interface operations {
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["ResponseTooLargeError"];
             422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */

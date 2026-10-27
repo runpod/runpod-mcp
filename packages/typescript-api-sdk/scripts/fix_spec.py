@@ -445,13 +445,10 @@ DESCRIPTION_EDITS: list[tuple[tuple[str, ...], str, str]] = [
         ("components", "schemas", "CreatePodRequest", "allOf", 1, "description"),
         "Exactly one of `gpu` or `cpu`\nmust be set — enforced at the handler layer. For CPU pods, memory\n"
         "is derived by the API from the selected flavor's RAM multiplier;\n"
-        "clients provide only CPU flavor and vCPU count. CPU pods support\n"
-        "container disk and network volumes only; `mounts.persistent` is\n"
-        "invalid when `cpu` is set.",
+        "clients provide only CPU flavor and vCPU count.",
         "Exactly one of `gpu` or `cpu`\nmust be set. For CPU pods, memory is derived by the API from the\n"
         "selected flavor's RAM multiplier; clients provide only CPU flavor\n"
-        "and vCPU count. CPU pods support container disk and network\n"
-        "volumes only; `mounts.persistent` is invalid when `cpu` is set.",
+        "and vCPU count.",
     ),
     (
         (

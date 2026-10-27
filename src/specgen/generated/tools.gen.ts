@@ -178,9 +178,36 @@ export const generatedTools: GeneratedTool[] = [
         ClusterMounts: {
           description:
             'Storage mounts for a cluster create: `persistent` or `network`, not both. Clusters cannot mount global volumes, so `global` is rejected.',
+          'x-go-type': 'BaseMounts',
           allOf: [
             {
               $ref: '#/$defs/BaseMounts',
+            },
+            {
+              type: 'object',
+              properties: {
+                persistent: {
+                  type: 'object',
+                  properties: {
+                    path: {
+                      type: 'string',
+                      minLength: 1,
+                    },
+                  },
+                },
+                network: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      path: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                  },
+                },
+              },
             },
           ],
           unevaluatedProperties: false,
@@ -2388,6 +2415,38 @@ export const generatedTools: GeneratedTool[] = [
     },
   },
   {
+    name: 'get-organization-user',
+    title: 'Get organization user',
+    operationId: 'getOrganizationUser',
+    description:
+      "Get an organization member. Returns one member of the authenticated caller's organization by user ID, with the role they hold. Any member can read it. A user who is not a member, including one from another organization, returns 404. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.",
+    method: 'GET',
+    path: '/v2/organization/users/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'User identifier',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
     name: 'get-pod',
     title: 'Get Pod',
     operationId: 'getPod',
@@ -3586,6 +3645,27 @@ export const generatedTools: GeneratedTool[] = [
           description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
         },
       },
+    },
+  },
+  {
+    name: 'list-organization-users',
+    title: 'List organization users',
+    operationId: 'listOrganizationUsers',
+    description:
+      "List organization members. Returns every member of the authenticated caller's organization with the role each holds. Any member can read the roster. The list is complete and takes no pagination parameters. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.",
+    method: 'GET',
+    path: '/v2/organization/users',
+    params: [],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {},
     },
   },
   {
