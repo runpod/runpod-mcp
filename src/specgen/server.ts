@@ -313,6 +313,7 @@ export function createSpecgenServer(
           status: 429,
           durationMs: 0,
           ...(verdict.reason ? { blockedBy: verdict.reason } : {}),
+          profile,
           ...opts.analytics,
         });
       }
@@ -391,6 +392,7 @@ export function createSpecgenServer(
               args: recordedArgumentValues(curated?.recordedArguments, args),
               guideKind: curated?.recordedGuideKind?.(args),
             }),
+        profile,
         ...opts.analytics,
       });
     }

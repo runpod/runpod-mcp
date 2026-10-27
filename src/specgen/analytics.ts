@@ -38,6 +38,9 @@ export interface ToolCallEvent {
   guideKind?: string;
   /** Set when this server's own limiter denied the call (not an API 429). */
   blockedBy?: string;
+  /** The tool surface the call came through: `directory` for the app
+   *  directories (mcp.runpod.io/directory), `default` for everything else. */
+  profile?: 'default' | 'directory';
 }
 
 /** The hosted 404 loop breaker started blocking one account + tool. */
@@ -169,6 +172,7 @@ export function captureToolCall(
     ...(event.clientName ? { client_name: event.clientName } : {}),
     ...(event.guideKind ? { guide_kind: event.guideKind } : {}),
     ...(event.blockedBy ? { blocked_by: event.blockedBy } : {}),
+    ...(event.profile ? { profile: event.profile } : {}),
     ...args,
   });
 }

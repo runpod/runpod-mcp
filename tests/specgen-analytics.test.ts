@@ -87,6 +87,15 @@ test('the event schema is the closed allowlist — no argument-shaped fields', (
   ]);
 });
 
+test('the tool surface is recorded as profile', () => {
+  process.env.POSTHOG_API_KEY = 'phc_test';
+  captureToolCall('rpa_k', { ...EVENT, profile: 'directory' });
+  const props = (
+    JSON.parse(captured[0].body) as { properties: Record<string, unknown> }
+  ).properties;
+  assert.equal(props.profile, 'directory');
+});
+
 test('a capture failure never propagates', () => {
   process.env.POSTHOG_API_KEY = 'phc_test';
   globalThis.fetch = (async () => {
