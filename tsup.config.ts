@@ -27,7 +27,12 @@ export default defineConfig([
   },
   // http entrypoint + shared tools — library modules, no shebang
   {
-    entry: ['src/http.ts', 'src/hosted.ts', 'src/specgen/profile.ts'],
+    entry: [
+      'src/http.ts',
+      'src/hosted.ts',
+      'src/alp.ts',
+      'src/specgen/profile.ts',
+    ],
     format: ['cjs', 'esm'],
     dts: true,
     sourcemap: true,

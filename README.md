@@ -231,5 +231,7 @@ An HTTP host that serves the directory profile can import `DIRECTORY_PATH`
 and `profileForPath` from `@runpod/mcp-server/profile`.
 
 The hosted service's own surface (the MCP request handler, the ALP submit and
-journal handlers, the knowledge search route and the ALP route constants the
-Convex functions share) is `@runpod/mcp-server/hosted`.
+journal handlers and the knowledge search route) is `@runpod/mcp-server/hosted`.
+The ALP contract the Convex sink shares (route names, the once-per-account
+rule and the scrubber) is `@runpod/mcp-server/alp`, kept free of the HTTP
+handler so a Convex function can bundle it.
