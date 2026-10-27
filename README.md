@@ -226,3 +226,6 @@ the new generated surface. Applications should connect to the server through
 MCP using the `runpod-mcp` CLI, or use `handleMcpRequest` from
 `@runpod/mcp-server/http` when embedding the HTTP handler. The HTTP entry point
 also no longer re-exports the legacy `registerTools` or `ToolContext`.
+
+An HTTP host that serves the directory profile can import `DIRECTORY_PATH`
+and `profileForPath` from `@runpod/mcp-server/profile`.

@@ -51,6 +51,11 @@
       "types": "./dist/http.d.ts",
       "import": "./dist/http.mjs",
       "require": "./dist/http.cjs"
+    },
+    "./profile": {
+      "types": "./dist/profile.d.ts",
+      "import": "./dist/profile.mjs",
+      "require": "./dist/profile.cjs"
     }
   },
   "imports": {
