@@ -56,6 +56,11 @@
       "types": "./dist/profile.d.ts",
       "import": "./dist/profile.mjs",
       "require": "./dist/profile.cjs"
+    },
+    "./hosted": {
+      "types": "./dist/hosted.d.ts",
+      "import": "./dist/hosted.mjs",
+      "require": "./dist/hosted.cjs"
     }
   },
   "imports": {

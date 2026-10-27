@@ -2,11 +2,14 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import fetch from 'node-fetch';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { getBaseUrl, handleMcpRequest } from '../src/http.js';
-import { handleAlpSubmit } from '../src/alp/ingest.js';
-import { handleAlpJournalRead } from '../src/alp/read.js';
-import { handleSearch } from '../src/search/route.js';
-import { DIRECTORY_PATH } from '../src/specgen/profile.js';
+import {
+  DIRECTORY_PATH,
+  getBaseUrl,
+  handleAlpJournalRead,
+  handleAlpSubmit,
+  handleMcpRequest,
+  handleSearch,
+} from '../src/hosted.js';
 import {
   isLoopbackHost,
   validatePkceAuthorization,
