@@ -56,7 +56,7 @@ function analyticsOptedOut(req: IncomingMessage): boolean {
   return value === 'off' || value === '0' || value === 'false';
 }
 
-// Structural request type so the Vercel adapter (api/index.ts) can share this
+// Structural request type so the hosted service's Vercel adapter can share this
 // proxy-header parsing instead of keeping a second copy.
 export function getBaseUrl(req: {
   headers: { host?: string; 'x-forwarded-proto'?: string | string[] };
@@ -157,7 +157,7 @@ function normalizeUrl(raw: string): string {
 // 401 rejects everything, a missed one only restores the prior behaviour.
 //
 // UNVERIFIED: nobody has confirmed what the hosted deployment actually sets.
-// There is no .env in the repo, no `env` block in vercel.json, and CI sets no
+// There is no .env in the repo, no `env` block in the hosted vercel.json, and CI sets no
 // RUNPOD_* vars — the values live only in the Vercel dashboard. If production
 // points any REST host somewhere non-default without also setting
 // RUNPOD_AUTHED_GRAPHQL_URL, this guard is silently disabling the gate in production

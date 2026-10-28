@@ -1,6 +1,6 @@
 // Hosted-only loop breaker. Scripts that poll deleted pods send thousands of
 // calls an hour that all 404. Each 404 is counted in the Convex sink per
-// hashed account + tool (convex/rateLimit.ts); once the sink says a pair is
+// hashed account + tool (the sink's rateLimit function); once the sink says a pair is
 // blocked, this instance answers that pair with a retryable 429 until the
 // block ends, without calling Convex again.
 //

@@ -13,6 +13,6 @@
     "rootDir": ".",
     "outDir": "dist"
   },
-  "include": ["src/**/*", "api/**/*", "scripts/**/*", "specgen/generator/**/*"],
+  "include": ["src/**/*", "scripts/**/*", "specgen/generator/**/*"],
   "exclude": ["dist", "build", "node_modules", "tsup.config.ts", "**/*.test.ts"]
 }

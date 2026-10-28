@@ -6,7 +6,7 @@
 // Behavior per request: authenticate → resolve the durable identity (never
 // key on the API key; see the design doc) → courtesy scrub → forward to the
 // private sink with the shared server secret. The sink (a Convex HTTP action
-// in convex/ in this repo) owns storage, the authoritative scrub, and everything
+// in the hosted service's repository) owns storage, the authoritative scrub, and everything
 // downstream. When no sink is configured this endpoint answers honestly that
 // nothing was recorded — it never pretends.
 //

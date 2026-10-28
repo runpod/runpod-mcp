@@ -9,7 +9,6 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import handler from '../api/index.js';
 import { handleMcpRequest, requestProfile } from '#src/http';
 import {
   createSpecgenServer,
@@ -401,62 +400,5 @@ test('an unauthenticated request to /directory points at its own resource metada
   assert.match(
     challenges.root,
     /resource_metadata="[^"]+\/\.well-known\/oauth-protected-resource"/
-  );
-});
-
-function fakeGet(url: string) {
-  let body: unknown;
-  let status: number | undefined;
-  const req = {
-    method: 'GET',
-    url,
-    headers: { host: 'mcp.test' },
-    body: undefined,
-    on() {},
-  } as unknown as Parameters<typeof handler>[0];
-  const res = {
-    setHeader() {
-      return this;
-    },
-    getHeader() {
-      return undefined;
-    },
-    status(code: number) {
-      status = code;
-      return this;
-    },
-    json(payload: unknown) {
-      body = payload;
-      return this;
-    },
-    send() {
-      return this;
-    },
-    end() {
-      return this;
-    },
-    writeHead(code: number) {
-      status = code;
-      return this;
-    },
-    on() {},
-  } as unknown as Parameters<typeof handler>[1];
-  return { req, res, result: () => ({ status, body }) };
-}
-
-test('protected-resource metadata names the directory endpoint as its resource', async () => {
-  const directory = fakeGet('/.well-known/oauth-protected-resource/directory');
-  await handler(directory.req, directory.res);
-  assert.equal(directory.result().status, 200);
-  assert.equal(
-    (directory.result().body as { resource: string }).resource,
-    'https://mcp.test/directory'
-  );
-
-  const root = fakeGet('/.well-known/oauth-protected-resource');
-  await handler(root.req, root.res);
-  assert.equal(
-    (root.result().body as { resource: string }).resource,
-    'https://mcp.test/'
   );
 });

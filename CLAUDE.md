@@ -31,12 +31,12 @@ The source is split by responsibility:
 - `src/specgen/` is the tool surface — generated from the v2 OpenAPI spec plus a curated overlay; see `specgen/DESIGN.md`. There is one surface: stdio and hosted serve the same tools and skill resources.
 - `src/server.ts` owns the server name/version constants.
 - Tests, scripts and the specgen generator import source modules through the `#src/...` alias (`package.json` `imports`, mapped to `src/*.ts`, so the specifier is bare); a relative `../src` import there is a lint error. `api/` and `convex/` keep relative imports because Vercel and Convex bundle them with their own resolvers.
-- `api/index.ts` is the Vercel adapter and hosts the OAuth authorization-server routes (`/.well-known/*`, `/register`, `/authorize`, `/token`).
+- The hosted deployment (the Vercel entry point, the OAuth authorization-server routes `/.well-known/*`, `/register`, `/authorize`, `/token`, and the Convex sink) lives in the hosted service's own repository, which consumes `@runpod/mcp-server/hosted` and `@runpod/mcp-server/alp`.
 - `packages/typescript-api-sdk/` is the REST v2 client, published separately to npm as `@runpod/typescript-api-sdk`. The repo is a pnpm workspace: the MCP at the root takes the SDK as a `workspace:*` devDependency and bundles it into `dist`, so the MCP package does not depend on an SDK release. The SDK owns the vendored spec (`packages/typescript-api-sdk/spec/openapi.yaml`) and its patch layer (`scripts/fix_spec.py`); both the SDK types and the MCP tools generate from that one file. The SDK keeps its own tooling (vitest, Python spec scripts, MIT license); see `packages/typescript-api-sdk/docs/development.md`.
 
 ### Hosted/OAuth environment variables
 
-The hosted HTTP path (`api/index.ts` + `src/http.ts`) reads these, all optional with production-safe defaults:
+The hosted HTTP path (`src/http.ts`, mounted by the hosted service) reads these, all optional with production-safe defaults:
 
 - `RUNPOD_GRAPHQL_URL`: flash auth backend for the OAuth flow (default `https://api.runpod.io/graphql`). Also the host the hosted credential pre-flight verifies against, so unlike the guest flash-auth mutations it now receives the caller's bearer token — point it only at a host you trust with that.
 - `CONSOLE_BASE_URL`: console that hosts the sign-in handoff page (default `https://console.runpod.io`).

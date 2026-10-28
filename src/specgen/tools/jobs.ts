@@ -29,7 +29,7 @@ const UPSTREAM_HOLD_SLACK_MS = 5_000;
 // stream-job polling: total budget, what an empty /stream holds for when no
 // ?wait= is sent (the stdio path omits the query), per-poll floor, pause
 // between polls, and the consecutive-error cap that ends the run.
-// Hosted (Vercel) requests are reaped at 60s (vercel.json maxDuration), so
+// Hosted (Vercel) requests are reaped at 60s (the hosted service's maxDuration), so
 // every server-side hold clamps to 45s there (and the directory profile,
 // served only there, describes those hosted limits) — the response must serialize
 // before the platform kills the invocation. stdio keeps the 5-minute budgets.

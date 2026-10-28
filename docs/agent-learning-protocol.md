@@ -226,11 +226,11 @@ should reuse this machinery rather than add a second copy. The registry is
 (`submissions.create`) and the `/alp/answered` route branch on it. The hosted
 handshake does not; it passes the literal `'referral'` to `hasAnswered`. A new
 once-per-account route is a literal in that list, in the `oncePerAccountRoute`
-Convex validator (`convex/submissions.ts`), in `ALP_ROUTES`
+Convex validator (in the hosted service repository), in `ALP_ROUTES`
 (`src/alp/ingest.ts`) and the schema's `route` union, plus the tool itself and
 a `hasAnswered(accountId, '<route>')` call wherever its ask is delivered.
-`tests/alp-sink-http.test.ts` fails if the Convex validators and the server
-lists drift apart.
+The hosted service's `alp-sink-http` test fails if the Convex validators and
+the server lists drift apart.
 
 To keep a single session from being asked both: the referral ask fires at
 session start, before any creation, and the NPS note fires on the third
@@ -279,18 +279,14 @@ gets an error, and may retry. Absence is unambiguous and free.
 
 ### Running the whole stack locally
 
-This falls out of the `api/` boundary with no second code path:
-
-```
-vercel dev                  # serves api/index.ts on :3000, reads ALP_SINK_URL from env
-npx convex dev              # the contributor's own dev deployment
-```
+The Vercel entry point and the Convex functions live in the hosted service's
+own repository; run `vercel dev` and `npx convex dev` there. The handlers live
+in `src/alp/` here and reach that service through `@runpod/mcp-server/hosted`.
 
 Connect an MCP client to the local HTTP server. ALP tools appear only when that
 server has `ALP_SINK_URL` and `ALP_SINK_SECRET` configured for your own development
 Convex deployment. The HTTP handler derives its ingest URL from the current
 request; there is no stdio ALP URL override or default production ingest URL.
-The handlers live in `src/alp/` and are mounted by `api/index.ts`.
 
 Use the development sink when testing writes. The application does not enforce
 ALP rate limits; optional deployment WAF rules are described under Rate limiting.
@@ -476,19 +472,21 @@ Two distinct leak surfaces, with different rules.
 1. **The published npm package.** `files` is `["dist/**/*", "CHANGELOG.md"]`, and
    tsup's entries are `src/stdio.ts`, `src/http.ts`, `src/tools.ts`. Everyone who
    installs `@runpod/mcp-server` gets all three, so **anything under `src/` is
-   published — including the hosted-path modules.** `api/` is compiled separately
-   by Vercel and never enters `dist`.
-2. **The public GitHub source.** Every file is readable, `api/` included. That
+   published — including the hosted-path modules.** The Vercel entry point lives
+   in the hosted service's repository and never enters `dist`.
+2. **The public GitHub source.** Every file is readable. That
    makes the _architecture_ visible, which is fine and not a leak. What must never
    be visible is any _value_: deployment URLs, tokens, project ids, secrets.
 
-### Rule 0 — the Convex side lives in a private repo — SUPERSEDED
+### Rule 0 — the Convex side lives in the hosted service repository
 
-Decision (2026-09-03): the Convex side lives in THIS repo, under `convex/` —
-one repo for the whole feature. It holds no values (the shared secret and
-deploy keys are env-only, and `convex/` is in neither the npm `files` list nor
-the Vercel build). Accepted consequence: the scrub ruleset is public, so it
-stays a best-effort pattern pass rather than a secret defense.
+Decision (2026-10-28): the Convex functions and the Vercel entry point live in
+the hosted service's own repository, which consumes `@runpod/mcp-server/hosted`
+and `@runpod/mcp-server/alp`. Between 2026-09-03 and 2026-10-28 they lived in
+this repo under `convex/` and `api/`, holding no values (the shared secret and
+deploy keys were env-only). The scrub ruleset stays public because
+`src/alp/scrub.ts` ships in the package, so it remains a best-effort pattern
+pass rather than a secret defense.
 
 ### Original reasoning (historical)
 
@@ -516,8 +514,8 @@ already public in this repo today.
 
 ### Rule 1 — storage credentials stay in the deployment environment
 
-`src/alp/ingest.ts` and `src/alp/read.ts` implement the HTTP handlers mounted by
-`api/index.ts`. They read the storage URL and shared secret from the server's
+`src/alp/ingest.ts` and `src/alp/read.ts` implement the HTTP handlers the hosted
+service mounts. They read the storage URL and shared secret from the server's
 environment. The tool clients know only the authenticated HTTP endpoint URL;
 they never receive storage credentials. The scrubber and Convex schema are public
 source in this repository.

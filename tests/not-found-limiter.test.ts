@@ -1,13 +1,7 @@
-// Hosted loop breaker: Convex counting rule, the instance-side block cache,
-// and fail-open behavior.
+// Hosted loop breaker: the instance-side block cache and fail-open behavior.
+// The sink's counting rule is tested next to the sink.
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  nextNotFoundState,
-  NOT_FOUND_BLOCK_MS,
-  NOT_FOUND_THRESHOLD,
-  NOT_FOUND_WINDOW_MS,
-} from '../convex/rateLimit.js';
 import {
   createNotFoundLimiter,
   notFoundSinkUrl,
@@ -17,27 +11,6 @@ import {
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 beforeEach(() => resetNotFoundBlocks());
-
-test('the counter blocks on the threshold-th 404 inside one window', () => {
-  let state = nextNotFoundState(null, 0);
-  for (let i = 2; i < NOT_FOUND_THRESHOLD; i++) {
-    state = nextNotFoundState(state, i);
-  }
-  assert.equal(state.count, NOT_FOUND_THRESHOLD - 1);
-  assert.equal(state.blockedUntil, 0);
-  state = nextNotFoundState(state, 100);
-  assert.equal(state.blockedUntil, 100 + NOT_FOUND_BLOCK_MS);
-});
-
-test('a new window starts the count over', () => {
-  const state = nextNotFoundState(
-    { windowStart: 0, count: NOT_FOUND_THRESHOLD - 1, blockedUntil: 0 },
-    NOT_FOUND_WINDOW_MS
-  );
-  assert.equal(state.count, 1);
-  assert.equal(state.windowStart, NOT_FOUND_WINDOW_MS);
-  assert.equal(state.blockedUntil, 0);
-});
 
 test('the sink URL is derived from the ALP submit URL', () => {
   assert.equal(

@@ -27,7 +27,6 @@
     "dev": "tsx src/stdio.ts",
     "smoke:http": "tsx scripts/smoke.ts http",
     "smoke:stdio": "tsx scripts/smoke.ts stdio",
-    "oauth-e2e": "tsx scripts/oauth-e2e.ts",
     "changeset": "changeset",
     "changeset:version": "changeset version",
     "changeset:publish": "changeset publish",
@@ -76,7 +75,6 @@
     "@modelcontextprotocol/sdk": "^1.7.0",
     "@runpod/plugin-knowledge": "^1.8.0",
     "jsonc-parser": "^3.3.1",
-    "node-fetch": "^3.3.2",
     "zod": "^3.22.4"
   },
   "devDependencies": {
@@ -84,7 +82,6 @@
     "@types/node": "^20.10.5",
     "@typescript-eslint/eslint-plugin": "^8.39.1",
     "@typescript-eslint/parser": "^8.39.1",
-    "@vercel/node": "^5.1.0",
     "ajv": "^8.20.0",
     "eslint": "^9.33.0",
     "prettier": "^3.6.2",
@@ -92,7 +89,6 @@
     "tsx": "^4.7.0",
     "typescript": "^5.3.3",
     "yaml": "^2.9.0",
-    "convex": "^1.16.0",
     "@runpod/typescript-api-sdk": "workspace:*"
   },
   "engines": {

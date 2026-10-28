@@ -22,7 +22,7 @@ description file.
         ▼                            ▼
    ┌──────────────────────────────────────────────┐
    │ BOX 1 — THE FRONT DOORS                      │
-   │ api/index.ts + src/http.ts   (hosted, OAuth) │
+   │ src/http.ts   (hosted, via the service)      │
    │ src/stdio.ts                 (local process) │
    │ Both mount the SAME Box 2 — one surface.     │
    └──────────────────────┬───────────────────────┘
@@ -286,7 +286,7 @@ plugin and this server serve one copy.
 ## Appendix: file map + commands
 
 ```
-api/index.ts                     Box 1: Vercel adapter + OAuth routes
+(hosted service repository)      Box 1: Vercel adapter + OAuth routes
 src/http.ts                      Box 1: auth, transport, per-request server
 src/specgen/server.ts            Box 2: tool list, routing, resources,
                                         instructions, hints, logging
