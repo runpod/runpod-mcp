@@ -236,3 +236,144 @@ test('real validation failures keep the shape hint', async () => {
   });
   assert.match(fieldErrors400, /Input shape mismatch/);
 });
+
+// The curated tools read their arguments in hand-written handlers, so the
+// query-param rule above never reached them. A strict-schema client sends
+// `wait: null` on every get-job-status call, and every optional GPU field on
+// set-endpoint-gpus as null.
+async function callCurated(
+  ctx: ReturnType<typeof createToolContext>,
+  name: string,
+  args: Record<string, unknown>
+) {
+  const server = createSpecgenServer(ctx, 'test');
+  const client = new Client({ name: 'test', version: '1' });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  try {
+    await Promise.all([server.connect(st), client.connect(ct)]);
+    const result = await client.callTool({ name, arguments: args });
+    return {
+      isError: result.isError === true,
+      payload: JSON.parse((result.content as Array<{ text: string }>)[0].text),
+    };
+  } finally {
+    await Promise.all([client.close(), server.close()]);
+  }
+}
+
+test('a null wait on get-job-status and runsync-endpoint is treated as omitted', async () => {
+  const calls: Array<{ path: string; body?: unknown }> = [];
+  const ctx = createToolContext({ apiKey: 'fake' });
+  Object.defineProperty(ctx, 'runtime', {
+    value: async (
+      _endpointId: string,
+      path: string,
+      opts: { body?: unknown } = {}
+    ) => {
+      calls.push({ path, body: opts.body });
+      return { id: 'job', status: 'COMPLETED', output: 'ok' };
+    },
+  });
+
+  const status = await callCurated(ctx, 'get-job-status', {
+    endpointId: 'ep',
+    jobId: 'job',
+    wait: null,
+  });
+  assert.equal(status.isError, false, JSON.stringify(status.payload));
+  assert.equal(status.payload.status, 'COMPLETED');
+
+  const runsync = await callCurated(ctx, 'runsync-endpoint', {
+    endpointId: 'ep',
+    input: { prompt: 'hi' },
+    wait: null,
+    webhook: null,
+    policy: null,
+    s3Config: null,
+  });
+  assert.equal(runsync.isError, false, JSON.stringify(runsync.payload));
+  assert.deepEqual(calls.at(-1), {
+    path: '/runsync',
+    body: { input: { prompt: 'hi' } },
+  });
+});
+
+test('run-endpoint does not forward null optional fields in the job body', async () => {
+  const calls: Array<{ path: string; body?: unknown }> = [];
+  const ctx = createToolContext({ apiKey: 'fake' });
+  Object.defineProperty(ctx, 'runtime', {
+    value: async (
+      _endpointId: string,
+      path: string,
+      opts: { body?: unknown } = {}
+    ) => {
+      calls.push({ path, body: opts.body });
+      return { id: 'job', status: 'IN_QUEUE' };
+    },
+  });
+  const result = await callCurated(ctx, 'run-endpoint', {
+    endpointId: 'ep',
+    input: { prompt: 'hi' },
+    webhook: null,
+    policy: null,
+    s3Config: null,
+  });
+  assert.equal(result.isError, false, JSON.stringify(result.payload));
+  assert.deepEqual(calls, [
+    { path: '/run', body: { input: { prompt: 'hi' } } },
+  ]);
+});
+
+test('set-endpoint-gpus treats null optional fields as omitted', async () => {
+  const captured: Captured[] = [];
+  const endpoint = {
+    id: 'ep',
+    name: 'n',
+    gpu: { pools: ['ADA_24'], count: 1 },
+  };
+  const ctx = createToolContext({ apiKey: 'fake' });
+  Object.defineProperty(ctx, 'sdk', {
+    value: createRunpodClient({
+      apiKey: 'fake',
+      fetch: async (input: Request | string | URL, init?: RequestInit) => {
+        const request =
+          input instanceof Request ? input : new Request(input, init);
+        const text = await request.text();
+        const body = text ? JSON.parse(text) : undefined;
+        captured.push({ url: new URL(request.url), body });
+        return Response.json(
+          body
+            ? { ...endpoint, gpu: { ...endpoint.gpu, ...body.gpu } }
+            : endpoint
+        );
+      },
+    }),
+  });
+  const result = await callCurated(ctx, 'set-endpoint-gpus', {
+    endpointId: 'ep',
+    gpuIds: null,
+    pools: ['AMPERE_80'],
+    excludeGpuTypeIds: null,
+    gpuCount: null,
+    minCudaVersion: null,
+    allowedCudaVersions: null,
+  });
+  assert.equal(result.isError, false, JSON.stringify(result.payload));
+  assert.deepEqual(captured.at(-1)?.body, {
+    gpu: { pools: ['AMPERE_80'], excludedTypes: [] },
+  });
+});
+
+test('a null required curated argument is still reported missing', async () => {
+  const ctx = createToolContext({ apiKey: 'fake' });
+  Object.defineProperty(ctx, 'runtime', {
+    value: async () => assert.fail('a null jobId reached the runtime API'),
+  });
+  const result = await callCurated(ctx, 'get-job-status', {
+    endpointId: 'ep',
+    jobId: null,
+    wait: null,
+  });
+  assert.equal(result.isError, true);
+  assert.match(result.payload.error, /Missing required argument: jobId/);
+});
