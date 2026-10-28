@@ -83,6 +83,26 @@ export function validateArguments(
   return null;
 }
 
+// Strict-schema clients (Codex, opencode) send every property, so an optional
+// argument they mean to leave out arrives as null. Curated handlers read their
+// arguments by hand and took that null as a value: get-job-status and
+// runsync-endpoint rejected `wait: null`, set-endpoint-gpus rejected every
+// null GPU field, and run-endpoint forwarded `webhook: null`, `policy: null`
+// and `s3Config: null` into the job body. No curated schema accepts null, so a
+// null optional argument is dropped before the gate and the handler see it. A
+// null REQUIRED argument is kept, so validateArguments still reports it.
+export function withoutNullOptionals(
+  inputSchema: { required?: unknown },
+  args: Record<string, unknown>
+): Record<string, unknown> {
+  const required = new Set((inputSchema.required ?? []) as string[]);
+  return Object.fromEntries(
+    Object.entries(args).filter(
+      ([name, value]) => value !== null || required.has(name)
+    )
+  );
+}
+
 export async function dispatchGeneratedTool(
   client: RunpodClient,
   tool: GeneratedTool,

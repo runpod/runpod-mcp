@@ -14,6 +14,7 @@ import type { ToolContext } from './context.js';
 import {
   dispatchGeneratedTool,
   validateArguments,
+  withoutNullOptionals,
   type ToolResult,
 } from './dispatch.js';
 import { generatedTools, type GeneratedTool } from './generated/tools.gen.js';
@@ -338,6 +339,12 @@ export function createSpecgenServer(
     const generated = servedGeneratedTools.find(
       (tool) => tool.name === request.params.name
     );
+    // A strict-schema client's null for an omitted optional argument is
+    // dropped here for curated tools (see withoutNullOptionals); generated
+    // tools handle it per parameter inside dispatch.
+    const curatedArgs = curated
+      ? withoutNullOptionals(curated.inputSchema, args)
+      : args;
     // runTool here as well as inside the curated handlers: it maps an HttpError
     // raised outside a handler body — a missing API key when the SDK client is
     // first built (src/specgen/context.ts) — onto a 401 tool result instead of a
@@ -362,14 +369,14 @@ export function createSpecgenServer(
       : curated && !curated.lenientArguments
         ? validateArguments(
             curated.inputSchema as { required?: unknown; properties?: unknown },
-            args
+            curatedArgs
           )
         : null;
     const result =
       rejected ??
       (await runTool(() =>
         curated
-          ? curated.handler(ctx, args)
+          ? curated.handler(ctx, curatedArgs)
           : dispatchTool(generated, request.params.name, args)
       ));
     logToolCall({
