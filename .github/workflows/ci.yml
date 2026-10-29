@@ -23,7 +23,7 @@ jobs:
       # report as failures too, hiding which platform actually broke.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        os: [blacksmith-2vcpu-ubuntu-2404]
         node-version: [20, 22, 24]
         # The install wizard has Windows-specific Claude Code detection and npm
         # package-launch paths. The suite models the published native-bin package in
@@ -109,7 +109,7 @@ jobs:
   # The published @runpod/typescript-api-sdk package. Its engines field allows
   # Node 20+, so each supported major is checked.
   sdk:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
 
     strategy:
       fail-fast: false
@@ -152,7 +152,7 @@ jobs:
     # the matrix result as a commit status on the PR head instead.
     if: always() && github.event_name == 'workflow_dispatch' && inputs.update_pr_head_sha != ''
     needs: [test, sdk]
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     permissions:
       statuses: write
     steps:

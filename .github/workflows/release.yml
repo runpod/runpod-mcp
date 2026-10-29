@@ -15,7 +15,7 @@ permissions:
 jobs:
   release:
     name: Release
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -71,4 +71,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_CONFIG_ACCESS: public # For scoped public packages
+          # npm trusted publishing rejects self-hosted runners, Blacksmith
+          # included. npm tries OIDC first and falls back to this token.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

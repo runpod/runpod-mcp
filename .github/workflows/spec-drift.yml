@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   spec-drift:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -49,7 +49,7 @@ jobs:
     # Put the dispatched drift result on that PR's head as a commit status.
     if: always() && github.event_name == 'workflow_dispatch' && inputs.update_pr_head_sha != ''
     needs: spec-drift
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     permissions:
       statuses: write
     steps:
