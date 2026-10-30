@@ -15,7 +15,12 @@ permissions:
 jobs:
   release:
     name: Release
-    runs-on: runpod-4vCPU-ubuntu-2404 # GitHub-hosted (trusted publishing needs that) with allow-listed static IPs
+    # GitHub-hosted runner with static, allow-listed IPs. npm trusted publishing
+    # rejects self-hosted runners, which includes Blacksmith. The label is literal
+    # because the org variable RUNNER_4VCPU_UBUNTU_2404 isn't shared with this
+    # repo, and an unset variable would leave runs-on empty. Once it's shared,
+    # switch to ${{ vars.RUNNER_4VCPU_UBUNTU_2404 }}.
+    runs-on: runpod-4vCPU-ubuntu-2404
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
