@@ -32,7 +32,7 @@ jobs:
         # which is how issue #56 happened. One combination is enough: the rest of
         # the suite is platform-agnostic.
         include:
-          - os: windows-latest
+          - os: blacksmith-4vcpu-windows-2025
             node-version: 22
 
     steps:
