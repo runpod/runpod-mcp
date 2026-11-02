@@ -1,5 +1,11 @@
 # @runpod/mcp-server
 
+## 4.9.1
+
+### Patch Changes
+
+- ad7445d: Drop the `node-fetch` dependency. Only the hosted entry point used it, and that now lives outside this repository.
+
 ## 4.9.0
 
 ### Minor Changes
