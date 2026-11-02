@@ -30,7 +30,7 @@ jobs:
   update:
     # Scheduled runs use the default branch. Reject manual runs from other refs.
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 30
     env:
       HAS_ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
@@ -77,6 +77,11 @@ jobs:
           echo "before=$before" >> "$GITHUB_OUTPUT"
           echo "after=$after" >> "$GITHUB_OUTPUT"
           if [ "$before" = "$after" ]; then
+            # pnpm update re-resolves unrelated transitive dependencies even
+            # when this one is already current. Drop that churn, or
+            # create-pull-request finds a dirty lockfile with no changeset to
+            # add and fails.
+            git checkout -- package.json pnpm-lock.yaml
             echo 'changed=false' >> "$GITHUB_OUTPUT"
           else
             echo 'changed=true' >> "$GITHUB_OUTPUT"
