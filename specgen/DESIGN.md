@@ -155,7 +155,6 @@ DAILY + EVERY PR ─ "did the API change under us?"
 
 EVERY PR ─ "is the repo consistent with itself?"   (pnpm test, no network)
   - every spec operation is generated OR excluded-with-a-reason
-  - all 54 tools of the old server still map to a served tool
   - every tool schema compiles as valid JSON Schema
   - keyless server still lists tools; a keyless call 401s cleanly
   - waits stay under the hosting platform's 60s kill deadline
@@ -300,7 +299,6 @@ packages/typescript-api-sdk/spec/openapi.yaml
                                  Box 3: vendored production spec (patched)
 specgen/generator-config.yaml    Box 3: exclusions / description + argument overrides / on-demand schemas
 specgen/generator/               Box 3: the generator
-specgen/old-mcp-tools.yaml       parity map against the old 54-tool server
 scripts/check-spec-drift.ts      live-vs-vendored spec diff
 tests/specgen-*.test.ts          the gates described in level 4
 ```

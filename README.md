@@ -167,15 +167,6 @@ Endpoints are image-based — pass an image and a GPU pool (a `pool` value from 
 
 See [`docs/configuration.md`](docs/configuration.md) for host overrides, private image pull (registry credentials vs ECR delegation), and large-output handling.
 
-## Upgrading from 3.x
-
-Eight tools follow their spec operationIds (e.g.
-`create-container-registry-auth` → `create-registry`, `get-billing` →
-`list-billing`) and `start-pod`/`stop-pod`/`restart-pod` fold into
-`pod-action` with an `action` argument. The full old→new map is
-[`specgen/old-mcp-tools.yaml`](specgen/old-mcp-tools.yaml). The server is
-v2-only; `RUNPOD_REST_VERSION` and the v1 fallback are retired.
-
 ## Security
 
 This server acts with the full permissions of the supplied API key.

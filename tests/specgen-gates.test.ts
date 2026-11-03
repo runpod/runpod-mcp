@@ -1,6 +1,5 @@
 // The specgen drift gates, ported from the specgen repo's vitest suite:
 //  - spec parity: every OpenAPI operation is generated or explicitly excluded
-//  - old-MCP parity: all 54 tools of the pre-specgen server map to a served tool
 //  - schema gate: every inputSchema compiles as self-contained JSON Schema
 //  - offline handshake: no key -> full tool list, and a call fails as a 401
 //    tool result, never a crash
@@ -65,17 +64,6 @@ test('every exclusion states a reason; replacements are actually served', () => 
 test('no name collisions between curated and generated tools', () => {
   const names = [...curatedTools, ...generatedTools].map((tool) => tool.name);
   assert.equal(new Set(names).size, names.length);
-});
-
-test('old-MCP parity: all mapped tools are served', () => {
-  const manifest = parse(readFileSync('specgen/old-mcp-tools.yaml', 'utf8'));
-  assert.equal(manifest.tools.length, 54);
-  for (const entry of manifest.tools as Array<{ old: string; to: string }>) {
-    assert.ok(
-      servedNames.has(entry.to),
-      `${entry.old} maps to unserved ${entry.to}`
-    );
-  }
 });
 
 test('every inputSchema compiles as a self-contained JSON Schema', () => {

@@ -17,7 +17,6 @@ packages/typescript-api-sdk/spec/openapi.yaml
                                 after the SDK's patch layer) — shared with the SDK
 specgen/generator-config.yaml   exclusions / renames / description overrides
 specgen/generator/              the generator (pnpm generate:tools)
-specgen/old-mcp-tools.yaml      54-tool parity manifest vs. the old surface
 src/specgen/generated/          machine-written output — never hand-edited
 src/specgen/tools/              curated overlay (runtime plane, GraphQL, SSE,
                                 trimmed list views)
@@ -57,8 +56,8 @@ fixes known spec errors and scrubs values that must not ship, such as real AWS
 account IDs. Fix the spec there, never by hand-editing the vendored file.
 
 New API endpoint: `pnpm spec:pull`, then `pnpm generate`. The gates fail if an
-operation is neither generated nor excluded with a reason, if a curated
-replacement disappears, or if the old 54-tool surface loses a mapping.
+operation is neither generated nor excluded with a reason, or if a curated
+replacement disappears.
 
 ## Playbooks over MCP
 
