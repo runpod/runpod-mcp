@@ -1,14 +1,16 @@
 // Best-effort secret redaction before forwarding to storage and again at the
-// Convex write boundary. This catches recognizable tokens and sensitive config
-// assignments; arbitrary unlabeled secrets cannot reliably be identified.
+// Convex write boundary. This catches recognizable tokens, sensitive config
+// assignments and email addresses; arbitrary unlabeled secrets cannot reliably
+// be identified.
 //
-// Four stages, run in this order, each a pure function with its own table
+// Five stages, run in this order, each a pure function with its own table
 // of rules and its own tests:
 //
 //   A. anchored credentials  — shapes recognizable on their own (rpa_, JWT...)
 //   B. sensitive headers     — the WHOLE value of Authorization/Cookie/...
 //   C. URL query secrets   — api_key/token/key/secret parameters
 //   D. config assignments    — `key = value` / `key: value` by key name
+//   E. email addresses       — personal data, not a credential
 //
 // Specific before broad is the invariant. Several stage-A rules identify a
 // credential by the word in front of it (`Bearer <opaque>`), and stage D stops
@@ -25,7 +27,7 @@ export interface ScrubResult {
 }
 
 // Bump when any stage's rules change so stored rows record which pass they got.
-export const SCRUB_VERSION = 5;
+export const SCRUB_VERSION = 6;
 
 const MARKER = /^["']?\[redacted:[a-z_]+\]["']?$/;
 
@@ -356,6 +358,43 @@ export function redactAssignments(text: string): ScrubResult {
   return { text: out, redactions };
 }
 
+// ---- Stage E: email addresses -------------------------------------------
+
+// Letters, marks and digits of any script, so `josé@example.com` and
+// `用户@例子.example.com` are caught too. Quantifiers carry the address limits
+// (64-character local part, 63-character labels), and the local part must
+// start a run of address characters, so each run is tried once and a run of
+// more than 64 characters before the `@` is not an address. Together they
+// keep a long run with no `@` from costing quadratic time on a long
+// submission. A dotted version such as `pkg@1.2.3` is not matched: the
+// top-level label must be letters.
+const EMAIL =
+  /(?<![\p{L}\p{M}\p{N}_.%+-])([\p{L}\p{M}\p{N}_.%+-]{1,64})@((?:[\p{L}\p{M}\p{N}-]{1,63}\.){1,8}[\p{L}\p{M}]{2,63})(?![\p{L}\p{M}\p{N}])/gu;
+
+// Two logins are kept: they name a machine, not a person, and the address is
+// what tells a reader where a command ran. They are Runpod's Pod SSH proxy
+// (`<podId>-<hash>@ssh.runpod.io`) and the git user of an SSH remote
+// (`git@github.com:org/repo.git`, `ssh://git@github.com/org/repo.git`).
+const RUNPOD_SSH_HOST = 'ssh.runpod.io';
+
+export function redactEmails(text: string): ScrubResult {
+  let redactions = 0;
+  const out = text.replace(
+    EMAIL,
+    (address: string, local: string, domain: string, offset: number) => {
+      const next = text[offset + address.length];
+      if (
+        domain.toLowerCase() === RUNPOD_SSH_HOST ||
+        (local === 'git' && (next === ':' || next === '/'))
+      )
+        return address;
+      redactions++;
+      return '[redacted:email]';
+    }
+  );
+  return { text: out, redactions };
+}
+
 // ---- Composition ---------------------------------------------------------
 
 export function scrub(text: string): ScrubResult {
@@ -366,6 +405,7 @@ export function scrub(text: string): ScrubResult {
     redactHeaderValues,
     redactQuerySecrets,
     redactAssignments,
+    redactEmails,
   ]) {
     const result = stage(out);
     out = result.text;

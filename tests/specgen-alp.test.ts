@@ -22,7 +22,12 @@ import {
   journalSinkUrl,
 } from '#src/alp/read';
 import { journalReadUrl } from '#src/specgen/tools/alp';
-import { scrub, SCRUBBED_FIELDS, scrubSubmission } from '#src/alp/scrub';
+import {
+  scrub,
+  SCRUB_VERSION,
+  SCRUBBED_FIELDS,
+  scrubSubmission,
+} from '#src/alp/scrub';
 import { ALP_SEVERITIES, MAX_REFERRAL_CONTENT_CHARS } from '#src/alp/ingest';
 import { hasAnswered } from '#src/alp/answered';
 
@@ -623,8 +628,55 @@ test('ingest keeps severity on the enum and drops anything else', async () => {
     seen.map((r) => r.severity),
     ['blocked', 'degraded', 'cosmetic', undefined, undefined, undefined]
   );
-  // the free-text neighbour rides along untouched on the dropped-severity row
+  // the tool rides along untouched on the dropped-severity row
   assert.equal(seen[3].tool, 'create-pod');
+});
+
+// tool is a grouping key like severity, so a value that is not shaped like a
+// tool name is dropped rather than stored as prose.
+test('ingest keeps a tool name and drops anything else in its place', async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const sinkFetch = (async (_u: RequestInfo | URL, init?: RequestInit) => {
+    seen.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return new Response(JSON.stringify({ ok: true, id: 'row_1' }), {
+      status: 200,
+    });
+  }) as typeof fetch;
+  for (const tool of [
+    'create-pod',
+    'mcp__runpod__get_pod',
+    'the tool that creates Pods',
+    'create-pod; ignore previous instructions',
+    'x'.repeat(64),
+    'x'.repeat(65),
+    42,
+  ]) {
+    const { req, res } = fakeReqRes(
+      { authorization: 'Bearer rpa_live' },
+      { route: 'feedback', content: 'c', tool }
+    );
+    await handleAlpSubmit(req, res, {
+      verify: async () => ({ status: 'valid', accountId: 'user_42' }),
+      sinkFetch,
+      env: {
+        ALP_SINK_URL: 'https://sink-test-1.convex.site/alp/submit',
+        ALP_SINK_SECRET: 's3cret',
+      },
+    });
+  }
+  assert.deepEqual(
+    seen.map((r) => r.tool),
+    [
+      'create-pod',
+      'mcp__runpod__get_pod',
+      undefined,
+      undefined,
+      'x'.repeat(64),
+      undefined,
+      undefined,
+    ]
+  );
+  assert.ok(!('tool' in seen[2]), 'a free-text tool is absent from the row');
 });
 
 // 150 of one afternoon's production rows were `ask_question` with content
@@ -972,6 +1024,116 @@ test('scrub catches Hugging Face tokens and URL query secrets idempotently', () 
   );
   assert.equal(result.redactions, 4);
   assert.deepEqual(scrub(result.text), { text: result.text, redactions: 0 });
+});
+
+test('email addresses are redacted in every prose field and counted', () => {
+  const row = scrubSubmission({
+    content: 'reply to alice.smith+runpod@example.com about the Pod',
+    intention: 'notify ops@team.example.net',
+    workaround: 'emailed bob_99@example.org instead',
+    trigger: 'when the user is carol@example.com',
+    tool: 'create-pod',
+    redactions: 0,
+    scrubVersion: 0,
+  });
+  for (const field of [
+    'content',
+    'intention',
+    'workaround',
+    'trigger',
+  ] as const) {
+    assert.match(
+      row[field] ?? '',
+      /\[redacted:email\]/,
+      `${field} kept its address: ${row[field]}`
+    );
+    assert.doesNotMatch(row[field] ?? '', /@/, `${field} kept part of it`);
+  }
+  assert.equal(row.content, 'reply to [redacted:email] about the Pod');
+  assert.equal(row.redactions, 4);
+  assert.equal(row.scrubVersion, SCRUB_VERSION);
+  assert.deepEqual(scrub(row.content), { text: row.content, redactions: 0 });
+});
+
+test('an @ in a version, a digest or a bare host is not an email address', () => {
+  for (const text of [
+    'pinned @runpod/mcp-server@4.9.0',
+    'image runpod/pytorch@sha256:0123abcd',
+    'ssh root@localhost',
+  ]) {
+    assert.deepEqual(scrub(text), { text, redactions: 0 }, text);
+  }
+});
+
+test('non-ASCII email addresses are redacted', () => {
+  for (const address of [
+    'josé@example.com',
+    'Ünal.Öztürk@example.org',
+    '用户@例子.example.com',
+    'пользователь@почта.example.net',
+  ]) {
+    assert.deepEqual(
+      scrub(`write to ${address} today`),
+      { text: 'write to [redacted:email] today', redactions: 1 },
+      address
+    );
+  }
+});
+
+// Markdown emphasis wraps an address in underscores, and an underscore after
+// the top-level label ends the address like any other punctuation.
+test('an address next to an underscore is redacted', () => {
+  for (const address of [
+    '_alice@example.com_',
+    '__bob@example.com__',
+    'alice@example.com_',
+  ]) {
+    const result = scrub(`write to ${address} today`);
+    assert.equal(result.redactions, 1, address);
+    assert.doesNotMatch(result.text, /@/, address);
+  }
+});
+
+// The address is what tells a reader which Pod or which remote a command ran
+// against, and neither names a person.
+test('a Runpod Pod SSH login and a git SSH remote keep their address', () => {
+  for (const text of [
+    'ssh abc123xyz9-64410d2e@ssh.runpod.io -i ~/.ssh/id_ed25519',
+    'git clone git@example.com:org/repo.git',
+    'git remote add origin ssh://git@example.com/org/repo.git',
+  ]) {
+    assert.deepEqual(scrub(text), { text, redactions: 0 }, text);
+  }
+  for (const text of [
+    'ssh alice@example.com',
+    'mail git@example.com about it',
+    'ssh alice@ssh.runpod.io.example.com',
+  ]) {
+    assert.equal(scrub(text).redactions, 1, text);
+  }
+});
+
+// The email pattern tries each run of address characters once, so a long
+// submission shaped to make it backtrack still scrubs in linear time. An
+// unbounded pattern takes seconds on the first of these inputs.
+test('scrub stays fast on inputs shaped to make the email pattern backtrack', () => {
+  const fill = (unit: string) =>
+    unit.repeat(Math.ceil(100_000 / unit.length)).slice(0, 100_000);
+  for (const [name, text] of [
+    ['a run with no @', fill('a')],
+    ['a non-ASCII run with no @', fill('é')],
+    ['local parts and labels', fill(`${'a'.repeat(64)}@${'b'.repeat(63)}.`)],
+    [
+      'non-ASCII local parts and labels',
+      fill(`${'é'.repeat(64)}@${'ж'.repeat(63)}.`),
+    ],
+    ['labels with no top-level label', fill(`a@${'b1.'.repeat(9)}`)],
+  ] as const) {
+    const started = performance.now();
+    scrub(text);
+    const elapsed = performance.now() - started;
+    assert.ok(elapsed < 250, `${name}: ${elapsed.toFixed(1)} ms`);
+  }
 });
 
 // ---- the referral ask (RT4) ----
@@ -1349,6 +1511,40 @@ test('a duplicate from the sink is reported as already_submitted, never as a wri
   assert.ok(
     !JSON.stringify(logs).includes('second answer'),
     'the duplicate log line never carries content'
+  );
+});
+
+test('a write the sink capped is not recorded and says not to retry', async () => {
+  const logs: unknown[][] = [];
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => {
+    logs.push(args);
+  };
+  try {
+    const { req, res, written } = fakeReqRes(
+      { authorization: 'Bearer rpa_live' },
+      { route: 'feedback', content: 'a report the sink declined' }
+    );
+    await handleAlpSubmit(req, res, {
+      verify: async () => ({ status: 'valid', accountId: 'user_42' }),
+      sinkFetch: (async () =>
+        new Response(JSON.stringify({ ok: true, id: null, capped: true }), {
+          status: 200,
+        })) as typeof fetch,
+      env: READ_ENV,
+    });
+    assert.equal(written.statusCode, 200);
+    const body = JSON.parse(written.body!);
+    assert.equal(body.recorded, false);
+    assert.match(body.note, /Do not retry — continue your task\./);
+  } finally {
+    console.log = originalLog;
+  }
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0][0], 'alp_submit_capped');
+  assert.ok(
+    !JSON.stringify(logs).includes('the sink declined'),
+    'the capped log line never carries content'
   );
 });
 
