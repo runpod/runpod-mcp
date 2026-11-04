@@ -15,6 +15,36 @@ import { badRequest, ok } from './util.js';
 
 const knowledge = loadKnowledge();
 
+// A withdrawn rule stays in the pinned bundle until the knowledge release that
+// deletes it ships in this package. Until then the hosted server lists it in
+// KNOWLEDGE_HIDDEN_RULES (comma-separated rule ids) to keep it out of answers.
+const hiddenRules = new Set(
+  (process.env.KNOWLEDGE_HIDDEN_RULES ?? '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean)
+);
+const concepts: Concept[] = knowledge.concepts.map((concept) => ({
+  ...concept,
+  rules: concept.rules.filter((rule) => !hiddenRules.has(rule.id)),
+}));
+// An id the bundle does not hold hides nothing: a typo, or a rule a later
+// knowledge release already deleted.
+for (const id of hiddenRules) {
+  if (
+    !knowledge.concepts.some((concept) =>
+      concept.rules.some((rule) => rule.id === id)
+    )
+  )
+    console.warn('knowledge_hidden_rule_unknown', {
+      id,
+      plugin_version: knowledge.version,
+    });
+}
+/** Rule ids with the hidden ones left out, for the places a rule is cited. */
+const visibleRuleIds = (ids: string[]) =>
+  ids.filter((id) => !hiddenRules.has(id));
+
 const GUIDE_KINDS = ['skill', 'reference', 'golden-path'] as const;
 const STOPWORDS = new Set(
   'a an and are as at be by can do does for from how i in is it my of on or the to what when why with you your'.split(
@@ -103,13 +133,14 @@ function linkedGuides(conceptId: string) {
     seen.add(link.from);
     const guide = byId.get(link.from);
     if (!guide) continue;
+    const rules = link.rules && visibleRuleIds(link.rules);
     if (guide.kind === 'golden-path')
       examples.push({ id: guide.id, title: guide.title, mcp: guide.mcp });
     else
       docs.push({
         id: guide.id,
         title: guide.title,
-        ...(link.rules ? { rules: link.rules } : {}),
+        ...(rules?.length ? { rules } : {}),
       });
   }
   return { examples, docs };
@@ -117,7 +148,7 @@ function linkedGuides(conceptId: string) {
 
 /** Concept ids by lower-cased id, name and alias. */
 const conceptIndex = new Map<string, Concept>();
-for (const concept of knowledge.concepts) {
+for (const concept of concepts) {
   for (const key of [concept.id, concept.name, ...concept.aliases]) {
     if (!conceptIndex.has(key.toLowerCase()))
       conceptIndex.set(key.toLowerCase(), concept);
@@ -169,7 +200,7 @@ function resolveConcept(
 }
 
 const ruleIndex = new Map<string, { rule: Rule; concept: Concept }>();
-for (const concept of knowledge.concepts) {
+for (const concept of concepts) {
   for (const rule of concept.rules) ruleIndex.set(rule.id, { rule, concept });
 }
 
@@ -314,7 +345,7 @@ export const lookupConcept: CuratedTool = {
       };
     }
     const { concept, matchedAs } = resolved;
-    const pointedAtBy = knowledge.concepts.flatMap((other) => [
+    const pointedAtBy = concepts.flatMap((other) => [
       ...(other.is_a === concept.id
         ? [{ concept: other.id, type: 'is_a' }]
         : []),
@@ -337,6 +368,14 @@ export const lookupConcept: CuratedTool = {
       ...source,
       ...(matchedAs ? { matched_as: matchedAs } : {}),
       ...concept,
+      steps: concept.steps.map((step) => ({
+        ...step,
+        rules: visibleRuleIds(step.rules),
+      })),
+      rules: concept.rules.map((rule) => ({
+        ...rule,
+        see: visibleRuleIds(rule.see),
+      })),
       pointed_at_by: pointedAtBy,
       linked_rules: linkedRules,
       ...linkedGuides(concept.id),
