@@ -53,6 +53,8 @@ tags:
     description: Available GPU, CPU, data center, and public template catalog metadata.
   - name: Billing
     description: Billing history and usage cost records across resource types.
+  - name: Cost Centers
+    description: Named labels that attribute resource spend for billing breakdowns.
   - name: Audit Logs
     description: Record of who did what to which resource on the account.
 components:
@@ -164,8 +166,8 @@ components:
         checked after authentication and rate limiting. GET and DELETE reject
         any nonempty request body with `422` instead.
 
-        An operation can also return this status when its expanded upstream
-        request is too large, even if the incoming body is within the limit.
+        An operation can also return this status when the request it expands
+        into is too large, even if the incoming body is within the limit.
       content:
         application/problem+json:
           schema:
@@ -184,7 +186,7 @@ components:
         RateLimit-Policy:
           $ref: '#/components/headers/RateLimit-Policy'
       description: |
-        The response would exceed the upstream response size cap. Request
+        The response would exceed the response size cap. Request
         fewer items and retry; on paginated operations, lower `limit`.
       content:
         application/problem+json:
@@ -248,9 +250,11 @@ components:
                 detail: rate limit exceeded for the minute window
   headers:
     RateLimit:
+      description: Live quota state for the caller, per the IETF ratelimit-headers draft.
       schema:
         $ref: '#/components/schemas/RateLimitHeader'
     RateLimit-Policy:
+      description: The quota policy behind `RateLimit`, per the IETF ratelimit-headers draft.
       schema:
         $ref: '#/components/schemas/RateLimitPolicyHeader'
   parameters:
@@ -299,6 +303,34 @@ components:
         type: integer
         minimum: 1
       example: 30
+    MetricsStartTime:
+      name: startTime
+      in: query
+      required: false
+      description: >
+        Start of the window (RFC 3339), inclusive. Defaults to 24 hours before endTime, rounded down to
+        the start of an interval bucket. Must be within the last 90 days.
+      schema:
+        type: string
+        format: date-time
+      example: '2026-10-11T00:00:00Z'
+    MetricsEndTime:
+      name: endTime
+      in: query
+      required: false
+      description: >
+        End of the window (RFC 3339), exclusive. Defaults to now; a future value is treated as now.
+      schema:
+        type: string
+        format: date-time
+      example: '2026-10-12T00:00:00Z'
+    MetricsInterval:
+      name: interval
+      in: query
+      required: false
+      description: Bucket size. Defaults to 1h.
+      schema:
+        $ref: '#/components/schemas/EndpointMetricsInterval'
     PaginationCursor:
       name: cursor
       in: query
@@ -322,6 +354,16 @@ components:
         maximum: 1000
       example: 50
     PaginationLimitBuilds:
+      name: limit
+      in: query
+      required: false
+      description: Page size, 1–100. Defaults to 100 when omitted.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+      example: 50
+    PaginationLimitOrganizationGroups:
       name: limit
       in: query
       required: false
@@ -398,6 +440,32 @@ components:
         type: string
         minLength: 1
       example: abc123
+    OrganizationCapabilityFamilyFilter:
+      name: family
+      in: query
+      required: false
+      description: Only return these capability families, matched exactly. Comma-separated; a family matching
+        any listed value is returned. An empty value is ignored.
+      style: form
+      explode: false
+      schema:
+        type: array
+        items:
+          type: string
+      example: [POD, ENDPOINT]
+    OrganizationCapabilityVerbFilter:
+      name: verb
+      in: query
+      required: false
+      description: Only return these verbs, matched exactly. Comma-separated. Each family lists only the
+        requested verbs it has, and a family with none of them is left out. An empty value is ignored.
+      style: form
+      explode: false
+      schema:
+        type: array
+        items:
+          type: string
+      example: [VIEW, USE]
     CatalogIncludeParam:
       name: include
       in: query
@@ -442,7 +510,7 @@ components:
       in: query
       required: false
       description: 'Cloud type for availability and lowest-price calculations. Valid only with include=AVAILABILITY.
-        Supported values: SECURE, COMMUNITY. Upstream default when omitted: SECURE.'
+        Supported values: SECURE, COMMUNITY. Default when omitted: SECURE.'
       schema:
         $ref: '#/components/schemas/GpuCloudFilter'
     CountryCodesFilter:
@@ -577,18 +645,51 @@ components:
           type: string
           description: Organization name.
           examples: [my-org]
-    OrganizationRoleRef:
+    OrganizationInvite:
       type: object
-      description: An organization role, by ID.
-      required: [id, type]
+      description: A pending invitation to join the caller's organization. An invite stops being listed
+        once it is accepted, revoked or expired.
+      required: [id, email, role, createdAt, expiresAt]
       properties:
         id:
           type: string
-          description: Role ID. A built-in role's ID is `builtin:` followed by its name; a custom role
+          description: Invite ID.
+          examples: [invite_id_abc_123]
+        email:
+          type: string
+          description: Email address the invitation was sent to. The invitee accepts by signing in with
+            a verified account on this address.
+          examples: [new-member@example.com]
+        role:
+          $ref: '#/components/schemas/OrganizationRoleRef'
+        createdAt:
+          type: string
+          format: date-time
+          description: When the invite was sent.
+          examples: ['2026-10-01T09:00:00Z']
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the invite can no longer be accepted.
+          examples: ['2026-10-15T09:00:00Z']
+    OrganizationRoleRef:
+      type: object
+      description: An organization role, by ID and display name.
+      required: [id, type, name]
+      properties:
+        id:
+          type: string
+          description: Role ID. A built-in role's ID is `builtin:` followed by its key; a custom role
             carries its own ID.
           examples: ['builtin:dev']
         type:
           $ref: '#/components/schemas/OrganizationRoleType'
+        name:
+          type: string
+          description: 'The role''s display name: `Admin`, `Developer`, `Billing` or `Contributor` for
+            a built-in role, or a custom role''s own name. A custom role that has since been deleted reads
+            as `Contributor` while `id` keeps its own ID.'
+          examples: [Developer]
     OrganizationRoleType:
       type: string
       description: 'Who defines the role. `builtin` roles are Runpod''s: `builtin:admin`, `builtin:dev`,
@@ -598,10 +699,46 @@ components:
         - OrganizationRoleTypeBuiltin
         - OrganizationRoleTypeCustom
       enum: [builtin, custom]
+    OrganizationRoleInput:
+      type: object
+      description: An organization role to assign, by ID.
+      additionalProperties: false
+      required: [id]
+      properties:
+        id:
+          type: string
+          minLength: 1
+          description: 'Role ID, as reported on a member or an invite: `builtin:admin`, `builtin:dev`,
+            `builtin:billing`, `builtin:basic`, or a custom role''s own ID.'
+          examples: ['builtin:dev']
+    ListOrganizationInvitesResponse:
+      type: object
+      required: [invites]
+      properties:
+        invites:
+          type: array
+          description: Pending invites, newest first.
+          items:
+            $ref: '#/components/schemas/OrganizationInvite'
+    CreateOrganizationInviteRequest:
+      type: object
+      additionalProperties: false
+      required: [email, role]
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+          maxLength: 254
+          description: Address to invite, stored lowercased. The invitee accepts by signing in with a
+            verified account on this address.
+          examples: [new-member@example.com]
+        role:
+          $ref: '#/components/schemas/OrganizationRoleInput'
     OrganizationUser:
       type: object
       description: A member of the caller's organization. `id` is the member's user ID.
-      required: [id, email, role]
+      required: [id, email, role, groups]
       properties:
         id:
           type: string
@@ -613,15 +750,293 @@ components:
           examples: [member@example.com]
         role:
           $ref: '#/components/schemas/OrganizationRoleRef'
+        groups:
+          type: array
+          description: The groups the member belongs to, by name.
+          items:
+            $ref: '#/components/schemas/OrganizationGroupRef'
+    OrganizationGroupRef:
+      type: object
+      description: An organization group, by ID and name.
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          description: Group ID.
+          examples: [group_id_abc_123]
+        name:
+          type: string
+          description: Group name.
+          examples: [Engineering]
     ListOrganizationUsersResponse:
       type: object
       required: [users]
       properties:
         users:
           type: array
-          description: Every member of the organization, in upstream's order.
+          description: Every member of the organization.
           items:
             $ref: '#/components/schemas/OrganizationUser'
+    ListOrganizationGroupsResponse:
+      type: object
+      required: [groups, pagination]
+      properties:
+        groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrganizationGroup'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+    OrganizationGroupMember:
+      type: object
+      description: A member of the group. `id` is the member's user ID.
+      required: [id, email]
+      properties:
+        id:
+          type: string
+          description: User ID.
+          examples: [user_id_abc_123]
+        email:
+          type: [string, 'null']
+          description: The member's email address. Null for an account that has none.
+          examples: [member@example.com]
+    ListOrganizationGroupMembersResponse:
+      type: object
+      required: [members, pagination]
+      properties:
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrganizationGroupMember'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+    OrganizationRole:
+      description: 'A role an organization member or invite can hold: one of Runpod''s built-in roles,
+        or a custom role the organization defined.'
+      oneOf:
+        - $ref: '#/components/schemas/BuiltinOrganizationRole'
+        - $ref: '#/components/schemas/CustomOrganizationRole'
+      discriminator:
+        propertyName: type
+        mapping:
+          builtin: '#/components/schemas/BuiltinOrganizationRole'
+          custom: '#/components/schemas/CustomOrganizationRole'
+    BuiltinOrganizationRole:
+      type: object
+      description: A role Runpod defines. Built-in roles cannot be changed.
+      required: [id, name, type, capabilities]
+      properties:
+        id:
+          type: string
+          description: Role ID, `builtin:` followed by the role's key.
+          examples: ['builtin:dev']
+        name:
+          type: string
+          description: Display name.
+          examples: [Developer]
+        type:
+          type: string
+          description: Always `builtin` for this variant.
+          x-enum-varnames: [BuiltinOrganizationRoleTypeBuiltin]
+          enum: [builtin]
+        capabilities:
+          $ref: '#/components/schemas/OrganizationRoleCapabilities'
+    CustomOrganizationRole:
+      type: object
+      description: A role the caller's organization defined.
+      required:
+        - id
+        - name
+        - type
+        - capabilities
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          description: Role ID.
+          examples: [cmcustomrole0001]
+        name:
+          type: string
+          description: Display name, unique within the organization.
+          examples: [Pod viewer]
+        type:
+          type: string
+          description: Always `custom` for this variant.
+          x-enum-varnames: [CustomOrganizationRoleTypeCustom]
+          enum: [custom]
+        capabilities:
+          $ref: '#/components/schemas/OrganizationRoleCapabilities'
+        createdAt:
+          type: string
+          format: date-time
+          description: When the role was created.
+          examples: ['2026-10-01T09:00:00Z']
+        updatedAt:
+          type: string
+          format: date-time
+          description: When the role last changed. Assigning the role to a member or invite can also move
+            it.
+          examples: ['2026-10-02T09:00:00Z']
+    OrganizationRoleCapabilities:
+      type: array
+      description: What the role grants, as `FAMILY:VERB` capabilities, sorted. A member's effective access
+        can also include account-level access that no role grants.
+      items:
+        type: string
+      examples: [['POD:CREATE', 'POD:VIEW']]
+    ListOrganizationRolesResponse:
+      type: object
+      required: [roles]
+      properties:
+        roles:
+          type: array
+          description: Built-in and custom roles, oldest first.
+          items:
+            $ref: '#/components/schemas/OrganizationRole'
+    CreateOrganizationRoleRequest:
+      type: object
+      additionalProperties: false
+      required: [name, capabilities]
+      properties:
+        name:
+          $ref: '#/components/schemas/OrganizationRoleName'
+        capabilities:
+          $ref: '#/components/schemas/OrganizationRoleCapabilitiesInput'
+    UpdateOrganizationRoleRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: The fields to change; omitted fields are unchanged. `capabilities` replaces the role's
+        whole grant set rather than adding to it.
+      properties:
+        name:
+          $ref: '#/components/schemas/OrganizationRoleName'
+        capabilities:
+          $ref: '#/components/schemas/OrganizationRoleCapabilitiesInput'
+    OrganizationRoleName:
+      type: string
+      minLength: 1
+      maxLength: 191
+      pattern: "[^\\t-\\r \N   - \L\P  　]"
+      description: Display name, 1–191 characters with at least one non-whitespace character. Leading
+        and trailing whitespace is trimmed. It must be unique within the organization and cannot be a
+        built-in role's name.
+      examples: [Pod viewer]
+    OrganizationRoleCapabilitiesInput:
+      type: array
+      description: What the role grants, as `FAMILY:VERB` capabilities from `GET /v2/organization/roles/capabilities`.
+        The caller must hold every capability it lists.
+      minItems: 1
+      uniqueItems: true
+      items:
+        type: string
+        pattern: ^[A-Z0-9_]+:[A-Z0-9_]+$
+      examples: [['POD:VIEW']]
+    OrganizationCapabilityCatalog:
+      type: object
+      description: The capabilities a custom role can grant.
+      required: [version, families]
+      properties:
+        version:
+          type: integer
+          description: Major version of the capability catalog.
+          examples: [1]
+        families:
+          type: array
+          description: Capability families, in catalog order.
+          items:
+            $ref: '#/components/schemas/OrganizationCapabilityFamily'
+    OrganizationCapabilityFamily:
+      type: object
+      required: [family, verbs]
+      properties:
+        family:
+          type: string
+          description: What the capability applies to. A capability is written `FAMILY:VERB`, e.g. `POD:VIEW`.
+          examples: [POD]
+        verbs:
+          type: array
+          description: The verbs a custom role can grant on this family, in catalog order.
+          items:
+            type: string
+          examples:
+            - [CREATE, USE, TERMINAL, UPDATE, DELETE, VIEW]
+    UpdateOrganizationUserRequest:
+      type: object
+      description: Changes to a member. Send `role`, `groups`, or both; an omitted field is left as it
+        is.
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        role:
+          $ref: '#/components/schemas/OrganizationRoleInput'
+        groups:
+          type: array
+          description: 'The member''s groups after the change: the whole set, by ID. An empty list removes
+            the member from every group.'
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/OrganizationGroupInput'
+    OrganizationGroupInput:
+      type: object
+      description: An organization group, by ID.
+      additionalProperties: false
+      required: [id]
+      properties:
+        id:
+          type: string
+          minLength: 1
+          description: Group ID.
+          examples: [group_id_abc_123]
+    OrganizationGroup:
+      type: object
+      description: A group in the authenticated caller's organization.
+      required: [id, name, memberCount, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          description: Group ID.
+        name:
+          type: string
+          description: Group name.
+        memberCount:
+          type: integer
+          minimum: 0
+          description: Number of group memberships.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+          description: Group update time; membership changes need not update it.
+    CreateOrganizationGroupRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 191
+          pattern: "[^\\t-\\r \N   - \L\P  　]"
+          description: Group name with at least one non-whitespace character; surrounding whitespace is
+            trimmed.
+          examples: [Engineering]
+    UpdateOrganizationGroupRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 191
+          pattern: "[^\\t-\\r \N   - \L\P  　]"
+          description: Group name with at least one non-whitespace character; surrounding whitespace is
+            trimmed.
+          examples: [Research]
     Pagination:
       type: object
       required: [nextCursor, hasNextPage]
@@ -726,25 +1141,24 @@ components:
     BaseMounts:
       type: object
       description: |
-        The mount kinds every resource that takes `mounts` shares. At most one
-        of `persistent` or `network` may be set: combining them is rejected
-        with 400. The `network` field is an array for forward compatibility
-        with multi-network-volume support; `maxItems` is 1.
+        Shared base type for all resources that mount storage volumes.
+        `persistent` and `network` cannot both be set (rejected with 400).
+        Each resource that uses this type sets its own limit on network
+        volumes.
       properties:
         persistent:
           $ref: '#/components/schemas/PersistentMount'
         network:
           type: array
-          maxItems: 1
           items:
             $ref: '#/components/schemas/NetworkMount'
     ClusterMounts:
       description: |
-        Storage mounts for a cluster create: `persistent` or `network`, not
-        both. Clusters cannot mount global volumes, so `global` is rejected
-        with 422. A mount `path` must not be empty (rejected with 422):
-        upstream reads an empty path as unset and would mount the volume at
-        the template's path, or `/workspace` without a template.
+        Storage mounts for a cluster create: `persistent` or one `network`
+        volume, not both. Clusters cannot mount global volumes, so `global`
+        is rejected with 422. A mount `path` must not be empty (rejected with 422): an
+        empty path reads as unset and would mount the volume at the
+        template's path, or `/workspace` without a template.
       x-go-type: BaseMounts
       allOf:
         - $ref: '#/components/schemas/BaseMounts'
@@ -758,6 +1172,7 @@ components:
                   minLength: 1
             network:
               type: array
+              maxItems: 1
               items:
                 type: object
                 properties:
@@ -767,40 +1182,32 @@ components:
       unevaluatedProperties: false
     Mounts:
       description: |
-        Storage mounts attached to a pod. `persistent` is mutually exclusive
-        with both `network` and `global`: combining them is rejected with 400.
-        The `network` field is an array for forward compatibility with
-        multi-network-volume support; `maxItems` is 1.
-
-        PATCH semantics:
-        - Omitting `mounts` or sending `{}` leaves the existing mount
-          unchanged.
-        - An explicit `network: []` is rejected with 400 (clearing mounts
-          is not supported).
-        - Mount kind is fixed at create — a PATCH that introduces a kind
-          not present at create (persistent on a network pod, network on
-          a persistent pod, or any mount on a previously-mountless pod)
-          is rejected with 400.
-        - The `volumeId` of a network mount is immutable; a PATCH that
-          names a different `volumeId` is rejected with 400.
-        - Partial mounts are not supported — every mount entry must
-          include the full schema (`size` + `path` for persistent,
-          `volumeId` + `path` for network). Missing required fields → 422.
+        Storage mounts attached to a pod. `persistent` (the volume disk) is
+        mutually exclusive with both `network` and `global`: combining them
+        is rejected with 400. A pod takes up to 4 network volumes
+        and 1 global volume. Every network volume must be in the pod's data
+        center, each volume may be listed once, and mount paths must not
+        overlap; a request that breaks one of these is rejected. To change a
+        pod's mounts after creation, see `UpdatePodMounts`.
       allOf:
         - $ref: '#/components/schemas/BaseMounts'
         - type: object
           properties:
+            network:
+              type: array
+              maxItems: 4
+              description: >
+                Up to 4 network volumes, all in the pod's data center.
+              items:
+                $ref: '#/components/schemas/NetworkMount'
             global:
               type: array
               maxItems: 1
               description: |
                 At most one global volume, on GPU and CPU pods, with no data
                 center constraint. Combinable with `network` but not with
-                `persistent` (rejected with 400): upstream drops a persistent
-                disk whenever a volume is attached. Same PATCH rules as
-                `network`: global mounts are fixed at create, `global: []` is
-                rejected with 400, and `volumeId` is immutable; only `path` may
-                change.
+                `persistent` (rejected with 400): a persistent disk is dropped
+                whenever a volume is attached. Same PATCH rules as `network`.
               items:
                 $ref: '#/components/schemas/GlobalMount'
       unevaluatedProperties: false
@@ -829,7 +1236,7 @@ components:
         size:
           type: integer
           minimum: 10
-          description: Host-local persistent storage in GB. Upstream enforces a 10 GB floor.
+          description: Host-local persistent storage in GB. Minimum 10 GB.
           examples: [20]
         path:
           type: string
@@ -841,8 +1248,8 @@ components:
       additionalProperties: false
       description: |
         Reference to a NetworkVolume. Custom paths are honored at runtime on
-        both GPU and CPU pods. The underlying `volumeId` is immutable
-        post-create; the mount `path` may be changed via PATCH.
+        both GPU and CPU pods. On a pod, the volume can be mounted, moved,
+        or unmounted after creation (see `UpdatePodMounts`).
       properties:
         volumeId:
           type: string
@@ -857,9 +1264,9 @@ components:
       required: [volumeId]
       additionalProperties: false
       description: |
-        Reference to a GlobalVolume. Usage-billed, so it has no size. The
-        underlying `volumeId` is immutable post-create; the mount `path` may be
-        changed via PATCH.
+        Reference to a GlobalVolume. Usage-billed, so it has no size. On a
+        pod, the volume can be mounted, moved, or unmounted after creation
+        (see `UpdatePodMounts`).
       properties:
         volumeId:
           type: string
@@ -867,9 +1274,116 @@ components:
           examples: [gsb_abc]
         path:
           type: string
-          description: Mount path inside the container. Optional on create, where a default is chosen
-            for you; a PATCH that omits it leaves the path unchanged.
+          description: Mount path inside the container. Optional; a default is chosen for you when omitted.
           examples: [/data]
+    UpdatePodMounts:
+      type: object
+      additionalProperties: false
+      description: |
+        Changes to a pod's mounts. Each entry names one volume by `volumeId`
+        and changes only that volume; volumes that are not listed, and kinds
+        that are omitted, are left as they are. Omitting `mounts` or sending
+        `{}` changes nothing.
+
+        - A listed volume the pod does not have is mounted at `path`.
+        - A listed volume the pod already has moves to `path` (or stays
+          put when `path` is omitted).
+        - `remove: true` unmounts the volume. It cannot be combined with
+          `path`, and the volume must be mounted on the pod.
+        - To swap a volume, remove the old one and add the new one in the
+          same request.
+
+        Limits are checked against the pod as it would be after the request
+        and rejected with 400: at most 4 network volumes and 1 global
+        volume, and a volume disk cannot share a pod with network or global
+        volumes. A volume disk can be added to a pod that has no volumes
+        mounted (or unmounts them all in the same request), and it can only
+        grow. Removing a volume disk is not supported yet.
+      properties:
+        persistent:
+          $ref: '#/components/schemas/PersistentMountPatch'
+        network:
+          type: array
+          maxItems: 8
+          description: |
+            Network volumes to mount, move, or unmount. Up to 8 entries, so
+            a request can unmount 4 volumes and mount 4 others; the pod can
+            still hold at most 4 afterwards.
+          items:
+            $ref: '#/components/schemas/NetworkMountPatch'
+        global:
+          type: array
+          maxItems: 2
+          description: |
+            Global volumes to mount, move, or unmount. Up to 2 entries, so a
+            request can swap the global volume; the pod can still hold at
+            most 1 afterwards.
+          items:
+            $ref: '#/components/schemas/GlobalMountPatch'
+    PersistentMountPatch:
+      type: object
+      additionalProperties: false
+      description: |
+        Adds the pod's volume disk, grows it, or moves it. Adding a disk
+        requires `size`; on a pod that already has one, omitted fields are
+        left as they are. Not available on CPU pods.
+      properties:
+        size:
+          type: integer
+          minimum: 10
+          description: Volume disk size in GB. Can only grow; a smaller size than the current one is rejected
+            with 400.
+          examples: [50]
+        path:
+          type: string
+          minLength: 1
+          description: Mount path inside the container.
+          examples: [/workspace]
+        remove:
+          type: boolean
+          description: |
+            Removes the volume disk. Not supported yet: `remove: true` is
+            rejected with 400.
+    NetworkMountPatch:
+      type: object
+      required: [volumeId]
+      additionalProperties: false
+      description: |
+        Mounts, moves, or unmounts one network volume. Mounting a volume the
+        pod does not have requires `path`.
+      properties:
+        volumeId:
+          type: string
+          description: ID of an existing NetworkVolume in the same data center as the pod.
+          examples: [vol_xyz]
+        path:
+          type: string
+          minLength: 1
+          description: Mount path inside the container. Required when mounting; optional when moving a
+            mounted volume.
+          examples: [/runpod-volume]
+        remove:
+          type: boolean
+          description: Unmount the volume. Cannot be combined with `path`.
+    GlobalMountPatch:
+      type: object
+      required: [volumeId]
+      additionalProperties: false
+      description: Mounts, moves, or unmounts the pod's global volume.
+      properties:
+        volumeId:
+          type: string
+          description: ID of an existing GlobalVolume.
+          examples: [gsb_abc]
+        path:
+          type: string
+          minLength: 1
+          description: Mount path inside the container. Optional; when mounting, a default is chosen for
+            you if omitted.
+          examples: [/data]
+        remove:
+          type: boolean
+          description: Unmount the volume. Cannot be combined with `path`.
     BaseGpuConfig:
       type: object
       required: [id]
@@ -881,6 +1395,7 @@ components:
         count:
           type: integer
           minimum: 1
+          maximum: 1024
           default: 1
           description: Number of GPUs
           examples: [1]
@@ -944,6 +1459,7 @@ components:
             minRamPerGpu:
               type: integer
               minimum: 1
+              maximum: 65536
               description: Minimum host system RAM in GB per requested GPU. This is a placement filter,
                 not a resource request. The actual total allocated system RAM may be higher and is returned
                 in gpu.memory.
@@ -951,6 +1467,7 @@ components:
             minVcpuCountPerGpu:
               type: integer
               minimum: 1
+              maximum: 4096
               description: Minimum host vCPU count per requested GPU. This is a placement filter, not
                 a resource request. The actual total allocated vCPU count may be higher and is returned
                 in gpu.vcpuCount.
@@ -1157,9 +1674,8 @@ components:
             the pools and the exclusions untouched, so changing only a CUDA
             constraint cannot widen a pinned endpoint.
 
-            Rejected with 400 if a value is not a GPU type in one of `pools`;
-            upstream accepts unrecognized exclusions silently, so a typo would
-            otherwise produce a filter that does nothing. Surrounding whitespace
+            Rejected with 400 if a value is not a GPU type in one of `pools`,
+            so a typo cannot produce a filter that does nothing. Surrounding whitespace
             is trimmed, so `" NVIDIA L40"` and `"NVIDIA L40"` mean the same card.
           items:
             type: string
@@ -1363,6 +1879,10 @@ components:
             - flashboot
             - createdAt
           properties:
+            costCenter:
+              $ref: '#/components/schemas/ResourceCostCenter'
+            tags:
+              $ref: '#/components/schemas/ResourceTags'
             id:
               type: string
               examples: [ep_abc123]
@@ -1543,6 +2063,186 @@ components:
           minimum: 0
           description: All workers currently allocated to the endpoint.
           examples: [3]
+    EndpointMetricsInterval:
+      type: string
+      enum: [1m, 5m, 15m, 30m, 1h, 6h, 12h, 1d]
+      default: 1h
+      description: Bucket size for endpoint metrics.
+    EndpointDurationStats:
+      type: object
+      description: Millisecond statistics over one bucket.
+      required: [min, max, total, p70, p90, p95, p98]
+      properties:
+        min:
+          type: integer
+        max:
+          type: integer
+        total:
+          type: number
+          format: double
+          description: Sum over every request (or cold start) in the bucket.
+        p70:
+          type: integer
+        p90:
+          type: integer
+        p95:
+          type: integer
+        p98:
+          type: integer
+    EndpointRequestMetric:
+      type: object
+      required:
+        - time
+        - requests
+        - completed
+        - failed
+        - retries
+        - executionTimeMs
+        - delayTimeMs
+      properties:
+        time:
+          type: string
+          format: date-time
+          description: Bucket start (UTC).
+        requests:
+          type: integer
+          description: Requests that finished in this bucket.
+        completed:
+          type: integer
+        failed:
+          type: integer
+        retries:
+          type: integer
+        executionTimeMs:
+          $ref: '#/components/schemas/EndpointDurationStats'
+        delayTimeMs:
+          $ref: '#/components/schemas/EndpointDurationStats'
+    EndpointColdStartMetric:
+      type: object
+      required: [time, count, durationMs]
+      properties:
+        time:
+          type: string
+          format: date-time
+          description: Bucket start (UTC).
+        count:
+          type: integer
+        durationMs:
+          $ref: '#/components/schemas/EndpointDurationStats'
+    EndpointWorkerMetric:
+      type: object
+      required:
+        - time
+        - running
+        - idle
+        - initializing
+        - throttled
+        - unhealthy
+      properties:
+        time:
+          type: string
+          format: date-time
+          description: Bucket start (UTC).
+        running:
+          type: integer
+        idle:
+          type: integer
+        initializing:
+          type: integer
+        throttled:
+          type: integer
+        unhealthy:
+          type: integer
+    EndpointRequestMetricsResponse:
+      type: object
+      description: >
+        Request counts and durations per bucket for the resolved window. `records` contains only buckets
+        with activity. Buckets with no activity are omitted, not zero-filled, so `records` can be shorter
+        than the number of buckets in the window, or empty. Results are paged: see `pagination`.
+      required:
+        - startTime
+        - endTime
+        - interval
+        - records
+        - pagination
+      properties:
+        startTime:
+          type: string
+          format: date-time
+          description: Resolved window start (after defaults).
+        endTime:
+          type: string
+          format: date-time
+          description: Resolved window end (after defaults and the clamp to now).
+        interval:
+          $ref: '#/components/schemas/EndpointMetricsInterval'
+        records:
+          type: array
+          description: This page's buckets, oldest first.
+          items:
+            $ref: '#/components/schemas/EndpointRequestMetric'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+    EndpointColdStartMetricsResponse:
+      type: object
+      description: >
+        Cold start counts and durations per bucket for the resolved window. `records` contains only buckets
+        with activity. Buckets with no activity are omitted, not zero-filled, so `records` can be shorter
+        than the number of buckets in the window, or empty. Results are paged: see `pagination`.
+      required:
+        - startTime
+        - endTime
+        - interval
+        - records
+        - pagination
+      properties:
+        startTime:
+          type: string
+          format: date-time
+          description: Resolved window start (after defaults).
+        endTime:
+          type: string
+          format: date-time
+          description: Resolved window end (after defaults and the clamp to now).
+        interval:
+          $ref: '#/components/schemas/EndpointMetricsInterval'
+        records:
+          type: array
+          description: This page's buckets, oldest first.
+          items:
+            $ref: '#/components/schemas/EndpointColdStartMetric'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+    EndpointWorkerMetricsResponse:
+      type: object
+      description: >
+        Worker counts by state per bucket for the resolved window. `records` contains only buckets with
+        activity. Buckets with no activity are omitted, not zero-filled, so `records` can be shorter than
+        the number of buckets in the window, or empty. Results are paged: see `pagination`.
+      required:
+        - startTime
+        - endTime
+        - interval
+        - records
+        - pagination
+      properties:
+        startTime:
+          type: string
+          format: date-time
+          description: Resolved window start (after defaults).
+        endTime:
+          type: string
+          format: date-time
+          description: Resolved window end (after defaults and the clamp to now).
+        interval:
+          $ref: '#/components/schemas/EndpointMetricsInterval'
+        records:
+          type: array
+          description: This page's buckets, oldest first.
+          items:
+            $ref: '#/components/schemas/EndpointWorkerMetric'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
     ListEndpointWorkersResponse:
       type: object
       required: [workers, summary]
@@ -2225,6 +2925,10 @@ components:
             - startedAt
             - globalNetworking
           properties:
+            costCenter:
+              $ref: '#/components/schemas/ResourceCostCenter'
+            tags:
+              $ref: '#/components/schemas/ResourceTags'
             id:
               type: string
               examples: [pod_abc123]
@@ -2421,7 +3125,7 @@ components:
               description: Lock the pod (true) or unlock it (false). Locked pods cannot be stopped or
                 reset.
             mounts:
-              $ref: '#/components/schemas/Mounts'
+              $ref: '#/components/schemas/UpdatePodMounts'
             name:
               type: string
               minLength: 1
@@ -2485,7 +3189,7 @@ components:
           type: integer
           minimum: 1
           description: Number of GPUs on each pod. Bounded above by the GPU type's per-cloud maximum (GpuType.maxCount);
-            the upstream rejects values beyond it.
+            values beyond it are rejected.
           examples: [8]
         podCount:
           type: integer
@@ -2591,6 +3295,10 @@ components:
         mounts, and runtime state — from `GET /v2/clusters/{id}/pods`.
       required: [id, name, type, compute, pods, createdAt]
       properties:
+        costCenter:
+          $ref: '#/components/schemas/ResourceCostCenter'
+        tags:
+          $ref: '#/components/schemas/ResourceTags'
         id:
           type: string
           examples: [cluster_abc123]
@@ -2877,6 +3585,10 @@ components:
       type: object
       required: [id, name, size, dataCenter, type]
       properties:
+        costCenter:
+          $ref: '#/components/schemas/ResourceCostCenter'
+        tags:
+          $ref: '#/components/schemas/ResourceTags'
         id:
           type: string
           description: Unique network volume identifier
@@ -2989,7 +3701,7 @@ components:
           type: string
           minLength: 1
           maxLength: 191
-          pattern: "[^\\p{Z}\\t-\\r\N]"
+          pattern: "[^\\t-\\r \N   - \L\P  　]"
           description: >
             Human-readable name, 1–191 characters with at least one non-whitespace character. Leading
             and trailing whitespace is trimmed.
@@ -3006,7 +3718,7 @@ components:
           type: string
           minLength: 1
           maxLength: 191
-          pattern: "[^\\p{Z}\\t-\\r\N]"
+          pattern: "[^\\t-\\r \N   - \L\P  　]"
           description: >
             New human-readable name, 1–191 characters with at least one non-whitespace character. Leading
             and trailing whitespace is trimmed.
@@ -3270,6 +3982,21 @@ components:
             community:
               type: integer
               examples: [4]
+        minVcpuCount:
+          type: integer
+          description: |
+            Minimum total vCPU count reported across matching machines for the
+            requested `count` and availability filters. Present only with
+            include=AVAILABILITY and omitted when `availability` is `NONE`.
+          examples: [8]
+        minRam:
+          type: integer
+          description: |
+            Minimum total system RAM in GB reported across matching machines
+            for the requested `count` and availability filters. This is host
+            RAM, not the GPU VRAM reported in `memory`. Present only with
+            include=AVAILABILITY and omitted when `availability` is `NONE`.
+          examples: [32]
         availability:
           description: Overall GPU availability for the requested `product` contexts. Present only when
             requested with include=AVAILABILITY, which also requires `product`.
@@ -3578,6 +4305,161 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DataCenter'
+    CostCenter:
+      type: object
+      required: [id, value]
+      properties:
+        id:
+          type: string
+          examples: [clz1x9k4a0000qw3h8s7d2f1g]
+        value:
+          type: string
+          description: Cost center name exactly as stored, so it matches billing breakdowns.
+          examples: [team-ml]
+    ResourceCostCenter:
+      description: Cost center this resource's spend is attributed to. Absent when the resource is not
+        attributed to a cost center, or when the caller lacks permission to view cost centers. Managed
+        through `/v2/cost-centers`.
+      allOf:
+        - $ref: '#/components/schemas/CostCenter'
+    ListCostCentersResponse:
+      type: object
+      required: [costCenters, pagination]
+      properties:
+        costCenters:
+          type: array
+          items:
+            $ref: '#/components/schemas/CostCenter'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+    ListCostCenterResourcesResponse:
+      type: object
+      required: [resources, pagination]
+      properties:
+        resources:
+          type: array
+          items:
+            $ref: '#/components/schemas/CostCenterResource'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+    ResourceType:
+      type: string
+      description: Kind of resource a cost center or tag can be attached to.
+      x-enum-varnames:
+        - ResourceTypePod
+        - ResourceTypeCluster
+        - ResourceTypeServerlessEndpoint
+        - ResourceTypeNetworkVolume
+      enum:
+        - POD
+        - CLUSTER
+        - SERVERLESS_ENDPOINT
+        - NETWORK_VOLUME
+    CostCenterResource:
+      type: object
+      additionalProperties: false
+      required: [id, type]
+      properties:
+        id:
+          type: string
+          minLength: 1
+          examples: [p9k2m4n6q8]
+        type:
+          $ref: '#/components/schemas/ResourceType'
+    CreateCostCenterRequest:
+      type: object
+      additionalProperties: false
+      required: [value]
+      properties:
+        value:
+          type: string
+          minLength: 1
+          maxLength: 50
+          pattern: ^\s*\S
+          description: Leading and trailing whitespace is trimmed.
+          examples: [team-ml]
+        resources:
+          type: array
+          description: Resources to attribute to the new cost center.
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/CostCenterResource'
+    UpdateCostCenterRequest:
+      type: object
+      additionalProperties: false
+      required: [value]
+      properties:
+        value:
+          type: string
+          minLength: 1
+          maxLength: 50
+          pattern: ^\s*\S
+          description: Leading and trailing whitespace is trimmed.
+          examples: [team-ml-eu]
+    TagReference:
+      type: object
+      required: [id, key, value]
+      properties:
+        id:
+          type: string
+          description: ID of the tag itself, shared by every resource it is attached to.
+          examples: [clz1x9k4a0000qw3h8s7d2f1g]
+        key:
+          type: string
+          examples: [env]
+        value:
+          type: string
+          description: May be empty.
+          examples: [dev]
+    ResourceTags:
+      type: array
+      description: The tags on this resource that are visible to the caller. Keys and values are returned
+        exactly as stored. Tags under the reserved `runpod:` prefix, such as the cost center, are never
+        listed here. Absent when the resource's tags are unavailable to the caller; an empty array means
+        none are visible.
+      items:
+        $ref: '#/components/schemas/TagReference'
+    ResourceFilters:
+      type: object
+      additionalProperties: false
+      description: An empty object, or an empty `tags` array, filters nothing.
+      properties:
+        tags:
+          type: array
+          maxItems: 25
+          description: Conditions on the resource's tags. A resource must match every condition; repeating
+            a key adds a condition rather than widening the first one. At most 25, the most tags one resource
+            can carry.
+          items:
+            $ref: '#/components/schemas/TagCondition'
+    TagCondition:
+      type: object
+      additionalProperties: false
+      required: [key]
+      properties:
+        key:
+          $ref: '#/components/schemas/TagFilterKey'
+        values:
+          type: array
+          maxItems: 100
+          description: Matches a tag under `key` with any one of these values, compared exactly. Omitted
+            or empty, the condition only requires the key to be present. `""` matches a tag whose value
+            is empty. At most 100.
+          items:
+            type: string
+            maxLength: 191
+          examples: [[dev, prod]]
+    TagFilterKey:
+      type: string
+      minLength: 1
+      maxLength: 191
+      pattern: "[^\\t-\\r \N   - \L\P  　\uFEFF]"
+      not:
+        pattern: "^[\\t-\\r \N   - \L\P  　\uFEFF]*[Rr][Uu][Nn][Pp][Oo][Dd]:"
+      description: Tag key, 1–191 characters as sent, with at least one that is not whitespace. Leading
+        and trailing whitespace is ignored. Keys under the reserved `runpod:` prefix, in any letter case,
+        are rejected.
+      examples: [env]
     AuditLog:
       type: object
       description: One recorded action on the account.
@@ -4174,7 +5056,8 @@ components:
 
         A structured-field list with one member per window (`minute`, `hour`,
         `day`), each carrying the remaining request count `r` and seconds until
-        the window resets `t`. Returned on responses to authenticated requests,
+        the window resets `t` (at least 1). Windows are fixed and aligned to the
+        clock, not sliding. Returned on responses to authenticated requests,
         not only on 429s.
       examples:
         - '"minute";r=0;t=12, "hour";r=2800;t=1812, "day";r=49500;t=45012'
@@ -4233,6 +5116,471 @@ paths:
           $ref: '#/components/responses/ForbiddenError'
         '404':
           $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/organization/groups:
+    get:
+      operationId: listOrganizationGroups
+      x-runpod-scope: membership:read
+      summary: List groups in your current organization
+      x-mint:
+        metadata:
+          description: List groups in your current organization with cursor pagination.
+      description: Returns groups without their members or roles, ordered by creation time descending
+        and then ID descending for deterministic pagination.
+      tags: [Organization]
+      parameters:
+        - name: name
+          in: query
+          required: false
+          description: Optional case-insensitive substring of the group name. An empty value applies no
+            filter.
+          schema:
+            type: string
+        - $ref: '#/components/parameters/PaginationCursor'
+        - $ref: '#/components/parameters/PaginationLimitOrganizationGroups'
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListOrganizationGroupsResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '413':
+          $ref: '#/components/responses/ResponseTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      operationId: createOrganizationGroup
+      x-runpod-scope: membership:write
+      summary: Create a group in your current organization
+      x-mint:
+        metadata:
+          description: Create a named group in your current organization. Add members separately.
+      tags: [Organization]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrganizationGroupRequest'
+            examples:
+              group:
+                value:
+                  name: Engineering
+      responses:
+        '201':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationGroup'
+              examples:
+                group:
+                  value:
+                    id: group_123
+                    name: Engineering
+                    memberCount: 0
+                    createdAt: '2026-10-13T12:00:00Z'
+                    updatedAt: '2026-10-13T12:00:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '409':
+          description: A group with this name already exists in the current organization.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/organization/groups/{id}/members/{userId}:
+    put:
+      operationId: addOrganizationGroupMember
+      x-runpod-scope: membership:write
+      summary: Add a member to a group
+      x-mint:
+        metadata:
+          description: Add an existing organization member to a group.
+      description: Adds the organization member to the group. The group and user must belong to the current
+        organization. Adding an existing member is idempotent and returns the same no-content response.
+      tags: [Organization]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Group ID.
+          schema:
+            type: string
+            minLength: 1
+        - name: userId
+          in: path
+          required: true
+          description: Organization member user ID.
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        '204':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Member added, or already belongs to the group.
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      operationId: removeOrganizationGroupMember
+      x-runpod-scope: membership:write
+      summary: Remove a member from a group
+      x-mint:
+        metadata:
+          description: Remove an organization member from a group.
+      description: Removes the organization member from the group. The group and user must belong to the
+        current organization. Returns 404 when the membership is absent, including repeated deletion,
+        or when the group is unknown or belongs to another organization.
+      tags: [Organization]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Group ID.
+          schema:
+            type: string
+            minLength: 1
+        - name: userId
+          in: path
+          required: true
+          description: Organization member user ID.
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        '204':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Member removed.
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/organization/groups/{id}/members:
+    get:
+      operationId: listOrganizationGroupMembers
+      x-runpod-scope: membership:read
+      summary: List members of a group
+      x-mint:
+        metadata:
+          description: List members of a group with cursor pagination.
+      description: Members are ordered newest first by membership creation time, with a unique upstream
+        tie-breaker. Returns 404 when the group does not exist in the current organization, or when the
+        caller does not belong to an organization.
+      tags: [Organization]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Group ID.
+          schema:
+            type: string
+            minLength: 1
+        - $ref: '#/components/parameters/PaginationCursor'
+        - $ref: '#/components/parameters/PaginationLimitOrganizationGroups'
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListOrganizationGroupMembersResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '413':
+          $ref: '#/components/responses/ResponseTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/organization/groups/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Group ID.
+        schema:
+          type: string
+          minLength: 1
+    get:
+      operationId: getOrganizationGroup
+      x-runpod-scope: membership:read
+      summary: Get a group in your current organization
+      x-mint:
+        metadata:
+          description: Get one group by ID from your current organization.
+      description: Returns the group without its members. Returns 404 when the ID is unknown or belongs
+        to another organization, or when the caller does not belong to an organization.
+      tags: [Organization]
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationGroup'
+              examples:
+                group:
+                  value:
+                    id: group_123
+                    name: Engineering
+                    memberCount: 3
+                    createdAt: '2026-10-13T12:00:00Z'
+                    updatedAt: '2026-10-15T12:00:00Z'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    patch:
+      operationId: updateOrganizationGroup
+      x-runpod-scope: membership:write
+      summary: Rename a group in your current organization
+      x-mint:
+        metadata:
+          description: Rename a group in your current organization without changing its members.
+      tags: [Organization]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateOrganizationGroupRequest'
+            examples:
+              group:
+                value:
+                  name: Research
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationGroup'
+              examples:
+                group:
+                  value:
+                    id: group_123
+                    name: Research
+                    memberCount: 3
+                    createdAt: '2026-10-13T12:00:00Z'
+                    updatedAt: '2026-10-15T12:00:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          description: A group with this name already exists in the current organization.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      operationId: deleteOrganizationGroup
+      x-runpod-scope: membership:write
+      summary: Delete a group in your current organization
+      x-mint:
+        metadata:
+          description: Delete a group and its group memberships without removing anyone from the organization.
+      description: Permanently deletes the group and its group memberships. Organization members are not
+        removed. Returns 404 when the group does not exist in your current organization, including when
+        it has already been deleted.
+      tags: [Organization]
+      responses:
+        '204':
+          description: Deleted
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
         default:
@@ -4396,11 +5744,17 @@ paths:
                         role:
                           id: builtin:admin
                           type: builtin
+                          name: Admin
+                        groups: []
                       - id: user_id_def_456
                         email: member@example.com
                         role:
                           id: builtin:dev
                           type: builtin
+                          name: Developer
+                        groups:
+                          - id: group_id_abc_123
+                            name: Engineering
         '401':
           $ref: '#/components/responses/UnauthorizedError'
         '403':
@@ -4462,12 +5816,815 @@ paths:
                     role:
                       id: builtin:admin
                       type: builtin
+                      name: Admin
+                    groups:
+                      - id: group_id_abc_123
+                        name: Engineering
         '401':
           $ref: '#/components/responses/UnauthorizedError'
         '403':
           $ref: '#/components/responses/ForbiddenError'
         '404':
           $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    patch:
+      operationId: updateOrganizationUser
+      x-runpod-scope: membership:write
+      summary: Update an organization member
+      x-mint:
+        metadata:
+          description: Change a member's role, replace their groups, or both, by user ID.
+      description: 'Changes one member of the authenticated caller''s organization by user ID: assigns
+        a role, replaces their set of groups, or both, applied together or not at all. Send at least one
+        field; an omitted field is left as it is, and an empty `groups` list removes the member from every
+        group. Updating members requires the organization''s member-management capability, which the built-in
+        admin role holds; other members, and callers outside an organization, receive 403, as does a caller
+        for whom organizations are unavailable. Returns 403 when the caller changes their own role or
+        assigns a role granting a capability the caller lacks; 409 when the change would leave the organization
+        without a member in the built-in admin role; and 404 when the user is not a member or the role
+        or a group is unknown to the organization, with the detail naming which.'
+      tags: [Organization]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateOrganizationUserRequest'
+            examples:
+              role:
+                summary: Assign a built-in role
+                value:
+                  role:
+                    id: builtin:dev
+              groups:
+                summary: Replace the member's groups
+                value:
+                  groups:
+                    - id: group_id_abc_123
+              clearGroups:
+                summary: Remove the member from every group
+                value:
+                  groups: []
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationUser'
+              examples:
+                user:
+                  summary: The member after the change
+                  value:
+                    id: user_id_abc_123
+                    email: member@example.com
+                    role:
+                      id: builtin:dev
+                      type: builtin
+                      name: Developer
+                    groups:
+                      - id: group_id_abc_123
+                        name: Engineering
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          description: The change would leave the organization without a member in the built-in admin
+            role.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      operationId: deleteOrganizationUser
+      x-runpod-scope: membership:write
+      summary: Remove an organization member
+      x-mint:
+        metadata:
+          description: Remove a member from your organization by user ID.
+      description: Removes one member from the authenticated caller's organization by user ID. Their group
+        memberships end and the API keys attributed to them within the organization are revoked; the resources
+        they created stay with the organization. Removing another member requires the organization's member-removal
+        capability, which the built-in admin role holds; any member can remove themselves. The organization
+        keeps at least one member with the built-in admin role, so removing the last one returns 409.
+        A user who is not a member, including one from another organization, returns 404. A member without
+        the capability removing someone else, a caller outside an organization, and a caller for whom
+        organizations are unavailable receive 403.
+      tags: [Organization]
+      responses:
+        '204':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Removed. Response has no body.
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          description: The member holds the organization's only built-in admin role.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/organization/invites:
+    get:
+      operationId: listOrganizationInvites
+      x-runpod-scope: membership:read
+      summary: List pending organization invites
+      x-mint:
+        metadata:
+          description: List the pending invitations to your organization.
+      description: 'Returns the pending invitations to the authenticated caller''s organization, newest
+        first. Only unexpired invites are pending: an invite leaves the list once it is accepted, revoked
+        or expired. The list is complete and takes no pagination parameters, because an organization''s
+        pending invites are capped. Reading invites requires the organization''s invite-management capability,
+        which the built-in admin role holds; other members receive 403. Returns 404 when the caller does
+        not belong to an organization, or 403 when organizations are unavailable to the caller.'
+      tags: [Organization]
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListOrganizationInvitesResponse'
+              examples:
+                invites:
+                  summary: Pending invites
+                  value:
+                    invites:
+                      - id: invite_id_abc_123
+                        email: new-member@example.com
+                        role:
+                          id: builtin:dev
+                          type: builtin
+                          name: Developer
+                        createdAt: '2026-10-01T09:00:00Z'
+                        expiresAt: '2026-10-15T09:00:00Z'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      operationId: createOrganizationInvite
+      x-runpod-scope: membership:write
+      summary: Invite a user to your organization
+      x-mint:
+        metadata:
+          description: Invite a user to your organization by email and choose the role they receive on
+            joining.
+      description: Sends an invitation to join the authenticated caller's organization and returns the
+        pending invite; `expiresAt` is when it lapses. The invitee receives an email carrying the acceptance
+        link, which is never returned here. Returns 409 when the address already belongs to a member or
+        to a pending invite, or when the organization has reached its pending-invite limit; 404 when the
+        role is unknown to the organization; and 403 when the caller does not hold every capability the
+        role grants. Inviting requires the organization's invite-management capability, which the built-in
+        admin role holds; other members, and callers outside an organization, receive 403, as does a caller
+        for whom organizations are unavailable.
+      tags: [Organization]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrganizationInviteRequest'
+            examples:
+              invite:
+                summary: Invite as a built-in role
+                value:
+                  email: new-member@example.com
+                  role:
+                    id: builtin:dev
+      responses:
+        '201':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvite'
+              examples:
+                invite:
+                  summary: Successful response
+                  value:
+                    id: invite_id_abc_123
+                    email: new-member@example.com
+                    role:
+                      id: builtin:dev
+                      type: builtin
+                      name: Developer
+                    createdAt: '2026-10-01T09:00:00Z'
+                    expiresAt: '2026-10-15T09:00:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          description: The address already belongs to an organization member or to a pending invite, or
+            the organization has reached its pending-invite limit.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/organization/invites/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Invite identifier
+        example: invite_id_abc_123
+    get:
+      operationId: getOrganizationInvite
+      x-runpod-scope: membership:read
+      summary: Get a pending organization invite
+      x-mint:
+        metadata:
+          description: Get one pending invitation to your organization by ID.
+      description: 'Returns one pending invitation to the authenticated caller''s organization. Only unexpired
+        invites are pending: an invite that has expired, been accepted or been revoked returns 404, as
+        does an ID from another organization. Reading invites requires the organization''s invite-management
+        capability, which the built-in admin role holds; other members receive 403. Returns 404 when the
+        caller does not belong to an organization, or 403 when organizations are unavailable to the caller.'
+      tags: [Organization]
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationInvite'
+              examples:
+                invite:
+                  summary: Pending invite
+                  value:
+                    id: invite_id_abc_123
+                    email: new-member@example.com
+                    role:
+                      id: builtin:dev
+                      type: builtin
+                      name: Developer
+                    createdAt: '2026-10-01T09:00:00Z'
+                    expiresAt: '2026-10-15T09:00:00Z'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      operationId: deleteOrganizationInvite
+      x-runpod-scope: membership:write
+      summary: Cancel an organization invite
+      x-mint:
+        metadata:
+          description: Cancel a pending invitation to your organization so it can no longer be accepted.
+      description: 'Cancels one invitation to the authenticated caller''s organization; the invitee can
+        no longer accept it. Returns 404 when the ID is unknown to the caller''s organization: never issued,
+        already accepted, already cancelled, or issued by another organization. An expired invite can
+        still be cancelled. Cancelling invites requires the organization''s invite-management capability,
+        which the built-in admin role holds; other members, and callers outside an organization, receive
+        403, as does a caller for whom organizations are unavailable.'
+      tags: [Organization]
+      responses:
+        '204':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Cancelled. Response has no body.
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/organization/roles:
+    get:
+      operationId: listOrganizationRoles
+      x-runpod-scope: membership:read
+      summary: List organization roles
+      x-mint:
+        metadata:
+          description: List the built-in roles and your organization's custom roles, with the capabilities
+            each grants.
+      description: 'Returns every role a member or invite of the authenticated caller''s organization
+        can hold: Runpod''s built-in roles and the organization''s custom roles, oldest first. The list
+        is complete and takes no pagination parameters, because an organization''s custom roles are capped.
+        Returns 404 when the caller does not belong to an organization, or 403 when organizations are
+        unavailable to the caller.'
+      tags: [Organization]
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListOrganizationRolesResponse'
+              examples:
+                roles:
+                  summary: Built-in and custom roles
+                  value:
+                    roles:
+                      - id: builtin:dev
+                        name: Dev
+                        type: builtin
+                        capabilities: ['POD:CREATE', 'POD:VIEW']
+                      - id: cmcustomrole0001
+                        name: Pod viewer
+                        type: custom
+                        capabilities: ['POD:VIEW']
+                        createdAt: '2026-10-01T09:00:00Z'
+                        updatedAt: '2026-10-02T09:00:00Z'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      operationId: createOrganizationRole
+      x-runpod-scope: membership:write
+      summary: Create a custom organization role
+      x-mint:
+        metadata:
+          description: Create a custom role in your organization from a name and the capabilities it grants.
+      description: Creates a custom role in the authenticated caller's organization and returns it. Returns
+        409 when the organization already has a role with this name or has reached its custom-role limit;
+        422 when a capability is unknown or the name is reserved; and 403 when the caller does not hold
+        every capability the role grants. Creating roles requires the organization's role-management capability,
+        which the built-in admin role holds; other members, and callers outside an organization, receive
+        403, as does a caller for whom organizations are unavailable.
+      tags: [Organization]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrganizationRoleRequest'
+            examples:
+              role:
+                summary: Read-only pod access
+                value:
+                  name: Pod viewer
+                  capabilities: ['POD:VIEW']
+      responses:
+        '201':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationRole'
+              examples:
+                role:
+                  summary: Successful response
+                  value:
+                    id: cmcustomrole0001
+                    name: Pod viewer
+                    type: custom
+                    capabilities: ['POD:VIEW']
+                    createdAt: '2026-10-01T09:00:00Z'
+                    updatedAt: '2026-10-01T09:00:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          description: The organization already has a role with this name, or has reached its custom-role
+            limit.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/organization/roles/capabilities:
+    get:
+      operationId: getOrganizationRoleCapabilities
+      x-runpod-scope: membership:read
+      summary: List grantable role capabilities
+      x-mint:
+        metadata:
+          description: List the capabilities a custom role in your organization can grant.
+      description: 'Returns the capabilities a custom role can grant, grouped by family: each capability
+        is a family and one of its verbs, written `FAMILY:VERB`. This is the set role creation accepts,
+        not filtered to the caller''s own access; saving a role also requires the caller to hold every
+        capability it grants. `family` and `verb` narrow the result and apply together; with neither,
+        the whole catalog is returned. Reading the catalog requires organization membership; other callers
+        receive 403.'
+      tags: [Organization]
+      parameters:
+        - $ref: '#/components/parameters/OrganizationCapabilityFamilyFilter'
+        - $ref: '#/components/parameters/OrganizationCapabilityVerbFilter'
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationCapabilityCatalog'
+              examples:
+                catalog:
+                  summary: Pod and endpoint view verbs
+                  value:
+                    version: 1
+                    families:
+                      - family: POD
+                        verbs: [VIEW]
+                      - family: ENDPOINT
+                        verbs: [VIEW]
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/organization/roles/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Role identifier
+        example: cmcustomrole0001
+    get:
+      operationId: getOrganizationRole
+      x-runpod-scope: membership:read
+      summary: Get an organization role
+      x-mint:
+        metadata:
+          description: Get one built-in or custom role by ID, with the capabilities it grants.
+      description: 'Returns one role a member or invite of the authenticated caller''s organization can
+        hold: a built-in role, or one of the organization''s custom roles. Returns 404 when the ID is
+        unknown or names another organization''s custom role, or when the caller does not belong to an
+        organization; 403 when the caller may not view the organization''s roles or organizations are
+        unavailable to the caller.'
+      tags: [Organization]
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationRole'
+              examples:
+                custom:
+                  summary: Custom role
+                  value:
+                    id: cmcustomrole0001
+                    name: Pod viewer
+                    type: custom
+                    capabilities: ['POD:VIEW']
+                    createdAt: '2026-10-01T09:00:00Z'
+                    updatedAt: '2026-10-02T09:00:00Z'
+                builtin:
+                  summary: Built-in role
+                  value:
+                    id: builtin:dev
+                    name: Dev
+                    type: builtin
+                    capabilities: ['POD:CREATE', 'POD:VIEW']
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    patch:
+      operationId: updateOrganizationRole
+      x-runpod-scope: membership:write
+      summary: Update a custom organization role
+      x-mint:
+        metadata:
+          description: Rename a custom role in your organization or replace the capabilities it grants.
+      description: Changes a custom role's name, its capabilities, or both, and returns the role. Sent
+        capabilities replace the whole grant set. Returns 400 for a built-in role, which cannot be changed;
+        404 when the ID is unknown or names another organization's role; 403 when the caller does not
+        hold every capability the role grants, before or after the change; 409 when the organization already
+        has a role with the new name; and 422 when a capability is unknown or the name is reserved. Updating
+        roles requires the organization's role-management capability, which the built-in admin role holds;
+        other members, and callers outside an organization, receive 403, as does a caller for whom organizations
+        are unavailable.
+      tags: [Organization]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateOrganizationRoleRequest'
+            examples:
+              rename:
+                summary: Rename a role
+                value:
+                  name: Pod operator
+              capabilities:
+                summary: Replace a role's capabilities
+                value:
+                  capabilities: ['POD:USE', 'POD:VIEW']
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationRole'
+              examples:
+                role:
+                  summary: Successful response
+                  value:
+                    id: cmcustomrole0001
+                    name: Pod operator
+                    type: custom
+                    capabilities: ['POD:USE', 'POD:VIEW']
+                    createdAt: '2026-10-01T09:00:00Z'
+                    updatedAt: '2026-10-03T09:00:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          description: The organization already has a role with this name.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      operationId: deleteOrganizationRole
+      x-runpod-scope: membership:write
+      summary: Delete a custom organization role
+      x-mint:
+        metadata:
+          description: Delete a custom role from your organization once no member or pending invite holds
+            it.
+      description: 'Deletes a custom role from the authenticated caller''s organization. Returns 409 while
+        a member or a pending invite holds the role: reassign those members and cancel those invites first,
+        since deleting never changes anyone''s role. Expired invites do not block deletion. Returns 400
+        for a built-in role, which cannot be deleted; 404 when the ID is unknown, names another organization''s
+        role, or was already deleted. Deleting roles requires the organization''s role-management capability,
+        which the built-in admin role holds; other members, and callers outside an organization, receive
+        403, as does a caller for whom organizations are unavailable.'
+      tags: [Organization]
+      responses:
+        '204':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Deleted. Response has no body.
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          description: A member or a pending invite still holds the role. The detail gives how many of
+            each.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
         default:
@@ -4900,6 +7057,8 @@ paths:
           $ref: '#/components/responses/ForbiddenError'
         '413':
           $ref: '#/components/responses/ResponseTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
         default:
@@ -4976,7 +7135,7 @@ paths:
         | `402` | Insufficient balance. | Stop; no candidate will succeed. |
         | `403` | Your account cannot access the requested pool. | Skip this candidate, keep going. |
         | `429` | Rate limited. | Back off using `Retry-After`, then resume. |
-        | `5xx` | Transient upstream failure. | Retry the same candidate with backoff. |
+        | `5xx` | Transient server failure. | Retry the same candidate with backoff. |
 
         Requests larger than 102400 bytes receive `413` after authentication
         and rate limiting, before deployment processing. Reduce the serialized
@@ -5065,7 +7224,7 @@ paths:
                         time.sleep(2**attempt)
                         continue
                     return response
-                raise RuntimeError(f"{attempts} transient failures for {gpu_id}; upstream unhealthy")
+                raise RuntimeError(f"{attempts} transient failures for {gpu_id}; service unhealthy")
 
 
             def deploy(region="EUROPE"):
@@ -5181,8 +7340,8 @@ paths:
         '404':
           $ref: '#/components/responses/NotFoundError'
         '413':
-          description: The incoming request body or expanded upstream request exceeds the 102400 byte
-            limit, or the upstream rejects the request as too large.
+          description: The incoming request body, or the request it expands into, exceeds the 102400 byte
+            limit or is rejected as too large.
           headers:
             RateLimit:
               $ref: '#/components/headers/RateLimit'
@@ -5329,6 +7488,9 @@ paths:
         apply immediately while others (e.g. `globalNetworking`) take effect
         on the pod's next start/restart, as noted on the individual fields.
 
+        Volumes can be mounted, moved, or unmounted after creation through
+        `mounts`, one entry per volume; see `UpdatePodMounts` for the rules.
+
         Pods that belong to a Cluster cannot be updated here — manage them
         through `/v2/clusters/{id}`.
 
@@ -5345,6 +7507,29 @@ paths:
                 summary: Rename pod
                 value:
                   name: renamed-training-pod
+              mountNetworkVolume:
+                summary: Mount a network volume
+                value:
+                  mounts:
+                    network:
+                      - volumeId: vol_abc
+                        path: /datasets
+              swapNetworkVolume:
+                summary: Swap one network volume for another
+                value:
+                  mounts:
+                    network:
+                      - volumeId: vol_xyz
+                        remove: true
+                      - volumeId: vol_abc
+                        path: /workspace
+              unmountNetworkVolume:
+                summary: Unmount a network volume
+                value:
+                  mounts:
+                    network:
+                      - volumeId: vol_xyz
+                        remove: true
       responses:
         '200':
           headers:
@@ -5760,6 +7945,8 @@ paths:
           $ref: '#/components/responses/ForbiddenError'
         '413':
           $ref: '#/components/responses/ResponseTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
         default:
@@ -6066,6 +8253,8 @@ paths:
           $ref: '#/components/responses/ForbiddenError'
         '413':
           $ref: '#/components/responses/ResponseTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
         default:
@@ -6131,8 +8320,8 @@ paths:
 
         If your workload needs a specific card, pick the pool that holds it and
         exclude the rest of that pool with `gpu.excludedTypes`. Keep at least
-        one type in the selection — upstream rejects a selection that leaves
-        none.
+        one type in the selection — a selection that leaves none is
+        rejected.
       tags: [Serverless]
       requestBody:
         required: true
@@ -6909,6 +9098,331 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /v2/serverless/{id}/metrics/requests:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Serverless endpoint identifier
+        example: ep_abc123
+    get:
+      operationId: getEndpointRequestMetrics
+      x-runpod-scope: serverless:read
+      summary: Get serverless endpoint request metrics
+      x-mint:
+        metadata:
+          description: Get request counts, execution time, and queue delay for a Runpod Serverless endpoint
+            as a time series.
+      description: |
+        Returns the request series shown on the endpoint's Metrics tab in the console.
+
+        **Window.** `startTime` is inclusive and `endTime` is exclusive. Both are
+        optional: `endTime` defaults to now and `startTime` to 24 hours before
+        `endTime`, rounded down to the start of an `interval` bucket. An
+        `endTime` in the future is treated as now. Metrics are kept for 90 days,
+        so `startTime` must be within the last 90 days.
+
+        **Interval.** Each record covers one `interval`-sized bucket, aligned to
+        UTC.
+
+        **Paging.** Records are oldest first, at most `limit` (default 1000) per
+        page. Follow `pagination.nextCursor` while `pagination.hasNextPage` is
+        true. The cursor keeps the first page's window, so `startTime`,
+        `endTime`, and `interval` can be left out on later pages; if sent, they
+        must match the first page or the cursor is rejected with 422.
+
+        **Sparse series.** Buckets with no activity are omitted, not zero-filled,
+        so `records` can be shorter than the number of buckets in the window, or
+        empty.
+
+        **Units.** Durations are milliseconds. `executionTimeMs` is the time a
+        worker spent running a request; `delayTimeMs` is the time a request
+        waited in the queue before a worker picked it up.
+      tags: [Serverless]
+      parameters:
+        - $ref: '#/components/parameters/MetricsStartTime'
+        - $ref: '#/components/parameters/MetricsEndTime'
+        - $ref: '#/components/parameters/MetricsInterval'
+        - $ref: '#/components/parameters/PaginationCursor'
+        - $ref: '#/components/parameters/PaginationLimit'
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EndpointRequestMetricsResponse'
+              examples:
+                metrics:
+                  summary: Successful response
+                  value:
+                    startTime: '2026-10-11T00:00:00Z'
+                    endTime: '2026-10-12T00:00:00Z'
+                    interval: 1h
+                    records:
+                      - time: '2026-10-11T13:00:00Z'
+                        requests: 120
+                        completed: 117
+                        failed: 3
+                        retries: 2
+                        executionTimeMs:
+                          min: 210
+                          max: 9400
+                          total: 182400
+                          p70: 1500
+                          p90: 3100
+                          p95: 4800
+                          p98: 7700
+                        delayTimeMs:
+                          min: 4
+                          max: 2100
+                          total: 15600
+                          p70: 90
+                          p90: 310
+                          p95: 820
+                          p98: 1500
+                    pagination:
+                      nextCursor: null
+                      hasNextPage: false
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '413':
+          $ref: '#/components/responses/ResponseTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/serverless/{id}/metrics/cold-starts:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Serverless endpoint identifier
+        example: ep_abc123
+    get:
+      operationId: getEndpointColdStartMetrics
+      x-runpod-scope: serverless:read
+      summary: Get serverless endpoint cold start metrics
+      x-mint:
+        metadata:
+          description: Get cold start counts and durations for a Runpod Serverless endpoint as a time
+            series.
+      description: |
+        Returns the cold start series shown on the endpoint's Metrics tab in the console.
+
+        **Window.** `startTime` is inclusive and `endTime` is exclusive. Both are
+        optional: `endTime` defaults to now and `startTime` to 24 hours before
+        `endTime`, rounded down to the start of an `interval` bucket. An
+        `endTime` in the future is treated as now. Metrics are kept for 90 days,
+        so `startTime` must be within the last 90 days.
+
+        **Interval.** Each record covers one `interval`-sized bucket, aligned to
+        UTC.
+
+        **Paging.** Records are oldest first, at most `limit` (default 1000) per
+        page. Follow `pagination.nextCursor` while `pagination.hasNextPage` is
+        true. The cursor keeps the first page's window, so `startTime`,
+        `endTime`, and `interval` can be left out on later pages; if sent, they
+        must match the first page or the cursor is rejected with 422.
+
+        **Sparse series.** Buckets with no activity are omitted, not zero-filled,
+        so `records` can be shorter than the number of buckets in the window, or
+        empty.
+
+        **Units.** `durationMs` is how long each cold start took, in milliseconds.
+      tags: [Serverless]
+      parameters:
+        - $ref: '#/components/parameters/MetricsStartTime'
+        - $ref: '#/components/parameters/MetricsEndTime'
+        - $ref: '#/components/parameters/MetricsInterval'
+        - $ref: '#/components/parameters/PaginationCursor'
+        - $ref: '#/components/parameters/PaginationLimit'
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EndpointColdStartMetricsResponse'
+              examples:
+                metrics:
+                  summary: Successful response
+                  value:
+                    startTime: '2026-10-11T00:00:00Z'
+                    endTime: '2026-10-12T00:00:00Z'
+                    interval: 1h
+                    records:
+                      - time: '2026-10-11T13:00:00Z'
+                        count: 2
+                        durationMs:
+                          min: 8200
+                          max: 11900
+                          total: 20100
+                          p70: 11900
+                          p90: 11900
+                          p95: 11900
+                          p98: 11900
+                    pagination:
+                      nextCursor: null
+                      hasNextPage: false
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '413':
+          $ref: '#/components/responses/ResponseTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/serverless/{id}/metrics/workers:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Serverless endpoint identifier
+        example: ep_abc123
+    get:
+      operationId: getEndpointWorkerMetrics
+      x-runpod-scope: serverless:read
+      summary: Get serverless endpoint worker metrics
+      x-mint:
+        metadata:
+          description: Get worker counts by state for a Runpod Serverless endpoint as a time series.
+      description: |
+        Returns the worker state series shown on the endpoint's Metrics tab in the console.
+        For the current worker list, use `GET /v2/serverless/{id}/workers`.
+
+        **Window.** `startTime` is inclusive and `endTime` is exclusive. Both are
+        optional: `endTime` defaults to now and `startTime` to 24 hours before
+        `endTime`, rounded down to the start of an `interval` bucket. An
+        `endTime` in the future is treated as now. Metrics are kept for 90 days,
+        so `startTime` must be within the last 90 days.
+
+        **Interval.** Each record covers one `interval`-sized bucket, aligned to
+        UTC.
+
+        **Paging.** Records are oldest first, at most `limit` (default 1000) per
+        page. Follow `pagination.nextCursor` while `pagination.hasNextPage` is
+        true. The cursor keeps the first page's window, so `startTime`,
+        `endTime`, and `interval` can be left out on later pages; if sent, they
+        must match the first page or the cursor is rejected with 422.
+
+        **Sparse series.** Buckets with no activity are omitted, not zero-filled,
+        so `records` can be shorter than the number of buckets in the window, or
+        empty.
+
+        **Snapshots.** Each record holds the last worker-count snapshot in its
+        bucket, as point-in-time counts.
+      tags: [Serverless]
+      parameters:
+        - $ref: '#/components/parameters/MetricsStartTime'
+        - $ref: '#/components/parameters/MetricsEndTime'
+        - $ref: '#/components/parameters/MetricsInterval'
+        - $ref: '#/components/parameters/PaginationCursor'
+        - $ref: '#/components/parameters/PaginationLimit'
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EndpointWorkerMetricsResponse'
+              examples:
+                metrics:
+                  summary: Successful response
+                  value:
+                    startTime: '2026-10-11T00:00:00Z'
+                    endTime: '2026-10-12T00:00:00Z'
+                    interval: 1h
+                    records:
+                      - time: '2026-10-11T13:00:00Z'
+                        running: 3
+                        idle: 1
+                        initializing: 0
+                        throttled: 0
+                        unhealthy: 0
+                    pagination:
+                      nextCursor: null
+                      hasNextPage: false
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '413':
+          $ref: '#/components/responses/ResponseTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v2/serverless/{id}/workers/{workerId}/logs:
     parameters:
       - name: id
@@ -7438,6 +9952,8 @@ paths:
           $ref: '#/components/responses/ForbiddenError'
         '413':
           $ref: '#/components/responses/ResponseTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
         default:
@@ -8945,6 +11461,518 @@ paths:
           $ref: '#/components/responses/UnauthorizedError'
         '403':
           $ref: '#/components/responses/ForbiddenError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/cost-centers:
+    get:
+      operationId: listCostCenters
+      x-runpod-scope: billing:read
+      summary: List cost centers
+      x-mint:
+        metadata:
+          description: List the Runpod cost centers available to the authenticated user for attributing
+            resource spend in billing.
+      description: |
+        Returns the caller's cost centers, cursor-paginated newest-first; an
+        omitted `limit` defaults to 1000. Follow `pagination.nextCursor` until
+        `hasNextPage` is false.
+      tags: [Cost Centers]
+      parameters:
+        - name: search
+          in: query
+          required: false
+          description: Case-insensitive substring match against `value`.
+          schema:
+            type: string
+            minLength: 1
+          example: team
+        - $ref: '#/components/parameters/PaginationCursor'
+        - $ref: '#/components/parameters/PaginationLimit'
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListCostCentersResponse'
+              examples:
+                costCenters:
+                  summary: Successful response
+                  value:
+                    costCenters:
+                      - id: clz1x9k4a0000qw3h8s7d2f1g
+                        value: team-ml
+                    pagination:
+                      nextCursor: null
+                      hasNextPage: false
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '413':
+          $ref: '#/components/responses/ResponseTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      operationId: createCostCenter
+      x-runpod-scope: billing:write
+      summary: Create a cost center
+      x-mint:
+        metadata:
+          description: Create a Runpod cost center and optionally attribute pods, clusters, serverless
+            endpoints, and network volumes to it.
+      description: Creates a cost center — a named label that groups resource spend so it can be broken
+        out in billing. Pass `resources` to attribute resources at creation time; attaching is all-or-nothing,
+        and a resource that already belongs to another cost center is rejected rather than moved.
+      tags: [Cost Centers]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCostCenterRequest'
+            examples:
+              bare:
+                summary: Name only
+                value:
+                  value: team-ml
+              withResources:
+                summary: With resources attributed
+                value:
+                  value: team-ml
+                  resources:
+                    - id: p9k2m4n6q8
+                      type: POD
+                    - id: nv_7h3x1q
+                      type: NETWORK_VOLUME
+      responses:
+        '201':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostCenter'
+              examples:
+                costCenter:
+                  summary: Successful response
+                  value:
+                    id: clz1x9k4a0000qw3h8s7d2f1g
+                    value: team-ml
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          description: A resource is already attributed to another cost center, or the account's plan
+            does not allow more cost centers.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/cost-centers/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+        description: Cost center identifier.
+    get:
+      operationId: getCostCenter
+      x-runpod-scope: billing:read
+      summary: Get a cost center
+      x-mint:
+        metadata:
+          description: Retrieve a Runpod cost center by ID.
+      description: |
+        Returns one cost center. Its attributed resources are listed by
+        `GET /v2/cost-centers/{id}/resources`. Returns 404 when the cost center
+        does not exist or is not the caller's.
+      tags: [Cost Centers]
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostCenter'
+              examples:
+                costCenter:
+                  summary: Successful response
+                  value:
+                    id: clz1x9k4a0000qw3h8s7d2f1g
+                    value: team-ml
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    patch:
+      operationId: updateCostCenter
+      x-runpod-scope: billing:write
+      summary: Rename a cost center
+      x-mint:
+        metadata:
+          description: Rename a Runpod cost center. Resources already attributed to it follow the new
+            name automatically.
+      description: |
+        Renames a cost center. Resources attributed to it are unaffected and
+        follow the new name — the attribution is by identifier, not by name.
+      tags: [Cost Centers]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCostCenterRequest'
+            examples:
+              rename:
+                summary: Rename
+                value:
+                  value: team-ml-eu
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostCenter'
+              examples:
+                costCenter:
+                  summary: Successful response
+                  value:
+                    id: clz1x9k4a0000qw3h8s7d2f1g
+                    value: team-ml-eu
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      operationId: deleteCostCenter
+      x-runpod-scope: billing:write
+      summary: Delete a cost center
+      x-mint:
+        metadata:
+          description: Delete a Runpod cost center. Fails while any resource is still attributed to it.
+      description: |
+        Deletes a cost center. The delete fails with 409 while any resource is
+        still attributed to the cost center; detach those resources first.
+      tags: [Cost Centers]
+      responses:
+        '204':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Deleted. Response has no body.
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          description: Resources are still attributed to the cost center. The detail lists each as `{resourceType}/{resourceId}`,
+            ready for the detach route.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/cost-centers/{id}/resources:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+        description: Cost center identifier.
+    get:
+      operationId: listCostCenterResources
+      x-runpod-scope: billing:read
+      summary: List a cost center's resources
+      x-mint:
+        metadata:
+          description: List the Runpod pods, clusters, serverless endpoints, and network volumes attributed
+            to a cost center.
+      description: |
+        Returns the resources attributed to one cost center, cursor-paginated;
+        an omitted `limit` defaults to 1000. Each entry is the `{type}/{id}`
+        pair `DELETE /v2/cost-centers/{id}/{resourceType}/{resourceId}` takes.
+        A cost center with nothing attributed returns an empty list; one that
+        does not exist or is not the caller's returns 404.
+      tags: [Cost Centers]
+      parameters:
+        - $ref: '#/components/parameters/PaginationCursor'
+        - $ref: '#/components/parameters/PaginationLimit'
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListCostCenterResourcesResponse'
+              examples:
+                resources:
+                  summary: Successful response
+                  value:
+                    resources:
+                      - id: p9k2m4n6q8
+                        type: POD
+                      - id: nv_7h3x1q
+                        type: NETWORK_VOLUME
+                    pagination:
+                      nextCursor: null
+                      hasNextPage: false
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '413':
+          $ref: '#/components/responses/ResponseTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/cost-centers/{id}/{resourceType}/{resourceId}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+        description: Cost center identifier.
+      - name: resourceType
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/ResourceType'
+        description: Kind of resource.
+      - name: resourceId
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+        description: Resource identifier.
+    put:
+      operationId: attachCostCenterResource
+      x-runpod-scope: billing:write
+      summary: Attribute a resource to a cost center
+      x-mint:
+        metadata:
+          description: Attribute a Runpod pod, cluster, serverless endpoint, or network volume to a cost
+            center.
+      description: |
+        Attributes a resource to a cost center. Repeating the request is a
+        no-op. A resource belongs to at most one cost center; one already
+        attributed elsewhere is rejected with 409 rather than moved.
+      tags: [Cost Centers]
+      responses:
+        '204':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Attributed. Response has no body.
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          description: The resource is already attributed to a different cost center.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      operationId: detachCostCenterResource
+      x-runpod-scope: billing:write
+      summary: Remove a resource from a cost center
+      x-mint:
+        metadata:
+          description: Remove a Runpod pod, cluster, serverless endpoint, or network volume from a cost
+            center.
+      description: |
+        Removes a resource's attribution to a cost center. The resource itself
+        is untouched. Returns 404 when the cost center does not exist or the
+        resource is not attributed to it, so repeating a DELETE that succeeded
+        returns 404.
+      tags: [Cost Centers]
+      responses:
+        '204':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Removed. Response has no body.
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
         default:

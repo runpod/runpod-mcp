@@ -374,7 +374,10 @@ test('generation freshness check rejects stale schemas and config without writin
 // tool cannot regrow it unnoticed; raise one only with the reason in the PR.
 // The audit-log lookup adds 2,418 B to the default tools/list surface. Keep
 // its five filters and pagination inputs visible; this 2 KB increase covers it.
-const GENERATED_SURFACE_BUDGET_BYTES = 66_000;
+// The 2026-11-05 spec resync adds 31 operations served in full: organization
+// groups, roles, invites and members, cost centers, and endpoint metrics.
+// They take the generated surface from about 66 KB to about 103 KB.
+const GENERATED_SURFACE_BUDGET_BYTES = 104_000;
 const CURATED_SURFACE_BUDGET_BYTES = 30_000;
 const ARGUMENT_DESCRIPTION_CAP_BYTES = 400;
 
