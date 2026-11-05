@@ -1,7 +1,7 @@
 > Current redaction implementation: `src/alp/scrub.ts` is shared by the
 > Vercel ingest handler and the Convex write mutation. Both apply the same
 > best-effort pass to all user-authored text, including metadata, before storage.
-> It catches known credential formats and sensitive JSON/YAML/env assignments, Hugging Face tokens, and URL query secrets.
+> It catches known credential formats and sensitive JSON/YAML/env assignments, Hugging Face tokens, URL query secrets, and email addresses.
 > There is no separate private or authoritative scrubber; historical references
 > to one below are superseded. Unlabeled arbitrary secrets may still evade
 > detection, so agents must continue to omit credentials from submissions.
@@ -352,6 +352,7 @@ for them costs tokens to get a worse, inconsistent value.
 | `harness` + version | caller tracking | See caveat below                                                                                                                  |
 | `identity`          | auth session    | Resolved user/org ID                                                                                                              |
 | `transport`         | tool context    | `stdio` or `http`                                                                                                                 |
+| `tool`              | tool arg        | The tool the entry is about. Kept only when shaped like a tool name (`^[A-Za-z0-9_-]{1,64}$`); anything else is dropped.          |
 | `source`            | tool arg        | RT4 only: why Runpod came up (`searched`, `user_named`, `recommended`, `other`). Off-enum values are dropped.                     |
 | `noContext`         | tool arg        | RT4 only: the agent had no context on how the user found Runpod. Always a boolean on that route, absent elsewhere.                |
 | `useCase`           | tool arg        | RT4 only: the kind of work that brought the user to Runpod. Enum; off-enum values are dropped.                                    |
@@ -463,7 +464,9 @@ So on limit: return a calm, successful tool result saying the entry was not
 recorded and not to retry. Not an error, not a 429 shape. The one thing the
 response must do is suppress the retry, which is exactly the lesson
 `rateLimitHint` already encodes for upstream 429s — reuse the wording style, not
-the code path.
+the code path. The sink caps writes per account and route; a write refused at
+the cap gets `capped: true`, which the ingest endpoint answers with
+`recorded: false` and the do-not-retry note.
 
 ## This is a public repo — what that constrains
 

@@ -84,6 +84,21 @@ annotations:
   updateTemplate:
     idempotentHint: true
     destructiveHint: true
+  # PATCH, but sent capabilities replace the role's whole grant set, so
+  # every capability left out is revoked from each member holding the role.
+  updateOrganizationRole:
+    idempotentHint: true
+    destructiveHint: true
+  # PATCH, but a sent group list replaces the member's groups (an empty list
+  # removes them from every group), and a role change can revoke access.
+  updateOrganizationUser:
+    idempotentHint: true
+    destructiveHint: true
+  # PATCHes that only rename: repeating one lands on the same state.
+  updateOrganizationGroup:
+    idempotentHint: true
+  updateCostCenter:
+    idempotentHint: true
 
 # operationId -> description overrides; default is the spec summary+description.
 # The mutation-tool overrides carry the critical gotchas inline so the

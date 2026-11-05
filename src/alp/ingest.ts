@@ -38,6 +38,11 @@ const MAX_CONTENT_CHARS = 20_000;
 export const MAX_REFERRAL_CONTENT_CHARS = 200;
 const MAX_FIELD_CHARS = 500;
 const SINK_TIMEOUT_MS = 5_000;
+// The shape of a tool name as it appears in an agent's tool list: 1 to 64
+// characters, no dots. Narrower than the MCP specification's tool names (1 to
+// 128 characters, dots allowed) on purpose, since `tool` is a grouping key and
+// the tighter shape keeps prose out of it.
+const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
 export const ALP_SEVERITIES = ['blocked', 'degraded', 'cosmetic'] as const;
 export type AlpSeverity = (typeof ALP_SEVERITIES)[number];
@@ -198,7 +203,12 @@ export async function handleAlpSubmit(
       !referral && ALP_SEVERITIES.includes(body.severity as AlpSeverity)
         ? (body.severity as AlpSeverity)
         : undefined,
-    tool: !referral && typeof body.tool === 'string' ? body.tool : undefined,
+    // Same rule as severity: a free-text tool would turn a grouping key back
+    // into prose, so only a value shaped like a tool name is kept.
+    tool:
+      !referral && typeof body.tool === 'string' && TOOL_NAME.test(body.tool)
+        ? body.tool
+        : undefined,
     workaround:
       !referral && typeof body.workaround === 'string'
         ? body.workaround
@@ -237,7 +247,7 @@ export async function handleAlpSubmit(
     intention: clean.intention?.slice(0, MAX_FIELD_CHARS),
     modelType: clean.modelType?.slice(0, MAX_FIELD_CHARS),
     severity: clean.severity,
-    tool: clean.tool?.slice(0, MAX_FIELD_CHARS),
+    tool: clean.tool,
     // Prose fields, so they get the content cap rather than the field cap: a
     // workaround worth reading is a paragraph, not a label.
     workaround: clean.workaround?.slice(0, MAX_CONTENT_CHARS),
@@ -282,7 +292,19 @@ export async function handleAlpSubmit(
       ok?: boolean;
       id?: string;
       duplicate?: boolean;
+      capped?: boolean;
     } | null;
+    if (sinkBody?.capped === true) {
+      // The account reached the sink's write cap on this route and nothing
+      // was stored. Answered like any other refusal: calm, and with the
+      // instruction not to retry, so the cap never reads as a failure.
+      console.log(
+        'alp_submit_capped',
+        JSON.stringify({ route: body.route, transport: row.transport })
+      );
+      send(200, notRecorded('this account reached its limit for this tool'));
+      return;
+    }
     if (sinkBody?.ok !== true || typeof sinkBody.id !== 'string') {
       console.warn('alp_sink_unrecognized', { status: response.status });
       send(200, notRecorded('the store did not confirm the write'));

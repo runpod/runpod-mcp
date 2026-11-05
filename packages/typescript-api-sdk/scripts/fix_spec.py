@@ -412,23 +412,10 @@ DESCRIPTION_EDITS: list[tuple[tuple[str, ...], str, str]] = [
     # external API consumers; the contract half is what callers need.
     (
         ("components", "schemas", "Mounts", "description"),
-        "`persistent` is mutually exclusive\nwith both `network` and `global` (enforced at the handler with 400 if\n"
-        "combined). The `network` field is an array for forward compatibility\n"
-        "with eventual multi-network-volume support, but `maxItems` is 1 today.",
-        "`persistent` is mutually exclusive\nwith both `network` and `global`: combining them is rejected with 400.\n"
-        "The `network` field is an array for forward compatibility with\n"
-        "multi-network-volume support; `maxItems` is 1.",
-    ),
-    (
-        ("components", "schemas", "BaseMounts", "description"),
-        "At-most-one\nof `persistent` or `network` may be set today (mutually exclusive,\n"
-        "enforced at the handler with 400 if both are present). The `network`\n"
-        "field is an array for forward compatibility with eventual\n"
-        "multi-network-volume support, but `maxItems` is 1 today. Left open so\n"
-        "that concrete schemas can extend it and close themselves.",
-        "At most one\nof `persistent` or `network` may be set: combining them is rejected\n"
-        "with 400. The `network` field is an array for forward compatibility\n"
-        "with multi-network-volume support; `maxItems` is 1.",
+        "mutually exclusive with both `network` and `global` (enforced at the\n"
+        "handler with 400 if combined).",
+        "mutually exclusive with both `network` and `global`: combining them\n"
+        "is rejected with 400.",
     ),
     (
         ("components", "schemas", "EndpointMount", "description"),
@@ -527,6 +514,33 @@ def use_neutral_secret_examples(spec: dict) -> int:
     return 1
 
 
+def drop_json_resource_filters(spec: dict) -> int:
+    """2026-11-05: `filters` (tag filters on list routes) is a query parameter
+    carried as URL-encoded JSON (`content: application/json`). The client
+    serializes queries as form-style scalars and arrays only, and generation
+    rejects anything else (scripts/query_contract.mjs), so the parameter is
+    left out until a JSON query serializer is reviewed. The list routes work
+    unchanged without it. Retire this patch when that serializer lands.
+    """
+    ref = "#/components/parameters/ResourceFilters"
+    parameters = spec.get("components", {}).get("parameters", {})
+    filters = parameters.get("ResourceFilters")
+    if filters is None:
+        return 0
+    if filters.get("in") != "query" or "application/json" not in filters.get("content", {}):
+        raise PatchError("ResourceFilters is no longer a JSON query parameter — re-derive this patch")
+    edits = 0
+    for item in spec["paths"].values():
+        for operation in item.values():
+            if not isinstance(operation, dict) or "parameters" not in operation:
+                continue
+            kept = [parameter for parameter in operation["parameters"] if parameter.get("$ref") != ref]
+            edits += len(operation["parameters"]) - len(kept)
+            operation["parameters"] = kept
+    del parameters["ResourceFilters"]
+    return edits
+
+
 # Applied in order.
 PATCHES = [
     ("delegation-auth-responses", add_delegation_auth_responses),
@@ -534,6 +548,7 @@ PATCHES = [
     ("enum-constant-names", name_enum_constants),
     ("public-descriptions", normalize_public_descriptions),
     ("neutral-secret-examples", use_neutral_secret_examples),
+    ("drop-json-resource-filters", drop_json_resource_filters),
 ]
 
 

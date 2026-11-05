@@ -24,6 +24,99 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v2/organization/groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List groups in your current organization
+         * @description Returns groups without their members or roles, ordered by creation time descending and then ID descending for deterministic pagination.
+         */
+        get: operations["listOrganizationGroups"];
+        put?: never;
+        /** Create a group in your current organization */
+        post: operations["createOrganizationGroup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/organization/groups/{id}/members/{userId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Add a member to a group
+         * @description Adds the organization member to the group. The group and user must belong to the current organization. Adding an existing member is idempotent and returns the same no-content response.
+         */
+        put: operations["addOrganizationGroupMember"];
+        post?: never;
+        /**
+         * Remove a member from a group
+         * @description Removes the organization member from the group. The group and user must belong to the current organization. Returns 404 when the membership is absent, including repeated deletion, or when the group is unknown or belongs to another organization.
+         */
+        delete: operations["removeOrganizationGroupMember"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/organization/groups/{id}/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List members of a group
+         * @description Members are ordered newest first by membership creation time, with a unique upstream tie-breaker. Returns 404 when the group does not exist in the current organization, or when the caller does not belong to an organization.
+         */
+        get: operations["listOrganizationGroupMembers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/organization/groups/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Group ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get a group in your current organization
+         * @description Returns the group without its members. Returns 404 when the ID is unknown or belongs to another organization, or when the caller does not belong to an organization.
+         */
+        get: operations["getOrganizationGroup"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a group in your current organization
+         * @description Permanently deletes the group and its group memberships. Organization members are not removed. Returns 404 when the group does not exist in your current organization, including when it has already been deleted.
+         */
+        delete: operations["deleteOrganizationGroup"];
+        options?: never;
+        head?: never;
+        /** Rename a group in your current organization */
+        patch: operations["updateOrganizationGroup"];
+        trace?: never;
+    };
     "/v2/account/ssh-keys": {
         parameters: {
             query?: never;
@@ -88,10 +181,150 @@ export interface paths {
         get: operations["getOrganizationUser"];
         put?: never;
         post?: never;
+        /**
+         * Remove an organization member
+         * @description Removes one member from the authenticated caller's organization by user ID. Their group memberships end and the API keys attributed to them within the organization are revoked; the resources they created stay with the organization. Removing another member requires the organization's member-removal capability, which the built-in admin role holds; any member can remove themselves. The organization keeps at least one member with the built-in admin role, so removing the last one returns 409. A user who is not a member, including one from another organization, returns 404. A member without the capability removing someone else, a caller outside an organization, and a caller for whom organizations are unavailable receive 403.
+         */
+        delete: operations["deleteOrganizationUser"];
+        options?: never;
+        head?: never;
+        /**
+         * Update an organization member
+         * @description Changes one member of the authenticated caller's organization by user ID: assigns a role, replaces their set of groups, or both, applied together or not at all. Send at least one field; an omitted field is left as it is, and an empty `groups` list removes the member from every group. Updating members requires the organization's member-management capability, which the built-in admin role holds; other members, and callers outside an organization, receive 403, as does a caller for whom organizations are unavailable. Returns 403 when the caller changes their own role or assigns a role granting a capability the caller lacks; 409 when the change would leave the organization without a member in the built-in admin role; and 404 when the user is not a member or the role or a group is unknown to the organization, with the detail naming which.
+         */
+        patch: operations["updateOrganizationUser"];
+        trace?: never;
+    };
+    "/v2/organization/invites": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List pending organization invites
+         * @description Returns the pending invitations to the authenticated caller's organization, newest first. Only unexpired invites are pending: an invite leaves the list once it is accepted, revoked or expired. The list is complete and takes no pagination parameters, because an organization's pending invites are capped. Reading invites requires the organization's invite-management capability, which the built-in admin role holds; other members receive 403. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.
+         */
+        get: operations["listOrganizationInvites"];
+        put?: never;
+        /**
+         * Invite a user to your organization
+         * @description Sends an invitation to join the authenticated caller's organization and returns the pending invite; `expiresAt` is when it lapses. The invitee receives an email carrying the acceptance link, which is never returned here. Returns 409 when the address already belongs to a member or to a pending invite, or when the organization has reached its pending-invite limit; 404 when the role is unknown to the organization; and 403 when the caller does not hold every capability the role grants. Inviting requires the organization's invite-management capability, which the built-in admin role holds; other members, and callers outside an organization, receive 403, as does a caller for whom organizations are unavailable.
+         */
+        post: operations["createOrganizationInvite"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/v2/organization/invites/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Invite identifier
+                 * @example invite_id_abc_123
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get a pending organization invite
+         * @description Returns one pending invitation to the authenticated caller's organization. Only unexpired invites are pending: an invite that has expired, been accepted or been revoked returns 404, as does an ID from another organization. Reading invites requires the organization's invite-management capability, which the built-in admin role holds; other members receive 403. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.
+         */
+        get: operations["getOrganizationInvite"];
+        put?: never;
+        post?: never;
+        /**
+         * Cancel an organization invite
+         * @description Cancels one invitation to the authenticated caller's organization; the invitee can no longer accept it. Returns 404 when the ID is unknown to the caller's organization: never issued, already accepted, already cancelled, or issued by another organization. An expired invite can still be cancelled. Cancelling invites requires the organization's invite-management capability, which the built-in admin role holds; other members, and callers outside an organization, receive 403, as does a caller for whom organizations are unavailable.
+         */
+        delete: operations["deleteOrganizationInvite"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/organization/roles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List organization roles
+         * @description Returns every role a member or invite of the authenticated caller's organization can hold: Runpod's built-in roles and the organization's custom roles, oldest first. The list is complete and takes no pagination parameters, because an organization's custom roles are capped. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.
+         */
+        get: operations["listOrganizationRoles"];
+        put?: never;
+        /**
+         * Create a custom organization role
+         * @description Creates a custom role in the authenticated caller's organization and returns it. Returns 409 when the organization already has a role with this name or has reached its custom-role limit; 422 when a capability is unknown or the name is reserved; and 403 when the caller does not hold every capability the role grants. Creating roles requires the organization's role-management capability, which the built-in admin role holds; other members, and callers outside an organization, receive 403, as does a caller for whom organizations are unavailable.
+         */
+        post: operations["createOrganizationRole"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/organization/roles/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List grantable role capabilities
+         * @description Returns the capabilities a custom role can grant, grouped by family: each capability is a family and one of its verbs, written `FAMILY:VERB`. This is the set role creation accepts, not filtered to the caller's own access; saving a role also requires the caller to hold every capability it grants. `family` and `verb` narrow the result and apply together; with neither, the whole catalog is returned. Reading the catalog requires organization membership; other callers receive 403.
+         */
+        get: operations["getOrganizationRoleCapabilities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/organization/roles/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Role identifier
+                 * @example cmcustomrole0001
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get an organization role
+         * @description Returns one role a member or invite of the authenticated caller's organization can hold: a built-in role, or one of the organization's custom roles. Returns 404 when the ID is unknown or names another organization's custom role, or when the caller does not belong to an organization; 403 when the caller may not view the organization's roles or organizations are unavailable to the caller.
+         */
+        get: operations["getOrganizationRole"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a custom organization role
+         * @description Deletes a custom role from the authenticated caller's organization. Returns 409 while a member or a pending invite holds the role: reassign those members and cancel those invites first, since deleting never changes anyone's role. Expired invites do not block deletion. Returns 400 for a built-in role, which cannot be deleted; 404 when the ID is unknown, names another organization's role, or was already deleted. Deleting roles requires the organization's role-management capability, which the built-in admin role holds; other members, and callers outside an organization, receive 403, as does a caller for whom organizations are unavailable.
+         */
+        delete: operations["deleteOrganizationRole"];
+        options?: never;
+        head?: never;
+        /**
+         * Update a custom organization role
+         * @description Changes a custom role's name, its capabilities, or both, and returns the role. Sent capabilities replace the whole grant set. Returns 400 for a built-in role, which cannot be changed; 404 when the ID is unknown or names another organization's role; 403 when the caller does not hold every capability the role grants, before or after the change; 409 when the organization already has a role with the new name; and 422 when a capability is unknown or the name is reserved. Updating roles requires the organization's role-management capability, which the built-in admin role holds; other members, and callers outside an organization, receive 403, as does a caller for whom organizations are unavailable.
+         */
+        patch: operations["updateOrganizationRole"];
         trace?: never;
     };
     "/v2/account/secrets": {
@@ -250,7 +483,7 @@ export interface paths {
          *     | `402` | Insufficient balance. | Stop; no candidate will succeed. |
          *     | `403` | Your account cannot access the requested pool. | Skip this candidate, keep going. |
          *     | `429` | Rate limited. | Back off using `Retry-After`, then resume. |
-         *     | `5xx` | Transient upstream failure. | Retry the same candidate with backoff. |
+         *     | `5xx` | Transient server failure. | Retry the same candidate with backoff. |
          *
          *     Requests larger than 102400 bytes receive `413` after authentication
          *     and rate limiting, before deployment processing. Reduce the serialized
@@ -322,6 +555,9 @@ export interface paths {
          *     `registry`, `mounts`, `locked`, and `globalNetworking`. Some changes
          *     apply immediately while others (e.g. `globalNetworking`) take effect
          *     on the pod's next start/restart, as noted on the individual fields.
+         *
+         *     Volumes can be mounted, moved, or unmounted after creation through
+         *     `mounts`, one entry per volume; see `UpdatePodMounts` for the rules.
          *
          *     Pods that belong to a Cluster cannot be updated here — manage them
          *     through `/v2/clusters/{id}`.
@@ -556,8 +792,8 @@ export interface paths {
          *
          *     If your workload needs a specific card, pick the pool that holds it and
          *     exclude the rest of that pool with `gpu.excludedTypes`. Keep at least
-         *     one type in the selection — upstream rejects a selection that leaves
-         *     none.
+         *     one type in the selection — a selection that leaves none is
+         *     rejected.
          */
         post: operations["createEndpoint"];
         delete?: never;
@@ -750,6 +986,151 @@ export interface paths {
          *     no need to page through `GET /v2/serverless/{id}/builds` to reach it.
          */
         get: operations["getEndpointBuild"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/serverless/{id}/metrics/requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Serverless endpoint identifier
+                 * @example ep_abc123
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get serverless endpoint request metrics
+         * @description Returns the request series shown on the endpoint's Metrics tab in the console.
+         *
+         *     **Window.** `startTime` is inclusive and `endTime` is exclusive. Both are
+         *     optional: `endTime` defaults to now and `startTime` to 24 hours before
+         *     `endTime`, rounded down to the start of an `interval` bucket. An
+         *     `endTime` in the future is treated as now. Metrics are kept for 90 days,
+         *     so `startTime` must be within the last 90 days.
+         *
+         *     **Interval.** Each record covers one `interval`-sized bucket, aligned to
+         *     UTC.
+         *
+         *     **Paging.** Records are oldest first, at most `limit` (default 1000) per
+         *     page. Follow `pagination.nextCursor` while `pagination.hasNextPage` is
+         *     true. The cursor keeps the first page's window, so `startTime`,
+         *     `endTime`, and `interval` can be left out on later pages; if sent, they
+         *     must match the first page or the cursor is rejected with 422.
+         *
+         *     **Sparse series.** Buckets with no activity are omitted, not zero-filled,
+         *     so `records` can be shorter than the number of buckets in the window, or
+         *     empty.
+         *
+         *     **Units.** Durations are milliseconds. `executionTimeMs` is the time a
+         *     worker spent running a request; `delayTimeMs` is the time a request
+         *     waited in the queue before a worker picked it up.
+         */
+        get: operations["getEndpointRequestMetrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/serverless/{id}/metrics/cold-starts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Serverless endpoint identifier
+                 * @example ep_abc123
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get serverless endpoint cold start metrics
+         * @description Returns the cold start series shown on the endpoint's Metrics tab in the console.
+         *
+         *     **Window.** `startTime` is inclusive and `endTime` is exclusive. Both are
+         *     optional: `endTime` defaults to now and `startTime` to 24 hours before
+         *     `endTime`, rounded down to the start of an `interval` bucket. An
+         *     `endTime` in the future is treated as now. Metrics are kept for 90 days,
+         *     so `startTime` must be within the last 90 days.
+         *
+         *     **Interval.** Each record covers one `interval`-sized bucket, aligned to
+         *     UTC.
+         *
+         *     **Paging.** Records are oldest first, at most `limit` (default 1000) per
+         *     page. Follow `pagination.nextCursor` while `pagination.hasNextPage` is
+         *     true. The cursor keeps the first page's window, so `startTime`,
+         *     `endTime`, and `interval` can be left out on later pages; if sent, they
+         *     must match the first page or the cursor is rejected with 422.
+         *
+         *     **Sparse series.** Buckets with no activity are omitted, not zero-filled,
+         *     so `records` can be shorter than the number of buckets in the window, or
+         *     empty.
+         *
+         *     **Units.** `durationMs` is how long each cold start took, in milliseconds.
+         */
+        get: operations["getEndpointColdStartMetrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/serverless/{id}/metrics/workers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Serverless endpoint identifier
+                 * @example ep_abc123
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get serverless endpoint worker metrics
+         * @description Returns the worker state series shown on the endpoint's Metrics tab in the console.
+         *     For the current worker list, use `GET /v2/serverless/{id}/workers`.
+         *
+         *     **Window.** `startTime` is inclusive and `endTime` is exclusive. Both are
+         *     optional: `endTime` defaults to now and `startTime` to 24 hours before
+         *     `endTime`, rounded down to the start of an `interval` bucket. An
+         *     `endTime` in the future is treated as now. Metrics are kept for 90 days,
+         *     so `startTime` must be within the last 90 days.
+         *
+         *     **Interval.** Each record covers one `interval`-sized bucket, aligned to
+         *     UTC.
+         *
+         *     **Paging.** Records are oldest first, at most `limit` (default 1000) per
+         *     page. Follow `pagination.nextCursor` while `pagination.hasNextPage` is
+         *     true. The cursor keeps the first page's window, so `startTime`,
+         *     `endTime`, and `interval` can be left out on later pages; if sent, they
+         *     must match the first page or the cursor is rejected with 422.
+         *
+         *     **Sparse series.** Buckets with no activity are omitted, not zero-filled,
+         *     so `records` can be shorter than the number of buckets in the window, or
+         *     empty.
+         *
+         *     **Snapshots.** Each record holds the last worker-count snapshot in its
+         *     bucket, as point-in-time counts.
+         */
+        get: operations["getEndpointWorkerMetrics"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1267,6 +1648,130 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v2/cost-centers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List cost centers
+         * @description Returns the caller's cost centers, cursor-paginated newest-first; an
+         *     omitted `limit` defaults to 1000. Follow `pagination.nextCursor` until
+         *     `hasNextPage` is false.
+         */
+        get: operations["listCostCenters"];
+        put?: never;
+        /**
+         * Create a cost center
+         * @description Creates a cost center — a named label that groups resource spend so it can be broken out in billing. Pass `resources` to attribute resources at creation time; attaching is all-or-nothing, and a resource that already belongs to another cost center is rejected rather than moved.
+         */
+        post: operations["createCostCenter"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/cost-centers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Cost center identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get a cost center
+         * @description Returns one cost center. Its attributed resources are listed by
+         *     `GET /v2/cost-centers/{id}/resources`. Returns 404 when the cost center
+         *     does not exist or is not the caller's.
+         */
+        get: operations["getCostCenter"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a cost center
+         * @description Deletes a cost center. The delete fails with 409 while any resource is
+         *     still attributed to the cost center; detach those resources first.
+         */
+        delete: operations["deleteCostCenter"];
+        options?: never;
+        head?: never;
+        /**
+         * Rename a cost center
+         * @description Renames a cost center. Resources attributed to it are unaffected and
+         *     follow the new name — the attribution is by identifier, not by name.
+         */
+        patch: operations["updateCostCenter"];
+        trace?: never;
+    };
+    "/v2/cost-centers/{id}/resources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Cost center identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * List a cost center's resources
+         * @description Returns the resources attributed to one cost center, cursor-paginated;
+         *     an omitted `limit` defaults to 1000. Each entry is the `{type}/{id}`
+         *     pair `DELETE /v2/cost-centers/{id}/{resourceType}/{resourceId}` takes.
+         *     A cost center with nothing attributed returns an empty list; one that
+         *     does not exist or is not the caller's returns 404.
+         */
+        get: operations["listCostCenterResources"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/cost-centers/{id}/{resourceType}/{resourceId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Cost center identifier. */
+                id: string;
+                /** @description Kind of resource. */
+                resourceType: components["schemas"]["ResourceType"];
+                /** @description Resource identifier. */
+                resourceId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Attribute a resource to a cost center
+         * @description Attributes a resource to a cost center. Repeating the request is a
+         *     no-op. A resource belongs to at most one cost center; one already
+         *     attributed elsewhere is rejected with 409 rather than moved.
+         */
+        put: operations["attachCostCenterResource"];
+        post?: never;
+        /**
+         * Remove a resource from a cost center
+         * @description Removes a resource's attribution to a cost center. The resource itself
+         *     is untouched. Returns 404 when the cost center does not exist or the
+         *     resource is not attributed to it, so repeating a DELETE that succeeded
+         *     returns 404.
+         */
+        delete: operations["detachCostCenterResource"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v2/audit-logs": {
         parameters: {
             query?: never;
@@ -1424,20 +1929,72 @@ export interface components {
              */
             name: string;
         };
-        /** @description An organization role, by ID. */
+        /** @description A pending invitation to join the caller's organization. An invite stops being listed once it is accepted, revoked or expired. */
+        OrganizationInvite: {
+            /**
+             * @description Invite ID.
+             * @example invite_id_abc_123
+             */
+            id: string;
+            /**
+             * @description Email address the invitation was sent to. The invitee accepts by signing in with a verified account on this address.
+             * @example new-member@example.com
+             */
+            email: string;
+            role: components["schemas"]["OrganizationRoleRef"];
+            /**
+             * Format: date-time
+             * @description When the invite was sent.
+             * @example 2026-10-01T09:00:00Z
+             */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description When the invite can no longer be accepted.
+             * @example 2026-10-15T09:00:00Z
+             */
+            expiresAt: string;
+        };
+        /** @description An organization role, by ID and display name. */
         OrganizationRoleRef: {
             /**
-             * @description Role ID. A built-in role's ID is `builtin:` followed by its name; a custom role carries its own ID.
+             * @description Role ID. A built-in role's ID is `builtin:` followed by its key; a custom role carries its own ID.
              * @example builtin:dev
              */
             id: string;
             type: components["schemas"]["OrganizationRoleType"];
+            /**
+             * @description The role's display name: `Admin`, `Developer`, `Billing` or `Contributor` for a built-in role, or a custom role's own name. A custom role that has since been deleted reads as `Contributor` while `id` keeps its own ID.
+             * @example Developer
+             */
+            name: string;
         };
         /**
          * @description Who defines the role. `builtin` roles are Runpod's: `builtin:admin`, `builtin:dev`, `builtin:billing` and `builtin:basic`. A `custom` role is one the organization defined, under its own ID.
          * @enum {string}
          */
         OrganizationRoleType: "builtin" | "custom";
+        /** @description An organization role to assign, by ID. */
+        OrganizationRoleInput: {
+            /**
+             * @description Role ID, as reported on a member or an invite: `builtin:admin`, `builtin:dev`, `builtin:billing`, `builtin:basic`, or a custom role's own ID.
+             * @example builtin:dev
+             */
+            id: string;
+        };
+        ListOrganizationInvitesResponse: {
+            /** @description Pending invites, newest first. */
+            invites: components["schemas"]["OrganizationInvite"][];
+        };
+        CreateOrganizationInviteRequest: {
+            /**
+             * Format: email
+             * @description Address to invite, stored lowercased. The invitee accepts by signing in with a verified account on this address.
+             * @example new-member@example.com
+             */
+            email: string;
+            role: components["schemas"]["OrganizationRoleInput"];
+        };
         /** @description A member of the caller's organization. `id` is the member's user ID. */
         OrganizationUser: {
             /**
@@ -1451,10 +2008,204 @@ export interface components {
              */
             email: string | null;
             role: components["schemas"]["OrganizationRoleRef"];
+            /** @description The groups the member belongs to, by name. */
+            groups: components["schemas"]["OrganizationGroupRef"][];
+        };
+        /** @description An organization group, by ID and name. */
+        OrganizationGroupRef: {
+            /**
+             * @description Group ID.
+             * @example group_id_abc_123
+             */
+            id: string;
+            /**
+             * @description Group name.
+             * @example Engineering
+             */
+            name: string;
         };
         ListOrganizationUsersResponse: {
-            /** @description Every member of the organization, in upstream's order. */
+            /** @description Every member of the organization. */
             users: components["schemas"]["OrganizationUser"][];
+        };
+        ListOrganizationGroupsResponse: {
+            groups: components["schemas"]["OrganizationGroup"][];
+            pagination: components["schemas"]["Pagination"];
+        };
+        /** @description A member of the group. `id` is the member's user ID. */
+        OrganizationGroupMember: {
+            /**
+             * @description User ID.
+             * @example user_id_abc_123
+             */
+            id: string;
+            /**
+             * @description The member's email address. Null for an account that has none.
+             * @example member@example.com
+             */
+            email: string | null;
+        };
+        ListOrganizationGroupMembersResponse: {
+            members: components["schemas"]["OrganizationGroupMember"][];
+            pagination: components["schemas"]["Pagination"];
+        };
+        /** @description A role an organization member or invite can hold: one of Runpod's built-in roles, or a custom role the organization defined. */
+        OrganizationRole: components["schemas"]["BuiltinOrganizationRole"] | components["schemas"]["CustomOrganizationRole"];
+        /** @description A role Runpod defines. Built-in roles cannot be changed. */
+        BuiltinOrganizationRole: {
+            /**
+             * @description Role ID, `builtin:` followed by the role's key.
+             * @example builtin:dev
+             */
+            id: string;
+            /**
+             * @description Display name.
+             * @example Developer
+             */
+            name: string;
+            /**
+             * @description Always `builtin` for this variant. (enum property replaced by openapi-typescript)
+             * @enum {string}
+             */
+            type: "builtin";
+            capabilities: components["schemas"]["OrganizationRoleCapabilities"];
+        };
+        /** @description A role the caller's organization defined. */
+        CustomOrganizationRole: {
+            /**
+             * @description Role ID.
+             * @example cmcustomrole0001
+             */
+            id: string;
+            /**
+             * @description Display name, unique within the organization.
+             * @example Pod viewer
+             */
+            name: string;
+            /**
+             * @description Always `custom` for this variant. (enum property replaced by openapi-typescript)
+             * @enum {string}
+             */
+            type: "custom";
+            capabilities: components["schemas"]["OrganizationRoleCapabilities"];
+            /**
+             * Format: date-time
+             * @description When the role was created.
+             * @example 2026-10-01T09:00:00Z
+             */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description When the role last changed. Assigning the role to a member or invite can also move it.
+             * @example 2026-10-02T09:00:00Z
+             */
+            updatedAt: string;
+        };
+        /**
+         * @description What the role grants, as `FAMILY:VERB` capabilities, sorted. A member's effective access can also include account-level access that no role grants.
+         * @example [
+         *       "POD:CREATE",
+         *       "POD:VIEW"
+         *     ]
+         */
+        OrganizationRoleCapabilities: string[];
+        ListOrganizationRolesResponse: {
+            /** @description Built-in and custom roles, oldest first. */
+            roles: components["schemas"]["OrganizationRole"][];
+        };
+        CreateOrganizationRoleRequest: {
+            name: components["schemas"]["OrganizationRoleName"];
+            capabilities: components["schemas"]["OrganizationRoleCapabilitiesInput"];
+        };
+        /** @description The fields to change; omitted fields are unchanged. `capabilities` replaces the role's whole grant set rather than adding to it. */
+        UpdateOrganizationRoleRequest: {
+            name?: components["schemas"]["OrganizationRoleName"];
+            capabilities?: components["schemas"]["OrganizationRoleCapabilitiesInput"];
+        };
+        /**
+         * @description Display name, 1–191 characters with at least one non-whitespace character. Leading and trailing whitespace is trimmed. It must be unique within the organization and cannot be a built-in role's name.
+         * @example Pod viewer
+         */
+        OrganizationRoleName: string;
+        /**
+         * @description What the role grants, as `FAMILY:VERB` capabilities from `GET /v2/organization/roles/capabilities`. The caller must hold every capability it lists.
+         * @example [
+         *       "POD:VIEW"
+         *     ]
+         */
+        OrganizationRoleCapabilitiesInput: string[];
+        /** @description The capabilities a custom role can grant. */
+        OrganizationCapabilityCatalog: {
+            /**
+             * @description Major version of the capability catalog.
+             * @example 1
+             */
+            version: number;
+            /** @description Capability families, in catalog order. */
+            families: components["schemas"]["OrganizationCapabilityFamily"][];
+        };
+        OrganizationCapabilityFamily: {
+            /**
+             * @description What the capability applies to. A capability is written `FAMILY:VERB`, e.g. `POD:VIEW`.
+             * @example POD
+             */
+            family: string;
+            /**
+             * @description The verbs a custom role can grant on this family, in catalog order.
+             * @example [
+             *       "CREATE",
+             *       "USE",
+             *       "TERMINAL",
+             *       "UPDATE",
+             *       "DELETE",
+             *       "VIEW"
+             *     ]
+             */
+            verbs: string[];
+        };
+        /** @description Changes to a member. Send `role`, `groups`, or both; an omitted field is left as it is. */
+        UpdateOrganizationUserRequest: {
+            role?: components["schemas"]["OrganizationRoleInput"];
+            /** @description The member's groups after the change: the whole set, by ID. An empty list removes the member from every group. */
+            groups?: components["schemas"]["OrganizationGroupInput"][];
+        };
+        /** @description An organization group, by ID. */
+        OrganizationGroupInput: {
+            /**
+             * @description Group ID.
+             * @example group_id_abc_123
+             */
+            id: string;
+        };
+        /** @description A group in the authenticated caller's organization. */
+        OrganizationGroup: {
+            /** @description Group ID. */
+            id: string;
+            /** @description Group name. */
+            name: string;
+            /** @description Number of group memberships. */
+            memberCount: number;
+            /** Format: date-time */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description Group update time; membership changes need not update it.
+             */
+            updatedAt: string;
+        };
+        CreateOrganizationGroupRequest: {
+            /**
+             * @description Group name with at least one non-whitespace character; surrounding whitespace is trimmed.
+             * @example Engineering
+             */
+            name: string;
+        };
+        UpdateOrganizationGroupRequest: {
+            /**
+             * @description Group name with at least one non-whitespace character; surrounding whitespace is trimmed.
+             * @example Research
+             */
+            name: string;
         };
         /** @description Cursor-pagination metadata, uniform across list endpoints. Every response carries it: follow `nextCursor` while `hasNextPage` is true to walk the full result set. */
         Pagination: {
@@ -1541,21 +2292,21 @@ export interface components {
             registry?: string | null;
         };
         /**
-         * @description The mount kinds every resource that takes `mounts` shares. At most one
-         *     of `persistent` or `network` may be set: combining them is rejected
-         *     with 400. The `network` field is an array for forward compatibility
-         *     with multi-network-volume support; `maxItems` is 1.
+         * @description Shared base type for all resources that mount storage volumes.
+         *     `persistent` and `network` cannot both be set (rejected with 400).
+         *     Each resource that uses this type sets its own limit on network
+         *     volumes.
          */
         BaseMounts: {
             persistent?: components["schemas"]["PersistentMount"];
             network?: components["schemas"]["NetworkMount"][];
         };
         /**
-         * @description Storage mounts for a cluster create: `persistent` or `network`, not
-         *     both. Clusters cannot mount global volumes, so `global` is rejected
-         *     with 422. A mount `path` must not be empty (rejected with 422):
-         *     upstream reads an empty path as unset and would mount the volume at
-         *     the template's path, or `/workspace` without a template.
+         * @description Storage mounts for a cluster create: `persistent` or one `network`
+         *     volume, not both. Clusters cannot mount global volumes, so `global`
+         *     is rejected with 422. A mount `path` must not be empty (rejected with 422): an
+         *     empty path reads as unset and would mount the volume at the
+         *     template's path, or `/workspace` without a template.
          */
         ClusterMounts: components["schemas"]["BaseMounts"] & {
             persistent?: {
@@ -1566,35 +2317,22 @@ export interface components {
             }[];
         };
         /**
-         * @description Storage mounts attached to a pod. `persistent` is mutually exclusive
-         *     with both `network` and `global`: combining them is rejected with 400.
-         *     The `network` field is an array for forward compatibility with
-         *     multi-network-volume support; `maxItems` is 1.
-         *
-         *     PATCH semantics:
-         *     - Omitting `mounts` or sending `{}` leaves the existing mount
-         *       unchanged.
-         *     - An explicit `network: []` is rejected with 400 (clearing mounts
-         *       is not supported).
-         *     - Mount kind is fixed at create — a PATCH that introduces a kind
-         *       not present at create (persistent on a network pod, network on
-         *       a persistent pod, or any mount on a previously-mountless pod)
-         *       is rejected with 400.
-         *     - The `volumeId` of a network mount is immutable; a PATCH that
-         *       names a different `volumeId` is rejected with 400.
-         *     - Partial mounts are not supported — every mount entry must
-         *       include the full schema (`size` + `path` for persistent,
-         *       `volumeId` + `path` for network). Missing required fields → 422.
+         * @description Storage mounts attached to a pod. `persistent` (the volume disk) is
+         *     mutually exclusive with both `network` and `global`: combining them
+         *     is rejected with 400. A pod takes up to 4 network volumes
+         *     and 1 global volume. Every network volume must be in the pod's data
+         *     center, each volume may be listed once, and mount paths must not
+         *     overlap; a request that breaks one of these is rejected. To change a
+         *     pod's mounts after creation, see `UpdatePodMounts`.
          */
         Mounts: components["schemas"]["BaseMounts"] & {
+            /** @description Up to 4 network volumes, all in the pod's data center. */
+            network?: components["schemas"]["NetworkMount"][];
             /**
              * @description At most one global volume, on GPU and CPU pods, with no data
              *     center constraint. Combinable with `network` but not with
-             *     `persistent` (rejected with 400): upstream drops a persistent
-             *     disk whenever a volume is attached. Same PATCH rules as
-             *     `network`: global mounts are fixed at create, `global: []` is
-             *     rejected with 400, and `volumeId` is immutable; only `path` may
-             *     change.
+             *     `persistent` (rejected with 400): a persistent disk is dropped
+             *     whenever a volume is attached. Same PATCH rules as `network`.
              */
             global?: components["schemas"]["GlobalMount"][];
         };
@@ -1616,7 +2354,7 @@ export interface components {
          */
         PersistentMount: {
             /**
-             * @description Host-local persistent storage in GB. Upstream enforces a 10 GB floor.
+             * @description Host-local persistent storage in GB. Minimum 10 GB.
              * @example 20
              */
             size: number;
@@ -1628,8 +2366,8 @@ export interface components {
         };
         /**
          * @description Reference to a NetworkVolume. Custom paths are honored at runtime on
-         *     both GPU and CPU pods. The underlying `volumeId` is immutable
-         *     post-create; the mount `path` may be changed via PATCH.
+         *     both GPU and CPU pods. On a pod, the volume can be mounted, moved,
+         *     or unmounted after creation (see `UpdatePodMounts`).
          */
         NetworkMount: {
             /**
@@ -1644,9 +2382,9 @@ export interface components {
             path: string;
         };
         /**
-         * @description Reference to a GlobalVolume. Usage-billed, so it has no size. The
-         *     underlying `volumeId` is immutable post-create; the mount `path` may be
-         *     changed via PATCH.
+         * @description Reference to a GlobalVolume. Usage-billed, so it has no size. On a
+         *     pod, the volume can be mounted, moved, or unmounted after creation
+         *     (see `UpdatePodMounts`).
          */
         GlobalMount: {
             /**
@@ -1655,10 +2393,101 @@ export interface components {
              */
             volumeId: string;
             /**
-             * @description Mount path inside the container. Optional on create, where a default is chosen for you; a PATCH that omits it leaves the path unchanged.
+             * @description Mount path inside the container. Optional; a default is chosen for you when omitted.
              * @example /data
              */
             path?: string;
+        };
+        /**
+         * @description Changes to a pod's mounts. Each entry names one volume by `volumeId`
+         *     and changes only that volume; volumes that are not listed, and kinds
+         *     that are omitted, are left as they are. Omitting `mounts` or sending
+         *     `{}` changes nothing.
+         *
+         *     - A listed volume the pod does not have is mounted at `path`.
+         *     - A listed volume the pod already has moves to `path` (or stays
+         *       put when `path` is omitted).
+         *     - `remove: true` unmounts the volume. It cannot be combined with
+         *       `path`, and the volume must be mounted on the pod.
+         *     - To swap a volume, remove the old one and add the new one in the
+         *       same request.
+         *
+         *     Limits are checked against the pod as it would be after the request
+         *     and rejected with 400: at most 4 network volumes and 1 global
+         *     volume, and a volume disk cannot share a pod with network or global
+         *     volumes. A volume disk can be added to a pod that has no volumes
+         *     mounted (or unmounts them all in the same request), and it can only
+         *     grow. Removing a volume disk is not supported yet.
+         */
+        UpdatePodMounts: {
+            persistent?: components["schemas"]["PersistentMountPatch"];
+            /**
+             * @description Network volumes to mount, move, or unmount. Up to 8 entries, so
+             *     a request can unmount 4 volumes and mount 4 others; the pod can
+             *     still hold at most 4 afterwards.
+             */
+            network?: components["schemas"]["NetworkMountPatch"][];
+            /**
+             * @description Global volumes to mount, move, or unmount. Up to 2 entries, so a
+             *     request can swap the global volume; the pod can still hold at
+             *     most 1 afterwards.
+             */
+            global?: components["schemas"]["GlobalMountPatch"][];
+        };
+        /**
+         * @description Adds the pod's volume disk, grows it, or moves it. Adding a disk
+         *     requires `size`; on a pod that already has one, omitted fields are
+         *     left as they are. Not available on CPU pods.
+         */
+        PersistentMountPatch: {
+            /**
+             * @description Volume disk size in GB. Can only grow; a smaller size than the current one is rejected with 400.
+             * @example 50
+             */
+            size?: number;
+            /**
+             * @description Mount path inside the container.
+             * @example /workspace
+             */
+            path?: string;
+            /**
+             * @description Removes the volume disk. Not supported yet: `remove: true` is
+             *     rejected with 400.
+             */
+            remove?: boolean;
+        };
+        /**
+         * @description Mounts, moves, or unmounts one network volume. Mounting a volume the
+         *     pod does not have requires `path`.
+         */
+        NetworkMountPatch: {
+            /**
+             * @description ID of an existing NetworkVolume in the same data center as the pod.
+             * @example vol_xyz
+             */
+            volumeId: string;
+            /**
+             * @description Mount path inside the container. Required when mounting; optional when moving a mounted volume.
+             * @example /runpod-volume
+             */
+            path?: string;
+            /** @description Unmount the volume. Cannot be combined with `path`. */
+            remove?: boolean;
+        };
+        /** @description Mounts, moves, or unmounts the pod's global volume. */
+        GlobalMountPatch: {
+            /**
+             * @description ID of an existing GlobalVolume.
+             * @example gsb_abc
+             */
+            volumeId: string;
+            /**
+             * @description Mount path inside the container. Optional; when mounting, a default is chosen for you if omitted.
+             * @example /data
+             */
+            path?: string;
+            /** @description Unmount the volume. Cannot be combined with `path`. */
+            remove?: boolean;
         };
         BaseGpuConfig: {
             /**
@@ -1900,9 +2729,8 @@ export interface components {
              *     the pools and the exclusions untouched, so changing only a CUDA
              *     constraint cannot widen a pinned endpoint.
              *
-             *     Rejected with 400 if a value is not a GPU type in one of `pools`;
-             *     upstream accepts unrecognized exclusions silently, so a typo would
-             *     otherwise produce a filter that does nothing. Surrounding whitespace
+             *     Rejected with 400 if a value is not a GPU type in one of `pools`,
+             *     so a typo cannot produce a filter that does nothing. Surrounding whitespace
              *     is trimmed, so `" NVIDIA L40"` and `"NVIDIA L40"` mean the same card.
              * @example [
              *       "NVIDIA L40"
@@ -2107,6 +2935,8 @@ export interface components {
          */
         EndpointScaling: components["schemas"]["QueueDelayScaling"] | components["schemas"]["RequestCountScaling"];
         Endpoint: components["schemas"]["ContainerConfig"] & {
+            costCenter?: components["schemas"]["ResourceCostCenter"];
+            tags?: components["schemas"]["ResourceTags"];
             /** @example ep_abc123 */
             id: string;
             /** @example my-inference */
@@ -2262,6 +3092,112 @@ export interface components {
              * @example 3
              */
             total: number;
+        };
+        /**
+         * @description Bucket size for endpoint metrics.
+         * @default 1h
+         * @enum {string}
+         */
+        EndpointMetricsInterval: "1m" | "5m" | "15m" | "30m" | "1h" | "6h" | "12h" | "1d";
+        /** @description Millisecond statistics over one bucket. */
+        EndpointDurationStats: {
+            min: number;
+            max: number;
+            /**
+             * Format: double
+             * @description Sum over every request (or cold start) in the bucket.
+             */
+            total: number;
+            p70: number;
+            p90: number;
+            p95: number;
+            p98: number;
+        };
+        EndpointRequestMetric: {
+            /**
+             * Format: date-time
+             * @description Bucket start (UTC).
+             */
+            time: string;
+            /** @description Requests that finished in this bucket. */
+            requests: number;
+            completed: number;
+            failed: number;
+            retries: number;
+            executionTimeMs: components["schemas"]["EndpointDurationStats"];
+            delayTimeMs: components["schemas"]["EndpointDurationStats"];
+        };
+        EndpointColdStartMetric: {
+            /**
+             * Format: date-time
+             * @description Bucket start (UTC).
+             */
+            time: string;
+            count: number;
+            durationMs: components["schemas"]["EndpointDurationStats"];
+        };
+        EndpointWorkerMetric: {
+            /**
+             * Format: date-time
+             * @description Bucket start (UTC).
+             */
+            time: string;
+            running: number;
+            idle: number;
+            initializing: number;
+            throttled: number;
+            unhealthy: number;
+        };
+        /** @description Request counts and durations per bucket for the resolved window. `records` contains only buckets with activity. Buckets with no activity are omitted, not zero-filled, so `records` can be shorter than the number of buckets in the window, or empty. Results are paged: see `pagination`. */
+        EndpointRequestMetricsResponse: {
+            /**
+             * Format: date-time
+             * @description Resolved window start (after defaults).
+             */
+            startTime: string;
+            /**
+             * Format: date-time
+             * @description Resolved window end (after defaults and the clamp to now).
+             */
+            endTime: string;
+            interval: components["schemas"]["EndpointMetricsInterval"];
+            /** @description This page's buckets, oldest first. */
+            records: components["schemas"]["EndpointRequestMetric"][];
+            pagination: components["schemas"]["Pagination"];
+        };
+        /** @description Cold start counts and durations per bucket for the resolved window. `records` contains only buckets with activity. Buckets with no activity are omitted, not zero-filled, so `records` can be shorter than the number of buckets in the window, or empty. Results are paged: see `pagination`. */
+        EndpointColdStartMetricsResponse: {
+            /**
+             * Format: date-time
+             * @description Resolved window start (after defaults).
+             */
+            startTime: string;
+            /**
+             * Format: date-time
+             * @description Resolved window end (after defaults and the clamp to now).
+             */
+            endTime: string;
+            interval: components["schemas"]["EndpointMetricsInterval"];
+            /** @description This page's buckets, oldest first. */
+            records: components["schemas"]["EndpointColdStartMetric"][];
+            pagination: components["schemas"]["Pagination"];
+        };
+        /** @description Worker counts by state per bucket for the resolved window. `records` contains only buckets with activity. Buckets with no activity are omitted, not zero-filled, so `records` can be shorter than the number of buckets in the window, or empty. Results are paged: see `pagination`. */
+        EndpointWorkerMetricsResponse: {
+            /**
+             * Format: date-time
+             * @description Resolved window start (after defaults).
+             */
+            startTime: string;
+            /**
+             * Format: date-time
+             * @description Resolved window end (after defaults and the clamp to now).
+             */
+            endTime: string;
+            interval: components["schemas"]["EndpointMetricsInterval"];
+            /** @description This page's buckets, oldest first. */
+            records: components["schemas"]["EndpointWorkerMetric"][];
+            pagination: components["schemas"]["Pagination"];
         };
         ListEndpointWorkersResponse: {
             workers: components["schemas"]["Worker"][];
@@ -2753,6 +3689,8 @@ export interface components {
              */
             registry: string | null;
         } & (components["schemas"]["ContainerConfig"] & {
+            costCenter?: components["schemas"]["ResourceCostCenter"];
+            tags?: components["schemas"]["ResourceTags"];
             /** @example pod_abc123 */
             id: string;
             /** @example my-training-pod */
@@ -2892,7 +3830,7 @@ export interface components {
             globalNetworking?: boolean;
             /** @description Lock the pod (true) or unlock it (false). Locked pods cannot be stopped or reset. */
             locked?: boolean;
-            mounts?: components["schemas"]["Mounts"];
+            mounts?: components["schemas"]["UpdatePodMounts"];
             name?: string;
             /**
              * @description ID of a pod template whose container settings are applied as
@@ -2930,7 +3868,7 @@ export interface components {
              */
             gpuTypeId: string;
             /**
-             * @description Number of GPUs on each pod. Bounded above by the GPU type's per-cloud maximum (GpuType.maxCount); the upstream rejects values beyond it.
+             * @description Number of GPUs on each pod. Bounded above by the GPU type's per-cloud maximum (GpuType.maxCount); values beyond it are rejected.
              * @example 8
              */
             gpuCountPerPod: number;
@@ -3017,6 +3955,8 @@ export interface components {
         };
         /** @description A cluster. Cluster-level fields describe the identity and homogeneous shape; `pods` is a lightweight summary of the members. Fetch the full member pods — with their container config, mounts, and runtime state — from `GET /v2/clusters/{id}/pods`. */
         Cluster: {
+            costCenter?: components["schemas"]["ResourceCostCenter"];
+            tags?: components["schemas"]["ResourceTags"];
             /** @example cluster_abc123 */
             id: string;
             /** @example my-training-cluster */
@@ -3250,6 +4190,8 @@ export interface components {
         };
         ListTemplatesResponse: components["schemas"]["TemplateList"] & components["schemas"]["Paginated"];
         NetworkVolume: {
+            costCenter?: components["schemas"]["ResourceCostCenter"];
+            tags?: components["schemas"]["ResourceTags"];
             /**
              * @description Unique network volume identifier
              * @example agv6w2qcg7
@@ -3550,6 +4492,21 @@ export interface components {
                 /** @example 4 */
                 community: number;
             };
+            /**
+             * @description Minimum total vCPU count reported across matching machines for the
+             *     requested `count` and availability filters. Present only with
+             *     include=AVAILABILITY and omitted when `availability` is `NONE`.
+             * @example 8
+             */
+            minVcpuCount?: number;
+            /**
+             * @description Minimum total system RAM in GB reported across matching machines
+             *     for the requested `count` and availability filters. This is host
+             *     RAM, not the GPU VRAM reported in `memory`. Present only with
+             *     include=AVAILABILITY and omitted when `availability` is `NONE`.
+             * @example 32
+             */
+            minRam?: number;
             /** @description Overall GPU availability for the requested `product` contexts. Present only when requested with include=AVAILABILITY, which also requires `product`. */
             availability?: components["schemas"]["AvailabilityLevel"];
             /**
@@ -3759,6 +4716,88 @@ export interface components {
         ListDataCentersResponse: {
             dataCenters: components["schemas"]["DataCenter"][];
         };
+        CostCenter: {
+            /** @example clz1x9k4a0000qw3h8s7d2f1g */
+            id: string;
+            /**
+             * @description Cost center name exactly as stored, so it matches billing breakdowns.
+             * @example team-ml
+             */
+            value: string;
+        };
+        /** @description Cost center this resource's spend is attributed to. Absent when the resource is not attributed to a cost center, or when the caller lacks permission to view cost centers. Managed through `/v2/cost-centers`. */
+        ResourceCostCenter: components["schemas"]["CostCenter"];
+        ListCostCentersResponse: {
+            costCenters: components["schemas"]["CostCenter"][];
+            pagination: components["schemas"]["Pagination"];
+        };
+        ListCostCenterResourcesResponse: {
+            resources: components["schemas"]["CostCenterResource"][];
+            pagination: components["schemas"]["Pagination"];
+        };
+        /**
+         * @description Kind of resource a cost center or tag can be attached to.
+         * @enum {string}
+         */
+        ResourceType: "POD" | "CLUSTER" | "SERVERLESS_ENDPOINT" | "NETWORK_VOLUME";
+        CostCenterResource: {
+            /** @example p9k2m4n6q8 */
+            id: string;
+            type: components["schemas"]["ResourceType"];
+        };
+        CreateCostCenterRequest: {
+            /**
+             * @description Leading and trailing whitespace is trimmed.
+             * @example team-ml
+             */
+            value: string;
+            /** @description Resources to attribute to the new cost center. */
+            resources?: components["schemas"]["CostCenterResource"][];
+        };
+        UpdateCostCenterRequest: {
+            /**
+             * @description Leading and trailing whitespace is trimmed.
+             * @example team-ml-eu
+             */
+            value: string;
+        };
+        TagReference: {
+            /**
+             * @description ID of the tag itself, shared by every resource it is attached to.
+             * @example clz1x9k4a0000qw3h8s7d2f1g
+             */
+            id: string;
+            /** @example env */
+            key: string;
+            /**
+             * @description May be empty.
+             * @example dev
+             */
+            value: string;
+        };
+        /** @description The tags on this resource that are visible to the caller. Keys and values are returned exactly as stored. Tags under the reserved `runpod:` prefix, such as the cost center, are never listed here. Absent when the resource's tags are unavailable to the caller; an empty array means none are visible. */
+        ResourceTags: components["schemas"]["TagReference"][];
+        /** @description An empty object, or an empty `tags` array, filters nothing. */
+        ResourceFilters: {
+            /** @description Conditions on the resource's tags. A resource must match every condition; repeating a key adds a condition rather than widening the first one. At most 25, the most tags one resource can carry. */
+            tags?: components["schemas"]["TagCondition"][];
+        };
+        TagCondition: {
+            key: components["schemas"]["TagFilterKey"];
+            /**
+             * @description Matches a tag under `key` with any one of these values, compared exactly. Omitted or empty, the condition only requires the key to be present. `""` matches a tag whose value is empty. At most 100.
+             * @example [
+             *       "dev",
+             *       "prod"
+             *     ]
+             */
+            values?: string[];
+        };
+        /**
+         * @description Tag key, 1–191 characters as sent, with at least one that is not whitespace. Leading and trailing whitespace is ignored. Keys under the reserved `runpod:` prefix, in any letter case, are rejected.
+         * @example env
+         */
+        TagFilterKey: string;
         /** @description One recorded action on the account. */
         AuditLog: {
             /**
@@ -4170,7 +5209,8 @@ export interface components {
          *
          *     A structured-field list with one member per window (`minute`, `hour`,
          *     `day`), each carrying the remaining request count `r` and seconds until
-         *     the window resets `t`. Returned on responses to authenticated requests,
+         *     the window resets `t` (at least 1). Windows are fixed and aligned to the
+         *     clock, not sliding. Returned on responses to authenticated requests,
          *     not only on 429s.
          * @example "minute";r=0;t=12, "hour";r=2800;t=1812, "day";r=49500;t=45012
          */
@@ -4251,8 +5291,8 @@ export interface components {
          *     checked after authentication and rate limiting. GET and DELETE reject
          *     any nonempty request body with `422` instead.
          *
-         *     An operation can also return this status when its expanded upstream
-         *     request is too large, even if the incoming body is within the limit.
+         *     An operation can also return this status when the request it expands
+         *     into is too large, even if the incoming body is within the limit.
          */
         RequestTooLargeError: {
             headers: {
@@ -4265,7 +5305,7 @@ export interface components {
             };
         };
         /**
-         * @description The response would exceed the upstream response size cap. Request
+         * @description The response would exceed the response size cap. Request
          *     fewer items and retry; on paginated operations, lower `limit`.
          */
         ResponseTooLargeError: {
@@ -4330,6 +5370,18 @@ export interface components {
          */
         BillingLastN: number;
         /**
+         * @description Start of the window (RFC 3339), inclusive. Defaults to 24 hours before endTime, rounded down to the start of an interval bucket. Must be within the last 90 days.
+         * @example 2026-10-11T00:00:00Z
+         */
+        MetricsStartTime: string;
+        /**
+         * @description End of the window (RFC 3339), exclusive. Defaults to now; a future value is treated as now.
+         * @example 2026-10-12T00:00:00Z
+         */
+        MetricsEndTime: string;
+        /** @description Bucket size. Defaults to 1h. */
+        MetricsInterval: components["schemas"]["EndpointMetricsInterval"];
+        /**
          * @description Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected with 422.
          * @example Y3JlYXRlZEF0PTE3NDg3ODA0MDA
          */
@@ -4344,6 +5396,11 @@ export interface components {
          * @example 50
          */
         PaginationLimitBuilds: number;
+        /**
+         * @description Page size, 1–100. Defaults to 100 when omitted.
+         * @example 50
+         */
+        PaginationLimitOrganizationGroups: number;
         /**
          * @description Page size, 1–200. Defaults to 200 when omitted.
          * @example 50
@@ -4381,6 +5438,22 @@ export interface components {
          */
         AuditLogSearch: string;
         /**
+         * @description Only return these capability families, matched exactly. Comma-separated; a family matching any listed value is returned. An empty value is ignored.
+         * @example [
+         *       "POD",
+         *       "ENDPOINT"
+         *     ]
+         */
+        OrganizationCapabilityFamilyFilter: string[];
+        /**
+         * @description Only return these verbs, matched exactly. Comma-separated. Each family lists only the requested verbs it has, and a family with none of them is left out. An empty value is ignored.
+         * @example [
+         *       "VIEW",
+         *       "USE"
+         *     ]
+         */
+        OrganizationCapabilityVerbFilter: string[];
+        /**
          * @description Comma-separated optional expansions; see `CatalogInclude` for the supported values.
          * @example [
          *       "AVAILABILITY"
@@ -4400,7 +5473,7 @@ export interface components {
          * @example 2
          */
         GpuCountFilter: number;
-        /** @description Cloud type for availability and lowest-price calculations. Valid only with include=AVAILABILITY. Supported values: SECURE, COMMUNITY. Upstream default when omitted: SECURE. */
+        /** @description Cloud type for availability and lowest-price calculations. Valid only with include=AVAILABILITY. Supported values: SECURE, COMMUNITY. Default when omitted: SECURE. */
         GpuCloudFilter: components["schemas"]["GpuCloudFilter"];
         /**
          * @description Comma-separated ISO 3166-1 alpha-2 country codes, uppercase, to constrain availability to — e.g. FR or FR,DE. Values within this filter use OR semantics. Valid only with include=AVAILABILITY (400 otherwise); a malformed entry is a 422. Scopes availability, lowest-price calculations and the dataCenters array to those countries, so a listed data center outside them is omitted rather than returned with availability NONE. On the list endpoint a GPU type with no data center in those countries drops out entirely; the single-GPU endpoint still returns the requested type, with availability NONE and dataCenters omitted, so a 404 keeps meaning the GPU type does not exist. Read the NONE on availability rather than the absence of dataCenters, which is also absent when availability was not requested.
@@ -4454,7 +5527,9 @@ export interface components {
     };
     requestBodies: never;
     headers: {
+        /** @description Live quota state for the caller, per the IETF ratelimit-headers draft. */
         RateLimit: components["schemas"]["RateLimitHeader"];
+        /** @description The quota policy behind `RateLimit`, per the IETF ratelimit-headers draft. */
         "RateLimit-Policy": components["schemas"]["RateLimitPolicyHeader"];
     };
     pathItems: never;
@@ -4484,6 +5559,384 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    listOrganizationGroups: {
+        parameters: {
+            query?: {
+                /** @description Optional case-insensitive substring of the group name. An empty value applies no filter. */
+                name?: string;
+                /**
+                 * @description Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected with 422.
+                 * @example Y3JlYXRlZEF0PTE3NDg3ODA0MDA
+                 */
+                cursor?: components["parameters"]["PaginationCursor"];
+                /**
+                 * @description Page size, 1–100. Defaults to 100 when omitted.
+                 * @example 50
+                 */
+                limit?: components["parameters"]["PaginationLimitOrganizationGroups"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListOrganizationGroupsResponse"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            413: components["responses"]["ResponseTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    createOrganizationGroup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateOrganizationGroupRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganizationGroup"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            /** @description A group with this name already exists in the current organization. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            413: components["responses"]["RequestTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    addOrganizationGroupMember: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Group ID. */
+                id: string;
+                /** @description Organization member user ID. */
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Member added, or already belongs to the group. */
+            204: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            413: components["responses"]["RequestTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    removeOrganizationGroupMember: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Group ID. */
+                id: string;
+                /** @description Organization member user ID. */
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Member removed. */
+            204: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    listOrganizationGroupMembers: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected with 422.
+                 * @example Y3JlYXRlZEF0PTE3NDg3ODA0MDA
+                 */
+                cursor?: components["parameters"]["PaginationCursor"];
+                /**
+                 * @description Page size, 1–100. Defaults to 100 when omitted.
+                 * @example 50
+                 */
+                limit?: components["parameters"]["PaginationLimitOrganizationGroups"];
+            };
+            header?: never;
+            path: {
+                /** @description Group ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListOrganizationGroupMembersResponse"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            413: components["responses"]["ResponseTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getOrganizationGroup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Group ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganizationGroup"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteOrganizationGroup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Group ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    updateOrganizationGroup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Group ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateOrganizationGroupRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganizationGroup"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            /** @description A group with this name already exists in the current organization. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            413: components["responses"]["RequestTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
             default: {
@@ -4643,6 +6096,585 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteOrganizationUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description User identifier
+                 * @example user_id_abc_123
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. Response has no body. */
+            204: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            /** @description The member holds the organization's only built-in admin role. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    updateOrganizationUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description User identifier
+                 * @example user_id_abc_123
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateOrganizationUserRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganizationUser"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            /** @description The change would leave the organization without a member in the built-in admin role. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            413: components["responses"]["RequestTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    listOrganizationInvites: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListOrganizationInvitesResponse"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    createOrganizationInvite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateOrganizationInviteRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganizationInvite"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            /** @description The address already belongs to an organization member or to a pending invite, or the organization has reached its pending-invite limit. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            413: components["responses"]["RequestTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getOrganizationInvite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Invite identifier
+                 * @example invite_id_abc_123
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganizationInvite"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteOrganizationInvite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Invite identifier
+                 * @example invite_id_abc_123
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cancelled. Response has no body. */
+            204: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    listOrganizationRoles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListOrganizationRolesResponse"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    createOrganizationRole: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateOrganizationRoleRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganizationRole"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            /** @description The organization already has a role with this name, or has reached its custom-role limit. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            413: components["responses"]["RequestTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getOrganizationRoleCapabilities: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Only return these capability families, matched exactly. Comma-separated; a family matching any listed value is returned. An empty value is ignored.
+                 * @example [
+                 *       "POD",
+                 *       "ENDPOINT"
+                 *     ]
+                 */
+                family?: components["parameters"]["OrganizationCapabilityFamilyFilter"];
+                /**
+                 * @description Only return these verbs, matched exactly. Comma-separated. Each family lists only the requested verbs it has, and a family with none of them is left out. An empty value is ignored.
+                 * @example [
+                 *       "VIEW",
+                 *       "USE"
+                 *     ]
+                 */
+                verb?: components["parameters"]["OrganizationCapabilityVerbFilter"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganizationCapabilityCatalog"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getOrganizationRole: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Role identifier
+                 * @example cmcustomrole0001
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganizationRole"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteOrganizationRole: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Role identifier
+                 * @example cmcustomrole0001
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. Response has no body. */
+            204: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            /** @description A member or a pending invite still holds the role. The detail gives how many of each. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    updateOrganizationRole: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Role identifier
+                 * @example cmcustomrole0001
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateOrganizationRoleRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrganizationRole"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            /** @description The organization already has a role with this name. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            413: components["responses"]["RequestTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
             default: {
@@ -4921,6 +6953,7 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             413: components["responses"]["ResponseTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
             default: {
@@ -4963,7 +6996,7 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
-            /** @description The incoming request body or expanded upstream request exceeds the 102400 byte limit, or the upstream rejects the request as too large. */
+            /** @description The incoming request body, or the request it expands into, exceeds the 102400 byte limit or is rejected as too large. */
             413: {
                 headers: {
                     RateLimit: components["headers"]["RateLimit"];
@@ -5312,6 +7345,7 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             413: components["responses"]["ResponseTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
             default: {
@@ -5590,6 +7624,7 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             413: components["responses"]["ResponseTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
             default: {
@@ -5983,6 +8018,213 @@ export interface operations {
             };
         };
     };
+    getEndpointRequestMetrics: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Start of the window (RFC 3339), inclusive. Defaults to 24 hours before endTime, rounded down to the start of an interval bucket. Must be within the last 90 days.
+                 * @example 2026-10-11T00:00:00Z
+                 */
+                startTime?: components["parameters"]["MetricsStartTime"];
+                /**
+                 * @description End of the window (RFC 3339), exclusive. Defaults to now; a future value is treated as now.
+                 * @example 2026-10-12T00:00:00Z
+                 */
+                endTime?: components["parameters"]["MetricsEndTime"];
+                /** @description Bucket size. Defaults to 1h. */
+                interval?: components["parameters"]["MetricsInterval"];
+                /**
+                 * @description Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected with 422.
+                 * @example Y3JlYXRlZEF0PTE3NDg3ODA0MDA
+                 */
+                cursor?: components["parameters"]["PaginationCursor"];
+                /**
+                 * @description Page size, 1–1000. Defaults to 1000 when omitted.
+                 * @example 50
+                 */
+                limit?: components["parameters"]["PaginationLimit"];
+            };
+            header?: never;
+            path: {
+                /**
+                 * @description Serverless endpoint identifier
+                 * @example ep_abc123
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EndpointRequestMetricsResponse"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            413: components["responses"]["ResponseTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getEndpointColdStartMetrics: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Start of the window (RFC 3339), inclusive. Defaults to 24 hours before endTime, rounded down to the start of an interval bucket. Must be within the last 90 days.
+                 * @example 2026-10-11T00:00:00Z
+                 */
+                startTime?: components["parameters"]["MetricsStartTime"];
+                /**
+                 * @description End of the window (RFC 3339), exclusive. Defaults to now; a future value is treated as now.
+                 * @example 2026-10-12T00:00:00Z
+                 */
+                endTime?: components["parameters"]["MetricsEndTime"];
+                /** @description Bucket size. Defaults to 1h. */
+                interval?: components["parameters"]["MetricsInterval"];
+                /**
+                 * @description Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected with 422.
+                 * @example Y3JlYXRlZEF0PTE3NDg3ODA0MDA
+                 */
+                cursor?: components["parameters"]["PaginationCursor"];
+                /**
+                 * @description Page size, 1–1000. Defaults to 1000 when omitted.
+                 * @example 50
+                 */
+                limit?: components["parameters"]["PaginationLimit"];
+            };
+            header?: never;
+            path: {
+                /**
+                 * @description Serverless endpoint identifier
+                 * @example ep_abc123
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EndpointColdStartMetricsResponse"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            413: components["responses"]["ResponseTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getEndpointWorkerMetrics: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Start of the window (RFC 3339), inclusive. Defaults to 24 hours before endTime, rounded down to the start of an interval bucket. Must be within the last 90 days.
+                 * @example 2026-10-11T00:00:00Z
+                 */
+                startTime?: components["parameters"]["MetricsStartTime"];
+                /**
+                 * @description End of the window (RFC 3339), exclusive. Defaults to now; a future value is treated as now.
+                 * @example 2026-10-12T00:00:00Z
+                 */
+                endTime?: components["parameters"]["MetricsEndTime"];
+                /** @description Bucket size. Defaults to 1h. */
+                interval?: components["parameters"]["MetricsInterval"];
+                /**
+                 * @description Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected with 422.
+                 * @example Y3JlYXRlZEF0PTE3NDg3ODA0MDA
+                 */
+                cursor?: components["parameters"]["PaginationCursor"];
+                /**
+                 * @description Page size, 1–1000. Defaults to 1000 when omitted.
+                 * @example 50
+                 */
+                limit?: components["parameters"]["PaginationLimit"];
+            };
+            header?: never;
+            path: {
+                /**
+                 * @description Serverless endpoint identifier
+                 * @example ep_abc123
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EndpointWorkerMetricsResponse"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            413: components["responses"]["ResponseTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     getWorkerLogs: {
         parameters: {
             query?: {
@@ -6321,6 +8563,7 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             413: components["responses"]["ResponseTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
             default: {
@@ -7076,7 +9319,7 @@ export interface operations {
                  * @example 2
                  */
                 count?: components["parameters"]["GpuCountFilter"];
-                /** @description Cloud type for availability and lowest-price calculations. Valid only with include=AVAILABILITY. Supported values: SECURE, COMMUNITY. Upstream default when omitted: SECURE. */
+                /** @description Cloud type for availability and lowest-price calculations. Valid only with include=AVAILABILITY. Supported values: SECURE, COMMUNITY. Default when omitted: SECURE. */
                 cloud?: components["parameters"]["GpuCloudFilter"];
                 /**
                  * @description Comma-separated ISO 3166-1 alpha-2 country codes, uppercase, to constrain availability to — e.g. FR or FR,DE. Values within this filter use OR semantics. Valid only with include=AVAILABILITY (400 otherwise); a malformed entry is a 422. Scopes availability, lowest-price calculations and the dataCenters array to those countries, so a listed data center outside them is omitted rather than returned with availability NONE. On the list endpoint a GPU type with no data center in those countries drops out entirely; the single-GPU endpoint still returns the requested type, with availability NONE and dataCenters omitted, so a 404 keeps meaning the GPU type does not exist. Read the NONE on availability rather than the absence of dataCenters, which is also absent when availability was not requested.
@@ -7156,7 +9399,7 @@ export interface operations {
                  * @example 2
                  */
                 count?: components["parameters"]["GpuCountFilter"];
-                /** @description Cloud type for availability and lowest-price calculations. Valid only with include=AVAILABILITY. Supported values: SECURE, COMMUNITY. Upstream default when omitted: SECURE. */
+                /** @description Cloud type for availability and lowest-price calculations. Valid only with include=AVAILABILITY. Supported values: SECURE, COMMUNITY. Default when omitted: SECURE. */
                 cloud?: components["parameters"]["GpuCloudFilter"];
                 /**
                  * @description Comma-separated ISO 3166-1 alpha-2 country codes, uppercase, to constrain availability to — e.g. FR or FR,DE. Values within this filter use OR semantics. Valid only with include=AVAILABILITY (400 otherwise); a malformed entry is a 422. Scopes availability, lowest-price calculations and the dataCenters array to those countries, so a listed data center outside them is omitted rather than returned with availability NONE. On the list endpoint a GPU type with no data center in those countries drops out entirely; the single-GPU endpoint still returns the requested type, with availability NONE and dataCenters omitted, so a 404 keeps meaning the GPU type does not exist. Read the NONE on availability rather than the absence of dataCenters, which is also absent when availability was not requested.
@@ -7447,6 +9690,398 @@ export interface operations {
             };
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    listCostCenters: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Case-insensitive substring match against `value`.
+                 * @example team
+                 */
+                search?: string;
+                /**
+                 * @description Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected with 422.
+                 * @example Y3JlYXRlZEF0PTE3NDg3ODA0MDA
+                 */
+                cursor?: components["parameters"]["PaginationCursor"];
+                /**
+                 * @description Page size, 1–1000. Defaults to 1000 when omitted.
+                 * @example 50
+                 */
+                limit?: components["parameters"]["PaginationLimit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListCostCentersResponse"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["ResponseTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    createCostCenter: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCostCenterRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostCenter"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            /** @description A resource is already attributed to another cost center, or the account's plan does not allow more cost centers. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            413: components["responses"]["RequestTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getCostCenter: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Cost center identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostCenter"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteCostCenter: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Cost center identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. Response has no body. */
+            204: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            /** @description Resources are still attributed to the cost center. The detail lists each as `{resourceType}/{resourceId}`, ready for the detach route. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    updateCostCenter: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Cost center identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateCostCenterRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostCenter"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            413: components["responses"]["RequestTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    listCostCenterResources: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected with 422.
+                 * @example Y3JlYXRlZEF0PTE3NDg3ODA0MDA
+                 */
+                cursor?: components["parameters"]["PaginationCursor"];
+                /**
+                 * @description Page size, 1–1000. Defaults to 1000 when omitted.
+                 * @example 50
+                 */
+                limit?: components["parameters"]["PaginationLimit"];
+            };
+            header?: never;
+            path: {
+                /** @description Cost center identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListCostCenterResourcesResponse"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            413: components["responses"]["ResponseTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    attachCostCenterResource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Cost center identifier. */
+                id: string;
+                /** @description Kind of resource. */
+                resourceType: components["schemas"]["ResourceType"];
+                /** @description Resource identifier. */
+                resourceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Attributed. Response has no body. */
+            204: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            /** @description The resource is already attributed to a different cost center. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            413: components["responses"]["RequestTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    detachCostCenterResource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Cost center identifier. */
+                id: string;
+                /** @description Kind of resource. */
+                resourceType: components["schemas"]["ResourceType"];
+                /** @description Resource identifier. */
+                resourceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. Response has no body. */
+            204: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
             default: {

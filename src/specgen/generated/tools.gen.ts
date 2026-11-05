@@ -36,6 +36,107 @@ export interface GeneratedTool {
 
 export const generatedTools: GeneratedTool[] = [
   {
+    name: 'add-organization-group-member',
+    title: 'Add organization group member',
+    operationId: 'addOrganizationGroupMember',
+    description:
+      'Add a member to a group. Adds the organization member to the group. The group and user must belong to the current organization. Adding an existing member is idempotent and returns the same no-content response.',
+    method: 'PUT',
+    path: '/v2/organization/groups/{id}/members/{userId}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+      {
+        name: 'userId',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          minLength: 1,
+          description: 'Group ID.',
+        },
+        userId: {
+          type: 'string',
+          minLength: 1,
+          description: 'Organization member user ID.',
+        },
+      },
+      required: ['id', 'userId'],
+    },
+  },
+  {
+    name: 'attach-cost-center-resource',
+    title: 'Attach cost center resource',
+    operationId: 'attachCostCenterResource',
+    description:
+      'Attribute a resource to a cost center. Attributes a resource to a cost center. Repeating the request is a no-op. A resource belongs to at most one cost center; one already attributed elsewhere is rejected with 409 rather than moved.',
+    method: 'PUT',
+    path: '/v2/cost-centers/{id}/{resourceType}/{resourceId}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+      {
+        name: 'resourceType',
+        location: 'path',
+      },
+      {
+        name: 'resourceId',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          minLength: 1,
+          description: 'Cost center identifier.',
+        },
+        resourceType: {
+          $ref: '#/$defs/ResourceType',
+          description: 'Kind of resource.',
+          type: 'string',
+        },
+        resourceId: {
+          type: 'string',
+          minLength: 1,
+          description: 'Resource identifier.',
+        },
+      },
+      required: ['id', 'resourceType', 'resourceId'],
+      $defs: {
+        ResourceType: {
+          type: 'string',
+          description:
+            'Kind of resource a cost center or tag can be attached to.',
+          enum: ['POD', 'CLUSTER', 'SERVERLESS_ENDPOINT', 'NETWORK_VOLUME'],
+        },
+      },
+    },
+  },
+  {
     name: 'create-cluster',
     title: 'Create cluster',
     operationId: 'createCluster',
@@ -138,7 +239,6 @@ export const generatedTools: GeneratedTool[] = [
             },
             network: {
               type: 'array',
-              maxItems: 1,
               items: {
                 $ref: '#/$defs/NetworkMount',
               },
@@ -163,7 +263,7 @@ export const generatedTools: GeneratedTool[] = [
               type: 'integer',
               minimum: 1,
               description:
-                "Number of GPUs on each pod. Bounded above by the GPU type's per-cloud maximum (GpuType.maxCount); the upstream rejects values beyond it.",
+                "Number of GPUs on each pod. Bounded above by the GPU type's per-cloud maximum (GpuType.maxCount); values beyond it are rejected.",
               examples: [8],
             },
             podCount: {
@@ -177,7 +277,7 @@ export const generatedTools: GeneratedTool[] = [
         },
         ClusterMounts: {
           description:
-            'Storage mounts for a cluster create: `persistent` or `network`, not both. Clusters cannot mount global volumes, so `global` is rejected.',
+            'Storage mounts for a cluster create: `persistent` or one `network` volume, not both. Clusters cannot mount global volumes, so `global` is rejected.',
           'x-go-type': 'BaseMounts',
           allOf: [
             {
@@ -197,6 +297,7 @@ export const generatedTools: GeneratedTool[] = [
                 },
                 network: {
                   type: 'array',
+                  maxItems: 1,
                   items: {
                     type: 'object',
                     properties: {
@@ -282,7 +383,7 @@ export const generatedTools: GeneratedTool[] = [
           required: ['volumeId', 'path'],
           additionalProperties: false,
           description:
-            'Reference to a NetworkVolume. Custom paths are honored at runtime on both GPU and CPU pods. The underlying `volumeId` is immutable post-create; the mount `path` may be changed via PATCH.',
+            'Reference to a NetworkVolume. Custom paths are honored at runtime on both GPU and CPU pods. On a pod, the volume can be mounted, moved, or unmounted after creation (see `UpdatePodMounts`).',
           properties: {
             volumeId: {
               type: 'string',
@@ -309,7 +410,7 @@ export const generatedTools: GeneratedTool[] = [
               type: 'integer',
               minimum: 10,
               description:
-                'Host-local persistent storage in GB. Upstream enforces a 10 GB floor.',
+                'Host-local persistent storage in GB. Minimum 10 GB.',
               examples: [20],
             },
             path: {
@@ -319,6 +420,79 @@ export const generatedTools: GeneratedTool[] = [
               examples: ['/workspace'],
             },
           },
+        },
+      },
+    },
+  },
+  {
+    name: 'create-cost-center',
+    title: 'Create cost center',
+    operationId: 'createCostCenter',
+    description:
+      'Create a cost center. Creates a cost center — a named label that groups resource spend so it can be broken out in billing. Pass `resources` to attribute resources at creation time; attaching is all-or-nothing, and a resource that already belongs to another cost center is rejected rather than moved.',
+    method: 'POST',
+    path: '/v2/cost-centers',
+    params: [],
+    hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        body: {
+          $ref: '#/$defs/CreateCostCenterRequest',
+          type: 'object',
+        },
+      },
+      required: ['body'],
+      $defs: {
+        CostCenterResource: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['id', 'type'],
+          properties: {
+            id: {
+              type: 'string',
+              minLength: 1,
+              examples: ['p9k2m4n6q8'],
+            },
+            type: {
+              $ref: '#/$defs/ResourceType',
+            },
+          },
+        },
+        CreateCostCenterRequest: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['value'],
+          properties: {
+            value: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 50,
+              pattern: '^\\s*\\S',
+              description: 'Leading and trailing whitespace is trimmed.',
+              examples: ['team-ml'],
+            },
+            resources: {
+              type: 'array',
+              description: 'Resources to attribute to the new cost center.',
+              maxItems: 100,
+              items: {
+                $ref: '#/$defs/CostCenterResource',
+              },
+            },
+          },
+        },
+        ResourceType: {
+          type: 'string',
+          description:
+            'Kind of resource a cost center or tag can be attached to.',
+          enum: ['POD', 'CLUSTER', 'SERVERLESS_ENDPOINT', 'NETWORK_VOLUME'],
         },
       },
     },
@@ -881,6 +1055,7 @@ export const generatedTools: GeneratedTool[] = [
               type: 'string',
               minLength: 1,
               maxLength: 191,
+              pattern: '[^\\t-\\r    -     　]',
               description:
                 'Human-readable name, 1–191 characters with at least one non-whitespace character. Leading and trailing whitespace is trimmed.',
               examples: ['training-data'],
@@ -955,6 +1130,176 @@ export const generatedTools: GeneratedTool[] = [
           type: 'string',
           description: 'Data center network volume storage type.',
           enum: ['STANDARD', 'HIGH_PERFORMANCE'],
+        },
+      },
+    },
+  },
+  {
+    name: 'create-organization-group',
+    title: 'Create organization group',
+    operationId: 'createOrganizationGroup',
+    description: 'Create a group in your current organization',
+    method: 'POST',
+    path: '/v2/organization/groups',
+    params: [],
+    hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        body: {
+          $ref: '#/$defs/CreateOrganizationGroupRequest',
+          type: 'object',
+        },
+      },
+      required: ['body'],
+      $defs: {
+        CreateOrganizationGroupRequest: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['name'],
+          properties: {
+            name: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 191,
+              pattern: '[^\\t-\\r    -     　]',
+              description:
+                'Group name with at least one non-whitespace character; surrounding whitespace is trimmed.',
+              examples: ['Engineering'],
+            },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: 'create-organization-invite',
+    title: 'Create organization invite',
+    operationId: 'createOrganizationInvite',
+    description:
+      "Invite a user to your organization. Sends an invitation to join the authenticated caller's organization and returns the pending invite; `expiresAt` is when it lapses. The invitee receives an email carrying the acceptance link, which is never returned here. Returns 409 when the address already belongs to a member or to a pending invite, or when the organization has reached its pending-invite limit; 404 when the role is unknown to the organization; and 403 when the caller does not hold every capability the role grants. Inviting requires the organization's invite-management capability, which the built-in admin role holds; other members, and callers outside an organization, receive 403, as does a caller for whom organizations are unavailable.",
+    method: 'POST',
+    path: '/v2/organization/invites',
+    params: [],
+    hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        body: {
+          $ref: '#/$defs/CreateOrganizationInviteRequest',
+          type: 'object',
+        },
+      },
+      required: ['body'],
+      $defs: {
+        CreateOrganizationInviteRequest: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['email', 'role'],
+          properties: {
+            email: {
+              type: 'string',
+              format: 'email',
+              minLength: 1,
+              maxLength: 254,
+              description:
+                'Address to invite, stored lowercased. The invitee accepts by signing in with a verified account on this address.',
+              examples: ['new-member@example.com'],
+            },
+            role: {
+              $ref: '#/$defs/OrganizationRoleInput',
+            },
+          },
+        },
+        OrganizationRoleInput: {
+          type: 'object',
+          description: 'An organization role to assign, by ID.',
+          additionalProperties: false,
+          required: ['id'],
+          properties: {
+            id: {
+              type: 'string',
+              minLength: 1,
+              description:
+                "Role ID, as reported on a member or an invite: `builtin:admin`, `builtin:dev`, `builtin:billing`, `builtin:basic`, or a custom role's own ID.",
+              examples: ['builtin:dev'],
+            },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: 'create-organization-role',
+    title: 'Create organization role',
+    operationId: 'createOrganizationRole',
+    description:
+      "Create a custom organization role. Creates a custom role in the authenticated caller's organization and returns it. Returns 409 when the organization already has a role with this name or has reached its custom-role limit; 422 when a capability is unknown or the name is reserved; and 403 when the caller does not hold every capability the role grants. Creating roles requires the organization's role-management capability, which the built-in admin role holds; other members, and callers outside an organization, receive 403, as does a caller for whom organizations are unavailable.",
+    method: 'POST',
+    path: '/v2/organization/roles',
+    params: [],
+    hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        body: {
+          $ref: '#/$defs/CreateOrganizationRoleRequest',
+          type: 'object',
+        },
+      },
+      required: ['body'],
+      $defs: {
+        CreateOrganizationRoleRequest: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['name', 'capabilities'],
+          properties: {
+            name: {
+              $ref: '#/$defs/OrganizationRoleName',
+            },
+            capabilities: {
+              $ref: '#/$defs/OrganizationRoleCapabilitiesInput',
+            },
+          },
+        },
+        OrganizationRoleCapabilitiesInput: {
+          type: 'array',
+          description:
+            'What the role grants, as `FAMILY:VERB` capabilities from `get-organization-role-capabilities`. The caller must hold every capability it lists.',
+          minItems: 1,
+          uniqueItems: true,
+          items: {
+            type: 'string',
+            pattern: '^[A-Z0-9_]+:[A-Z0-9_]+$',
+          },
+          examples: [['POD:VIEW']],
+        },
+        OrganizationRoleName: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 191,
+          pattern: '[^\\t-\\r    -     　]',
+          description:
+            "Display name, 1–191 characters with at least one non-whitespace character. Leading and trailing whitespace is trimmed. It must be unique within the organization and cannot be a built-in role's name.",
+          examples: ['Pod viewer'],
         },
       },
     },
@@ -1086,6 +1431,7 @@ export const generatedTools: GeneratedTool[] = [
             count: {
               type: 'integer',
               minimum: 1,
+              maximum: 1024,
               default: 1,
               description: 'Number of GPUs',
               examples: [1],
@@ -1100,7 +1446,6 @@ export const generatedTools: GeneratedTool[] = [
             },
             network: {
               type: 'array',
-              maxItems: 1,
               items: {
                 $ref: '#/$defs/NetworkMount',
               },
@@ -1169,6 +1514,7 @@ export const generatedTools: GeneratedTool[] = [
                 minRamPerGpu: {
                   type: 'integer',
                   minimum: 1,
+                  maximum: 65536,
                   description:
                     'Minimum host system RAM in GB per requested GPU. This is a placement filter, not a resource request. The actual total allocated system RAM may be higher and is returned in gpu.memory.',
                   examples: [8],
@@ -1176,6 +1522,7 @@ export const generatedTools: GeneratedTool[] = [
                 minVcpuCountPerGpu: {
                   type: 'integer',
                   minimum: 1,
+                  maximum: 4096,
                   description:
                     'Minimum host vCPU count per requested GPU. This is a placement filter, not a resource request. The actual total allocated vCPU count may be higher and is returned in gpu.vcpuCount.',
                   examples: [2],
@@ -1274,7 +1621,7 @@ export const generatedTools: GeneratedTool[] = [
           required: ['volumeId'],
           additionalProperties: false,
           description:
-            'Reference to a GlobalVolume. Usage-billed, so it has no size. The underlying `volumeId` is immutable post-create; the mount `path` may be changed via PATCH.',
+            'Reference to a GlobalVolume. Usage-billed, so it has no size. On a pod, the volume can be mounted, moved, or unmounted after creation (see `UpdatePodMounts`).',
           properties: {
             volumeId: {
               type: 'string',
@@ -1284,7 +1631,7 @@ export const generatedTools: GeneratedTool[] = [
             path: {
               type: 'string',
               description:
-                'Mount path inside the container. Optional on create, where a default is chosen for you; a PATCH that omits it leaves the path unchanged.',
+                'Mount path inside the container. Optional; a default is chosen for you when omitted.',
               examples: ['/data'],
             },
           },
@@ -1299,11 +1646,20 @@ export const generatedTools: GeneratedTool[] = [
             {
               type: 'object',
               properties: {
+                network: {
+                  type: 'array',
+                  maxItems: 4,
+                  description:
+                    "Up to 4 network volumes, all in the pod's data center.",
+                  items: {
+                    $ref: '#/$defs/NetworkMount',
+                  },
+                },
                 global: {
                   type: 'array',
                   maxItems: 1,
                   description:
-                    'At most one global volume, on GPU and CPU pods, with no data center constraint. Combinable with `network` but not with `persistent` (rejected): upstream drops a persistent disk whenever a volume is attached.',
+                    'At most one global volume, on GPU and CPU pods, with no data center constraint. Combinable with `network` but not with `persistent` (rejected): a persistent disk is dropped whenever a volume is attached. Same PATCH rules as `network`.',
                   items: {
                     $ref: '#/$defs/GlobalMount',
                   },
@@ -1318,7 +1674,7 @@ export const generatedTools: GeneratedTool[] = [
           required: ['volumeId', 'path'],
           additionalProperties: false,
           description:
-            'Reference to a NetworkVolume. Custom paths are honored at runtime on both GPU and CPU pods. The underlying `volumeId` is immutable post-create; the mount `path` may be changed via PATCH.',
+            'Reference to a NetworkVolume. Custom paths are honored at runtime on both GPU and CPU pods. On a pod, the volume can be mounted, moved, or unmounted after creation (see `UpdatePodMounts`).',
           properties: {
             volumeId: {
               type: 'string',
@@ -1345,7 +1701,7 @@ export const generatedTools: GeneratedTool[] = [
               type: 'integer',
               minimum: 10,
               description:
-                'Host-local persistent storage in GB. Upstream enforces a 10 GB floor.',
+                'Host-local persistent storage in GB. Minimum 10 GB.',
               examples: [20],
             },
             path: {
@@ -1660,7 +2016,7 @@ export const generatedTools: GeneratedTool[] = [
               type: 'integer',
               minimum: 10,
               description:
-                'Host-local persistent storage in GB. Upstream enforces a 10 GB floor.',
+                'Host-local persistent storage in GB. Minimum 10 GB.',
               examples: [20],
             },
             path: {
@@ -1720,6 +2076,39 @@ export const generatedTools: GeneratedTool[] = [
         id: {
           type: 'string',
           description: 'Cluster identifier',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'delete-cost-center',
+    title: 'Delete cost center',
+    operationId: 'deleteCostCenter',
+    description:
+      'Delete a cost center. Deletes a cost center. The delete fails with 409 while any resource is still attributed to the cost center; detach those resources first.',
+    method: 'DELETE',
+    path: '/v2/cost-centers/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          minLength: 1,
+          description: 'Cost center identifier.',
         },
       },
       required: ['id'],
@@ -1818,6 +2207,135 @@ export const generatedTools: GeneratedTool[] = [
         id: {
           type: 'string',
           description: 'Network volume identifier',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'delete-organization-group',
+    title: 'Delete organization group',
+    operationId: 'deleteOrganizationGroup',
+    description:
+      'Delete a group in your current organization. Permanently deletes the group and its group memberships. Organization members are not removed. Returns 404 when the group does not exist in your current organization, including when it has already been deleted.',
+    method: 'DELETE',
+    path: '/v2/organization/groups/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          minLength: 1,
+          description: 'Group ID.',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'delete-organization-invite',
+    title: 'Delete organization invite',
+    operationId: 'deleteOrganizationInvite',
+    description:
+      "Cancel an organization invite. Cancels one invitation to the authenticated caller's organization; the invitee can no longer accept it. Returns 404 when the ID is unknown to the caller's organization: never issued, already accepted, already cancelled, or issued by another organization. An expired invite can still be cancelled. Cancelling invites requires the organization's invite-management capability, which the built-in admin role holds; other members, and callers outside an organization, receive 403, as does a caller for whom organizations are unavailable.",
+    method: 'DELETE',
+    path: '/v2/organization/invites/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Invite identifier',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'delete-organization-role',
+    title: 'Delete organization role',
+    operationId: 'deleteOrganizationRole',
+    description:
+      "Delete a custom organization role. Deletes a custom role from the authenticated caller's organization. Returns 409 while a member or a pending invite holds the role: reassign those members and cancel those invites first, since deleting never changes anyone's role. Expired invites do not block deletion. Returns 400 for a built-in role, which cannot be deleted; 404 when the ID is unknown, names another organization's role, or was already deleted. Deleting roles requires the organization's role-management capability, which the built-in admin role holds; other members, and callers outside an organization, receive 403, as does a caller for whom organizations are unavailable.",
+    method: 'DELETE',
+    path: '/v2/organization/roles/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Role identifier',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'delete-organization-user',
+    title: 'Delete organization user',
+    operationId: 'deleteOrganizationUser',
+    description:
+      "Remove an organization member. Removes one member from the authenticated caller's organization by user ID. Their group memberships end and the API keys attributed to them within the organization are revoked; the resources they created stay with the organization. Removing another member requires the organization's member-removal capability, which the built-in admin role holds; any member can remove themselves. The organization keeps at least one member with the built-in admin role, so removing the last one returns 409. A user who is not a member, including one from another organization, returns 404. A member without the capability removing someone else, a caller outside an organization, and a caller for whom organizations are unavailable receive 403.",
+    method: 'DELETE',
+    path: '/v2/organization/users/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'User identifier',
         },
       },
       required: ['id'],
@@ -1956,6 +2474,65 @@ export const generatedTools: GeneratedTool[] = [
     },
   },
   {
+    name: 'detach-cost-center-resource',
+    title: 'Detach cost center resource',
+    operationId: 'detachCostCenterResource',
+    description:
+      "Remove a resource from a cost center. Removes a resource's attribution to a cost center. The resource itself is untouched. Returns 404 when the cost center does not exist or the resource is not attributed to it, so repeating a DELETE that succeeded returns 404.",
+    method: 'DELETE',
+    path: '/v2/cost-centers/{id}/{resourceType}/{resourceId}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+      {
+        name: 'resourceType',
+        location: 'path',
+      },
+      {
+        name: 'resourceId',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          minLength: 1,
+          description: 'Cost center identifier.',
+        },
+        resourceType: {
+          $ref: '#/$defs/ResourceType',
+          description: 'Kind of resource.',
+          type: 'string',
+        },
+        resourceId: {
+          type: 'string',
+          minLength: 1,
+          description: 'Resource identifier.',
+        },
+      },
+      required: ['id', 'resourceType', 'resourceId'],
+      $defs: {
+        ResourceType: {
+          type: 'string',
+          description:
+            'Kind of resource a cost center or tag can be attached to.',
+          enum: ['POD', 'CLUSTER', 'SERVERLESS_ENDPOINT', 'NETWORK_VOLUME'],
+        },
+      },
+    },
+  },
+  {
     name: 'get-cluster',
     title: 'Get cluster',
     operationId: 'getCluster',
@@ -1982,6 +2559,39 @@ export const generatedTools: GeneratedTool[] = [
         id: {
           type: 'string',
           description: 'Cluster identifier',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'get-cost-center',
+    title: 'Get cost center',
+    operationId: 'getCostCenter',
+    description:
+      "Get a cost center. Returns one cost center. Its attributed resources are listed by `GET /v2/cost-centers/{id}/resources`. Returns 404 when the cost center does not exist or is not the caller's.",
+    method: 'GET',
+    path: '/v2/cost-centers/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          minLength: 1,
+          description: 'Cost center identifier.',
         },
       },
       required: ['id'],
@@ -2196,6 +2806,273 @@ export const generatedTools: GeneratedTool[] = [
     },
   },
   {
+    name: 'get-endpoint-cold-start-metrics',
+    title: 'Get endpoint cold start metrics',
+    operationId: 'getEndpointColdStartMetrics',
+    description:
+      "Get serverless endpoint cold start metrics. Returns the cold start series shown on the endpoint's Metrics tab in the console. **Window.** `startTime` is inclusive and `endTime` is exclusive. Both are optional: `endTime` defaults to now and `startTime` to 24 hours before `endTime`, rounded down to the start of an `interval` bucket. An `endTime` in the future is treated as now. Metrics are kept for 90 days, so `startTime` must be within the last 90 days. **Interval.** Each record covers one `interval`-sized bucket, aligned to UTC. **Paging.** Records are oldest first, at most `limit` (default 1000) per page. Follow `pagination.nextCursor` while `pagination.hasNextPage` is true. The cursor keeps the first page's window, so `startTime`, `endTime`, and `interval` can be left out on later pages; if sent, they must match the first page or the cursor is rejected with 422. **Sparse series.** Buckets with no activity are omitted, not zero-filled, so `records` can be shorter than the number of buckets in the window, or empty. **Units.** `durationMs` is how long each cold start took, in milliseconds.",
+    method: 'GET',
+    path: '/v2/serverless/{id}/metrics/cold-starts',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+      {
+        name: 'startTime',
+        location: 'query',
+      },
+      {
+        name: 'endTime',
+        location: 'query',
+      },
+      {
+        name: 'interval',
+        location: 'query',
+      },
+      {
+        name: 'cursor',
+        location: 'query',
+      },
+      {
+        name: 'limit',
+        location: 'query',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Serverless endpoint identifier',
+        },
+        startTime: {
+          type: 'string',
+          format: 'date-time',
+          description:
+            'Start of the window (RFC 3339), inclusive. Defaults to 24 hours before endTime, rounded down to the start of an interval bucket. Must be within the last 90 days.',
+        },
+        endTime: {
+          type: 'string',
+          format: 'date-time',
+          description:
+            'End of the window (RFC 3339), exclusive. Defaults to now; a future value is treated as now.',
+        },
+        interval: {
+          $ref: '#/$defs/EndpointMetricsInterval',
+          description: 'Bucket size. Defaults to 1h.',
+          type: 'string',
+        },
+        cursor: {
+          type: 'string',
+          minLength: 1,
+          description:
+            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 1000,
+          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+        },
+      },
+      required: ['id'],
+      $defs: {
+        EndpointMetricsInterval: {
+          type: 'string',
+          enum: ['1m', '5m', '15m', '30m', '1h', '6h', '12h', '1d'],
+          default: '1h',
+          description: 'Bucket size for endpoint metrics.',
+        },
+      },
+    },
+  },
+  {
+    name: 'get-endpoint-request-metrics',
+    title: 'Get endpoint request metrics',
+    operationId: 'getEndpointRequestMetrics',
+    description:
+      "Get serverless endpoint request metrics. Returns the request series shown on the endpoint's Metrics tab in the console. **Window.** `startTime` is inclusive and `endTime` is exclusive. Both are optional: `endTime` defaults to now and `startTime` to 24 hours before `endTime`, rounded down to the start of an `interval` bucket. An `endTime` in the future is treated as now. Metrics are kept for 90 days, so `startTime` must be within the last 90 days. **Interval.** Each record covers one `interval`-sized bucket, aligned to UTC. **Paging.** Records are oldest first, at most `limit` (default 1000) per page. Follow `pagination.nextCursor` while `pagination.hasNextPage` is true. The cursor keeps the first page's window, so `startTime`, `endTime`, and `interval` can be left out on later pages; if sent, they must match the first page or the cursor is rejected with 422. **Sparse series.** Buckets with no activity are omitted, not zero-filled, so `records` can be shorter than the number of buckets in the window, or empty. **Units.** Durations are milliseconds. `executionTimeMs` is the time a worker spent running a request; `delayTimeMs` is the time a request waited in the queue before a worker picked it up.",
+    method: 'GET',
+    path: '/v2/serverless/{id}/metrics/requests',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+      {
+        name: 'startTime',
+        location: 'query',
+      },
+      {
+        name: 'endTime',
+        location: 'query',
+      },
+      {
+        name: 'interval',
+        location: 'query',
+      },
+      {
+        name: 'cursor',
+        location: 'query',
+      },
+      {
+        name: 'limit',
+        location: 'query',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Serverless endpoint identifier',
+        },
+        startTime: {
+          type: 'string',
+          format: 'date-time',
+          description:
+            'Start of the window (RFC 3339), inclusive. Defaults to 24 hours before endTime, rounded down to the start of an interval bucket. Must be within the last 90 days.',
+        },
+        endTime: {
+          type: 'string',
+          format: 'date-time',
+          description:
+            'End of the window (RFC 3339), exclusive. Defaults to now; a future value is treated as now.',
+        },
+        interval: {
+          $ref: '#/$defs/EndpointMetricsInterval',
+          description: 'Bucket size. Defaults to 1h.',
+          type: 'string',
+        },
+        cursor: {
+          type: 'string',
+          minLength: 1,
+          description:
+            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 1000,
+          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+        },
+      },
+      required: ['id'],
+      $defs: {
+        EndpointMetricsInterval: {
+          type: 'string',
+          enum: ['1m', '5m', '15m', '30m', '1h', '6h', '12h', '1d'],
+          default: '1h',
+          description: 'Bucket size for endpoint metrics.',
+        },
+      },
+    },
+  },
+  {
+    name: 'get-endpoint-worker-metrics',
+    title: 'Get endpoint worker metrics',
+    operationId: 'getEndpointWorkerMetrics',
+    description:
+      "Get serverless endpoint worker metrics. Returns the worker state series shown on the endpoint's Metrics tab in the console. For the current worker list, use `GET /v2/serverless/{id}/workers`. **Window.** `startTime` is inclusive and `endTime` is exclusive. Both are optional: `endTime` defaults to now and `startTime` to 24 hours before `endTime`, rounded down to the start of an `interval` bucket. An `endTime` in the future is treated as now. Metrics are kept for 90 days, so `startTime` must be within the last 90 days. **Interval.** Each record covers one `interval`-sized bucket, aligned to UTC. **Paging.** Records are oldest first, at most `limit` (default 1000) per page. Follow `pagination.nextCursor` while `pagination.hasNextPage` is true. The cursor keeps the first page's window, so `startTime`, `endTime`, and `interval` can be left out on later pages; if sent, they must match the first page or the cursor is rejected with 422. **Sparse series.** Buckets with no activity are omitted, not zero-filled, so `records` can be shorter than the number of buckets in the window, or empty. **Snapshots.** Each record holds the last worker-count snapshot in its bucket, as point-in-time counts.",
+    method: 'GET',
+    path: '/v2/serverless/{id}/metrics/workers',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+      {
+        name: 'startTime',
+        location: 'query',
+      },
+      {
+        name: 'endTime',
+        location: 'query',
+      },
+      {
+        name: 'interval',
+        location: 'query',
+      },
+      {
+        name: 'cursor',
+        location: 'query',
+      },
+      {
+        name: 'limit',
+        location: 'query',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Serverless endpoint identifier',
+        },
+        startTime: {
+          type: 'string',
+          format: 'date-time',
+          description:
+            'Start of the window (RFC 3339), inclusive. Defaults to 24 hours before endTime, rounded down to the start of an interval bucket. Must be within the last 90 days.',
+        },
+        endTime: {
+          type: 'string',
+          format: 'date-time',
+          description:
+            'End of the window (RFC 3339), exclusive. Defaults to now; a future value is treated as now.',
+        },
+        interval: {
+          $ref: '#/$defs/EndpointMetricsInterval',
+          description: 'Bucket size. Defaults to 1h.',
+          type: 'string',
+        },
+        cursor: {
+          type: 'string',
+          minLength: 1,
+          description:
+            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 1000,
+          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+        },
+      },
+      required: ['id'],
+      $defs: {
+        EndpointMetricsInterval: {
+          type: 'string',
+          enum: ['1m', '5m', '15m', '30m', '1h', '6h', '12h', '1d'],
+          default: '1h',
+          description: 'Bucket size for endpoint metrics.',
+        },
+      },
+    },
+  },
+  {
     name: 'get-global-volume',
     title: 'Get global volume',
     operationId: 'getGlobalVolume',
@@ -2312,7 +3189,7 @@ export const generatedTools: GeneratedTool[] = [
         cloud: {
           $ref: '#/$defs/GpuCloudFilter',
           description:
-            'Cloud type for availability and lowest-price calculations. Valid only with include=AVAILABILITY. Supported values: SECURE, COMMUNITY. Upstream default when omitted: SECURE.',
+            'Cloud type for availability and lowest-price calculations. Valid only with include=AVAILABILITY. Supported values: SECURE, COMMUNITY. Default when omitted: SECURE.',
           type: 'string',
         },
         countryCodes: {
@@ -2412,6 +3289,152 @@ export const generatedTools: GeneratedTool[] = [
     inputSchema: {
       type: 'object',
       properties: {},
+    },
+  },
+  {
+    name: 'get-organization-group',
+    title: 'Get organization group',
+    operationId: 'getOrganizationGroup',
+    description:
+      'Get a group in your current organization. Returns the group without its members. Returns 404 when the ID is unknown or belongs to another organization, or when the caller does not belong to an organization.',
+    method: 'GET',
+    path: '/v2/organization/groups/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          minLength: 1,
+          description: 'Group ID.',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'get-organization-invite',
+    title: 'Get organization invite',
+    operationId: 'getOrganizationInvite',
+    description:
+      "Get a pending organization invite. Returns one pending invitation to the authenticated caller's organization. Only unexpired invites are pending: an invite that has expired, been accepted or been revoked returns 404, as does an ID from another organization. Reading invites requires the organization's invite-management capability, which the built-in admin role holds; other members receive 403. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.",
+    method: 'GET',
+    path: '/v2/organization/invites/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Invite identifier',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'get-organization-role',
+    title: 'Get organization role',
+    operationId: 'getOrganizationRole',
+    description:
+      "Get an organization role. Returns one role a member or invite of the authenticated caller's organization can hold: a built-in role, or one of the organization's custom roles. Returns 404 when the ID is unknown or names another organization's custom role, or when the caller does not belong to an organization; 403 when the caller may not view the organization's roles or organizations are unavailable to the caller.",
+    method: 'GET',
+    path: '/v2/organization/roles/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Role identifier',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'get-organization-role-capabilities',
+    title: 'Get organization role capabilities',
+    operationId: 'getOrganizationRoleCapabilities',
+    description:
+      "List grantable role capabilities. Returns the capabilities a custom role can grant, grouped by family: each capability is a family and one of its verbs, written `FAMILY:VERB`. This is the set role creation accepts, not filtered to the caller's own access; saving a role also requires the caller to hold every capability it grants. `family` and `verb` narrow the result and apply together; with neither, the whole catalog is returned. Reading the catalog requires organization membership; other callers receive 403.",
+    method: 'GET',
+    path: '/v2/organization/roles/capabilities',
+    params: [
+      {
+        name: 'family',
+        location: 'query',
+        explode: false,
+      },
+      {
+        name: 'verb',
+        location: 'query',
+        explode: false,
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        family: {
+          type: 'array',
+          items: {
+            type: 'string',
+          },
+          description:
+            'Only return these capability families, matched exactly. Comma-separated; a family matching any listed value is returned. An empty value is ignored.',
+        },
+        verb: {
+          type: 'array',
+          items: {
+            type: 'string',
+          },
+          description:
+            'Only return these verbs, matched exactly. Comma-separated. Each family lists only the requested verbs it has, and a family with none of them is left out. An empty value is ignored.',
+        },
+      },
     },
   },
   {
@@ -2903,6 +3926,111 @@ export const generatedTools: GeneratedTool[] = [
     inputSchema: {
       type: 'object',
       properties: {
+        cursor: {
+          type: 'string',
+          minLength: 1,
+          description:
+            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 1000,
+          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+        },
+      },
+    },
+  },
+  {
+    name: 'list-cost-center-resources',
+    title: 'List cost center resources',
+    operationId: 'listCostCenterResources',
+    description:
+      "List a cost center's resources. Returns the resources attributed to one cost center, cursor-paginated; an omitted `limit` defaults to 1000. Each entry is the `{type}/{id}` pair `DELETE /v2/cost-centers/{id}/{resourceType}/{resourceId}` takes. A cost center with nothing attributed returns an empty list; one that does not exist or is not the caller's returns 404.",
+    method: 'GET',
+    path: '/v2/cost-centers/{id}/resources',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+      {
+        name: 'cursor',
+        location: 'query',
+      },
+      {
+        name: 'limit',
+        location: 'query',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          minLength: 1,
+          description: 'Cost center identifier.',
+        },
+        cursor: {
+          type: 'string',
+          minLength: 1,
+          description:
+            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 1000,
+          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'list-cost-centers',
+    title: 'List cost centers',
+    operationId: 'listCostCenters',
+    description:
+      "List cost centers. Returns the caller's cost centers, cursor-paginated newest-first; an omitted `limit` defaults to 1000. Follow `pagination.nextCursor` until `hasNextPage` is false.",
+    method: 'GET',
+    path: '/v2/cost-centers',
+    params: [
+      {
+        name: 'search',
+        location: 'query',
+      },
+      {
+        name: 'cursor',
+        location: 'query',
+      },
+      {
+        name: 'limit',
+        location: 'query',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        search: {
+          type: 'string',
+          minLength: 1,
+          description: 'Case-insensitive substring match against `value`.',
+        },
         cursor: {
           type: 'string',
           minLength: 1,
@@ -3476,7 +4604,7 @@ export const generatedTools: GeneratedTool[] = [
         cloud: {
           $ref: '#/$defs/GpuCloudFilter',
           description:
-            'Cloud type for availability and lowest-price calculations. Valid only with include=AVAILABILITY. Supported values: SECURE, COMMUNITY. Upstream default when omitted: SECURE.',
+            'Cloud type for availability and lowest-price calculations. Valid only with include=AVAILABILITY. Supported values: SECURE, COMMUNITY. Default when omitted: SECURE.',
           type: 'string',
         },
         countryCodes: {
@@ -3645,6 +4773,153 @@ export const generatedTools: GeneratedTool[] = [
           description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
         },
       },
+    },
+  },
+  {
+    name: 'list-organization-group-members',
+    title: 'List organization group members',
+    operationId: 'listOrganizationGroupMembers',
+    description:
+      'List members of a group. Members are ordered newest first by membership creation time, with a unique upstream tie-breaker. Returns 404 when the group does not exist in the current organization, or when the caller does not belong to an organization.',
+    method: 'GET',
+    path: '/v2/organization/groups/{id}/members',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+      {
+        name: 'cursor',
+        location: 'query',
+      },
+      {
+        name: 'limit',
+        location: 'query',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          minLength: 1,
+          description: 'Group ID.',
+        },
+        cursor: {
+          type: 'string',
+          minLength: 1,
+          description:
+            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          description: 'Page size, 1–100. Defaults to 100 when omitted.',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'list-organization-groups',
+    title: 'List organization groups',
+    operationId: 'listOrganizationGroups',
+    description:
+      'List groups in your current organization. Returns groups without their members or roles, ordered by creation time descending and then ID descending for deterministic pagination.',
+    method: 'GET',
+    path: '/v2/organization/groups',
+    params: [
+      {
+        name: 'name',
+        location: 'query',
+      },
+      {
+        name: 'cursor',
+        location: 'query',
+      },
+      {
+        name: 'limit',
+        location: 'query',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description:
+            'Optional case-insensitive substring of the group name. An empty value applies no filter.',
+        },
+        cursor: {
+          type: 'string',
+          minLength: 1,
+          description:
+            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          description: 'Page size, 1–100. Defaults to 100 when omitted.',
+        },
+      },
+    },
+  },
+  {
+    name: 'list-organization-invites',
+    title: 'List organization invites',
+    operationId: 'listOrganizationInvites',
+    description:
+      "List pending organization invites. Returns the pending invitations to the authenticated caller's organization, newest first. Only unexpired invites are pending: an invite leaves the list once it is accepted, revoked or expired. The list is complete and takes no pagination parameters, because an organization's pending invites are capped. Reading invites requires the organization's invite-management capability, which the built-in admin role holds; other members receive 403. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.",
+    method: 'GET',
+    path: '/v2/organization/invites',
+    params: [],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'list-organization-roles',
+    title: 'List organization roles',
+    operationId: 'listOrganizationRoles',
+    description:
+      "List organization roles. Returns every role a member or invite of the authenticated caller's organization can hold: Runpod's built-in roles and the organization's custom roles, oldest first. The list is complete and takes no pagination parameters, because an organization's custom roles are capped. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.",
+    method: 'GET',
+    path: '/v2/organization/roles',
+    params: [],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {},
     },
   },
   {
@@ -4021,6 +5296,48 @@ export const generatedTools: GeneratedTool[] = [
     },
   },
   {
+    name: 'remove-organization-group-member',
+    title: 'Remove organization group member',
+    operationId: 'removeOrganizationGroupMember',
+    description:
+      'Remove a member from a group. Removes the organization member from the group. The group and user must belong to the current organization. Returns 404 when the membership is absent, including repeated deletion, or when the group is unknown or belongs to another organization.',
+    method: 'DELETE',
+    path: '/v2/organization/groups/{id}/members/{userId}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+      {
+        name: 'userId',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          minLength: 1,
+          description: 'Group ID.',
+        },
+        userId: {
+          type: 'string',
+          minLength: 1,
+          description: 'Organization member user ID.',
+        },
+      },
+      required: ['id', 'userId'],
+    },
+  },
+  {
     name: 'revoke-delegation',
     title: 'Revoke ECR delegation',
     operationId: 'revokeDelegation',
@@ -4096,6 +5413,60 @@ export const generatedTools: GeneratedTool[] = [
               type: 'string',
               minLength: 1,
               examples: ['renamed-cluster'],
+            },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: 'update-cost-center',
+    title: 'Update cost center',
+    operationId: 'updateCostCenter',
+    description:
+      'Rename a cost center. Renames a cost center. Resources attributed to it are unaffected and follow the new name — the attribution is by identifier, not by name.',
+    method: 'PATCH',
+    path: '/v2/cost-centers/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          minLength: 1,
+          description: 'Cost center identifier.',
+        },
+        body: {
+          $ref: '#/$defs/UpdateCostCenterRequest',
+          type: 'object',
+        },
+      },
+      required: ['id', 'body'],
+      $defs: {
+        UpdateCostCenterRequest: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['value'],
+          properties: {
+            value: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 50,
+              pattern: '^\\s*\\S',
+              description: 'Leading and trailing whitespace is trimmed.',
+              examples: ['team-ml-eu'],
             },
           },
         },
@@ -4568,6 +5939,7 @@ export const generatedTools: GeneratedTool[] = [
               type: 'string',
               minLength: 1,
               maxLength: 191,
+              pattern: '[^\\t-\\r    -     　]',
               description:
                 'New human-readable name, 1–191 characters with at least one non-whitespace character. Leading and trailing whitespace is trimmed.',
               examples: ['renamed-volume'],
@@ -4639,11 +6011,227 @@ export const generatedTools: GeneratedTool[] = [
     },
   },
   {
+    name: 'update-organization-group',
+    title: 'Update organization group',
+    operationId: 'updateOrganizationGroup',
+    description: 'Rename a group in your current organization',
+    method: 'PATCH',
+    path: '/v2/organization/groups/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          minLength: 1,
+          description: 'Group ID.',
+        },
+        body: {
+          $ref: '#/$defs/UpdateOrganizationGroupRequest',
+          type: 'object',
+        },
+      },
+      required: ['id', 'body'],
+      $defs: {
+        UpdateOrganizationGroupRequest: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['name'],
+          properties: {
+            name: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 191,
+              pattern: '[^\\t-\\r    -     　]',
+              description:
+                'Group name with at least one non-whitespace character; surrounding whitespace is trimmed.',
+              examples: ['Research'],
+            },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: 'update-organization-role',
+    title: 'Update organization role',
+    operationId: 'updateOrganizationRole',
+    description:
+      "Update a custom organization role. Changes a custom role's name, its capabilities, or both, and returns the role. Sent capabilities replace the whole grant set. Returns 400 for a built-in role, which cannot be changed; 404 when the ID is unknown or names another organization's role; 403 when the caller does not hold every capability the role grants, before or after the change; 409 when the organization already has a role with the new name; and 422 when a capability is unknown or the name is reserved. Updating roles requires the organization's role-management capability, which the built-in admin role holds; other members, and callers outside an organization, receive 403, as does a caller for whom organizations are unavailable.",
+    method: 'PATCH',
+    path: '/v2/organization/roles/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Role identifier',
+        },
+        body: {
+          $ref: '#/$defs/UpdateOrganizationRoleRequest',
+          type: 'object',
+        },
+      },
+      required: ['id', 'body'],
+      $defs: {
+        OrganizationRoleCapabilitiesInput: {
+          type: 'array',
+          description:
+            'What the role grants, as `FAMILY:VERB` capabilities from `get-organization-role-capabilities`. The caller must hold every capability it lists.',
+          minItems: 1,
+          uniqueItems: true,
+          items: {
+            type: 'string',
+            pattern: '^[A-Z0-9_]+:[A-Z0-9_]+$',
+          },
+          examples: [['POD:VIEW']],
+        },
+        OrganizationRoleName: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 191,
+          pattern: '[^\\t-\\r    -     　]',
+          description:
+            "Display name, 1–191 characters with at least one non-whitespace character. Leading and trailing whitespace is trimmed. It must be unique within the organization and cannot be a built-in role's name.",
+          examples: ['Pod viewer'],
+        },
+        UpdateOrganizationRoleRequest: {
+          type: 'object',
+          additionalProperties: false,
+          minProperties: 1,
+          description:
+            "The fields to change; omitted fields are unchanged. `capabilities` replaces the role's whole grant set rather than adding to it.",
+          properties: {
+            name: {
+              $ref: '#/$defs/OrganizationRoleName',
+            },
+            capabilities: {
+              $ref: '#/$defs/OrganizationRoleCapabilitiesInput',
+            },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: 'update-organization-user',
+    title: 'Update organization user',
+    operationId: 'updateOrganizationUser',
+    description:
+      "Update an organization member. Changes one member of the authenticated caller's organization by user ID: assigns a role, replaces their set of groups, or both, applied together or not at all. Send at least one field; an omitted field is left as it is, and an empty `groups` list removes the member from every group. Updating members requires the organization's member-management capability, which the built-in admin role holds; other members, and callers outside an organization, receive 403, as does a caller for whom organizations are unavailable. Returns 403 when the caller changes their own role or assigns a role granting a capability the caller lacks; 409 when the change would leave the organization without a member in the built-in admin role; and 404 when the user is not a member or the role or a group is unknown to the organization, with the detail naming which.",
+    method: 'PATCH',
+    path: '/v2/organization/users/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'User identifier',
+        },
+        body: {
+          $ref: '#/$defs/UpdateOrganizationUserRequest',
+          type: 'object',
+        },
+      },
+      required: ['id', 'body'],
+      $defs: {
+        OrganizationGroupInput: {
+          type: 'object',
+          description: 'An organization group, by ID.',
+          additionalProperties: false,
+          required: ['id'],
+          properties: {
+            id: {
+              type: 'string',
+              minLength: 1,
+              description: 'Group ID.',
+              examples: ['group_id_abc_123'],
+            },
+          },
+        },
+        OrganizationRoleInput: {
+          type: 'object',
+          description: 'An organization role to assign, by ID.',
+          additionalProperties: false,
+          required: ['id'],
+          properties: {
+            id: {
+              type: 'string',
+              minLength: 1,
+              description:
+                "Role ID, as reported on a member or an invite: `builtin:admin`, `builtin:dev`, `builtin:billing`, `builtin:basic`, or a custom role's own ID.",
+              examples: ['builtin:dev'],
+            },
+          },
+        },
+        UpdateOrganizationUserRequest: {
+          type: 'object',
+          description:
+            'Changes to a member. Send `role`, `groups`, or both; an omitted field is left as it is.',
+          additionalProperties: false,
+          minProperties: 1,
+          properties: {
+            role: {
+              $ref: '#/$defs/OrganizationRoleInput',
+            },
+            groups: {
+              type: 'array',
+              description:
+                "The member's groups after the change: the whole set, by ID. An empty list removes the member from every group.",
+              uniqueItems: true,
+              items: {
+                $ref: '#/$defs/OrganizationGroupInput',
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  {
     name: 'update-pod',
     title: 'Update Pod',
     operationId: 'updatePod',
     description:
-      "Update a pod. Partially updates a pod's configuration. This is a PATCH: only the fields present in the body are changed, and omitted fields are left untouched. Use empty values only when you explicitly mean to clear a field (for example, set `registry` to `null` or set `ports` to `[]`). See `UpdatePodRequest` for the full body. Mutable fields: `name`, `image`, `args`, `disk`, `ports`, `env`, `registry`, `mounts`, `locked`, and `globalNetworking`. Some changes apply immediately while others (e.g. `globalNetworking`) take effect on the pod's next start/restart, as noted on the individual fields. Pods that belong to a Cluster cannot be updated here — manage them through `/v2/clusters/{id}`. Returns `200` with the full updated pod.",
+      "Update a pod. Partially updates a pod's configuration. This is a PATCH: only the fields present in the body are changed, and omitted fields are left untouched. Use empty values only when you explicitly mean to clear a field (for example, set `registry` to `null` or set `ports` to `[]`). See `UpdatePodRequest` for the full body. Mutable fields: `name`, `image`, `args`, `disk`, `ports`, `env`, `registry`, `mounts`, `locked`, and `globalNetworking`. Some changes apply immediately while others (e.g. `globalNetworking`) take effect on the pod's next start/restart, as noted on the individual fields. Volumes can be mounted, moved, or unmounted after creation through `mounts`, one entry per volume; see `UpdatePodMounts` for the rules. Pods that belong to a Cluster cannot be updated here — manage them through `/v2/clusters/{id}`. Returns `200` with the full updated pod.",
     method: 'PATCH',
     path: '/v2/pods/{id}',
     params: [
@@ -4740,21 +6328,6 @@ export const generatedTools: GeneratedTool[] = [
             },
           },
         },
-        BaseMounts: {
-          type: 'object',
-          properties: {
-            persistent: {
-              $ref: '#/$defs/PersistentMount',
-            },
-            network: {
-              type: 'array',
-              maxItems: 1,
-              items: {
-                $ref: '#/$defs/NetworkMount',
-              },
-            },
-          },
-        },
         ContainerConfig: {
           allOf: [
             {
@@ -4773,12 +6346,11 @@ export const generatedTools: GeneratedTool[] = [
             },
           ],
         },
-        GlobalMount: {
+        GlobalMountPatch: {
           type: 'object',
           required: ['volumeId'],
           additionalProperties: false,
-          description:
-            'Reference to a GlobalVolume. Usage-billed, so it has no size. The underlying `volumeId` is immutable post-create; the mount `path` may be changed via PATCH.',
+          description: "Mounts, moves, or unmounts the pod's global volume.",
           properties: {
             volumeId: {
               type: 'string',
@@ -4787,42 +6359,24 @@ export const generatedTools: GeneratedTool[] = [
             },
             path: {
               type: 'string',
+              minLength: 1,
               description:
-                'Mount path inside the container. Optional on create, where a default is chosen for you; a PATCH that omits it leaves the path unchanged.',
+                'Mount path inside the container. Optional; when mounting, a default is chosen for you if omitted.',
               examples: ['/data'],
+            },
+            remove: {
+              type: 'boolean',
+              description:
+                'Unmount the volume. Cannot be combined with `path`.',
             },
           },
         },
-        Mounts: {
-          description:
-            "Storage mounts for the pod: `persistent` (size + path) excludes both `network` and `global`; `network` (volumeId + path) and `global` (volumeId, optional path) take one entry each and can be combined. Every entry needs its full shape. On update, omit the field to leave the mounts as they are; the mount kind and a volume's volumeId cannot change, and mounts cannot be cleared.",
-          allOf: [
-            {
-              $ref: '#/$defs/BaseMounts',
-            },
-            {
-              type: 'object',
-              properties: {
-                global: {
-                  type: 'array',
-                  maxItems: 1,
-                  description:
-                    'At most one global volume, on GPU and CPU pods, with no data center constraint. Combinable with `network` but not with `persistent` (rejected): upstream drops a persistent disk whenever a volume is attached.',
-                  items: {
-                    $ref: '#/$defs/GlobalMount',
-                  },
-                },
-              },
-            },
-          ],
-          unevaluatedProperties: false,
-        },
-        NetworkMount: {
+        NetworkMountPatch: {
           type: 'object',
-          required: ['volumeId', 'path'],
+          required: ['volumeId'],
           additionalProperties: false,
           description:
-            'Reference to a NetworkVolume. Custom paths are honored at runtime on both GPU and CPU pods. The underlying `volumeId` is immutable post-create; the mount `path` may be changed via PATCH.',
+            'Mounts, moves, or unmounts one network volume. Mounting a volume the pod does not have requires `path`.',
           properties: {
             volumeId: {
               type: 'string',
@@ -4832,31 +6386,70 @@ export const generatedTools: GeneratedTool[] = [
             },
             path: {
               type: 'string',
+              minLength: 1,
               description:
-                'Mount path inside the container. No default — must be specified explicitly.',
+                'Mount path inside the container. Required when mounting; optional when moving a mounted volume.',
               examples: ['/runpod-volume'],
+            },
+            remove: {
+              type: 'boolean',
+              description:
+                'Unmount the volume. Cannot be combined with `path`.',
             },
           },
         },
-        PersistentMount: {
+        PersistentMountPatch: {
           type: 'object',
-          required: ['size', 'path'],
           additionalProperties: false,
           description:
-            "Host-local persistent storage. Pinned to the pod's host machine — data does not survive a host failure. Disallowed on CPU pods. Mutually exclusive with NetworkMount. Deprecated: prefer NetworkMount for any data you cannot recreate.",
+            "Adds the pod's volume disk, grows it, or moves it. Adding a disk requires `size`; on a pod that already has one, omitted fields are left as they are. Not available on CPU pods.",
           properties: {
             size: {
               type: 'integer',
               minimum: 10,
               description:
-                'Host-local persistent storage in GB. Upstream enforces a 10 GB floor.',
-              examples: [20],
+                'Volume disk size in GB. Can only grow; a smaller size than the current one is rejected.',
+              examples: [50],
             },
             path: {
               type: 'string',
-              description:
-                'Mount path inside the container. May be changed via PATCH.',
+              minLength: 1,
+              description: 'Mount path inside the container.',
               examples: ['/workspace'],
+            },
+            remove: {
+              type: 'boolean',
+              description:
+                'Removes the volume disk. Not supported yet: `remove: true` is rejected.',
+            },
+          },
+        },
+        UpdatePodMounts: {
+          type: 'object',
+          additionalProperties: false,
+          description:
+            "Changes to a pod's mounts. Each entry names one volume by `volumeId` and changes only that volume; volumes that are not listed, and kinds that are omitted, are left as they are. Omitting `mounts` or sending `{}` changes nothing.",
+          properties: {
+            persistent: {
+              $ref: '#/$defs/PersistentMountPatch',
+            },
+            network: {
+              type: 'array',
+              maxItems: 8,
+              description:
+                'Network volumes to mount, move, or unmount. Up to 8 entries, so a request can unmount 4 volumes and mount 4 others; the pod can still hold at most 4 afterwards.',
+              items: {
+                $ref: '#/$defs/NetworkMountPatch',
+              },
+            },
+            global: {
+              type: 'array',
+              maxItems: 2,
+              description:
+                'Global volumes to mount, move, or unmount. Up to 2 entries, so a request can swap the global volume; the pod can still hold at most 1 afterwards.',
+              items: {
+                $ref: '#/$defs/GlobalMountPatch',
+              },
             },
           },
         },
@@ -4879,7 +6472,7 @@ export const generatedTools: GeneratedTool[] = [
                     'Lock the pod (true) or unlock it (false). Locked pods cannot be stopped or reset.',
                 },
                 mounts: {
-                  $ref: '#/$defs/Mounts',
+                  $ref: '#/$defs/UpdatePodMounts',
                 },
                 name: {
                   type: 'string',
@@ -5140,7 +6733,7 @@ export const generatedTools: GeneratedTool[] = [
               type: 'integer',
               minimum: 10,
               description:
-                'Host-local persistent storage in GB. Upstream enforces a 10 GB floor.',
+                'Host-local persistent storage in GB. Minimum 10 GB.',
               examples: [20],
             },
             path: {
