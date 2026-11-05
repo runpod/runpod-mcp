@@ -312,6 +312,7 @@ export function createSpecgenServer(
           ok: false,
           status: 429,
           durationMs: 0,
+          errorClass: 'rate_limited',
           ...(verdict.reason ? { blockedBy: verdict.reason } : {}),
           profile,
           ...opts.analytics,
@@ -391,6 +392,7 @@ export function createSpecgenServer(
         ok: result.ok,
         status: result.status,
         durationMs: Date.now() - startedAt,
+        ...(result.ok ? {} : { errorClass: errorClass(result) }),
         // The directory profile records which tool ran, never what was asked.
         ...(directory
           ? {}
@@ -453,20 +455,60 @@ const SHAPE_HINT =
 // names one of those causes gets a hint about that cause instead. The shape
 // hint stays for real validation failures (a 422, or a 400 carrying field
 // errors) and for anything unrecognised.
-const DETAIL_HINTS: ReadonlyArray<readonly [RegExp, string]> = [
+const DETAIL_HINTS: ReadonlyArray<readonly [RegExp, string, ErrorClass]> = [
   [
-    /no longer any instances available|not enough free GPUs/i,
+    /no longer any instances available|no instances currently available|not enough free GPUs/i,
     "Capacity, not input: the request is valid but no machine can take it right now. Don't change the payload shape. Retry with another GPU type, data center, cloud, CUDA version or count, or try again later. For a stopped Pod, its host's GPUs are taken; that Pod can only start once they free up.",
+    'capacity',
   ],
   [
     /at least \$\d|insufficient (?:funds|balance)|\bbalance\b/i,
     'Account balance, not input: this operation needs funds on the account. Ask the user to add credit in the Runpod console; list-billing shows recent spend.',
+    'balance',
   ],
   [
     /mutually exclusive|cannot be combined with/i,
     'Two arguments conflict: send only one of them and leave the other out entirely. Do not change anything else.',
+    'conflicting_args',
   ],
 ];
+
+/** Closed set of failure causes recorded on analytics events. A fixed enum,
+ *  never the upstream message, so no response text reaches PostHog. */
+export type ErrorClass =
+  | 'capacity'
+  | 'balance'
+  | 'conflicting_args'
+  | 'validation'
+  | 'auth'
+  | 'permission'
+  | 'not_found'
+  | 'rate_limited'
+  | 'timeout'
+  | 'server'
+  | 'other';
+
+/** Why a failed tool call failed, for the dashboard: separates a capacity or
+ *  balance 400 from an agent's malformed input, which share a status code. */
+export function errorClass(result: ToolResult): ErrorClass {
+  const { status } = result;
+  const payload = asRecord(result.payload) ?? { error: result.payload };
+  const detail = detailText(payload);
+  if (status === 400 && detail) {
+    for (const [pattern, , cls] of DETAIL_HINTS)
+      if (pattern.test(detail)) return cls;
+    if (/^unauthorized$/i.test(detail.trim())) return 'balance';
+  }
+  if (status === 400 || status === 422) return 'validation';
+  if (status === 401) return 'auth';
+  if (status === 402) return 'balance';
+  if (status === 403) return 'permission';
+  if (status === 404) return 'not_found';
+  if (status === 429) return 'rate_limited';
+  if (status === 504) return 'timeout';
+  if (status >= 500) return 'server';
+  return 'other';
+}
 
 function errorHint(status: number, detail?: string): string | undefined {
   if (status === 400 && detail) {

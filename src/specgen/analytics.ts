@@ -36,6 +36,9 @@ export interface ToolCallEvent {
   args?: Record<string, string>;
   /** Kind of the guide read-guide resolved: skill, reference or golden-path. */
   guideKind?: string;
+  /** Failure cause from a closed enum (server.ts errorClass), only on
+   *  failed calls. Never the upstream message itself. */
+  errorClass?: string;
   /** Set when this server's own limiter denied the call (not an API 429). */
   blockedBy?: string;
   /** The tool surface the call came through: `directory` for the app
@@ -171,6 +174,7 @@ export function captureToolCall(
     server_version: event.serverVersion,
     ...(event.clientName ? { client_name: event.clientName } : {}),
     ...(event.guideKind ? { guide_kind: event.guideKind } : {}),
+    ...(event.errorClass ? { error_class: event.errorClass } : {}),
     ...(event.blockedBy ? { blocked_by: event.blockedBy } : {}),
     ...(event.profile ? { profile: event.profile } : {}),
     ...args,
