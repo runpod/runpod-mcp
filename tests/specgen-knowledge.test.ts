@@ -4,8 +4,24 @@ import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { loadKnowledge } from '@runpod/plugin-knowledge';
-import { createSpecgenServer } from '#src/specgen/server';
 import { createToolContext } from '#src/specgen/context';
+
+// The knowledge tools read KNOWLEDGE_HIDDEN_RULES once at load, so it is set
+// before the server is imported, and the warnings of that load are kept. The
+// second id is in no bundle.
+const HIDDEN_RULE = 'pod.running-is-not-ready';
+const UNKNOWN_RULE = 'pod.no-such-rule';
+process.env.KNOWLEDGE_HIDDEN_RULES = ` ${HIDDEN_RULE} ,${UNKNOWN_RULE},`;
+const loadWarnings: unknown[][] = [];
+const originalWarn = console.warn;
+console.warn = (...args: unknown[]) => {
+  loadWarnings.push(args);
+};
+const { createSpecgenServer } = await import('#src/specgen/server').finally(
+  () => {
+    console.warn = originalWarn;
+  }
+);
 
 async function connect() {
   const server = createSpecgenServer(
@@ -130,6 +146,86 @@ test('search-concepts ranks the restart rule for a restart question', async () =
     ids.join(', ')
   );
   await client.close();
+});
+
+test('a rule in KNOWLEDGE_HIDDEN_RULES is left out of both concept tools and every citation of it', async () => {
+  const bundle = loadKnowledge();
+  const concept = (id: string) =>
+    bundle.concepts.find((candidate) => candidate.id === id)!;
+  const hidden = concept('pod').rules.find((rule) => rule.id === HIDDEN_RULE);
+  assert.ok(hidden, `${HIDDEN_RULE} is a pod rule in the bundle`);
+  // The bundle cites it from another concept's rule, a step and a doc.
+  assert.ok(
+    concept('exposed-port').rules.some((rule) => rule.see.includes(HIDDEN_RULE))
+  );
+  assert.ok(
+    concept('pod-deployment').steps.some((step) =>
+      step.rules.includes(HIDDEN_RULE)
+    )
+  );
+  assert.ok(
+    bundle.links.some(
+      (link) => link.to === 'pod' && link.rules?.includes(HIDDEN_RULE)
+    )
+  );
+  const client = await connect();
+  try {
+    for (const id of ['pod', 'exposed-port', 'pod-deployment']) {
+      const { body } = await call(client, 'lookup-concept', { concept: id });
+      assert.equal(body.id, id);
+      assert.ok(
+        !JSON.stringify(body).includes(HIDDEN_RULE),
+        `lookup-concept ${id} mentions the hidden rule`
+      );
+    }
+    const search = await call(client, 'search-concepts', {
+      query: hidden.statement,
+      limit: 25,
+    });
+    assert.ok(search.body.count > 0);
+    assert.ok(
+      search.body.rules.every((rule: { id: string }) => rule.id !== HIDDEN_RULE)
+    );
+  } finally {
+    await client.close();
+  }
+});
+
+test('an id in KNOWLEDGE_HIDDEN_RULES that the bundle does not hold is warned about at load', () => {
+  assert.deepEqual(
+    loadWarnings.filter(([event]) => event === 'knowledge_hidden_rule_unknown'),
+    [
+      [
+        'knowledge_hidden_rule_unknown',
+        { id: UNKNOWN_RULE, plugin_version: loadKnowledge().version },
+      ],
+    ]
+  );
+});
+
+test('a rule with conflict set comes back flagged from both concept tools', async () => {
+  // The bundle may have no disputed rule, so one is flagged on the bundle the
+  // tools serve.
+  const rule = loadKnowledge().concepts.find(
+    (concept) => concept.id === 'machine'
+  )!.rules[0]!;
+  const saved = rule.conflict;
+  const client = await connect();
+  rule.conflict = true;
+  try {
+    const byId = (rules: { id: string; conflict: boolean }[]) =>
+      rules.find((candidate) => candidate.id === rule.id);
+    const lookup = await call(client, 'lookup-concept', { concept: 'machine' });
+    assert.equal(byId(lookup.body.rules)?.conflict, true);
+    const search = await call(client, 'search-concepts', {
+      query: rule.statement,
+      limit: 25,
+    });
+    assert.equal(byId(search.body.rules)?.conflict, true, rule.id);
+  } finally {
+    rule.conflict = saved;
+    await client.close();
+  }
 });
 
 test('guides are also served as resources', async () => {

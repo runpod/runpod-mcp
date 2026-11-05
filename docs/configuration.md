@@ -20,6 +20,10 @@ ALP (Agent Learning Protocol) tools — `report_feedback` / `save_to_journal` / 
 
 To develop against a non-production API, pair the runtime override with the matching spec: `SPEC_URL=... pnpm spec:pull && pnpm generate` (see `specgen/README.md`).
 
+## Hiding a concept rule
+
+`lookup-concept` and `search-concepts` serve the concept rules of the `@runpod/plugin-knowledge` version that `package.json` pins exactly. Each release checks that this version was published with npm provenance built in `runpod/runpod-plugins-official` (`pnpm knowledge:provenance`). A rule is withdrawn by deleting it in a patch release of that package, which reaches users with the next `@runpod/mcp-server` release. Until then the hosted server can hide it: set `KNOWLEDGE_HIDDEN_RULES` to the rule ids, comma-separated, as the `id` field of `search-concepts` shows them. The server reads the variable once at startup and leaves those rules out of `search-concepts` and `lookup-concept`, including every place a rule id is cited: a rule's `see`, a step's `rules`, a doc's `rules` and `linked_rules`. An id the pinned bundle does not hold is logged at startup as `knowledge_hidden_rule_unknown`: a typo, or a rule that a later release already deleted. Set it on the hosted server only; local installs get the withdrawal from the release. A disputed rule is not hidden: it is served with `conflict: true`.
+
 ## Serverless endpoint types and autoscaling
 
 `create-endpoint` takes a `body` object matching the REST v2 schema. Set

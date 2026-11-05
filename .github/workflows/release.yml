@@ -56,6 +56,12 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
+      # @runpod/mcp-server depends on the exact @runpod/plugin-knowledge
+      # version package.json pins. Stop here if npm holds no verified
+      # provenance for it from runpod-plugins-official.
+      - name: Verify knowledge package provenance
+        run: pnpm knowledge:provenance
+
       - name: Build package
         run: pnpm run build
 

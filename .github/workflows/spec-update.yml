@@ -67,17 +67,20 @@ jobs:
             echo 'changed=true' >> "$GITHUB_OUTPUT"
           fi
       # list-guides and read-guide serve this bundle. runpod-plugins-official
-      # publishes it on every plugin release.
+      # publishes it on every plugin release. `pnpm add <pkg>@latest` keeps a
+      # range that already matches, so the version is read with npm view and
+      # added exact.
       - name: Update the plugin knowledge to latest
         id: knowledge
         run: |
           before=$(jq -r '.dependencies["@runpod/plugin-knowledge"]' package.json)
-          pnpm update --latest @runpod/plugin-knowledge
+          latest=$(npm view @runpod/plugin-knowledge version)
+          pnpm add --workspace-root --save-exact "@runpod/plugin-knowledge@$latest"
           after=$(jq -r '.dependencies["@runpod/plugin-knowledge"]' package.json)
           echo "before=$before" >> "$GITHUB_OUTPUT"
           echo "after=$after" >> "$GITHUB_OUTPUT"
           if [ "$before" = "$after" ]; then
-            # pnpm update re-resolves unrelated transitive dependencies even
+            # pnpm add can re-resolve unrelated transitive dependencies even
             # when this one is already current. Drop that churn, or
             # create-pull-request finds a dirty lockfile with no changeset to
             # add and fails.
@@ -86,6 +89,9 @@ jobs:
           else
             echo 'changed=true' >> "$GITHUB_OUTPUT"
           fi
+      - name: Verify knowledge package provenance
+        if: steps.knowledge.outputs.changed == 'true'
+        run: pnpm knowledge:provenance
       - name: Decide whether to update
         id: any
         env:
@@ -169,7 +175,7 @@ jobs:
             fi
             if [ "$KNOWLEDGE" = true ]; then
               # shellcheck disable=SC2016
-              printf 'Update `@runpod/plugin-knowledge` from %s to %s, so `list-guides` and `read-guide` serve the latest plugin guides.\n' "${KNOWLEDGE_BEFORE#^}" "${KNOWLEDGE_AFTER#^}"
+              printf 'Update `@runpod/plugin-knowledge` from %s to %s, so `list-guides` and `read-guide` serve the latest plugin guides.\n' "$KNOWLEDGE_BEFORE" "$KNOWLEDGE_AFTER"
             fi
             printf '\nUpdate run: %s\n' "$RUN_URL"
           } > .changeset/production-spec-update.md
