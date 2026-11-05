@@ -4,6 +4,20 @@ The official Runpod Model Context Protocol (MCP) server. It lets MCP clients suc
 
 **We host it for you at [`https://mcp.runpod.io/`](https://mcp.runpod.io/)** — point your client at that URL and sign in with Runpod. Nothing to install, no API key on disk. Or run it locally from npm as [`@runpod/mcp-server`](https://www.npmjs.com/package/@runpod/mcp-server).
 
+> [!WARNING]
+> **"Sign in with Runpod" (OAuth) is currently not working.** Use an API key instead until it is fixed:
+>
+> 1. In the Runpod console, open the [Settings page](https://console.runpod.io/user/settings).
+> 2. Expand **API Keys** and select **Create API Key**.
+> 3. Set up the server with that key. Either send it to the hosted server as a header:
+>
+>    ```bash
+>    claude mcp add --transport http runpod -s user https://mcp.runpod.io/ \
+>      --header "Authorization: Bearer YOUR_API_KEY"
+>    ```
+>
+>    or [run the server locally](#run-locally-with-npx) with `RUNPOD_API_KEY`, or use the installer's local mode: `npx @runpod/mcp-server@latest add --local`.
+
 ## Quick start
 
 The guided installer detects the clients you have installed, asks which to configure, and writes the config for you:
