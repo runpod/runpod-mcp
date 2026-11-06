@@ -109,6 +109,7 @@ test('SSE connection timeout is a tool error; established streams still yield sn
   const { runTool } = await import('../src/specgen/tools/util.js');
   const silent = createSseReader({
     apiKey: 'fake',
+    connectTimeoutMs: 20,
     fetchImpl: ((input, init) =>
       new Promise<Response>((_resolve, reject) => {
         const signal =
