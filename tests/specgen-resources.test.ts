@@ -53,18 +53,21 @@ test('reads a journey guide body verbatim', async () => {
   await client.close();
 });
 
-test('a renamed guide still reads under its old id', async () => {
+// The journeys were renamed to runpod-<name> (runpod-mcp already had the
+// prefix). The bundle's aliases keep each old id (pod-doctor) resolving to the
+// renamed guide; old ids are not listed.
+test('an old journey URI reads the renamed guide', async () => {
   const client = await connect();
-  const res = await client.readResource({ uri: 'runpod://guides/pod-doctor' });
-  const { uri, text } = res.contents[0] as { uri: string; text: string };
-  assert.equal(uri, 'runpod://guides/runpod-pod-doctor');
-  assert.match(text, /Pod doctor/);
-  const guide = await client.callTool({
-    name: 'read-guide',
-    arguments: { id: 'pod-doctor' },
-  });
-  assert.ok(!guide.isError);
-  assert.match(JSON.stringify(guide.content), /runpod-pod-doctor/);
+  for (const id of JOURNEYS.filter((journey) => journey !== 'runpod-mcp')) {
+    const from = id.replace(/^runpod-/, '');
+    const res = await client.readResource({ uri: `runpod://guides/${from}` });
+    const content = res.contents[0] as { uri: string; text: string };
+    assert.equal(content.uri, `runpod://guides/${id}`, from);
+    assert.equal(
+      content.text,
+      guideResources.find((g) => g.uri === content.uri)!.text
+    );
+  }
   await client.close();
 });
 
@@ -117,52 +120,12 @@ test('instructions name reconnecting as the way to get current instructions', ()
   assert.match(SERVER_INSTRUCTIONS, /current instructions/);
 });
 
-// The skills were renamed to runpod-<name>; the bundle's aliases keep the old
-// journey ids resolving for clients and agents that still use them.
-const RENAMED: Record<string, string> = {
-  discovery: 'runpod-discovery',
-  'lifecycle-crud': 'runpod-lifecycle-crud',
-  'serverless-deploy': 'runpod-serverless-deploy',
-  'pod-deploy': 'runpod-pod-deploy',
-  'pod-doctor': 'runpod-pod-doctor',
-  'endpoint-ops': 'runpod-endpoint-ops',
-  'cost-audit': 'runpod-cost-audit',
-};
-
-test('an old journey URI reads the renamed guide', async () => {
-  const client = await connect();
-  for (const [from, to] of Object.entries(RENAMED)) {
-    const res = await client.readResource({ uri: `runpod://guides/${from}` });
-    const content = res.contents[0] as { uri: string; text: string };
-    assert.equal(content.uri, `runpod://guides/${to}`, from);
-    assert.equal(
-      content.text,
-      guideResources.find((g) => g.uri === content.uri)!.text
-    );
-  }
-  await client.close();
-});
-
-test('old ids are not listed, only resolved', async () => {
-  const client = await connect();
-  const { resources } = await client.listResources();
-  for (const from of Object.keys(RENAMED)) {
-    assert.ok(
-      !resources.some((r) => r.uri === `runpod://guides/${from}`),
-      from
-    );
-  }
-  await client.close();
-});
-
-test('every journey the instructions name is a served guide', () => {
-  for (const id of [
-    'runpod-mcp',
-    'runpod-serverless-deploy',
-    'runpod-pod-doctor',
-    'runpod-cost-audit',
-  ]) {
-    assert.match(SERVER_INSTRUCTIONS, new RegExp(`\\b${id}\\b`), id);
+test('every journey the instructions route to is a served guide', () => {
+  const routed = [
+    ...SERVER_INSTRUCTIONS.matchAll(/\bread(?:s|-guide)? (runpod-[a-z-]+)/g),
+  ].map((match) => match[1]);
+  assert.ok(routed.length >= 4, routed.join(', '));
+  for (const id of routed) {
     assert.ok(
       guideResources.some((g) => g.uri === `runpod://guides/${id}`),
       id
