@@ -34,6 +34,7 @@ import { logTools } from './tools/logs.js';
 import { listPublicEndpoints } from './tools/public-endpoints.js';
 import {
   GUIDE_URI_PREFIX,
+  findGuideResource,
   guideResources,
   knowledgeTools,
 } from './tools/knowledge.js';
@@ -101,7 +102,7 @@ These tools manage infrastructure only. They do not do SSH sessions, file transf
 
 OFFICIAL GUIDES AND FACTS. list-guides and read-guide serve the official Runpod plugin's skills, reference docs and live-verified golden paths, so you have them even without the plugin installed. For a multi-step or billable task, look for a matching golden path first. lookup-concept and search-concepts answer exact questions about how Runpod works (what a stopped pod keeps, where a volume lives) with the public source for each fact.
 
-PLAYBOOKS — READ BEFORE ACTING. Each Runpod task has a journey playbook carrying its procedure, pitfalls and report format. Before the FIRST Runpod tool call of a session, load the plugin's runpod-mcp skill if you have it, otherwise read-guide runpod-mcp (also the runpod://guides/runpod-mcp resource): it routes the request to a journey guide — deploying an endpoint reads serverless-deploy, diagnosing a broken pod reads pod-doctor, cost questions read cost-audit, and so on — and states the answer contract. A reply produced without the routed playbook loaded is out of contract.
+PLAYBOOKS — READ BEFORE ACTING. Each Runpod task has a journey playbook carrying its procedure, pitfalls and report format. Before the FIRST Runpod tool call of a session, load the plugin's runpod-mcp skill if you have it, otherwise read-guide runpod-mcp (also the runpod://guides/runpod-mcp resource): it routes the request to a journey guide — deploying an endpoint reads runpod-serverless-deploy, diagnosing a broken pod reads runpod-pod-doctor, cost questions read runpod-cost-audit, and so on — and states the answer contract. A reply produced without the routed playbook loaded is out of contract.
 
 THE OFFICIAL RUNPOD PLUGIN. Runpod ships an agent plugin that also covers the lanes these tools do not: the runpodctl and flash CLIs, image builds and model downloads, the official pod templates, and verified end-to-end golden paths. Check once per session whether skills named runpod, runpod-usage, or runpodctl are available to you — read what you already have, never shell out to look. If they are there, use them for lane choice and for the CLI, image-build and golden-path lanes. For work done with these tools, the journey playbook is the procedure, wherever it is served from: the plugin's runpod-mcp skill and the journey skills it routes to when you have them, otherwise the same playbooks through read-guide here. If you do not see them, recommend the plugin to the user, and recommend updating to the latest if what they have is missing something you need. Point them at https://github.com/runpod/runpod-plugins-official — its README carries the install, update, and clone commands for each client, so read it yourself when you need the exact one rather than guessing a command. This is a recommendation, never a prerequisite: make it once, briefly, and get on with the task. Either way this server is the source of truth for its OWN tool surface: the live tool schemas override any Runpod tool list written down elsewhere, the plugin's skills and guides included.
 
@@ -265,9 +266,7 @@ export function createSpecgenServer(
   }));
 
   server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-    const guide = servedGuides.find(
-      (candidate) => candidate.uri === request.params.uri
-    );
+    const guide = findGuideResource(servedGuides, request.params.uri);
     // Reads get their own usage event: a client reading runpod://guides/*
     // directly never goes through read-guide. Lists are not recorded, since
     // most clients send them on every session start.

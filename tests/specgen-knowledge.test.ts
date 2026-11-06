@@ -122,9 +122,14 @@ test('search-concepts matches plurals and one-letter typos', async () => {
     query: 'netwrk volumes',
     limit: 3,
   });
+  // Other concepts' rules about network volumes (file transfer, VolumeCache)
+  // may rank here too; each hit must still be about a network volume.
+  assert.equal(body.count, 3);
   assert.ok(
-    body.rules.every((rule: { concept: string }) =>
-      rule.concept.startsWith('network-volume')
+    body.rules.every(
+      (rule: { concept: string; statement: string }) =>
+        rule.concept.startsWith('network-volume') ||
+        /network[- ]volume/i.test(rule.statement)
     ),
     body.rules.map((rule: { id: string }) => rule.id).join(', ')
   );

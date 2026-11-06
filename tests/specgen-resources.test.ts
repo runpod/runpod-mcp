@@ -21,13 +21,13 @@ async function connect() {
 
 const JOURNEYS = [
   'runpod-mcp',
-  'discovery',
-  'lifecycle-crud',
-  'serverless-deploy',
-  'pod-deploy',
-  'pod-doctor',
-  'endpoint-ops',
-  'cost-audit',
+  'runpod-discovery',
+  'runpod-lifecycle-crud',
+  'runpod-serverless-deploy',
+  'runpod-pod-deploy',
+  'runpod-pod-doctor',
+  'runpod-endpoint-ops',
+  'runpod-cost-audit',
 ];
 
 test('lists only the plugin guides, the journey playbooks among them', async () => {
@@ -45,11 +45,26 @@ test('lists only the plugin guides, the journey playbooks among them', async () 
 
 test('reads a journey guide body verbatim', async () => {
   const client = await connect();
-  const uri = 'runpod://guides/pod-doctor';
+  const uri = 'runpod://guides/runpod-pod-doctor';
   const res = await client.readResource({ uri });
   const text = (res.contents[0] as { text: string }).text;
   assert.equal(text, guideResources.find((g) => g.uri === uri)!.text);
   assert.match(text, /Pod doctor/);
+  await client.close();
+});
+
+test('a renamed guide still reads under its old id', async () => {
+  const client = await connect();
+  const res = await client.readResource({ uri: 'runpod://guides/pod-doctor' });
+  const { uri, text } = res.contents[0] as { uri: string; text: string };
+  assert.equal(uri, 'runpod://guides/runpod-pod-doctor');
+  assert.match(text, /Pod doctor/);
+  const guide = await client.callTool({
+    name: 'read-guide',
+    arguments: { id: 'pod-doctor' },
+  });
+  assert.ok(!guide.isError);
+  assert.match(JSON.stringify(guide.content), /runpod-pod-doctor/);
   await client.close();
 });
 
