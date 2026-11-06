@@ -81,6 +81,17 @@ test('list-guides filters by kind and read-guide returns the body', async () => 
   await client.close();
 });
 
+test('read-guide resolves the old id of a renamed skill or reference', async () => {
+  const client = await connect();
+  const doctor = await call(client, 'read-guide', { id: 'pod-doctor' });
+  assert.equal(doctor.isError, false);
+  assert.equal(doctor.body.id, 'runpod-pod-doctor');
+  const ref = await call(client, 'read-guide', { id: 'flash/api' });
+  assert.equal(ref.isError, false);
+  assert.equal(ref.body.id, 'runpod-flash/api');
+  await client.close();
+});
+
 test('lookup-concept resolves aliases and reports what points at it', async () => {
   const client = await connect();
   const { body } = await call(client, 'lookup-concept', { concept: 'Machine' });

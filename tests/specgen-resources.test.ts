@@ -116,3 +116,56 @@ test('instructions name reconnecting as the way to get current instructions', ()
   assert.match(SERVER_INSTRUCTIONS, /re-runs initialize/);
   assert.match(SERVER_INSTRUCTIONS, /current instructions/);
 });
+
+// The skills were renamed to runpod-<name>; the bundle's aliases keep the old
+// journey ids resolving for clients and agents that still use them.
+const RENAMED: Record<string, string> = {
+  discovery: 'runpod-discovery',
+  'lifecycle-crud': 'runpod-lifecycle-crud',
+  'serverless-deploy': 'runpod-serverless-deploy',
+  'pod-deploy': 'runpod-pod-deploy',
+  'pod-doctor': 'runpod-pod-doctor',
+  'endpoint-ops': 'runpod-endpoint-ops',
+  'cost-audit': 'runpod-cost-audit',
+};
+
+test('an old journey URI reads the renamed guide', async () => {
+  const client = await connect();
+  for (const [from, to] of Object.entries(RENAMED)) {
+    const res = await client.readResource({ uri: `runpod://guides/${from}` });
+    const content = res.contents[0] as { uri: string; text: string };
+    assert.equal(content.uri, `runpod://guides/${to}`, from);
+    assert.equal(
+      content.text,
+      guideResources.find((g) => g.uri === content.uri)!.text
+    );
+  }
+  await client.close();
+});
+
+test('old ids are not listed, only resolved', async () => {
+  const client = await connect();
+  const { resources } = await client.listResources();
+  for (const from of Object.keys(RENAMED)) {
+    assert.ok(
+      !resources.some((r) => r.uri === `runpod://guides/${from}`),
+      from
+    );
+  }
+  await client.close();
+});
+
+test('every journey the instructions name is a served guide', () => {
+  for (const id of [
+    'runpod-mcp',
+    'runpod-serverless-deploy',
+    'runpod-pod-doctor',
+    'runpod-cost-audit',
+  ]) {
+    assert.match(SERVER_INSTRUCTIONS, new RegExp(`\\b${id}\\b`), id);
+    assert.ok(
+      guideResources.some((g) => g.uri === `runpod://guides/${id}`),
+      id
+    );
+  }
+});

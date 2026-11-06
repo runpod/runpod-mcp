@@ -36,7 +36,7 @@ Without `--client` and without a terminal, the installer exits with code 2 and c
 
 ### Or install the whole Runpod plugin
 
-For the full agent setup, the [official plugin marketplace](https://github.com/runpod/runpod-plugins-official) bundles this server with a router skill plus five more — `runpod-mcp`, `runpodctl`, `flash`, `runpod-usage`, and `companion-clis`:
+For the full agent setup, the [official plugin marketplace](https://github.com/runpod/runpod-plugins-official) bundles this server with a router skill and task skills such as `runpod-mcp`, `runpodctl`, `runpod-flash`, `runpod-usage`, and `runpod-companion-clis`:
 
 ```bash
 npx skills add runpod/runpod-plugins-official
