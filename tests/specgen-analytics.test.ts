@@ -11,7 +11,7 @@ import {
   analyticsCallerId,
   recordedArgumentValues,
 } from '#src/specgen/analytics';
-import { createSpecgenServer } from '#src/specgen/server';
+import { createSpecgenServer, errorClass } from '#src/specgen/server';
 import { createToolContext } from '#src/specgen/context';
 
 const realFetch = globalThis.fetch;
@@ -275,6 +275,7 @@ test('a rate-limited call is still captured, as a 429', async () => {
   assert.equal(event.properties.tool, 'get-pod');
   assert.equal(event.properties.status, 429);
   assert.equal(event.properties.ok, false);
+  assert.equal(event.properties.error_class, 'rate_limited');
   // A generic denial carries no reason, so it is not labeled as the breaker.
   assert.equal(event.properties.blocked_by, undefined);
 });
@@ -323,4 +324,88 @@ test('the loop-blocked event carries the tool and block length, never the key', 
     'tool',
     'transport',
   ]);
+});
+
+test('errorClass separates capacity and balance 400s from bad input', () => {
+  const fail = (status: number, payload: unknown) =>
+    errorClass({ ok: false, status, payload });
+  assert.equal(
+    fail(400, {
+      error: 'Bad Request',
+      detail:
+        'There are no longer any instances available with the requested specifications. Please refresh and try again.',
+    }),
+    'capacity'
+  );
+  assert.equal(
+    fail(400, { detail: 'There are no instances currently available' }),
+    'capacity'
+  );
+  assert.equal(
+    fail(400, {
+      detail: 'You must have at least $0.01 in your account balance.',
+    }),
+    'balance'
+  );
+  assert.equal(fail(400, { detail: 'Unauthorized' }), 'balance');
+  assert.equal(
+    fail(400, { detail: 'gpuTypeIds and cpuFlavorIds are mutually exclusive' }),
+    'conflicting_args'
+  );
+  // Field errors mean the shape is wrong, whatever the detail says.
+  assert.equal(
+    fail(400, {
+      detail: 'no longer any instances available',
+      errors: [{ field: 'gpuCount' }],
+    }),
+    'validation'
+  );
+  assert.equal(fail(422, { detail: 'bad' }), 'validation');
+  assert.equal(fail(401, {}), 'auth');
+  assert.equal(fail(402, {}), 'balance');
+  assert.equal(fail(403, {}), 'permission');
+  assert.equal(fail(404, {}), 'not_found');
+  assert.equal(fail(429, { detail: 'Too Many Requests' }), 'rate_limited');
+  assert.equal(fail(504, {}), 'timeout');
+  assert.equal(fail(500, {}), 'server');
+  assert.equal(fail(418, {}), 'other');
+  assert.equal(fail(0, { error: 'fetch failed' }), 'other');
+});
+
+test('a failed call records error_class and never the upstream message', async () => {
+  process.env.POSTHOG_API_KEY = 'phc_test';
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes('posthog')) {
+      captured.push({ url, body: String(init?.body) });
+      return new Response('{"status":1}', { status: 200 });
+    }
+    return new Response(
+      JSON.stringify({
+        detail:
+          'There are no longer any instances available with the requested specifications. Please refresh and try again.',
+        status: 400,
+        title: 'Bad Request',
+      }),
+      { status: 400, headers: { 'Content-Type': 'application/problem+json' } }
+    );
+  }) as typeof fetch;
+  const client = await connect(true);
+  const result = await client.callTool({ name: 'list-pods', arguments: {} });
+  assert.equal(result.isError, true);
+  const [event] = events();
+  assert.equal(event.properties.ok, false);
+  assert.equal(event.properties.status, 400);
+  assert.equal(event.properties.error_class, 'capacity');
+  assert.ok(!captured[0].body.includes('instances'), 'upstream text leaked');
+});
+
+test('a successful call records no error_class', async () => {
+  process.env.POSTHOG_API_KEY = 'phc_test';
+  const client = await connect(true);
+  await client.callTool({
+    name: 'read-guide',
+    arguments: { id: 'runpod-mcp' },
+  });
+  assert.equal(events()[0].properties.error_class, undefined);
 });
