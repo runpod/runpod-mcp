@@ -36,7 +36,7 @@ Without `--client` and without a terminal, the installer exits with code 2 and c
 
 ### Or install the whole Runpod plugin
 
-For the full agent setup, the [official plugin marketplace](https://github.com/runpod/runpod-plugins-official) bundles this server with a router skill plus five more — `runpod-mcp`, `runpodctl`, `flash`, `runpod-usage`, and `companion-clis`:
+For the full agent setup, the [official plugin marketplace](https://github.com/runpod/runpod-plugins-official) bundles this server with a router skill and task skills such as `runpod-mcp`, `runpodctl`, `runpod-flash`, `runpod-usage`, and `runpod-companion-clis`:
 
 ```bash
 npx skills add runpod/runpod-plugins-official
@@ -166,15 +166,6 @@ runpod/test-output:0.0.1, GPU pool AMPERE_80, 0 min workers, 3 max workers.
 Endpoints are image-based — pass an image and a GPU pool (a `pool` value from `list-gpu-types`), not a template.
 
 See [`docs/configuration.md`](docs/configuration.md) for host overrides, private image pull (registry credentials vs ECR delegation), and large-output handling.
-
-## Upgrading from 3.x
-
-Eight tools follow their spec operationIds (e.g.
-`create-container-registry-auth` → `create-registry`, `get-billing` →
-`list-billing`) and `start-pod`/`stop-pod`/`restart-pod` fold into
-`pod-action` with an `action` argument. The full old→new map is
-[`specgen/old-mcp-tools.yaml`](specgen/old-mcp-tools.yaml). The server is
-v2-only; `RUNPOD_REST_VERSION` and the v1 fallback are retired.
 
 ## Security
 
