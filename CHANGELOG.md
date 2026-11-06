@@ -1,5 +1,26 @@
 # @runpod/mcp-server
 
+## 4.10.1
+
+### Patch Changes
+
+- 12d34ee: Treat a `null` optional argument as omitted on the hand-written tools too.
+  Strict-schema clients such as Codex and opencode send every property, and the
+  fix for generated tools did not reach the curated ones: `get-job-status` and
+  `runsync-endpoint` rejected `wait: null` with a 400, `set-endpoint-gpus`
+  rejected every null GPU field (`gpuIds`, `gpuCount`, `minCudaVersion` and the
+  rest) so it could not be called at all, and `run-endpoint` and
+  `runsync-endpoint` forwarded `webhook: null`, `policy: null` and
+  `s3Config: null` into the job body. A null required argument is still reported
+  as missing.
+- 568328f: `stream-pod-logs` and `stream-worker-logs` no longer fail with "did not respond before the request deadline" when the log stream's headers take longer than `maxWaitMs`. Headers now get their own 10-second budget, and `maxWaitMs` measures how long the open stream is read. Snapshots are also capped at 32,000 serialized characters so they fit within MCP clients' tool-output limits: a capped snapshot keeps its leading lines, cuts only between timestamps where it can, clips oversized lines (measured after JSON escaping), and sets `truncated: true`. The tool descriptions now say that `since` is exclusive and replays container lines only.
+- 1cb0082: Record why a hosted tool call failed. Failed calls now carry `error_class` (`capacity`, `balance`, `conflicting_args`, `validation`, `auth`, `permission`, `not_found`, `rate_limited`, `timeout`, `server` or `other`) on the anonymous analytics event, from a fixed list and never the upstream message. A 400 for "no instances currently available" now gets the capacity hint, the same as "no longer any instances available".
+- 27fe395: Update `@runpod/plugin-knowledge` from 1.9.0 to 2.0.0, so `list-guides` and `read-guide` serve the latest plugin guides.
+
+  Plugin-knowledge 2.0.0 renames the journey guides with a `runpod-` prefix (`pod-doctor` is now `runpod-pod-doctor`). The server instructions name the new ids, and `read-guide` and `runpod://guides/` resource reads still accept the old ids through the bundle's alias map.
+
+  Update run: https://github.com/runpod/runpod-mcp/actions/runs/42194967234
+
 ## 4.10.0
 
 ### Minor Changes
