@@ -307,3 +307,48 @@ test('the read window is not shortened by slow headers', async () => {
     ['late']
   );
 });
+
+// JSON escaping grows text: each ESC byte serializes as \u001b, six
+// characters. A character cap alone let ANSI-colored output past the
+// serialized ceiling.
+test('escape-heavy and oversized-metadata entries still fit the cap', async () => {
+  const { fitSnapshot, LOG_SNAPSHOT_MAX_CHARS } = await import(
+    '#src/specgen/clients/sse'
+  );
+  const ansi = '\x1b[31mX\x1b[0m'.repeat(2_000);
+  const bigMeta = { line: 'ok', ts: 't0', source: 's'.repeat(40_000) };
+  for (const items of [
+    [{ line: ansi, ts: 't0' }],
+    [
+      { line: ansi, ts: 't0' },
+      { line: 'next', ts: 't1' },
+    ],
+    [bigMeta],
+    [bigMeta, { line: 'next', ts: 't1' }],
+  ]) {
+    const snapshot = fitSnapshot(items, false);
+    assert.equal(snapshot.truncated, true);
+    assert.ok(snapshot.count >= 1);
+    assert.equal(snapshot.items[0]?.ts, 't0');
+    const size = JSON.stringify(snapshot, null, 2).length;
+    assert.ok(size <= LOG_SNAPSHOT_MAX_CHARS, `${size} chars`);
+  }
+});
+
+test('a body that fails after headers is an error, not a partial snapshot', async () => {
+  const source = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(frame('first')));
+      setTimeout(() => controller.error(new Error('connection reset')), 10);
+    },
+  });
+  const reader = createSseReader({
+    apiKey: 'test-key',
+    fetchImpl: async () => new Response(source),
+  });
+  await assert.rejects(
+    collectLogSnapshot(reader, 'https://x/logs', { maxWaitMs: 1_000 }),
+    /connection reset/
+  );
+  assert.equal(source.locked, false);
+});

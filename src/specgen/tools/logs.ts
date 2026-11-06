@@ -27,7 +27,7 @@ const logStreamProperties = {
   since: {
     type: 'string',
     description:
-      'RFC3339 timestamp to resume from; when set, `tail` is ignored.',
+      'RFC3339 timestamp to resume after (exclusive). Replays container lines only; system lines stream live from the call. When set, `tail` is ignored.',
   },
   maxWaitMs: {
     type: 'integer',
@@ -77,7 +77,7 @@ export const streamPodLogs: CuratedTool = {
   holdsResponse: true,
   annotations: readOnly,
   description:
-    "Read a bounded snapshot of a Pod's logs (container and/or system source). Holds the live stream open for maxWaitMs and returns the parsed log lines; `truncated: true` means the size cap cut the output: call again with `since` set to the last line's `ts` for the rest (lines with that `ts` may repeat).",
+    "Read a bounded snapshot of a Pod's logs (container and/or system source). Holds the live stream open for maxWaitMs and returns the parsed log lines; `truncated: true` means the size cap cut the output. For later container lines, call again with `since` set to the last container line's `ts`; `since` does not replay system lines, so for those request a smaller `tail`.",
   inputSchema: {
     type: 'object',
     properties: {
@@ -106,7 +106,7 @@ export const streamWorkerLogs: CuratedTool = {
   holdsResponse: true,
   annotations: readOnly,
   description:
-    "Read a bounded snapshot of a Serverless worker's logs (container and/or system source). Holds the live stream open for maxWaitMs and returns the parsed log lines; `truncated: true` means the size cap cut the output: call again with `since` set to the last line's `ts` for the rest (lines with that `ts` may repeat). Get worker IDs from list-endpoint-workers. Use this whenever a job stays IN_QUEUE while workers exist, whatever status they report — a crash-looping container often still shows RUNNING or THROTTLED with unhealthy 0, so these logs, not the worker status, are what identify a crash loop.",
+    "Read a bounded snapshot of a Serverless worker's logs (container and/or system source). Holds the live stream open for maxWaitMs and returns the parsed log lines; `truncated: true` means the size cap cut the output. For later container lines, call again with `since` set to the last container line's `ts`; `since` does not replay system lines, so for those request a smaller `tail`. Get worker IDs from list-endpoint-workers. Use this whenever a job stays IN_QUEUE while workers exist, whatever status they report — a crash-looping container often still shows RUNNING or THROTTLED with unhealthy 0, so these logs, not the worker status, are what identify a crash loop.",
   inputSchema: {
     type: 'object',
     properties: {

@@ -177,35 +177,71 @@ type LogSnapshot = { items: LogEntry[]; count: number; truncated: boolean };
 const serializedLength = (snapshot: LogSnapshot) =>
   JSON.stringify(snapshot, null, 2).length;
 
-// A single entry is clipped to this many characters of text, so any one entry
-// fits the snapshot ceiling with room for the envelope.
+// A single entry is clipped to this many characters of text, so no one entry
+// takes most of a snapshot.
 export const LOG_ENTRY_MAX_CHARS = 16_000;
+
+const CLIPPABLE_KEYS = ['line', 'raw'] as const;
+
+function clipText(text: string, keep: number): string {
+  // Never split a surrogate pair.
+  const code = text.charCodeAt(keep - 1);
+  if (keep > 0 && code >= 0xd800 && code <= 0xdbff) keep--;
+  return `${text.slice(0, keep)}… [clipped ${text.length - keep} chars]`;
+}
 
 function clipEntry(entry: LogEntry): { entry: LogEntry; clipped: boolean } {
   let clipped = false;
   const out: Record<string, unknown> = { ...entry };
-  for (const key of ['line', 'raw'] as const) {
+  for (const key of CLIPPABLE_KEYS) {
     const text = out[key];
     if (typeof text === 'string' && text.length > LOG_ENTRY_MAX_CHARS) {
-      out[key] =
-        `${text.slice(0, LOG_ENTRY_MAX_CHARS)}… [clipped ${text.length - LOG_ENTRY_MAX_CHARS} chars]`;
+      out[key] = clipText(text, LOG_ENTRY_MAX_CHARS);
       clipped = true;
     }
   }
   return { entry: out as LogEntry, clipped };
 }
 
+// Clip one entry until a snapshot holding only it fits maxChars. The cap is
+// on serialized size, and JSON escaping can grow text sixfold (an ANSI escape
+// byte serializes as \u001b), so a character cap alone cannot guarantee it.
+// Its longest text fields are clipped first; an entry whose `ts` or
+// non-text fields alone overflow is returned as clipped as it can be.
+function fitEntry(entry: LogEntry, maxChars: number): LogEntry {
+  const size = (e: LogEntry) =>
+    serializedLength({ items: [e], count: 1, truncated: false });
+  const out: Record<string, unknown> = { ...entry };
+  // Any text field but `ts`, which the agent needs to resume.
+  const keys = Object.keys(out)
+    .filter((key) => key !== 'ts' && typeof out[key] === 'string')
+    .sort((a, b) => (out[b] as string).length - (out[a] as string).length);
+  for (const key of keys) {
+    if (size(out as LogEntry) <= maxChars) break;
+    const text = (entry as Record<string, unknown>)[key] as string;
+    let lo = 0;
+    let hi = Math.min(text.length, LOG_ENTRY_MAX_CHARS);
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (size({ ...out, [key]: clipText(text, mid) } as LogEntry) <= maxChars)
+        lo = mid;
+      else hi = mid - 1;
+    }
+    out[key] = clipText(text, lo);
+  }
+  return out as LogEntry;
+}
+
 const entryTs = (entry: LogEntry | undefined) =>
   (entry as { ts?: unknown } | undefined)?.ts;
 
-// Fit the snapshot under maxChars, keeping leading lines so the agent can
-// resume with `since` from the last line it got. The API's only resume
-// cursor is a timestamp, and system log lines share whole-second ones, so a
-// cut is moved back to a timestamp boundary when the kept part spans more
-// than one: resuming then repeats at most the last timestamp's lines and
-// skips none, whether the API treats `since` as inclusive or exclusive.
-// Oversized entries are clipped, so the first entry always fits and the
-// snapshot is never empty.
+// Fit the snapshot under maxChars, keeping leading lines. The upstream `since`
+// cursor is exclusive (the host drops lines at or before it) and is a bare
+// timestamp, while system log lines share whole-second ones, so a cut is
+// moved back to a timestamp boundary when the kept part spans more than one:
+// resuming from the last kept line's `ts` then skips nothing. The first entry
+// is clipped to fit when it must, so a snapshot is never empty and never
+// over the cap.
 export function fitSnapshot(
   items: LogEntry[],
   truncated: boolean,
@@ -224,6 +260,10 @@ export function fitSnapshot(
   });
   const whole = snapshot(entries.length, cut);
   if (entries.length === 0 || serializedLength(whole) <= maxChars) return whole;
+  if (serializedLength(snapshot(1, true)) > maxChars) {
+    entries[0] = fitEntry(items[0]!, maxChars);
+    if (entries.length === 1) return snapshot(1, true);
+  }
   let lo = 1;
   let hi = entries.length - 1;
   while (lo < hi) {
