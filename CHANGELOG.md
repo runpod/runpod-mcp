@@ -1,5 +1,19 @@
 # @runpod/mcp-server
 
+## 4.10.0
+
+### Minor Changes
+
+- ba8ae08: Redact email addresses in ALP submissions, non-ASCII ones included, as `[redacted:email]`, counted in `redactions`. Runpod Pod SSH logins (`@ssh.runpod.io`) and the `git@` user of an SSH remote are kept. `SCRUB_VERSION` is now 6 and is exported from `@runpod/mcp-server/alp`. The ingest endpoint keeps `tool` only when it is shaped like a tool name (`^[A-Za-z0-9_-]{1,64}$`) and drops anything else, as it does an off-enum `severity`, and answers a write the sink refused at its cap (`capped: true`) with `recorded: false` and the do-not-retry note.
+- 80d0d1f: Pin `@runpod/plugin-knowledge` to an exact version, checked before each release for npm provenance built in `runpod/runpod-plugins-official`, and leave the concept rules listed in `KNOWLEDGE_HIDDEN_RULES` (comma-separated rule ids) out of `lookup-concept` and `search-concepts`, citations included, so the hosted server can withdraw a rule before the knowledge release that deletes it ships. An id the bundle does not hold is logged at startup.
+- ba8ae08: Resync the vendored v2 OpenAPI spec with production as of 2026-11-05 and regenerate the SDK schema and the tools. Adds 31 tools: organization groups, roles, invites and member updates and removal, cost centers, and endpoint cold-start, request and worker metrics. A pod's mounts now take up to 4 network volumes and 1 global volume. The `filters` query parameter on the pod, cluster, endpoint and network volume list routes is left out until the client can send JSON query parameters.
+
+### Patch Changes
+
+- 017cdc3: Update `@runpod/plugin-knowledge` from 1.8.0 to 1.9.0, so `list-guides` and `read-guide` serve the latest plugin guides.
+
+  Update run: https://github.com/runpod/runpod-mcp/actions/runs/41610964582
+
 ## 4.9.1
 
 ### Patch Changes
