@@ -33,7 +33,8 @@ const logStreamProperties = {
     type: 'integer',
     minimum: 500,
     maximum: 30000,
-    description: 'How long to read the stream, in ms (default 5000, max 30000)',
+    description:
+      'How long to read the stream once it opens, in ms (default 5000, max 30000)',
   },
 } as const;
 
@@ -76,7 +77,7 @@ export const streamPodLogs: CuratedTool = {
   holdsResponse: true,
   annotations: readOnly,
   description:
-    "Read a bounded snapshot of a Pod's logs (container and/or system source). Holds the live stream open for maxWaitMs and returns the parsed log lines; `truncated: true` means the byte cap cut the output. Use `since` to resume from a timestamp.",
+    "Read a bounded snapshot of a Pod's logs (container and/or system source). Holds the live stream open for maxWaitMs and returns the parsed log lines; `truncated: true` means the size cap cut the output: call again with `since` set to the last line's `ts` for the rest (lines with that `ts` may repeat).",
   inputSchema: {
     type: 'object',
     properties: {
@@ -101,11 +102,11 @@ export const streamWorkerLogs: CuratedTool = {
   name: 'stream-worker-logs',
   title: 'Stream worker logs',
   directoryDescription:
-    "Read a bounded snapshot of a Serverless worker's logs (container, system, or both). Holds the live stream open for maxWaitMs and returns the parsed log lines; truncated: true means the byte cap cut the output. A worker whose container keeps failing to start can report RUNNING or THROTTLED while its logs show the failure.",
+    "Read a bounded snapshot of a Serverless worker's logs (container, system, or both). Holds the live stream open for maxWaitMs and returns the parsed log lines; truncated: true means the size cap cut the output. A worker whose container keeps failing to start can report RUNNING or THROTTLED while its logs show the failure.",
   holdsResponse: true,
   annotations: readOnly,
   description:
-    "Read a bounded snapshot of a Serverless worker's logs (container and/or system source). Holds the live stream open for maxWaitMs and returns the parsed log lines; `truncated: true` means the byte cap cut the output. Get worker IDs from list-endpoint-workers. Use this whenever a job stays IN_QUEUE while workers exist, whatever status they report — a crash-looping container often still shows RUNNING or THROTTLED with unhealthy 0, so these logs, not the worker status, are what identify a crash loop.",
+    "Read a bounded snapshot of a Serverless worker's logs (container and/or system source). Holds the live stream open for maxWaitMs and returns the parsed log lines; `truncated: true` means the size cap cut the output: call again with `since` set to the last line's `ts` for the rest (lines with that `ts` may repeat). Get worker IDs from list-endpoint-workers. Use this whenever a job stays IN_QUEUE while workers exist, whatever status they report — a crash-looping container often still shows RUNNING or THROTTLED with unhealthy 0, so these logs, not the worker status, are what identify a crash loop.",
   inputSchema: {
     type: 'object',
     properties: {
