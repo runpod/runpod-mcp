@@ -15,6 +15,9 @@ import { badRequest, ok } from './util.js';
 
 const knowledge = loadKnowledge();
 
+/** Map a renamed guide's old id (for example "pod-doctor") to its current id. */
+export const resolveGuideId = (id: string) => knowledge.aliases?.[id] ?? id;
+
 // A withdrawn rule stays in the pinned bundle until the knowledge release that
 // deletes it ships in this package. Until then the hosted server lists it in
 // KNOWLEDGE_HIDDEN_RULES (comma-separated rule ids) to keep it out of answers.
@@ -260,7 +263,9 @@ export const readGuide: CuratedTool = {
   annotations: bundledRead,
   recordedArguments: ['id'],
   recordedGuideKind: (args) =>
-    knowledge.guides.find((guide) => guide.id === String(args.id).trim())?.kind,
+    knowledge.guides.find(
+      (guide) => guide.id === resolveGuideId(String(args.id).trim())
+    )?.kind,
   description:
     'Read one official Runpod guide in full, by the id list-guides returns (for example "runpod-usage/storage" or "golden-path/06-dev-pod").',
   inputSchema: {
@@ -273,7 +278,9 @@ export const readGuide: CuratedTool = {
   },
   handler: async (_ctx, args) => {
     const id = String(args.id).trim();
-    const guide = knowledge.guides.find((candidate) => candidate.id === id);
+    const guide = knowledge.guides.find(
+      (candidate) => candidate.id === resolveGuideId(id)
+    );
     if (!guide) {
       const close = knowledge.guides
         .filter(
@@ -470,3 +477,16 @@ export const guideResources = knowledge.guides.map((guide) => ({
   mimeType: 'text/markdown',
   text: guide.body,
 }));
+
+/** The guide resource for a uri, following a renamed guide's old id. */
+export const findGuideResource = (
+  resources: typeof guideResources,
+  uri: string
+) => {
+  const id = uri.startsWith(GUIDE_URI_PREFIX)
+    ? resolveGuideId(uri.slice(GUIDE_URI_PREFIX.length))
+    : undefined;
+  return resources.find(
+    (resource) => resource.uri === uri || resource.uri === GUIDE_URI_PREFIX + id
+  );
+};
