@@ -18,6 +18,21 @@
 
 import { createHmac } from 'node:crypto';
 
+/** Closed set of failure causes recorded on analytics events. A fixed enum,
+ *  never the upstream message, so no response text reaches PostHog. */
+export type ErrorClass =
+  | 'capacity'
+  | 'balance'
+  | 'conflicting_args'
+  | 'validation'
+  | 'auth'
+  | 'permission'
+  | 'not_found'
+  | 'rate_limited'
+  | 'timeout'
+  | 'server'
+  | 'other';
+
 export interface ToolCallEvent {
   tool: string;
   ok: boolean;
@@ -38,7 +53,7 @@ export interface ToolCallEvent {
   guideKind?: string;
   /** Failure cause from a closed enum (server.ts errorClass), only on
    *  failed calls. Never the upstream message itself. */
-  errorClass?: string;
+  errorClass?: ErrorClass;
   /** Set when this server's own limiter denied the call (not an API 429). */
   blockedBy?: string;
   /** The tool surface the call came through: `directory` for the app

@@ -102,7 +102,7 @@ You can also [run the server locally](#run-locally-with-npx). The local server c
 
 ### Usage analytics
 
-The hosted server records one anonymous event per tool call (tool name, status, duration, transport) and per guide resource read (guide URI, or `unknown` on a miss), plus one event when it starts blocking a 404 loop (tool name and block length). It never records your API key or any resource data, and drops tool arguments except on the guide and concept tools (`list-guides`, `read-guide`, `lookup-concept`, `search-concepts`), where it keeps the guide id, concept name or search words, plus the kind of guide read. Your identity is an irreversible salted hash. To opt out, send the header `X-Runpod-Analytics: off` — e.g. append `--header "X-Runpod-Analytics: off"` to the `claude mcp add` command. Running locally, nothing is ever sent.
+The hosted server records one anonymous event per tool call (tool name, status, duration, transport, and for a failed call a failure category from a fixed list such as `capacity` or `validation`, never the error text) and per guide resource read (guide URI, or `unknown` on a miss), plus one event when it starts blocking a 404 loop (tool name and block length). It never records your API key or any resource data, and drops tool arguments except on the guide and concept tools (`list-guides`, `read-guide`, `lookup-concept`, `search-concepts`), where it keeps the guide id, concept name or search words, plus the kind of guide read. Your identity is an irreversible salted hash. To opt out, send the header `X-Runpod-Analytics: off` — e.g. append `--header "X-Runpod-Analytics: off"` to the `claude mcp add` command. Running locally, nothing is ever sent.
 
 ## Run locally with `npx`
 

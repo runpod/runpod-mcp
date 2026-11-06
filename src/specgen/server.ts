@@ -47,6 +47,7 @@ import {
   captureResourceCall,
   captureToolCall,
   recordedArgumentValues,
+  type ErrorClass,
 } from './analytics.js';
 import { createAlpTools, type AlpToolsOptions } from './tools/alp.js';
 import { createSearchDocsTool } from './tools/search.js';
@@ -471,22 +472,14 @@ const DETAIL_HINTS: ReadonlyArray<readonly [RegExp, string, ErrorClass]> = [
     'Two arguments conflict: send only one of them and leave the other out entirely. Do not change anything else.',
     'conflicting_args',
   ],
+  // A 400 with a bare "Unauthorized" detail from a write the same key can
+  // otherwise make is upstream's answer for an unfunded account.
+  [
+    /^\s*unauthorized\s*$/i,
+    'Upstream refused this write. With a key that can read, this usually means the account has no balance: ask the user to check their balance in the Runpod console before retrying.',
+    'balance',
+  ],
 ];
-
-/** Closed set of failure causes recorded on analytics events. A fixed enum,
- *  never the upstream message, so no response text reaches PostHog. */
-export type ErrorClass =
-  | 'capacity'
-  | 'balance'
-  | 'conflicting_args'
-  | 'validation'
-  | 'auth'
-  | 'permission'
-  | 'not_found'
-  | 'rate_limited'
-  | 'timeout'
-  | 'server'
-  | 'other';
 
 /** Why a failed tool call failed, for the dashboard: separates a capacity or
  *  balance 400 from an agent's malformed input, which share a status code. */
@@ -497,7 +490,6 @@ export function errorClass(result: ToolResult): ErrorClass {
   if (status === 400 && detail) {
     for (const [pattern, , cls] of DETAIL_HINTS)
       if (pattern.test(detail)) return cls;
-    if (/^unauthorized$/i.test(detail.trim())) return 'balance';
   }
   if (status === 400 || status === 422) return 'validation';
   if (status === 401) return 'auth';
@@ -514,10 +506,6 @@ function errorHint(status: number, detail?: string): string | undefined {
   if (status === 400 && detail) {
     for (const [pattern, hint] of DETAIL_HINTS)
       if (pattern.test(detail)) return hint;
-    // A 400 with a bare "Unauthorized" detail from a write the same key can
-    // otherwise make is upstream's answer for an unfunded account.
-    if (/^unauthorized$/i.test(detail.trim()))
-      return 'Upstream refused this write. With a key that can read, this usually means the account has no balance: ask the user to check their balance in the Runpod console before retrying.';
   }
   if (status === 400 || status === 422) return SHAPE_HINT;
   if (status === 401) return 'The Runpod API key is missing or invalid.';

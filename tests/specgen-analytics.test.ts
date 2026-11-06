@@ -365,8 +365,11 @@ test('errorClass separates capacity and balance 400s from bad input', () => {
   assert.equal(fail(402, {}), 'balance');
   assert.equal(fail(403, {}), 'permission');
   assert.equal(fail(404, {}), 'not_found');
+  assert.equal(fail(429, { detail: 'Too Many Requests' }), 'rate_limited');
   assert.equal(fail(504, {}), 'timeout');
   assert.equal(fail(500, {}), 'server');
+  assert.equal(fail(418, {}), 'other');
+  assert.equal(fail(0, { error: 'fetch failed' }), 'other');
 });
 
 test('a failed call records error_class and never the upstream message', async () => {
