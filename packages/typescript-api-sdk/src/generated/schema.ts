@@ -3791,7 +3791,7 @@ export interface components {
              *     access: injects a `PUBLIC_KEY` environment variable carrying
              *     your account's registered SSH public keys, unless the request
              *     already sets one. **Requires registered keys** (`PUT
-             *     /v2/account/ssh-keys`) — with none registered the flag does
+             *     /v2/account/ssh-keys`); with none registered the flag does
              *     nothing and the pod has no SSH access. Only images that honor
              *     the convention start sshd from it (all Runpod official images
              *     do). Connect using the pod's `ssh` block; the `ssh.direct`
@@ -8691,6 +8691,17 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
+            /** @description The volume was created less than five minutes ago. Retry after the time given in the detail. */
+            409: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
             default: {
