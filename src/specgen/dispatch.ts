@@ -207,6 +207,19 @@ export async function dispatchGeneratedTool(
   };
 }
 
+// The full-schema check (validate.ts) must not report what dispatch is about
+// to drop: an empty optional query parameter is treated as omitted below.
+export function omittedEmptyQueryArg(
+  tool: GeneratedTool
+): (name: string, value: unknown) => boolean {
+  const required = new Set((tool.inputSchema.required ?? []) as string[]);
+  const query = new Set(
+    tool.params.filter((p) => p.location === 'query').map((p) => p.name)
+  );
+  return (name, value) =>
+    query.has(name) && !required.has(name) && isEmptyValue(value);
+}
+
 function isEmptyValue(value: unknown): boolean {
   return (
     value === null || value === '' || (Array.isArray(value) && !value.length)

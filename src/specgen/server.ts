@@ -13,11 +13,18 @@ import {
 import type { ToolContext } from './context.js';
 import {
   dispatchGeneratedTool,
+  omittedEmptyQueryArg,
   validateArguments,
   withoutNullOptionals,
   type ToolResult,
 } from './dispatch.js';
 import { generatedTools, type GeneratedTool } from './generated/tools.gen.js';
+import {
+  invalidArgumentsPayload,
+  logSchemaViolations,
+  schemaValidationMode,
+  schemaViolations,
+} from './validate.js';
 import { podTransitionTools } from './tools/pod-transitions.js';
 import {
   directoryIncludes,
@@ -184,6 +191,7 @@ export function createSpecgenServer(
   const caller = callerId(ctx.apiKey);
   const profile: ServerProfile = opts.profile ?? 'default';
   const directory = profile === 'directory';
+  const schemaMode = schemaValidationMode();
   // The ALP tools collect conversation-derived data, which the directory
   // profile never offers, whatever the caller passed.
   const alp = directory ? undefined : opts.alp;
@@ -373,9 +381,38 @@ export function createSpecgenServer(
             curated.inputSchema as { required?: unknown; properties?: unknown },
             curatedArgs
           )
-        : null;
+        : generated
+          ? validateArguments(generated.inputSchema, args)
+          : null;
+    // Full-schema check, once the top-level gate has passed (see validate.ts):
+    // shadow mode only logs, enforce mode rejects before any request is built,
+    // so a shape error is no longer hidden behind an auth failure.
+    let schemaRejected: ToolResult | null = null;
+    if (!rejected && schemaMode !== 'off') {
+      const violations = curated
+        ? curated.lenientArguments
+          ? []
+          : schemaViolations(curated.inputSchema, curatedArgs)
+        : generated
+          ? schemaViolations(
+              generated.inputSchema,
+              args,
+              omittedEmptyQueryArg(generated)
+            )
+          : [];
+      if (violations.length) {
+        logSchemaViolations(request.params.name, schemaMode, violations);
+        if (schemaMode === 'enforce')
+          schemaRejected = {
+            ok: false,
+            status: 400,
+            payload: invalidArgumentsPayload(violations),
+          };
+      }
+    }
     const result =
       rejected ??
+      schemaRejected ??
       (await runTool(() =>
         curated
           ? curated.handler(ctx, curatedArgs)
