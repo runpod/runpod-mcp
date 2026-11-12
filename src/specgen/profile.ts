@@ -52,6 +52,8 @@ export const DIRECTORY_TOOLS: Readonly<Record<string, DirectoryDecision>> = {
   'delete-organization-role': IN,
   'delete-organization-user': IN,
   'delete-pod': IN,
+  // env can carry tokens (HF_TOKEN for a model download), so the directory omits it.
+  'exec-pod': { include: true, omitInputs: ['env'] },
   'delete-template': IN,
   'deploy-hub-repo': IN,
   'detach-cost-center-resource': IN,

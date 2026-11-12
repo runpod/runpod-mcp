@@ -365,7 +365,9 @@ test('generation freshness check rejects stale schemas and config without writin
 // The 2026-11-05 spec resync adds 31 operations served in full: organization
 // groups, roles, invites and members, cost centers, and endpoint metrics.
 // They take the generated surface from about 66 KB to about 103 KB.
-const GENERATED_SURFACE_BUDGET_BYTES = 104_000;
+// The 2026-11-12 resync adds exec-pod (run a command in a Pod), about 2.5 KB
+// with its background-download guidance.
+const GENERATED_SURFACE_BUDGET_BYTES = 107_000;
 const CURATED_SURFACE_BUDGET_BYTES = 30_000;
 const ARGUMENT_DESCRIPTION_CAP_BYTES = 400;
 

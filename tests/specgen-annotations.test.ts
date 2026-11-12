@@ -106,6 +106,7 @@ const expectedHints = new Map<string, string>([
   ['delete-organization-role', 'FTTT'],
   ['delete-organization-user', 'FTTT'],
   ['delete-pod', 'FTTT'],
+  ['exec-pod', 'FTFT'],
   ['delete-registry', 'FTTT'],
   ['delete-secret', 'FTTT'],
   ['delete-template', 'FTTT'],
