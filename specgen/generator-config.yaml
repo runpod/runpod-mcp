@@ -131,9 +131,10 @@ descriptions:
     URL > /tmp/dl.log 2>&1 &"], then check progress with later calls (ls -la,
     du -h, tail /tmp/dl.log). stdout and stderr are each capped at 1 MiB
     (truncated true). Right after a create, the Pod can answer 404 "Pod not
-    found" for a few seconds even with the right id, then 409 while its
-    container starts (retry after Retry-After). A Pod that is not running
-    answers 409. A host not yet updated for exec answers 503. Reaches only Pods owned by the API key's own
+    found" for about 10 seconds even with the right id, then 409 while its
+    container starts: retry in about 10 seconds, a few times at most. A Pod
+    that is not running answers 409. A host not yet updated for exec answers
+    503. Reaches only Pods owned by the API key's own
     account. Commands can change or delete data in the Pod: run write
     commands only for what the user asked.
   listServerlessBilling: >-

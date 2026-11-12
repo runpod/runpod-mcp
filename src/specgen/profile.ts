@@ -13,8 +13,9 @@ export const DIRECTORY_PATH = '/directory';
  *  can serve must have an entry, so a new tool (a spec regeneration, a new
  *  curated tool) fails tests/specgen-directory.test.ts until someone decides.
  *  The rules for deciding are in specgen/DIRECTORY_POLICY.md.
- *  `omitInputs` hides top-level arguments the directory must not ask for (a
- *  credential, for example); a call that passes one is refused. */
+ *  `omitInputs` hides arguments the directory must not ask for (a credential,
+ *  for example); a call that passes one is refused. A key is a top-level
+ *  argument (`s3Config`) or one level inside an object argument (`body.env`). */
 export type DirectoryDecision =
   | { include: true; omitInputs?: readonly string[] }
   | { include: false; reason: string };
@@ -52,12 +53,12 @@ export const DIRECTORY_TOOLS: Readonly<Record<string, DirectoryDecision>> = {
   'delete-organization-role': IN,
   'delete-organization-user': IN,
   'delete-pod': IN,
-  // env can carry tokens (HF_TOKEN for a model download), so the directory omits it.
-  'exec-pod': { include: true, omitInputs: ['env'] },
   'delete-template': IN,
   'deploy-hub-repo': IN,
   'detach-cost-center-resource': IN,
   'endpoint-health': IN,
+  // env can carry tokens (HF_TOKEN for a model download), so the directory omits it.
+  'exec-pod': { include: true, omitInputs: ['body.env'] },
   'get-capacity': IN,
   'get-cluster': IN,
   'get-cost-center': IN,
@@ -181,6 +182,19 @@ export function directoryIncludes(name: string): boolean {
 export function directoryOmittedInputs(name: string): readonly string[] {
   const decision = DIRECTORY_TOOLS[name];
   return decision?.include ? (decision.omitInputs ?? []) : [];
+}
+
+/** The omitted inputs (see DirectoryDecision) that a call's arguments set. */
+export function omittedInputsIn(
+  omit: readonly string[],
+  args: Record<string, unknown>
+): string[] {
+  return omit.filter((key) => {
+    const [parent, child] = key.split('.');
+    if (child === undefined) return parent in args;
+    const value = args[parent];
+    return !!value && typeof value === 'object' && child in value;
+  });
 }
 
 export function profileForPath(pathname: string): ServerProfile {
