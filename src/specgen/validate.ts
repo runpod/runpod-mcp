@@ -130,6 +130,11 @@ function toViolation(error: ErrorObject): SchemaViolation {
   ) {
     path = [...base, params.additionalProperty].join('.');
     message = 'is not an accepted argument here';
+  } else if (error.keyword === 'pattern') {
+    // Ajv's text quotes the regex, which an agent cannot act on and which can
+    // hold invisible Unicode whitespace (U+2028/U+2029 split lines in some
+    // tools). The field's own description says what it accepts.
+    message = 'is not in an accepted format';
   }
   const allowed =
     error.keyword === 'enum'

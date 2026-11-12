@@ -9,7 +9,11 @@ import { createSpecgenServer } from '#src/specgen/server';
 import { createToolContext } from '#src/specgen/context';
 import { generatedTools } from '#src/specgen/generated/tools.gen';
 import { argsAsSent, omittedEmptyQueryArg } from '#src/specgen/dispatch';
-import { schemaValidationMode, schemaViolations } from '#src/specgen/validate';
+import {
+  invalidArgumentsPayload,
+  schemaValidationMode,
+  schemaViolations,
+} from '#src/specgen/validate';
 
 function generated(name: string) {
   const tool = generatedTools.find((t) => t.name === name);
@@ -324,5 +328,20 @@ test('prefixItems is enforced: the program name must not be blank', () => {
   assert.deepEqual(
     check('exec-pod', { id: 'p', body: { command: ['ls'] } }),
     []
+  );
+});
+
+test('a pattern failure reads as plain text, without the raw regex', () => {
+  // The exec-pod program pattern holds invisible Unicode whitespace,
+  // including U+2028/U+2029, which some tools treat as line breaks.
+  const [violation] = check('exec-pod', {
+    id: 'p',
+    body: { command: [' '] },
+  });
+  assert.equal(violation.keyword, 'pattern');
+  assert.equal(violation.message, 'is not in an accepted format');
+  assert.doesNotMatch(
+    JSON.stringify(invalidArgumentsPayload([violation])),
+    /[\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]|\^\[/
   );
 });
