@@ -72,6 +72,20 @@ const SDK_RETRY: RetryOptions = {
   maxRetryAfterMs: 5_000,
 };
 
+// The REST v2 URL prefix, normalized the way `new Request` normalizes
+// request.url (lowercase host, default port dropped), so a base like
+// https://API.RUNPOD.IO:443 still matches and REST calls do not silently lose
+// the team. A base that does not parse keeps the raw string: building the
+// context must not throw, and the SDK call reports the bad base itself.
+function restV2PrefixOf(base: string): string {
+  try {
+    const url = new URL(base);
+    return `${url.origin}${url.pathname.replace(/\/+$/, '')}/v2/`;
+  } catch {
+    return `${base}/v2/`;
+  }
+}
+
 export function createToolContext(
   options: ToolContextOptions = {}
 ): ToolContext {
@@ -100,8 +114,7 @@ export function createToolContext(
     };
   }
   const teamId = options.teamId;
-  const restV2Prefix = `${sdkBase(process.env)}/v2/`;
-
+  const restV2Prefix = teamId ? restV2PrefixOf(sdkBase(process.env)) : '';
   let fetchImpl: typeof fetch = fetch;
   if (options.tracking || teamId) {
     fetchImpl = (input, init) => {

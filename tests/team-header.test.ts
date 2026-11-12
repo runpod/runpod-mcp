@@ -254,3 +254,33 @@ describe('handleMcpRequest — X-Team-Id reaches the REST call', () => {
     });
   });
 });
+
+describe('createToolContext — X-Team-Id with a non-canonical REST base', () => {
+  for (const base of [
+    'https://api.runpod.io:443',
+    'https://API.RUNPOD.IO',
+    'https://api.runpod.io/',
+  ]) {
+    it(`RUNPOD_API_BASE_URL=${base} still scopes REST v2, not GraphQL`, async () => {
+      const saved = process.env.RUNPOD_API_BASE_URL;
+      process.env.RUNPOD_API_BASE_URL = base;
+      try {
+        await withRecordedFetch(async (seen) => {
+          const ctx = createToolContext({
+            apiKey: 'rpa_x',
+            teamId: 'cm1team',
+            sdkRetry: false,
+          });
+          await ctx.sdk.GET('/v2/pods');
+          await ctx.graphql.public('{ x }');
+          assert.equal(seen.length, 2);
+          assert.equal(seen[0].teamId, 'cm1team', seen[0].url);
+          assert.equal(seen[1].teamId, null, seen[1].url);
+        });
+      } finally {
+        if (saved === undefined) delete process.env.RUNPOD_API_BASE_URL;
+        else process.env.RUNPOD_API_BASE_URL = saved;
+      }
+    });
+  }
+});
