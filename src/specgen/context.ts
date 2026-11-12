@@ -36,6 +36,8 @@ export interface ToolContext {
 export interface ToolContextOptions {
   /** Per-caller credential. Falls back to RUNPOD_API_KEY (stdio path). */
   apiKey?: string;
+  /** Team the caller acts for (hosted: the inbound X-Team-Id header). */
+  teamId?: string;
   /** Caller identity stamped on every outbound API call (User-Agent +
    *  X-Runpod-Session-Id). Ported from the pre-specgen server. */
   tracking?: {

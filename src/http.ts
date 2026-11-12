@@ -47,6 +47,28 @@ export function extractBearerToken(req: IncomingMessage): string | null {
   return parts[1];
 }
 
+// Team scope: REST v2 acts for a team when a Console (Clerk JWT) caller sends
+// `X-Team-Id` (spec securitySchemes.bearerAuth). The team comes from this
+// request header only, never from a tool argument: the Console owns team
+// context, and a model-chosen team is a wrong-account risk. A malformed value
+// is refused, not dropped: dropping it would run the call on the user's own
+// account, the same silent fallback REST applies to a non-member team, and
+// the caller would never see why. Team ids are opaque, so the check is a
+// charset/length bound, not a format. Node joins a repeated custom header
+// with ", ", which the charset rejects.
+const TEAM_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+
+export function parseTeamIdHeader(
+  req: IncomingMessage
+): { teamId: string | undefined } | { invalid: true } {
+  const value = req.headers['x-team-id'];
+  if (value === undefined) return { teamId: undefined };
+  if (typeof value !== 'string' || !TEAM_ID_PATTERN.test(value)) {
+    return { invalid: true };
+  }
+  return { teamId: value };
+}
+
 // Per-request analytics opt-out: any client can send
 // `X-Runpod-Analytics: off` (or 0/false) and no usage event is captured for
 // its calls. Checked case-insensitively; absence means opted in (the capture
@@ -474,6 +496,22 @@ export async function handleMcpRequest(
     );
     return;
   }
+  const team = parseTeamIdHeader(req);
+  if ('invalid' in team) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        error: {
+          code: -32600,
+          message:
+            'Invalid X-Team-Id header: send one team id of 1-128 letters, digits, "_" or "-".',
+        },
+        id: null,
+      })
+    );
+    return;
+  }
 
   // The body is read only when the pre-flight might actually run. The cheap,
   // body-independent skips are decided first (earlyCredentialCheckSkip) so a
@@ -592,6 +630,7 @@ export async function handleMcpRequest(
   const server = createSpecgenServer(
     createSpecgenContext({
       apiKey: bearerToken,
+      teamId: team.teamId,
       tracking: {
         // Stateless HTTP never sees the MCP clientInfo; the inbound
         // User-Agent is the best identity available.
