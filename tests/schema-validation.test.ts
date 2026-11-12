@@ -8,7 +8,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createSpecgenServer } from '#src/specgen/server';
 import { createToolContext } from '#src/specgen/context';
 import { generatedTools } from '#src/specgen/generated/tools.gen';
-import { omittedEmptyQueryArg } from '#src/specgen/dispatch';
+import { argsAsSent, omittedEmptyQueryArg } from '#src/specgen/dispatch';
 import { schemaValidationMode, schemaViolations } from '#src/specgen/validate';
 
 function generated(name: string) {
@@ -20,6 +20,14 @@ function generated(name: string) {
 function check(name: string, args: Record<string, unknown>) {
   const tool = generated(name);
   return schemaViolations(tool.inputSchema, args, omittedEmptyQueryArg(tool));
+}
+
+// What server.ts validates: the arguments as dispatch will send them.
+function checkSent(name: string, args: Record<string, unknown>) {
+  const tool = generated(name);
+  const sent = argsAsSent(tool, args);
+  assert.ok(sent, 'body should parse');
+  return schemaViolations(tool.inputSchema, sent, omittedEmptyQueryArg(tool));
 }
 
 test('mode defaults to shadow and accepts only off and enforce otherwise', () => {
@@ -123,9 +131,68 @@ test('a null array item is a value, not an omission', () => {
   );
 });
 
+test('a body sent as a JSON string is checked as the object dispatch sends', () => {
+  assert.deepEqual(
+    checkSent('exec-pod', {
+      id: 'p',
+      body: JSON.stringify({ command: ['ls'] }),
+    }),
+    []
+  );
+  assert.deepEqual(
+    checkSent('exec-pod', { id: 'p', body: { command: ['ls'] } }),
+    []
+  );
+});
+
+test('number strings in the body are checked after dispatch converts them', () => {
+  assert.deepEqual(
+    checkSent('exec-pod', {
+      id: 'p',
+      body: { command: ['ls'], timeoutSeconds: '5' },
+    }),
+    []
+  );
+  assert.deepEqual(
+    checkSent('exec-pod', {
+      id: 'p',
+      body: JSON.stringify({ command: ['ls'], timeoutSeconds: '5' }),
+    }),
+    []
+  );
+  assert.deepEqual(
+    checkSent('update-pod', { id: 'p', body: { disk: '20' } }),
+    []
+  );
+});
+
+test('a real error inside a stringified body is still reported', () => {
+  const violations = checkSent('exec-pod', {
+    id: 'p',
+    body: JSON.stringify({ timeoutSeconds: 5 }),
+  });
+  assert.deepEqual(
+    violations.map((v) => [v.path, v.keyword]),
+    [['body.command', 'required']]
+  );
+});
+
+test('a body string that is not valid JSON is left to dispatch', () => {
+  assert.equal(argsAsSent(generated('exec-pod'), { id: 'p', body: '{' }), null);
+});
+
 async function callPodAction(
   mode: string | undefined,
   action: string,
+  apiKey: string | undefined = 'fake'
+) {
+  return callTool(mode, 'pod-action', { id: 'p', body: { action } }, apiKey);
+}
+
+async function callTool(
+  mode: string | undefined,
+  name: string,
+  args: Record<string, unknown>,
   apiKey: string | undefined = 'fake'
 ) {
   const savedMode = process.env.MCP_SCHEMA_VALIDATION;
@@ -155,10 +222,7 @@ async function callPodAction(
   const [ct, st] = InMemoryTransport.createLinkedPair();
   try {
     await Promise.all([server.connect(st), client.connect(ct)]);
-    const result = await client.callTool({
-      name: 'pod-action',
-      arguments: { id: 'p', body: { action } },
-    });
+    const result = await client.callTool({ name, arguments: args });
     return {
       requests,
       logs: logs.filter((line) => line.startsWith('schema_violation')),
@@ -227,4 +291,24 @@ test('off mode neither logs nor blocks', async () => {
   const { requests, logs } = await callPodAction('off', 'halt');
   assert.equal(requests, 1);
   assert.equal(logs.length, 0);
+});
+
+test('enforce mode sends a stringified body with number strings', async () => {
+  const { requests, logs, isError } = await callTool('enforce', 'exec-pod', {
+    id: 'p',
+    body: JSON.stringify({ command: ['ls'], timeoutSeconds: '5' }),
+  });
+  assert.equal(requests, 1);
+  assert.equal(logs.length, 0);
+  assert.notEqual(isError, true);
+});
+
+test('a body string that is not valid JSON gets the dispatch error, not a violation', async () => {
+  const { requests, logs, payload } = await callTool('enforce', 'exec-pod', {
+    id: 'p',
+    body: '{',
+  });
+  assert.equal(requests, 0);
+  assert.equal(logs.length, 0);
+  assert.match(payload.error, /not valid JSON/);
 });

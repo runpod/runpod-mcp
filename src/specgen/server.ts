@@ -12,6 +12,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolContext } from './context.js';
 import {
+  argsAsSent,
   dispatchGeneratedTool,
   omittedEmptyQueryArg,
   validateArguments,
@@ -387,16 +388,20 @@ export function createSpecgenServer(
     // Full-schema check, once the top-level gate has passed (see validate.ts):
     // shadow mode only logs, enforce mode rejects before any request is built,
     // so a shape error is no longer hidden behind an auth failure.
+    // Generated tools are checked on the arguments as dispatch will send
+    // them (argsAsSent); a body string that is not valid JSON skips the check
+    // and gets dispatch's own error.
     let schemaRejected: ToolResult | null = null;
     if (!rejected && schemaMode !== 'off') {
+      const sent = generated ? argsAsSent(generated, args) : null;
       const violations = curated
         ? curated.lenientArguments
           ? []
           : schemaViolations(curated.inputSchema, curatedArgs)
-        : generated
+        : generated && sent
           ? schemaViolations(
               generated.inputSchema,
-              args,
+              sent,
               omittedEmptyQueryArg(generated)
             )
           : [];
