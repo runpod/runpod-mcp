@@ -77,30 +77,49 @@ export function createToolContext(
 ): ToolContext {
   const apiKey = options.apiKey ?? process.env.RUNPOD_API_KEY;
 
-  // One wrapped fetch shared by all four clients: identifies the calling MCP
-  // client on every outbound API request. The session id is per-context —
-  // per-request on hosted, per-process on stdio.
-  let fetchImpl: typeof fetch = fetch;
+  // One wrapped fetch shared by all four clients. It adds two kinds of
+  // header, each only where the request does not already set it:
+  //  - tracking (User-Agent + X-Runpod-Session-Id) identifies the calling MCP
+  //    client on every outbound API request; the session id is per-context —
+  //    per-request on hosted, per-process on stdio.
+  //  - X-Team-Id scopes a Console (Clerk JWT) call to a team, on REST v2
+  //    requests only (spec securitySchemes.bearerAuth). GraphQL (public and
+  //    authed, same origin as REST but not under /v2/) and the Serverless
+  //    runtime host do not document the header, so they never receive it.
+  let trackingHeaders: Record<string, string> = {};
   let setClientInfo: ToolContext['setClientInfo'];
   if (options.tracking) {
     // Mutable so the stdio handshake can late-bind clientInfo; headers are
     // rebuilt only when it changes.
     const tracking = { ...options.tracking, sessionId: randomUUID() };
-    let headers = buildTrackingHeaders(tracking);
+    trackingHeaders = buildTrackingHeaders(tracking);
     setClientInfo = (name, version) => {
       tracking.clientName = name;
       tracking.clientVersion = version;
-      headers = buildTrackingHeaders(tracking);
+      trackingHeaders = buildTrackingHeaders(tracking);
     };
+  }
+  const teamId = options.teamId;
+  const restV2Prefix = `${sdkBase(process.env)}/v2/`;
+
+  let fetchImpl: typeof fetch = fetch;
+  if (options.tracking || teamId) {
     fetchImpl = (input, init) => {
       // openapi-fetch calls fetch with a fully-built Request as `input`
       // (headers inside it, no init); other clients pass (url, init). Fold
-      // both into one Request, then add the tracking headers only where
-      // absent — passing a headers init alongside a Request would REPLACE
-      // the request's own headers and drop Authorization.
+      // both into one Request, then add headers only where absent — passing
+      // a headers init alongside a Request would REPLACE the request's own
+      // headers and drop Authorization.
       const request = new Request(input, init);
-      for (const [name, value] of Object.entries(headers)) {
+      for (const [name, value] of Object.entries(trackingHeaders)) {
         if (!request.headers.has(name)) request.headers.set(name, value);
+      }
+      if (
+        teamId &&
+        request.url.startsWith(restV2Prefix) &&
+        !request.headers.has('X-Team-Id')
+      ) {
+        request.headers.set('X-Team-Id', teamId);
       }
       return fetch(request);
     };
