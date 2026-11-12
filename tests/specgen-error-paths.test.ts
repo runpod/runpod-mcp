@@ -475,7 +475,7 @@ async function callWithFetch(
 
 const createPod = {
   name: 'create-pod',
-  arguments: { body: { name: 'retry-safety-test' } },
+  arguments: { body: { name: 'retry-safety-test', image: 'runpod/base' } },
 };
 const runEndpoint = {
   name: 'run-endpoint',

@@ -144,42 +144,17 @@ export async function dispatchGeneratedTool(
       param.explode === false && Array.isArray(value) ? value.join(',') : value;
   }
 
-  // Some MCP clients serialize a nested object argument as a JSON string
-  // rather than an object. Forwarding that verbatim makes upstream reject the
-  // whole request with "$: got string, want object" — which never mentions
-  // that the body was stringified, so the agent re-reads the schema it already
-  // followed and retries the same shape. Accept the string and parse it; a
-  // body that is not valid JSON is the client's error, so name it plainly.
-  let requestBody = args.body;
-  if (tool.hasBody && typeof requestBody === 'string') {
-    try {
-      requestBody = JSON.parse(requestBody);
-    } catch {
-      return {
-        ok: false,
-        status: 400,
-        payload: {
-          error:
-            'The body argument arrived as a string that is not valid JSON. Send body as an object.',
-        },
-      };
-    }
-  }
-
-  // Some clients stringify every scalar inside a nested body (disk: "20",
-  // workers.max: "1"), and upstream rejects each one with "$.disk: got string,
-  // want integer". The body schema says what each field is, so a string that
-  // is exactly a number or boolean where the schema wants one is converted
-  // back. Anything else is forwarded untouched for upstream to judge.
-  if (tool.hasBody && requestBody !== undefined) {
-    const properties = (tool.inputSchema.properties ?? {}) as Record<
-      string,
-      unknown
-    >;
-    const defs = ((tool.inputSchema as { $defs?: unknown }).$defs ??
-      {}) as Record<string, unknown>;
-    requestBody = coerceScalars(requestBody, properties.body, defs);
-  }
+  const sent = tool.hasBody ? bodyAsSent(tool, args.body) : { body: args.body };
+  if (!sent)
+    return {
+      ok: false,
+      status: 400,
+      payload: {
+        error:
+          'The body argument arrived as a string that is not valid JSON. Send body as an object.',
+      },
+    };
+  const requestBody = sent.body;
 
   // openapi-fetch is typed per literal path; generated dispatch is generic by
   // construction, so the client is narrowed to the structural shape of a verb
@@ -205,6 +180,68 @@ export async function dispatchGeneratedTool(
     status: response.status,
     payload: data ?? { status: response.status },
   };
+}
+
+// The request body as dispatch sends it; null when it arrived as a string that
+// is not valid JSON.
+//
+// Some MCP clients serialize a nested object argument as a JSON string rather
+// than an object. Forwarding that verbatim makes upstream reject the whole
+// request with "$: got string, want object" — which never mentions that the
+// body was stringified, so the agent re-reads the schema it already followed
+// and retries the same shape. Accept the string and parse it; a body that is
+// not valid JSON is the client's error, so dispatch names it plainly.
+//
+// Some clients also stringify every scalar inside a nested body (disk: "20",
+// workers.max: "1"), and upstream rejects each one with "$.disk: got string,
+// want integer". The body schema says what each field is, so a string that is
+// exactly a number or boolean where the schema wants one is converted back.
+// Anything else is forwarded untouched for upstream to judge.
+export function bodyAsSent(
+  tool: GeneratedTool,
+  body: unknown
+): { body: unknown } | null {
+  let parsed = body;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return null;
+    }
+  }
+  if (parsed === undefined) return { body: parsed };
+  const properties = (tool.inputSchema.properties ?? {}) as Record<
+    string,
+    unknown
+  >;
+  const defs = ((tool.inputSchema as { $defs?: unknown }).$defs ??
+    {}) as Record<string, unknown>;
+  return { body: coerceScalars(parsed, properties.body, defs) };
+}
+
+// The arguments the full-schema check (validate.ts) sees: the body normalized
+// as dispatch will send it, so a quirk dispatch fixes is not reported. Null
+// when the body is a string that is not valid JSON; dispatch reports that.
+export function argsAsSent(
+  tool: GeneratedTool,
+  args: Record<string, unknown>
+): Record<string, unknown> | null {
+  if (!tool.hasBody || args.body === undefined) return args;
+  const sent = bodyAsSent(tool, args.body);
+  return sent ? { ...args, body: sent.body } : null;
+}
+
+// The full-schema check (validate.ts) must not report what dispatch is about
+// to drop: an empty optional query parameter is treated as omitted below.
+export function omittedEmptyQueryArg(
+  tool: GeneratedTool
+): (name: string, value: unknown) => boolean {
+  const required = new Set((tool.inputSchema.required ?? []) as string[]);
+  const query = new Set(
+    tool.params.filter((p) => p.location === 'query').map((p) => p.name)
+  );
+  return (name, value) =>
+    query.has(name) && !required.has(name) && isEmptyValue(value);
 }
 
 function isEmptyValue(value: unknown): boolean {

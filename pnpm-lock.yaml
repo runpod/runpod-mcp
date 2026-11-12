@@ -17,6 +17,9 @@ importers:
       '@runpod/plugin-knowledge':
         specifier: 2.0.0
         version: 2.0.0
+      ajv:
+        specifier: ^8.20.0
+        version: 8.20.0
       jsonc-parser:
         specifier: ^3.3.1
         version: 3.3.1
@@ -39,9 +42,6 @@ importers:
       '@typescript-eslint/parser':
         specifier: ^8.39.1
         version: 8.46.3(eslint@9.39.1)(typescript@5.9.3)
-      ajv:
-        specifier: ^8.20.0
-        version: 8.20.0
       eslint:
         specifier: ^9.33.0
         version: 9.39.1
