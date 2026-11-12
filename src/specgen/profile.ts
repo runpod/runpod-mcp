@@ -192,7 +192,16 @@ export function omittedInputsIn(
   return omit.filter((key) => {
     const [parent, child] = key.split('.');
     if (child === undefined) return parent in args;
-    const value = args[parent];
+    let value = args[parent];
+    // Dispatch parses a body sent as a JSON string, so check its parsed form;
+    // a string that is not JSON fails in dispatch instead.
+    if (typeof value === 'string') {
+      try {
+        value = JSON.parse(value);
+      } catch {
+        return false;
+      }
+    }
     return !!value && typeof value === 'object' && child in value;
   });
 }

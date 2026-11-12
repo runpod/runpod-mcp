@@ -243,18 +243,18 @@ test('directory profile refuses an omitted input', async () => {
   assert.match(result.content[0].text, /s3Config/);
 });
 
-test('directory profile refuses an omitted nested input', async () => {
-  const client = await connect({ profile: 'directory' });
-  const result = (await client.callTool({
-    name: 'exec-pod',
-    arguments: {
-      id: 'p1',
-      body: { command: ['ls'], env: { HF_TOKEN: 'x' } },
-    },
-  })) as { isError?: boolean; content: Array<{ text: string }> };
-  await client.close();
-  assert.equal(result.isError, true);
-  assert.match(result.content[0].text, /body\.env/);
+test('directory profile refuses an omitted nested input, also in a JSON-string body', async () => {
+  const body = { command: ['ls'], env: { HF_TOKEN: 'x' } };
+  for (const sent of [body, JSON.stringify(body)]) {
+    const client = await connect({ profile: 'directory' });
+    const result = (await client.callTool({
+      name: 'exec-pod',
+      arguments: { id: 'p1', body: sent },
+    })) as { isError?: boolean; content: Array<{ text: string }> };
+    await client.close();
+    assert.equal(result.isError, true, typeof sent);
+    assert.match(result.content[0].text, /body\.env/, typeof sent);
+  }
 });
 
 test('directory profile serves one tool per Pod transition instead of pod-action', async () => {
