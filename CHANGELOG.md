@@ -1,5 +1,16 @@
 # @runpod/mcp-server
 
+## 4.11.0
+
+### Minor Changes
+
+- 00dc801: Check every tool call against the tool's full input schema: types, enums, ranges and nested fields, not just top-level required and unknown arguments. By default this runs in shadow mode and only logs a `schema_violation` line (schema keywords and locations, never argument values), so no call that works today is blocked. Set `MCP_SCHEMA_VALIDATION=enforce` to reject an invalid call before any request is sent, with an `invalid_arguments` error naming each field's path, the problem, and the allowed values. With enforcement on, a shape error is no longer hidden behind an authentication failure. A `null` sent for an optional argument at any depth counts as omitted.
+- 7c58f5b: Add `exec-pod`: run one command in a running Pod's container and get stdout, stderr and the exit code back, with no SSH setup (REST v2 `POST /v2/pods/{id}/exec`). The tool description covers background jobs for long downloads, the 25-second limit, and the 404/409 answers while a new Pod starts. Resync the v2 spec from production; the new signup routes are excluded from the tool surface.
+
+### Patch Changes
+
+- e9f7fe2: The hosted 404 loop breaker now counts and blocks only `get-pod`, which caused 519 of the 559 blocks in the last month. 404s from other tools, such as `exec-pod` retried while a new Pod is still being created, no longer count toward a block.
+
 ## 4.10.1
 
 ### Patch Changes
