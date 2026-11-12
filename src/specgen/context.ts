@@ -31,6 +31,9 @@ export interface ToolContext {
    *  The stdio transport only learns it from the MCP initialize handshake,
    *  which happens after this context is built. No-op without tracking. */
   setClientInfo?: (name: string, version?: string) => void;
+  /** Team the caller acts for (hosted: the inbound X-Team-Id header). Tools
+   *  that cannot carry it (non-REST-v2 writes) refuse when it is set. */
+  teamId?: string;
 }
 
 export interface ToolContextOptions {
@@ -72,18 +75,26 @@ const SDK_RETRY: RetryOptions = {
   maxRetryAfterMs: 5_000,
 };
 
-// The REST v2 URL prefix, normalized the way `new Request` normalizes
-// request.url (lowercase host, default port dropped), so a base like
-// https://API.RUNPOD.IO:443 still matches and REST calls do not silently lose
-// the team. A base that does not parse keeps the raw string: building the
-// context must not throw, and the SDK call reports the bad base itself.
-function restV2PrefixOf(base: string): string {
-  try {
-    const url = new URL(base);
-    return `${url.origin}${url.pathname.replace(/\/+$/, '')}/v2/`;
-  } catch {
-    return `${base}/v2/`;
-  }
+// A fetch that adds `headers()` to each request where the request does not
+// already set the header. Returns the bare global fetch when `active` is false,
+// so stdio without tracking or a team behaves exactly as before.
+function withHeaders(
+  headers: () => Record<string, string>,
+  active: boolean
+): typeof fetch {
+  if (!active) return fetch;
+  return (input, init) => {
+    // openapi-fetch calls fetch with a fully-built Request as `input`
+    // (headers inside it, no init); other clients pass (url, init). Fold both
+    // into one Request, then add headers only where absent — passing a headers
+    // init alongside a Request would REPLACE the request's own headers and drop
+    // Authorization.
+    const request = new Request(input, init);
+    for (const [name, value] of Object.entries(headers())) {
+      if (!request.headers.has(name)) request.headers.set(name, value);
+    }
+    return fetch(request);
+  };
 }
 
 export function createToolContext(
@@ -91,15 +102,14 @@ export function createToolContext(
 ): ToolContext {
   const apiKey = options.apiKey ?? process.env.RUNPOD_API_KEY;
 
-  // One wrapped fetch shared by all four clients. It adds two kinds of
-  // header, each only where the request does not already set it:
+  // Outbound headers, each added only where the request does not set it:
   //  - tracking (User-Agent + X-Runpod-Session-Id) identifies the calling MCP
   //    client on every outbound API request; the session id is per-context —
   //    per-request on hosted, per-process on stdio.
-  //  - X-Team-Id scopes a Console (Clerk JWT) call to a team, on REST v2
-  //    requests only (spec securitySchemes.bearerAuth). GraphQL (public and
-  //    authed, same origin as REST but not under /v2/) and the Serverless
-  //    runtime host do not document the header, so they never receive it.
+  //  - X-Team-Id scopes a Console (Clerk JWT) call to a team. Only REST v2
+  //    documents it (spec securitySchemes.bearerAuth), so only the clients that
+  //    call REST v2 (`sdk`, and `sse` for the /v2 log streams) get it. The
+  //    Serverless runtime and GraphQL never do, whatever their hosts are.
   let trackingHeaders: Record<string, string> = {};
   let setClientInfo: ToolContext['setClientInfo'];
   if (options.tracking) {
@@ -114,29 +124,12 @@ export function createToolContext(
     };
   }
   const teamId = options.teamId;
-  const restV2Prefix = teamId ? restV2PrefixOf(sdkBase(process.env)) : '';
-  let fetchImpl: typeof fetch = fetch;
-  if (options.tracking || teamId) {
-    fetchImpl = (input, init) => {
-      // openapi-fetch calls fetch with a fully-built Request as `input`
-      // (headers inside it, no init); other clients pass (url, init). Fold
-      // both into one Request, then add headers only where absent — passing
-      // a headers init alongside a Request would REPLACE the request's own
-      // headers and drop Authorization.
-      const request = new Request(input, init);
-      for (const [name, value] of Object.entries(trackingHeaders)) {
-        if (!request.headers.has(name)) request.headers.set(name, value);
-      }
-      if (
-        teamId &&
-        request.url.startsWith(restV2Prefix) &&
-        !request.headers.has('X-Team-Id')
-      ) {
-        request.headers.set('X-Team-Id', teamId);
-      }
-      return fetch(request);
-    };
-  }
+  const trackingFetch = withHeaders(() => trackingHeaders, !!options.tracking);
+  const restFetch = withHeaders(
+    () =>
+      teamId ? { ...trackingHeaders, 'X-Team-Id': teamId } : trackingHeaders,
+    !!options.tracking || !!teamId
+  );
 
   let sdk: RunpodClient | undefined;
 
@@ -154,15 +147,16 @@ export function createToolContext(
         sdk = createRunpodClient({
           apiKey,
           baseUrl: sdkBase(process.env),
-          fetch: fetchImpl,
+          fetch: restFetch,
           timeoutMs: options.sdkTimeoutMs ?? SDK_TIMEOUT_MS,
           retry: options.sdkRetry ?? SDK_RETRY,
         });
       }
       return sdk;
     },
-    runtime: createRuntimeClient({ apiKey, fetchImpl }),
-    graphql: createGraphqlClient({ apiKey, fetchImpl }),
-    sse: createSseReader({ apiKey, fetchImpl }),
+    teamId,
+    runtime: createRuntimeClient({ apiKey, fetchImpl: trackingFetch }),
+    graphql: createGraphqlClient({ apiKey, fetchImpl: trackingFetch }),
+    sse: createSseReader({ apiKey, fetchImpl: restFetch }),
   };
 }
