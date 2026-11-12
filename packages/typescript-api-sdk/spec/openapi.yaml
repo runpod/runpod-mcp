@@ -36,6 +36,8 @@ tags:
     description: Organization identity, membership, and access management.
   - name: Account
     description: Account-scoped settings and primitives (SSH public keys).
+  - name: Signup
+    description: Email sign-in and account creation for callers without an API key.
   - name: Pods
     description: GPU and CPU pod lifecycle, configuration, actions, and log streaming.
   - name: Serverless
@@ -2815,6 +2817,91 @@ components:
             authenticate both SSH paths reported in the pod's `ssh` block.
           examples:
             - - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILXGDN/SclOozk1xsDztpmhGiKkkrfQB9SKoO8dSIQQZ me@example.com
+    CreateAuthenticationAttemptRequest:
+      type: object
+      additionalProperties: false
+      required: [email, keyName, codeChallenge]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          description: Address to send the verification code to. It may belong to an existing account
+            or a new one.
+          examples: [owner@example.com]
+        keyName:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Name of the API key issued when verification succeeds.
+          examples: [laptop-cli]
+        codeChallenge:
+          type: string
+          pattern: ^[A-Za-z0-9_-]{43}$
+          description: Unpadded base64url SHA-256 hash of a random `codeVerifier` the caller keeps private.
+            Verify and resend require the matching verifier.
+          examples: [E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM]
+    VerifyAuthenticationAttemptRequest:
+      type: object
+      additionalProperties: false
+      required: [code, codeVerifier]
+      properties:
+        code:
+          type: string
+          pattern: ^[0-9]{6}$
+          description: Verification code from the email.
+          examples: ['123456']
+        codeVerifier:
+          $ref: '#/components/schemas/CodeVerifier'
+    ResendAuthenticationAttemptRequest:
+      type: object
+      additionalProperties: false
+      required: [codeVerifier]
+      properties:
+        codeVerifier:
+          $ref: '#/components/schemas/CodeVerifier'
+    CodeVerifier:
+      type: string
+      pattern: ^[A-Za-z0-9._~-]{43,128}$
+      description: The random secret whose SHA-256 hash was sent as `codeChallenge`.
+      examples: [dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk]
+    AuthenticationAttempt:
+      type: object
+      required: [attemptId, expiresAt, resendAfter]
+      properties:
+        attemptId:
+          type: string
+          description: Identifies the attempt in verify and resend.
+          examples: [att_3kq9x81mzp]
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the attempt stops accepting codes. Resending does not extend it.
+          examples: ['2026-10-16T18:10:00Z']
+        resendAfter:
+          type: string
+          format: date-time
+          description: Earliest time a resend is accepted.
+          examples: ['2026-10-16T18:00:30Z']
+    AuthenticationAttemptResult:
+      type: object
+      required: [userId, credential]
+      properties:
+        userId:
+          type: string
+          examples: [user_2abc9xyz]
+        credential:
+          type: object
+          required: [id, apiKey]
+          properties:
+            id:
+              type: string
+              description: Identifies the key in the console, where it can be revoked.
+              examples: [key_7Rk2m0pq]
+            apiKey:
+              type: string
+              description: The raw API key. It is returned once, so store it before doing anything else.
+              examples: [rpa_EXAMPLEONLYEXAMPLEONLYEXAMPLEONLY]
     Secret:
       type: object
       description: 'An account-scoped secret: an encrypted string stored by Runpod, referenced from pod,
@@ -3073,7 +3160,7 @@ components:
                 access: injects a `PUBLIC_KEY` environment variable carrying
                 your account's registered SSH public keys, unless the request
                 already sets one. **Requires registered keys** (`PUT
-                /v2/account/ssh-keys`) — with none registered the flag does
+                /v2/account/ssh-keys`); with none registered the flag does
                 nothing and the pod has no SSH access. Only images that honor
                 the convention start sshd from it (all Runpod official images
                 do). Connect using the pod's `ssh` block; the `ssh.direct`
@@ -3150,6 +3237,107 @@ components:
       properties:
         action:
           $ref: '#/components/schemas/PodAction'
+    PodExecRequest:
+      type: object
+      additionalProperties: false
+      required: [command]
+      properties:
+        command:
+          type: array
+          minItems: 1
+          maxItems: 256
+          prefixItems:
+            - type: string
+              minLength: 1
+              maxLength: 4096
+              pattern: "^[^\\x00]*[^\\t-\\r \N   - \L\P  　\\x00][^\\x00]*$"
+          items:
+            type: string
+            maxLength: 4096
+            pattern: ^[^\x00]*$
+          description: |
+            Command to run, as an argv array of 1-256 arguments of at most 4096
+            characters each. It is run directly, never through a shell; for
+            pipes, redirects or globbing pass `["sh", "-c", "..."]`. The first
+            element, the program, must contain a non-whitespace character;
+            later arguments may be empty. No argument may contain a NUL
+            character.
+          examples:
+            - - nvidia-smi
+              - --query-gpu=name,memory.used
+              - --format=csv
+        timeoutSeconds:
+          type: integer
+          minimum: 1
+          maximum: 25
+          default: 20
+          description: |
+            How long the call waits for the command to finish, in seconds. A
+            command still running at this point returns with `timedOut: true`.
+          examples: [10]
+        cwd:
+          type: string
+          pattern: ^/[^\x00-\x1f\x7f]*$
+          maxLength: 1024
+          description: |
+            Absolute working directory for the command, at most 1024 characters
+            and without control characters. Defaults to the image's `WORKDIR`.
+          examples: [/workspace]
+        env:
+          type: object
+          maxProperties: 64
+          propertyNames:
+            type: string
+            minLength: 1
+            maxLength: 256
+            pattern: ^[^=\x00]+$
+          additionalProperties:
+            type: string
+            maxLength: 16384
+            pattern: ^[^\x00]*$
+          description: |
+            Up to 64 environment variables added to the container's environment
+            for this command only. A name is 1-256 characters and must not
+            contain `=` or a NUL character; a value is at most 16384 characters
+            and must not contain a NUL character.
+          examples:
+            - HF_HOME: /workspace/hf
+    PodExecResult:
+      type: object
+      required:
+        - stdout
+        - stderr
+        - exitCode
+        - timedOut
+        - truncated
+        - durationMs
+      properties:
+        stdout:
+          type: string
+          description: |
+            The command's standard output, as UTF-8 with invalid bytes
+            replaced. Capped at 1 MiB; see `truncated`.
+        stderr:
+          type: string
+          description: |
+            The command's standard error, as UTF-8 with invalid bytes
+            replaced. Capped at 1 MiB; see `truncated`.
+        exitCode:
+          type: [integer, 'null']
+          description: |
+            The command's exit code. A non-zero code is a result, not an error.
+            Null only when `timedOut` is `true`.
+        timedOut:
+          type: boolean
+          description: |
+            The call stopped waiting at `timeoutSeconds`. It does not mean the
+            command was stopped: it may still be running inside the container.
+        truncated:
+          type: boolean
+          description: '`stdout` or `stderr` reached the 1 MiB cap and was cut.'
+        durationMs:
+          type: integer
+          description: Wall time of the command as measured on the pod's machine, in milliseconds.
     PodList:
       type: object
       description: >
@@ -6963,6 +7151,203 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /v2/signup/authentication-attempts:
+    post:
+      operationId: createAuthenticationAttempt
+      security: []
+      x-mint:
+        metadata:
+          description: Email a verification code to sign in or create a Runpod account without an API
+            key.
+      summary: Start an authentication attempt
+      description: Emails a verification code to sign in to an existing account or create a new one, without
+        an API key. The response is the same whether or not an account exists for the email.
+      tags: [Signup]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+          description: Use an unpredictable unique key, such as a UUID, for each new attempt. Retrying
+            with the same key and body returns the same attempt without sending another email. For the
+            same email, the same key with a different body is a `422`.
+          example: 0f8c2d4e-6a1b-4c3d-9e7f-1a2b3c4d5e6f
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAuthenticationAttemptRequest'
+      responses:
+        '201':
+          description: Created. A verification code was emailed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthenticationAttempt'
+        '400':
+          description: The request is malformed or its body could not be read.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: The incoming request body exceeds 4096 bytes (4 KiB).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/signup/authentication-attempts/{id}/verify:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 64
+        description: The `attemptId` returned when the attempt started.
+    post:
+      operationId: verifyAuthenticationAttempt
+      security: []
+      x-mint:
+        metadata:
+          description: Exchange an emailed verification code for a new Runpod API key.
+      summary: Verify an authentication attempt
+      description: Exchanges the emailed code and the `codeVerifier` whose hash started the attempt for
+        a new API key, visible and revocable in the console. A wrong code is a `422`, and five wrong codes
+        lock the attempt.
+      tags: [Signup]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyAuthenticationAttemptRequest'
+      responses:
+        '200':
+          description: OK. The attempt is consumed and the key is issued.
+          headers:
+            Cache-Control:
+              required: true
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthenticationAttemptResult'
+        '403':
+          description: The account requires SSO or MFA, or belongs to an organization. Sign in through
+            the console instead.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No usable attempt matches this id and `codeVerifier`. It does not exist, expired,
+            already issued a key, or locked after five wrong codes.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: The request is malformed or its body could not be read.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: The incoming request body exceeds 4096 bytes (4 KiB).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/signup/authentication-attempts/{id}/resend:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 64
+        description: The `attemptId` returned when the attempt started.
+    post:
+      operationId: resendAuthenticationAttempt
+      security: []
+      x-mint:
+        metadata:
+          description: Email a new verification code for a pending authentication attempt.
+      summary: Resend an authentication attempt's code
+      description: Emails a new verification code and invalidates the previous one. The attempt's `expiresAt`
+        and wrong-code count carry over. Resending before `resendAfter` is a `429` with `Retry-After`.
+      tags: [Signup]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResendAuthenticationAttemptRequest'
+      responses:
+        '200':
+          description: OK. A new code was emailed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthenticationAttempt'
+        '404':
+          description: No usable attempt matches this id and `codeVerifier`. It does not exist, expired,
+            already issued a key, or locked after five wrong codes.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: The request is malformed or its body could not be read.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: The incoming request body exceeds 4096 bytes (4 KiB).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v2/pods:
     get:
       operationId: listPods
@@ -7904,6 +8289,211 @@ paths:
           $ref: '#/components/responses/UnprocessableEntityError'
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/pods/{id}/exec:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Pod identifier
+        example: pod_abc123
+    post:
+      operationId: execPod
+      x-runpod-scope: pods:write
+      summary: Run a command in a pod
+      x-mint:
+        metadata:
+          description: Run one command inside a running Runpod Pod's container and get its stdout, stderr,
+            and exit code back, with no SSH setup.
+      description: |
+        Runs one command inside the pod's container and returns its stdout,
+        stderr and exit code once it finishes. No SSH key, public IP or exposed
+        port is needed, and it works with any image.
+
+        `command` is an argv array, run directly and never through a shell. For
+        pipes, redirects or globbing pass `["sh", "-c", "..."]`.
+
+        A command that exits non-zero is a result, not an error: the call
+        answers `200` with `exitCode` set. A command still running after
+        `timeoutSeconds` (1-25, default 20) answers `200` with
+        `timedOut: true` and a null `exitCode`. `timedOut` means the call
+        stopped waiting, not that the command was stopped: it may keep
+        running in the container.
+
+        `stdout` and `stderr` are each capped at 1 MiB. Output past the cap is
+        cut and `truncated` is `true`.
+
+        The pod must be running with its container up, otherwise this answers
+        `409`; while the container is still starting, the `409` carries
+        `Retry-After`. A pod whose machine has not been updated for exec yet
+        answers `503` with `Retry-After`.
+
+        `X-Team-Id` is not applied on this route: it reaches only pods owned by
+        the caller's own account.
+      tags: [Pods]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PodExecRequest'
+            examples:
+              gpuQuery:
+                summary: Query the GPU
+                value:
+                  command:
+                    - nvidia-smi
+                    - --query-gpu=name,memory.used
+                    - --format=csv
+                  timeoutSeconds: 10
+              failingInstall:
+                summary: Shell command in a working directory
+                value:
+                  command: [sh, -c, pip install -q nosuchpackage]
+                  cwd: /workspace
+              timeout:
+                summary: Command that outlives its timeout
+                value:
+                  command: [sleep, '120']
+                  timeoutSeconds: 5
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: The command finished or the call stopped waiting for it. A non-zero `exitCode`
+            is a result, not an error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PodExecResult'
+              examples:
+                gpuQuery:
+                  summary: Command succeeded
+                  value:
+                    stdout: |
+                      name, memory.used [MiB]
+                      NVIDIA H100 80GB HBM3, 0 MiB
+                    stderr: ''
+                    exitCode: 0
+                    timedOut: false
+                    truncated: false
+                    durationMs: 412
+                failingInstall:
+                  summary: Command exited non-zero
+                  value:
+                    stdout: ''
+                    stderr: >
+                      ERROR: No matching distribution found for nosuchpackage
+                    exitCode: 1
+                    timedOut: false
+                    truncated: false
+                    durationMs: 2310
+                timeout:
+                  summary: Call stopped waiting
+                  value:
+                    stdout: ''
+                    stderr: ''
+                    exitCode: null
+                    timedOut: true
+                    truncated: false
+                    durationMs: 5003
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. Sent only while the pod's container is starting.
+              schema:
+                type: integer
+              example: 5
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: |
+            The pod is not running, or its container has not started yet. A
+            container that is starting answers with `Retry-After`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          $ref: '#/components/responses/RequestTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        '502':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: |
+            The call did not complete. When the pod could not be looked up, or
+            its machine or the exec service could not be reached, the command
+            did not start: retry the call. When the command was sent but no
+            usable answer came back, it may still be running: check before you
+            retry. When the result could not be read, the command ran.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
+              example: 30
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: |
+            Command execution is not available for this pod right now: its
+            machine has not been updated for exec, execution is busy, or it is
+            temporarily unavailable. The pod itself is unaffected; retry after
+            `Retry-After`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: |
+            The pod's machine, or the exec service in front of it, did not
+            answer in time. The command may still be running: check before you
+            retry.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         default:
           headers:
             RateLimit:
@@ -10206,6 +10796,18 @@ paths:
           $ref: '#/components/responses/ForbiddenError'
         '404':
           $ref: '#/components/responses/NotFoundError'
+        '409':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: The volume was created less than five minutes ago. Retry after the time given in
+            the detail.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
         default:
