@@ -255,32 +255,67 @@ describe('handleMcpRequest — X-Team-Id reaches the REST call', () => {
   });
 });
 
-describe('createToolContext — X-Team-Id with a non-canonical REST base', () => {
-  for (const base of [
-    'https://api.runpod.io:443',
-    'https://API.RUNPOD.IO',
-    'https://api.runpod.io/',
-  ]) {
-    it(`RUNPOD_API_BASE_URL=${base} still scopes REST v2, not GraphQL`, async () => {
-      const saved = process.env.RUNPOD_API_BASE_URL;
-      process.env.RUNPOD_API_BASE_URL = base;
-      try {
-        await withRecordedFetch(async (seen) => {
-          const ctx = createToolContext({
-            apiKey: 'rpa_x',
-            teamId: 'cm1team',
-            sdkRetry: false,
-          });
-          await ctx.sdk.GET('/v2/pods');
-          await ctx.graphql.public('{ x }');
-          assert.equal(seen.length, 2);
-          assert.equal(seen[0].teamId, 'cm1team', seen[0].url);
-          assert.equal(seen[1].teamId, null, seen[1].url);
+describe('createToolContext — X-Team-Id follows the client, not the host', () => {
+  it('the Serverless runtime gets no team even when it shares the REST host', async () => {
+    const saved = {
+      base: process.env.RUNPOD_API_BASE_URL,
+      runtime: process.env.RUNPOD_SERVERLESS_API_URL,
+    };
+    process.env.RUNPOD_API_BASE_URL = 'https://api.runpod.dev';
+    process.env.RUNPOD_SERVERLESS_API_URL = 'https://api.runpod.dev/v2';
+    try {
+      await withRecordedFetch(async (seen) => {
+        const ctx = createToolContext({
+          apiKey: 'rpa_x',
+          teamId: 'cm1team',
+          sdkRetry: false,
         });
-      } finally {
-        if (saved === undefined) delete process.env.RUNPOD_API_BASE_URL;
-        else process.env.RUNPOD_API_BASE_URL = saved;
+        await ctx.sdk.GET('/v2/pods');
+        await ctx.runtime('ep1', '/health').catch(() => undefined);
+        assert.equal(seen.length, 2, JSON.stringify(seen));
+        assert.equal(seen[0].teamId, 'cm1team', seen[0].url);
+        assert.ok(seen[1].url.includes('/ep1/health'), seen[1].url);
+        assert.equal(seen[1].teamId, null, seen[1].url);
+      });
+    } finally {
+      for (const [key, value] of [
+        ['RUNPOD_API_BASE_URL', saved.base],
+        ['RUNPOD_SERVERLESS_API_URL', saved.runtime],
+      ] as const) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
       }
+    }
+  });
+});
+
+describe('handleMcpRequest — deploy-hub-repo with a team', () => {
+  it('refuses before any call, so the endpoint cannot land on the personal account', async () => {
+    await withRecordedFetch(async (seen) => {
+      const { req, res, fake, finished } = fakeReqRes(
+        {
+          jsonrpc: '2.0',
+          id: 4,
+          method: 'tools/call',
+          params: {
+            name: 'deploy-hub-repo',
+            arguments: { repo: 'runpod-workers/worker-vllm' },
+          },
+        },
+        { 'x-team-id': 'cm1team' }
+      );
+      await handleMcpRequest(req, res, {
+        verifyCredential: async () => ({ status: 'valid' as const }),
+      });
+      await finished;
+      const body = fake.chunks.join('');
+      assert.match(body, /"isError":true/, body);
+      assert.match(body, /team/i, body);
+      assert.equal(
+        seen.filter((call) => call.url.includes('graphql')).length,
+        0,
+        JSON.stringify(seen)
+      );
     });
-  }
+  });
 });

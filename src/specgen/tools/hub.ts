@@ -413,6 +413,13 @@ export const deployHubRepo: CuratedTool = {
   },
   handler: (ctx, args) =>
     runTool(async () => {
+      if (ctx.teamId) {
+        // saveEndpoint is authed GraphQL, which does not take X-Team-Id: with
+        // a team set, the endpoint would land on the caller's personal account.
+        return badRequest(
+          'deploy-hub-repo cannot deploy for a team yet: it would create the endpoint on your personal account. Create it with create-template and create-endpoint instead, which act for the team.'
+        );
+      }
       if (!args.repo && !args.hubReleaseId) {
         return badRequest(
           'Provide either repo ("owner/name") or hubReleaseId. Use list-hub-repos to discover both.'
