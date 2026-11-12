@@ -75,11 +75,40 @@ test('directory profile: no ALP, guide or describe tools, and full schemas', asy
     if (!source) continue;
     const omitted = directoryOmittedInputs(tool.name);
     const properties = { ...(source.inputSchema.properties as object) };
-    for (const key of omitted)
+    for (const key of omitted.filter((k) => !k.includes('.')))
       delete (properties as Record<string, unknown>)[key];
     assert.deepEqual(tool.inputSchema.properties, properties, tool.name);
+    // Every omitted key names a real input, so a typo or a nested key the
+    // listing cannot reach fails here; and the listing does not offer it.
+    for (const key of omitted) {
+      assert.ok(
+        inputAt(source.inputSchema as Schema, key),
+        `${tool.name}: omitInputs ${key} is not an input`
+      );
+      assert.equal(
+        inputAt(tool.inputSchema as Schema, key),
+        undefined,
+        `${tool.name}: ${key} is still listed`
+      );
+    }
   }
 });
+
+type Schema = Record<string, unknown>;
+
+// The property schema at `key` (`a` or `a.b`), following a $defs reference.
+function inputAt(schema: Schema, key: string): unknown {
+  const [parent, child] = key.split('.');
+  const node = (schema.properties as Record<string, Schema> | undefined)?.[
+    parent
+  ];
+  if (!node || child === undefined) return node;
+  const ref = typeof node.$ref === 'string' ? node.$ref : '';
+  const target = ref.startsWith('#/$defs/')
+    ? (schema.$defs as Record<string, Schema> | undefined)?.[ref.slice(8)]
+    : node;
+  return (target?.properties as Record<string, unknown> | undefined)?.[child];
+}
 
 // Every tool the server can serve needs an explicit directory decision, so a
 // regenerated or newly written tool cannot reach the directory unreviewed.
@@ -212,6 +241,20 @@ test('directory profile refuses an omitted input', async () => {
   await client.close();
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /s3Config/);
+});
+
+test('directory profile refuses an omitted nested input, also in a JSON-string body', async () => {
+  const body = { command: ['ls'], env: { HF_TOKEN: 'x' } };
+  for (const sent of [body, JSON.stringify(body)]) {
+    const client = await connect({ profile: 'directory' });
+    const result = (await client.callTool({
+      name: 'exec-pod',
+      arguments: { id: 'p1', body: sent },
+    })) as { isError?: boolean; content: Array<{ text: string }> };
+    await client.close();
+    assert.equal(result.isError, true, typeof sent);
+    assert.match(result.content[0].text, /body\.env/, typeof sent);
+  }
 });
 
 test('directory profile serves one tool per Pod transition instead of pod-action', async () => {

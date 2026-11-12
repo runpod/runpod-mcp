@@ -2533,6 +2533,115 @@ export const generatedTools: GeneratedTool[] = [
     },
   },
   {
+    name: 'exec-pod',
+    title: 'Run a command in a Pod',
+    operationId: 'execPod',
+    description:
+      'Run one command inside a running Pod\'s container and get stdout, stderr and the exit code back. No SSH key, public IP or exposed port is needed. command is an argv array run without a shell: pass ["sh", "-c", "..."] for pipes, redirects, globs or &&. One call waits at most timeoutSeconds (1-25, default 20). timedOut true means the call stopped waiting, NOT that the command stopped: it keeps running in the container. For anything longer (model downloads, pip installs, builds), start it in the background and log to a file, e.g. ["sh", "-c", "nohup wget -c -O /workspace/m.safetensors URL > /tmp/dl.log 2>&1 &"], then check progress with later calls (ls -la, du -h, tail /tmp/dl.log). stdout and stderr are each capped at 1 MiB (truncated true). Right after a create, the Pod can answer 404 "Pod not found" for about 10 seconds even with the right id, then 409 while its container starts: retry in about 10 seconds, a few times at most. A Pod that is not running answers 409. A host not yet updated for exec answers 503. Reaches only Pods owned by the API key\'s own account. Commands can change or delete data in the Pod: run write commands only for what the user asked.',
+    directoryDescription:
+      "Run one command inside a running Pod's container and return stdout, stderr and the exit code. The command is an argv array run without a shell. One call waits at most timeoutSeconds (1-25, default 20); a command still running then keeps running in the container, and the result says timedOut. stdout and stderr are each capped at 1 MiB. A Pod that is not running answers 409, and a host not yet updated for exec answers 503. Reaches only Pods owned by the caller's own account. The command can change or delete data in the Pod.",
+    method: 'POST',
+    path: '/v2/pods/{id}/exec',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Pod identifier',
+        },
+        body: {
+          $ref: '#/$defs/PodExecRequest',
+          type: 'object',
+        },
+      },
+      required: ['id', 'body'],
+      $defs: {
+        PodExecRequest: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['command'],
+          properties: {
+            command: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 256,
+              prefixItems: [
+                {
+                  type: 'string',
+                  minLength: 1,
+                  maxLength: 4096,
+                  pattern: '^[^\\x00]*[^\\t-\\r    -     　\\x00][^\\x00]*$',
+                },
+              ],
+              items: {
+                type: 'string',
+                maxLength: 4096,
+                pattern: '^[^\\x00]*$',
+              },
+              description:
+                'Command to run, as an argv array of 1-256 arguments of at most 4096 characters each. It is run directly, never through a shell; for pipes, redirects or globbing pass `["sh", "-c", "..."]`.',
+              examples: [
+                ['nvidia-smi', '--query-gpu=name,memory.used', '--format=csv'],
+              ],
+            },
+            timeoutSeconds: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 25,
+              default: 20,
+              description:
+                'How long the call waits for the command to finish, in seconds. A command still running at this point returns with `timedOut: true`.',
+              examples: [10],
+            },
+            cwd: {
+              type: 'string',
+              pattern: '^/[^\\x00-\\x1f\\x7f]*$',
+              maxLength: 1024,
+              description:
+                "Absolute working directory for the command, at most 1024 characters and without control characters. Defaults to the image's `WORKDIR`.",
+              examples: ['/workspace'],
+            },
+            env: {
+              type: 'object',
+              maxProperties: 64,
+              propertyNames: {
+                type: 'string',
+                minLength: 1,
+                maxLength: 256,
+                pattern: '^[^=\\x00]+$',
+              },
+              additionalProperties: {
+                type: 'string',
+                maxLength: 16384,
+                pattern: '^[^\\x00]*$',
+              },
+              description:
+                "Up to 64 environment variables added to the container's environment for this command only. A name is 1-256 characters and must not contain `=` or a NUL character; a value is at most 16384 characters and must not contain a NUL character.",
+              examples: [
+                {
+                  HF_HOME: '/workspace/hf',
+                },
+              ],
+            },
+          },
+        },
+      },
+    },
+  },
+  {
     name: 'get-cluster',
     title: 'Get cluster',
     operationId: 'getCluster',

@@ -115,14 +115,45 @@ function withoutCredentialExamples(schema: Schema): Schema {
   return strip(schema) as Schema;
 }
 
-function withoutInputs(schema: Schema, omit: readonly string[]): Schema {
-  if (!omit.length) return schema;
+function withoutKeys(schema: Schema, omit: readonly string[]): Schema {
   const properties = { ...((schema.properties ?? {}) as Schema) };
   for (const key of omit) delete properties[key];
   const required = Array.isArray(schema.required)
     ? schema.required.filter((key) => !omit.includes(key as string))
     : schema.required;
   return { ...schema, properties, ...(required ? { required } : {}) };
+}
+
+// Top-level keys drop from the tool's properties. A `parent.child` key drops
+// `child` from the parent argument's object schema: inline, or the $defs entry
+// it references (each tool carries its own $defs copy).
+function withoutInputs(schema: Schema, omit: readonly string[]): Schema {
+  if (!omit.length) return schema;
+  let out = withoutKeys(
+    schema,
+    omit.filter((key) => !key.includes('.'))
+  );
+  for (const key of omit.filter((k) => k.includes('.'))) {
+    const [parent, child] = key.split('.');
+    const properties = (out.properties ?? {}) as Record<string, Schema>;
+    const node = properties[parent];
+    if (!node) continue;
+    const ref = typeof node.$ref === 'string' ? node.$ref : undefined;
+    const defName = ref?.startsWith('#/$defs/') ? ref.slice(8) : undefined;
+    const defs = (out.$defs ?? {}) as Record<string, Schema>;
+    if (defName && defs[defName]) {
+      out = {
+        ...out,
+        $defs: { ...defs, [defName]: withoutKeys(defs[defName], [child]) },
+      };
+    } else {
+      out = {
+        ...out,
+        properties: { ...properties, [parent]: withoutKeys(node, [child]) },
+      };
+    }
+  }
+  return out;
 }
 
 export function callShape(schema: Schema): Schema {

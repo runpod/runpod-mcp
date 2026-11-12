@@ -407,6 +407,72 @@ export interface paths {
         patch: operations["updateSecret"];
         trace?: never;
     };
+    "/v2/signup/authentication-attempts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start an authentication attempt
+         * @description Emails a verification code to sign in to an existing account or create a new one, without an API key. The response is the same whether or not an account exists for the email.
+         */
+        post: operations["createAuthenticationAttempt"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/signup/authentication-attempts/{id}/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The `attemptId` returned when the attempt started. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify an authentication attempt
+         * @description Exchanges the emailed code and the `codeVerifier` whose hash started the attempt for a new API key, visible and revocable in the console. A wrong code is a `422`, and five wrong codes lock the attempt.
+         */
+        post: operations["verifyAuthenticationAttempt"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/signup/authentication-attempts/{id}/resend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The `attemptId` returned when the attempt started. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resend an authentication attempt's code
+         * @description Emails a new verification code and invalidates the previous one. The attempt's `expiresAt` and wrong-code count carry over. Resending before `resendAfter` is a `429` with `Retry-After`.
+         */
+        post: operations["resendAuthenticationAttempt"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v2/pods": {
         parameters: {
             query?: never;
@@ -636,6 +702,55 @@ export interface paths {
          *     not valid for the pod's current status returns `409`.
          */
         post: operations["podAction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/pods/{id}/exec": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Pod identifier
+                 * @example pod_abc123
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run a command in a pod
+         * @description Runs one command inside the pod's container and returns its stdout,
+         *     stderr and exit code once it finishes. No SSH key, public IP or exposed
+         *     port is needed, and it works with any image.
+         *
+         *     `command` is an argv array, run directly and never through a shell. For
+         *     pipes, redirects or globbing pass `["sh", "-c", "..."]`.
+         *
+         *     A command that exits non-zero is a result, not an error: the call
+         *     answers `200` with `exitCode` set. A command still running after
+         *     `timeoutSeconds` (1-25, default 20) answers `200` with
+         *     `timedOut: true` and a null `exitCode`. `timedOut` means the call
+         *     stopped waiting, not that the command was stopped: it may keep
+         *     running in the container.
+         *
+         *     `stdout` and `stderr` are each capped at 1 MiB. Output past the cap is
+         *     cut and `truncated` is `true`.
+         *
+         *     The pod must be running with its container up, otherwise this answers
+         *     `409`; while the container is still starting, the `409` carries
+         *     `Retry-After`. A pod whose machine has not been updated for exec yet
+         *     answers `503` with `Retry-After`.
+         *
+         *     `X-Team-Id` is not applied on this route: it reaches only pods owned by
+         *     the caller's own account.
+         */
+        post: operations["execPod"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3589,6 +3704,75 @@ export interface components {
              */
             keys: string[];
         };
+        CreateAuthenticationAttemptRequest: {
+            /**
+             * Format: email
+             * @description Address to send the verification code to. It may belong to an existing account or a new one.
+             * @example owner@example.com
+             */
+            email: string;
+            /**
+             * @description Name of the API key issued when verification succeeds.
+             * @example laptop-cli
+             */
+            keyName: string;
+            /**
+             * @description Unpadded base64url SHA-256 hash of a random `codeVerifier` the caller keeps private. Verify and resend require the matching verifier.
+             * @example E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM
+             */
+            codeChallenge: string;
+        };
+        VerifyAuthenticationAttemptRequest: {
+            /**
+             * @description Verification code from the email.
+             * @example 123456
+             */
+            code: string;
+            codeVerifier: components["schemas"]["CodeVerifier"];
+        };
+        ResendAuthenticationAttemptRequest: {
+            codeVerifier: components["schemas"]["CodeVerifier"];
+        };
+        /**
+         * @description The random secret whose SHA-256 hash was sent as `codeChallenge`.
+         * @example dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk
+         */
+        CodeVerifier: string;
+        AuthenticationAttempt: {
+            /**
+             * @description Identifies the attempt in verify and resend.
+             * @example att_3kq9x81mzp
+             */
+            attemptId: string;
+            /**
+             * Format: date-time
+             * @description When the attempt stops accepting codes. Resending does not extend it.
+             * @example 2026-10-16T18:10:00Z
+             */
+            expiresAt: string;
+            /**
+             * Format: date-time
+             * @description Earliest time a resend is accepted.
+             * @example 2026-10-16T18:00:30Z
+             */
+            resendAfter: string;
+        };
+        AuthenticationAttemptResult: {
+            /** @example user_2abc9xyz */
+            userId: string;
+            credential: {
+                /**
+                 * @description Identifies the key in the console, where it can be revoked.
+                 * @example key_7Rk2m0pq
+                 */
+                id: string;
+                /**
+                 * @description The raw API key. It is returned once, so store it before doing anything else.
+                 * @example rpa_EXAMPLEONLYEXAMPLEONLYEXAMPLEONLY
+                 */
+                apiKey: string;
+            };
+        };
         /** @description An account-scoped secret: an encrypted string stored by Runpod, referenced from pod, serverless, and template environment variables with the `{{ RUNPOD_SECRET_<name> }}` placeholder, substituted with the secret's value when the pod or worker boots. The value is write-only and never returned by the API. */
         Secret: {
             /**
@@ -3791,7 +3975,7 @@ export interface components {
              *     access: injects a `PUBLIC_KEY` environment variable carrying
              *     your account's registered SSH public keys, unless the request
              *     already sets one. **Requires registered keys** (`PUT
-             *     /v2/account/ssh-keys`) — with none registered the flag does
+             *     /v2/account/ssh-keys`); with none registered the flag does
              *     nothing and the pod has no SSH access. Only images that honor
              *     the convention start sshd from it (all Runpod official images
              *     do). Connect using the pod's `ssh` block; the `ssh.direct`
@@ -3848,6 +4032,75 @@ export interface components {
         };
         PodActionRequest: {
             action: components["schemas"]["PodAction"];
+        };
+        PodExecRequest: {
+            /**
+             * @description Command to run, as an argv array of 1-256 arguments of at most 4096
+             *     characters each. It is run directly, never through a shell; for
+             *     pipes, redirects or globbing pass `["sh", "-c", "..."]`. The first
+             *     element, the program, must contain a non-whitespace character;
+             *     later arguments may be empty. No argument may contain a NUL
+             *     character.
+             * @example [
+             *       "nvidia-smi",
+             *       "--query-gpu=name,memory.used",
+             *       "--format=csv"
+             *     ]
+             */
+            command: [
+                string
+            ];
+            /**
+             * @description How long the call waits for the command to finish, in seconds. A
+             *     command still running at this point returns with `timedOut: true`.
+             * @default 20
+             * @example 10
+             */
+            timeoutSeconds?: number;
+            /**
+             * @description Absolute working directory for the command, at most 1024 characters
+             *     and without control characters. Defaults to the image's `WORKDIR`.
+             * @example /workspace
+             */
+            cwd?: string;
+            /**
+             * @description Up to 64 environment variables added to the container's environment
+             *     for this command only. A name is 1-256 characters and must not
+             *     contain `=` or a NUL character; a value is at most 16384 characters
+             *     and must not contain a NUL character.
+             * @example {
+             *       "HF_HOME": "/workspace/hf"
+             *     }
+             */
+            env?: {
+                [key: string]: string;
+            };
+        };
+        PodExecResult: {
+            /**
+             * @description The command's standard output, as UTF-8 with invalid bytes
+             *     replaced. Capped at 1 MiB; see `truncated`.
+             */
+            stdout: string;
+            /**
+             * @description The command's standard error, as UTF-8 with invalid bytes
+             *     replaced. Capped at 1 MiB; see `truncated`.
+             */
+            stderr: string;
+            /**
+             * @description The command's exit code. A non-zero code is a result, not an error.
+             *     Null only when `timedOut` is `true`.
+             */
+            exitCode: number | null;
+            /**
+             * @description The call stopped waiting at `timeoutSeconds`. It does not mean the
+             *     command was stopped: it may still be running inside the container.
+             */
+            timedOut: boolean;
+            /** @description `stdout` or `stderr` reached the 1 MiB cap and was cut. */
+            truncated: boolean;
+            /** @description Wall time of the command as measured on the pod's machine, in milliseconds. */
+            durationMs: number;
         };
         /** @description A bare list of pods. `GET /v2/clusters/{id}/pods` returns it as-is (a cluster's members are a small, complete set); `GET /v2/pods` composes it with the pagination block via ListPodsResponse. */
         PodList: {
@@ -6914,6 +7167,205 @@ export interface operations {
             };
         };
     };
+    createAuthenticationAttempt: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description Use an unpredictable unique key, such as a UUID, for each new attempt. Retrying with the same key and body returns the same attempt without sending another email. For the same email, the same key with a different body is a `422`.
+                 * @example 0f8c2d4e-6a1b-4c3d-9e7f-1a2b3c4d5e6f
+                 */
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateAuthenticationAttemptRequest"];
+            };
+        };
+        responses: {
+            /** @description Created. A verification code was emailed. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthenticationAttempt"];
+                };
+            };
+            /** @description The request is malformed or its body could not be read. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The incoming request body exceeds 4096 bytes (4 KiB). */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    verifyAuthenticationAttempt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The `attemptId` returned when the attempt started. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VerifyAuthenticationAttemptRequest"];
+            };
+        };
+        responses: {
+            /** @description OK. The attempt is consumed and the key is issued. */
+            200: {
+                headers: {
+                    "Cache-Control": "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthenticationAttemptResult"];
+                };
+            };
+            /** @description The request is malformed or its body could not be read. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The account requires SSO or MFA, or belongs to an organization. Sign in through the console instead. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description No usable attempt matches this id and `codeVerifier`. It does not exist, expired, already issued a key, or locked after five wrong codes. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The incoming request body exceeds 4096 bytes (4 KiB). */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    resendAuthenticationAttempt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The `attemptId` returned when the attempt started. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResendAuthenticationAttemptRequest"];
+            };
+        };
+        responses: {
+            /** @description OK. A new code was emailed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthenticationAttempt"];
+                };
+            };
+            /** @description The request is malformed or its body could not be read. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description No usable attempt matches this id and `codeVerifier`. It does not exist, expired, already issued a key, or locked after five wrong codes. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The incoming request body exceeds 4096 bytes (4 KiB). */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     listPods: {
         parameters: {
             query?: {
@@ -7300,6 +7752,128 @@ export interface operations {
             413: components["responses"]["RequestTooLargeError"];
             422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    execPod: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Pod identifier
+                 * @example pod_abc123
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PodExecRequest"];
+            };
+        };
+        responses: {
+            /** @description The command finished or the call stopped waiting for it. A non-zero `exitCode` is a result, not an error. */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PodExecResult"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            /**
+             * @description The pod is not running, or its container has not started yet. A
+             *     container that is starting answers with `Retry-After`.
+             */
+            409: {
+                headers: {
+                    /**
+                     * @description Seconds to wait before retrying. Sent only while the pod's container is starting.
+                     * @example 5
+                     */
+                    "Retry-After"?: number;
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            413: components["responses"]["RequestTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /**
+             * @description The call did not complete. When the pod could not be looked up, or
+             *     its machine or the exec service could not be reached, the command
+             *     did not start: retry the call. When the command was sent but no
+             *     usable answer came back, it may still be running: check before you
+             *     retry. When the result could not be read, the command ran.
+             */
+            502: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /**
+             * @description Command execution is not available for this pod right now: its
+             *     machine has not been updated for exec, execution is busy, or it is
+             *     temporarily unavailable. The pod itself is unaffected; retry after
+             *     `Retry-After`.
+             */
+            503: {
+                headers: {
+                    /**
+                     * @description Seconds to wait before retrying.
+                     * @example 30
+                     */
+                    "Retry-After"?: number;
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /**
+             * @description The pod's machine, or the exec service in front of it, did not
+             *     answer in time. The command may still be running: check before you
+             *     retry.
+             */
+            504: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error */
             default: {
                 headers: {
@@ -8691,6 +9265,17 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
+            /** @description The volume was created less than five minutes ago. Retry after the time given in the detail. */
+            409: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
             default: {

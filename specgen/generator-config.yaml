@@ -22,6 +22,15 @@ exclude:
     replacedBy: stream-worker-logs
     reason: text/event-stream, held open to tail live output — the generated
       JSON dispatch cannot consume it
+  createAuthenticationAttempt:
+    reason: account signup flow for unauthenticated humans, not an action an
+      agent takes on an existing account
+  verifyAuthenticationAttempt:
+    reason: account signup flow for unauthenticated humans, not an action an
+      agent takes on an existing account
+  resendAuthenticationAttempt:
+    reason: account signup flow for unauthenticated humans, not an action an
+      agent takes on an existing account
 
 # operationId -> tool name overrides; default is the kebab-cased operationId.
 rename: {}
@@ -39,6 +48,7 @@ titles:
   createDelegation: Create ECR delegation
   listDelegations: List ECR delegations
   revokeDelegation: Revoke ECR delegation
+  execPod: Run a command in a Pod
 
 # operationId -> annotation overrides, merged over the hints derived from the
 # HTTP method. Use for operations whose method misstates what they do: a write
@@ -54,6 +64,11 @@ annotations:
   # PUT that replaces the whole key set, removing every key not in the request.
   updateSshKeys:
     destructiveHint: true
+  # POST that runs an arbitrary command in the container: it can delete or
+  # overwrite files, and repeating it repeats the side effects.
+  execPod:
+    destructiveHint: true
+    idempotentHint: false
   # PATCH, but not additive: sending gpu.pools clears exclusions, cpu and the
   # network/global volume lists replace what is there (detaching the rest),
   # and a container change rolls a new release onto the workers. A repeated
@@ -104,6 +119,24 @@ annotations:
 # The mutation-tool overrides carry the critical gotchas inline so the
 # BARE-CLIENT path (no skills installed) still sees them at tool-choice time.
 descriptions:
+  execPod: >-
+    Run one command inside a running Pod's container and get stdout, stderr
+    and the exit code back. No SSH key, public IP or exposed port is needed.
+    command is an argv array run without a shell: pass ["sh", "-c", "..."] for
+    pipes, redirects, globs or &&. One call waits at most timeoutSeconds (1-25,
+    default 20). timedOut true means the call stopped waiting, NOT that the
+    command stopped: it keeps running in the container. For anything longer
+    (model downloads, pip installs, builds), start it in the background and
+    log to a file, e.g. ["sh", "-c", "nohup wget -c -O /workspace/m.safetensors
+    URL > /tmp/dl.log 2>&1 &"], then check progress with later calls (ls -la,
+    du -h, tail /tmp/dl.log). stdout and stderr are each capped at 1 MiB
+    (truncated true). Right after a create, the Pod can answer 404 "Pod not
+    found" for about 10 seconds even with the right id, then 409 while its
+    container starts: retry in about 10 seconds, a few times at most. A Pod
+    that is not running answers 409. A host not yet updated for exec answers
+    503. Reaches only Pods owned by the API key's own
+    account. Commands can change or delete data in the Pod: run write
+    commands only for what the user asked.
   listServerlessBilling: >-
     Get serverless billing history, split into time buckets. SIZE WARNING: with
     defaults this emits one record per endpoint PER BUCKET — on an account with
@@ -192,6 +225,15 @@ descriptions:
 # connections keep the descriptions above. The generator rejects keys whose
 # operationId is absent from the spec.
 directoryDescriptions:
+  execPod: >-
+    Run one command inside a running Pod's container and return stdout, stderr
+    and the exit code. The command is an argv array run without a shell. One
+    call waits at most timeoutSeconds (1-25, default 20); a command still
+    running then keeps running in the container, and the result says
+    timedOut. stdout and stderr are each capped at 1 MiB. A Pod that is not
+    running answers 409, and a host not yet updated for exec answers 503.
+    Reaches only Pods owned by the caller's own account. The command can
+    change or delete data in the Pod.
   createCluster: >-
     Create an Instant Cluster: compute.podCount identical Pods joined by a
     high-speed interconnect, each with compute.gpuCountPerPod GPUs of

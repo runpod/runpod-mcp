@@ -22,6 +22,7 @@ import { podTransitionTools } from './tools/pod-transitions.js';
 import {
   directoryIncludes,
   directoryOmittedInputs,
+  omittedInputsIn,
   type ServerProfile,
 } from './profile.js';
 import { redactSecretEnv } from './redact.js';
@@ -357,7 +358,7 @@ export function createSpecgenServer(
     // The directory profile does not list inputs it must not collect
     // (DIRECTORY_TOOLS omitInputs), so it does not accept them either.
     const omitted = directory
-      ? directoryOmittedInputs(request.params.name).filter((key) => key in args)
+      ? omittedInputsIn(directoryOmittedInputs(request.params.name), args)
       : [];
     const rejected: ToolResult | null = omitted.length
       ? {

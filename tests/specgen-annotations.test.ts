@@ -113,6 +113,7 @@ const expectedHints = new Map<string, string>([
   ['describe-tool', 'TFTF'],
   ['detach-cost-center-resource', 'FTTT'],
   ['endpoint-health', 'TFTT'],
+  ['exec-pod', 'FTFT'],
   ['get-capacity', 'TFTT'],
   ['get-cluster', 'TFTT'],
   ['get-cost-center', 'TFTT'],
