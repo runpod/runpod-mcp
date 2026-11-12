@@ -16,7 +16,8 @@
 // Validation never changes the arguments a handler receives; it only decides
 // whether the call proceeds.
 
-import { Ajv, type ErrorObject, type ValidateFunction } from 'ajv';
+import type { ErrorObject, ValidateFunction } from 'ajv';
+import { Ajv2020 } from 'ajv/dist/2020.js';
 
 export type SchemaValidationMode = 'off' | 'shadow' | 'enforce';
 
@@ -40,9 +41,15 @@ export interface SchemaViolation {
   schemaPath: string;
 }
 
-// Formats are off: the API validates them, and ajv-formats would be another
-// runtime dependency for checks that duplicate upstream ones.
-const ajv = new Ajv({ strict: false, allErrors: true, validateFormats: false });
+// The spec is JSON Schema 2020-12 (prefixItems, $defs), so the 2020 dialect:
+// the default draft-07 Ajv ignores prefixItems. Formats are off: the API
+// validates them, and ajv-formats would be another runtime dependency for
+// checks that duplicate upstream ones.
+const ajv = new Ajv2020({
+  strict: false,
+  allErrors: true,
+  validateFormats: false,
+});
 
 // Compiled lazily, once per schema object: a hosted cold start pays only for
 // the tools it is actually asked to call.

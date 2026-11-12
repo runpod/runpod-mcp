@@ -312,3 +312,17 @@ test('a body string that is not valid JSON gets the dispatch error, not a violat
   assert.equal(logs.length, 0);
   assert.match(payload.error, /not valid JSON/);
 });
+
+test('prefixItems is enforced: the program name must not be blank', () => {
+  // The spec is JSON Schema 2020-12; an older-draft validator ignores
+  // prefixItems and lets a whitespace-only program through.
+  const violations = check('exec-pod', { id: 'p', body: { command: [' '] } });
+  assert.deepEqual(
+    violations.map((v) => [v.path, v.keyword]),
+    [['body.command.0', 'pattern']]
+  );
+  assert.deepEqual(
+    check('exec-pod', { id: 'p', body: { command: ['ls'] } }),
+    []
+  );
+});
