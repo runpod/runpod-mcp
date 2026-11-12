@@ -1,9 +1,8 @@
 // Hosted-only loop breaker. Scripts that poll deleted pods send thousands of
-// calls an hour that all 404. Only the tools in LOOP_LIMITED_TOOLS are
-// counted: get-pod caused 519 of the 559 blocks from 2026-10-13 to
-// 2026-11-11 (PostHog runpod_mcp_loop_blocked), and counting every tool also
-// counted agents retrying a new Pod's id while it is still being created.
-// Each counted 404 goes to the Convex sink per hashed account + tool (the
+// calls an hour that all 404. Only the tools in LOOP_LIMITED_TOOLS count:
+// the ones scripts poll in a loop on deleted resources. Counting every tool
+// also counted agents retrying a new Pod's id while it is still being
+// created. Each counted 404 goes to the Convex sink per hashed account + tool (the
 // sink's rateLimit function); once the sink says a pair is blocked, this
 // instance answers that pair with a retryable 429 until the block ends,
 // without calling Convex again.
@@ -51,7 +50,8 @@ export function createNotFoundLimiter(opts: {
   const now = opts.now ?? Date.now;
   return {
     rateLimiter: async (_caller, tool) => {
-      if (!LOOP_LIMITED_TOOLS.has(tool)) return { allowed: true };
+      // Only onToolResult adds blocks, and it skips tools outside
+      // LOOP_LIMITED_TOOLS, so no other tool is ever denied here.
       const pair = `${opts.key}|${tool}`;
       const until = blocked.get(pair);
       if (until === undefined) return { allowed: true };
