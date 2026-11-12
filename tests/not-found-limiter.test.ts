@@ -59,6 +59,16 @@ test('only 404s are reported, with the secret and the hashed pair key', async ()
   assert.deepEqual(await l.rateLimiter('x', 'get-pod'), { allowed: true });
 });
 
+test('404s from tools outside LOOP_LIMITED_TOOLS are not reported or blocked', async () => {
+  const l = limiter(async () => Response.json({ blockedUntil: 61_000 }));
+  for (const tool of ['exec-pod', 'pod-action', 'get-job-status'])
+    l.onToolResult(tool, 404);
+  await flush();
+  await flush();
+  assert.equal(l.calls.length, 0);
+  assert.deepEqual(await l.rateLimiter('x', 'exec-pod'), { allowed: true });
+});
+
 test('a block from the sink denies that tool only, until it expires', async () => {
   let clock = 1_000;
   const l = limiter(
