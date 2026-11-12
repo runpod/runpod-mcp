@@ -1,8 +1,11 @@
 // Hosted-only loop breaker. Scripts that poll deleted pods send thousands of
-// calls an hour that all 404. Each 404 is counted in the Convex sink per
-// hashed account + tool (the sink's rateLimit function); once the sink says a pair is
-// blocked, this instance answers that pair with a retryable 429 until the
-// block ends, without calling Convex again.
+// calls an hour that all 404. Only the tools in LOOP_LIMITED_TOOLS count:
+// the ones scripts poll in a loop on deleted resources. Counting every tool
+// also counted agents retrying a new Pod's id while it is still being
+// created. Each counted 404 goes to the Convex sink per hashed account + tool (the
+// sink's rateLimit function); once the sink says a pair is blocked, this
+// instance answers that pair with a retryable 429 until the block ends,
+// without calling Convex again.
 //
 // Successful calls never touch Convex, and every failure path fails open: a
 // slow or missing sink only means nothing gets blocked.
@@ -11,6 +14,9 @@ import { sinkRouteUrl } from '../alp/sink.js';
 import type { RateLimiter } from './ops.js';
 
 const SINK_TIMEOUT_MS = 3_000;
+
+/** The tools whose 404s are counted and can be blocked. */
+export const LOOP_LIMITED_TOOLS: ReadonlySet<string> = new Set(['get-pod']);
 
 /** The `reason` on this limiter's denials, recorded as blocked_by. */
 export const NOT_FOUND_LOOP = 'not_found_loop';
@@ -44,6 +50,8 @@ export function createNotFoundLimiter(opts: {
   const now = opts.now ?? Date.now;
   return {
     rateLimiter: async (_caller, tool) => {
+      // Only onToolResult adds blocks, and it skips tools outside
+      // LOOP_LIMITED_TOOLS, so no other tool is ever denied here.
       const pair = `${opts.key}|${tool}`;
       const until = blocked.get(pair);
       if (until === undefined) return { allowed: true };
@@ -58,7 +66,7 @@ export function createNotFoundLimiter(opts: {
       };
     },
     onToolResult: (tool, status) => {
-      if (status !== 404) return;
+      if (status !== 404 || !LOOP_LIMITED_TOOLS.has(tool)) return;
       const pair = `${opts.key}|${tool}`;
       void fetchImpl(opts.sinkUrl, {
         method: 'POST',
