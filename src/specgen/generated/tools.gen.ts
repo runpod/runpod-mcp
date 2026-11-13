@@ -141,9 +141,9 @@ export const generatedTools: GeneratedTool[] = [
     title: 'Create cluster',
     operationId: 'createCluster',
     description:
-      "Create an instant cluster (multiple pods with high-speed interconnect). BILLABLE from creation for every pod in the cluster: it rents compute.podCount identical pods at once, each with compute.gpuCountPerPod GPUs of compute.gpuTypeId — state the hourly price for the total GPU count (podCount * gpuCountPerPod, priced from the catalog tools) and create only after the user's explicit go on that quoted shape and total hourly price. Verify GPU stock first via the catalog tools. The compute shape and type are fixed at creation; only the name can be changed later. The container configuration applies to every pod, and templateId is the only private-image path — a bare registry property is rejected. Delete with delete-cluster when finished.",
+      "Create an instant cluster (multiple pods with high-speed interconnect). BILLABLE from creation for every pod in the cluster: it rents compute.podCount identical pods at once, each with compute.gpuCountPerPod GPUs of compute.gpuTypeId — state the hourly price for the total GPU count (podCount * gpuCountPerPod, priced from the catalog tools) and create only after the user's explicit go on that quoted shape and total hourly price. Verify GPU stock first via the catalog tools. The compute shape and type are fixed at creation; only the name can be changed later. The container configuration applies to every pod. For a private image, pass registry (a credential id from list-registries) or a templateId whose template has one; an explicit registry overrides the template's. Delete with delete-cluster when finished.",
     directoryDescription:
-      "Create an Instant Cluster: compute.podCount identical Pods joined by a high-speed interconnect, each with compute.gpuCountPerPod GPUs of compute.gpuTypeId. Billable from creation for every Pod in the cluster, at the GPU type's hourly price times the total GPU count. The compute shape and type are fixed at creation; only the name can change later. The container configuration applies to every Pod, and templateId is the only way to use a private image; a bare registry property is rejected.",
+      "Create an Instant Cluster: compute.podCount identical Pods joined by a high-speed interconnect, each with compute.gpuCountPerPod GPUs of compute.gpuTypeId. Billable from creation for every Pod in the cluster, at the GPU type's hourly price times the total GPU count. The compute shape and type are fixed at creation; only the name can change later. The container configuration applies to every Pod. A private image uses registry (a container registry credential id) or a template that has one; an explicit registry overrides the template's.",
     method: 'POST',
     path: '/v2/clusters',
     params: [],
@@ -320,16 +320,34 @@ export const generatedTools: GeneratedTool[] = [
           enum: ['APPLICATION', 'TRAINING', 'SLURM', 'RAY'],
           examples: ['TRAINING'],
         },
-        CreateClusterRequest: {
+        ContainerConfig: {
           allOf: [
             {
               $ref: '#/$defs/BaseContainerConfig',
             },
             {
               type: 'object',
+              properties: {
+                registry: {
+                  type: ['string', 'null'],
+                  description:
+                    'Container registry credential ID for a private image: one of your credentials from `/v2/registries`. Leave it unset for a private Amazon ECR image.',
+                  examples: [null],
+                },
+              },
+            },
+          ],
+        },
+        CreateClusterRequest: {
+          allOf: [
+            {
+              $ref: '#/$defs/ContainerConfig',
+            },
+            {
+              type: 'object',
               required: ['name', 'type', 'compute'],
               description:
-                'Request body for creating a cluster. `compute` defines the homogeneous pod shape; the container configuration (image, env, ports, …) applies to every pod.',
+                'Request body for creating a cluster. `compute` defines the homogeneous pod shape; the container configuration (image, env, ports, registry, …) applies to every pod.',
               properties: {
                 compute: {
                   $ref: '#/$defs/ClusterCompute',
@@ -346,7 +364,7 @@ export const generatedTools: GeneratedTool[] = [
                   type: 'string',
                   minLength: 1,
                   description:
-                    'ID of a pod template to provision every member pod from: it supplies the container settings (image, args, disk, env, ports) and the registry credential for private images — the only private-image path for clusters. Mutually exclusive with the inline container fields (`image`, `args`, `entrypoint`, `cmd`, `disk`, `env`, `ports`, `mounts`). Must be a non-serverless template you can access.',
+                    'Pod template for every member pod: it supplies the container settings and the registry credential (an explicit `registry` overrides it). Mutually exclusive with `image`, `args`, `entrypoint`, `cmd`, `disk`, `env`, `ports`; `mounts` combines with it. Must be a non-serverless template you can access.',
                   examples: ['30zmvf89kd'],
                 },
                 dataCenterIds: {
@@ -703,7 +721,7 @@ export const generatedTools: GeneratedTool[] = [
                 registry: {
                   type: ['string', 'null'],
                   description:
-                    'Container registry credential ID (for private images)',
+                    'Container registry credential ID for a private image: one of your credentials from `/v2/registries`. Leave it unset for a private Amazon ECR image.',
                   examples: [null],
                 },
               },
@@ -1469,7 +1487,7 @@ export const generatedTools: GeneratedTool[] = [
                 registry: {
                   type: ['string', 'null'],
                   description:
-                    'Container registry credential ID (for private images)',
+                    'Container registry credential ID for a private image: one of your credentials from `/v2/registries`. Leave it unset for a private Amazon ECR image.',
                   examples: [null],
                 },
               },
@@ -1603,6 +1621,9 @@ export const generatedTools: GeneratedTool[] = [
                     "ID of a pod template to base this pod on (not a serverless one). Its container settings (image, args, disk, ports, env, registry, persistent mount) fill in what this body omits; body fields win, and `env` merges per key with body winning. A CUDA field in `gpu` replaces the template's CUDA constraint; CPU pods ignore its mount. Copied once: later template edits do not affect the pod.",
                   examples: ['30zmvf89kd'],
                 },
+                queue: {
+                  $ref: '#/$defs/PodQueueOptions',
+                },
               },
             },
           ],
@@ -1711,6 +1732,76 @@ export const generatedTools: GeneratedTool[] = [
               examples: ['/workspace'],
             },
           },
+        },
+        PodQueueAllowedHours: {
+          type: 'object',
+          description:
+            'Hours of the day, in UTC, during which the queued pod may deploy, per weekday. Omit the object to allow any time. A weekday that is omitted is unrestricted; an empty array blocks that whole day.',
+          properties: {
+            monday: {
+              $ref: '#/$defs/PodQueueHours',
+            },
+            tuesday: {
+              $ref: '#/$defs/PodQueueHours',
+            },
+            wednesday: {
+              $ref: '#/$defs/PodQueueHours',
+            },
+            thursday: {
+              $ref: '#/$defs/PodQueueHours',
+            },
+            friday: {
+              $ref: '#/$defs/PodQueueHours',
+            },
+            saturday: {
+              $ref: '#/$defs/PodQueueHours',
+            },
+            sunday: {
+              $ref: '#/$defs/PodQueueHours',
+            },
+          },
+          unevaluatedProperties: false,
+        },
+        PodQueueHours: {
+          type: 'array',
+          items: {
+            type: 'integer',
+            minimum: 0,
+            maximum: 23,
+          },
+          examples: [[9, 10, 11, 12, 13, 14, 15, 16]],
+        },
+        PodQueueOptions: {
+          type: 'object',
+          description:
+            'Queue the pod for deploy-when-available instead of failing when the requested GPU has no capacity.',
+          properties: {
+            startsAt: {
+              type: 'string',
+              format: 'date-time',
+              description:
+                'Begin waiting at this future time instead of now. The create call then does not try to deploy first; the pod is queued at once. A time already past is a `400`.',
+              examples: ['2026-06-02T08:00:00Z'],
+            },
+            expiresAt: {
+              type: 'string',
+              format: 'date-time',
+              description:
+                'Stop waiting at this time; the queued pod then reports `EXPIRED`. Defaults to, and is capped at, 30 days after `startsAt` (or after the request when `startsAt` is omitted). A time already past, or one not after `startsAt`, is a `400`.',
+              examples: ['2026-06-03T08:00:00Z'],
+            },
+            allowedHours: {
+              $ref: '#/$defs/PodQueueAllowedHours',
+            },
+            notifyEmail: {
+              type: 'string',
+              format: 'email',
+              description:
+                'Also email this address when the pod deploys, or when the queued pod fails or expires. Must be an address on your account (`422` otherwise).',
+              examples: ['ops@example.com'],
+            },
+          },
+          unevaluatedProperties: false,
         },
       },
     },
@@ -1935,7 +2026,7 @@ export const generatedTools: GeneratedTool[] = [
                 registry: {
                   type: ['string', 'null'],
                   description:
-                    'Container registry credential ID (for private images)',
+                    'Container registry credential ID for a private image: one of your credentials from `/v2/registries`. Leave it unset for a private Amazon ECR image.',
                   examples: [null],
                 },
               },
@@ -2376,6 +2467,38 @@ export const generatedTools: GeneratedTool[] = [
     },
   },
   {
+    name: 'delete-queued-pod',
+    title: 'Delete queued Pod',
+    operationId: 'deleteQueuedPod',
+    description:
+      'Cancel a queued pod. Cancels a queued pod: it leaves the queue and is never deployed. A pod it already created is untouched; terminate that with `DELETE /v2/pods/{id}`. Cancelling a queued pod that already deployed, failed or expired changes nothing and still answers `204`.',
+    method: 'DELETE',
+    path: '/v2/queued-pods/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Queued pod identifier',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
     name: 'delete-registry',
     title: 'Delete registry credential',
     operationId: 'deleteRegistry',
@@ -2639,6 +2762,27 @@ export const generatedTools: GeneratedTool[] = [
           },
         },
       },
+    },
+  },
+  {
+    name: 'get-account',
+    title: 'Get account',
+    operationId: 'getAccount',
+    description:
+      'Get your account. Returns the account the API key belongs to.',
+    method: 'GET',
+    path: '/v2/account',
+    params: [],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {},
     },
   },
   {
@@ -3604,6 +3748,38 @@ export const generatedTools: GeneratedTool[] = [
         id: {
           type: 'string',
           description: 'Pod identifier',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'get-queued-pod',
+    title: 'Get queued Pod',
+    operationId: 'getQueuedPod',
+    description:
+      'Get a queued pod. Returns a single queued pod by ID. Poll it after a `202` from `createPod`: `status` moves from `QUEUED` to `DEPLOYED` (with `podId`), `FAILED` (with `failureReason`), `EXPIRED`, or `CANCELLED`.',
+    method: 'GET',
+    path: '/v2/queued-pods/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Queued pod identifier',
         },
       },
       required: ['id'],
@@ -5219,6 +5395,49 @@ export const generatedTools: GeneratedTool[] = [
     },
   },
   {
+    name: 'list-queued-pods',
+    title: 'List queued Pods',
+    operationId: 'listQueuedPods',
+    description:
+      "List queued pods. Returns the caller's queued pods, cursor-paginated newest-first; an omitted `limit` defaults to 1000. Every queued pod is listed whatever its `status`, so the outcome of a queued create can be read after the fact. Follow `pagination.nextCursor` until `hasNextPage` is false.",
+    method: 'GET',
+    path: '/v2/queued-pods',
+    params: [
+      {
+        name: 'cursor',
+        location: 'query',
+      },
+      {
+        name: 'limit',
+        location: 'query',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cursor: {
+          type: 'string',
+          minLength: 1,
+          description:
+            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 1000,
+          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+        },
+      },
+    },
+  },
+  {
     name: 'list-registries',
     title: 'List registry credentials',
     operationId: 'listRegistries',
@@ -5750,7 +5969,7 @@ export const generatedTools: GeneratedTool[] = [
                 registry: {
                   type: ['string', 'null'],
                   description:
-                    'Container registry credential ID (for private images)',
+                    'Container registry credential ID for a private image: one of your credentials from `/v2/registries`. Leave it unset for a private Amazon ECR image.',
                   examples: [null],
                 },
               },
@@ -6448,7 +6667,7 @@ export const generatedTools: GeneratedTool[] = [
                 registry: {
                   type: ['string', 'null'],
                   description:
-                    'Container registry credential ID (for private images)',
+                    'Container registry credential ID for a private image: one of your credentials from `/v2/registries`. Leave it unset for a private Amazon ECR image.',
                   examples: [null],
                 },
               },
@@ -6824,7 +7043,7 @@ export const generatedTools: GeneratedTool[] = [
                 registry: {
                   type: ['string', 'null'],
                   description:
-                    'Container registry credential ID (for private images)',
+                    'Container registry credential ID for a private image: one of your credentials from `/v2/registries`. Leave it unset for a private Amazon ECR image.',
                   examples: [null],
                 },
               },

@@ -367,7 +367,9 @@ test('generation freshness check rejects stale schemas and config without writin
 // They take the generated surface from about 66 KB to about 103 KB.
 // The 2026-11-12 resync adds exec-pod (run a command in a Pod), about 2.5 KB
 // with its background-download guidance.
-const GENERATED_SURFACE_BUDGET_BYTES = 107_000;
+// The 2026-11-13 resync adds get-account and the three queued-pod tools, and
+// the queue option on create-pod: 106,605 B to 109,068 B.
+const GENERATED_SURFACE_BUDGET_BYTES = 110_000;
 const CURATED_SURFACE_BUDGET_BYTES = 30_000;
 const ARGUMENT_DESCRIPTION_CAP_BYTES = 400;
 

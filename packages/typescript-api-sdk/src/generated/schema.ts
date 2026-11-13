@@ -117,6 +117,26 @@ export interface paths {
         patch: operations["updateOrganizationGroup"];
         trace?: never;
     };
+    "/v2/account": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get your account
+         * @description Returns the account the API key belongs to.
+         */
+        get: operations["getAccount"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v2/account/ssh-keys": {
         parameters: {
             query?: never;
@@ -757,6 +777,64 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v2/queued-pods": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List queued pods
+         * @description Returns the caller's queued pods, cursor-paginated newest-first; an
+         *     omitted `limit` defaults to 1000. Every queued pod is listed whatever
+         *     its `status`, so the outcome of a queued create can be read after the
+         *     fact. Follow `pagination.nextCursor` until `hasNextPage` is false.
+         */
+        get: operations["listQueuedPods"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/queued-pods/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Queued pod identifier
+                 * @example clz1x9k4a0000qw3h8s7d2f1g
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get a queued pod
+         * @description Returns a single queued pod by ID. Poll it after a `202` from
+         *     `createPod`: `status` moves from `QUEUED` to `DEPLOYED` (with
+         *     `podId`), `FAILED` (with `failureReason`), `EXPIRED`, or `CANCELLED`.
+         */
+        get: operations["getQueuedPod"];
+        put?: never;
+        post?: never;
+        /**
+         * Cancel a queued pod
+         * @description Cancels a queued pod: it leaves the queue and is never deployed. A
+         *     pod it already created is untouched; terminate that with
+         *     `DELETE /v2/pods/{id}`. Cancelling a queued pod that already
+         *     deployed, failed or expired changes nothing and still answers `204`.
+         */
+        delete: operations["deleteQueuedPod"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v2/clusters": {
         parameters: {
             query?: never;
@@ -869,6 +947,11 @@ export interface paths {
          *     body, from a serverless template referenced by `templateId` (body
          *     fields override the template's), or both; `image` is required unless
          *     `templateId` is set. See `CreateEndpointRequest` for the full body.
+         *     An image in a private Amazon ECR registry with no `registry`
+         *     credential must be covered by one of your ECR delegations (see
+         *     `registry`); otherwise the create returns 400 here rather than
+         *     workers failing their image pull. A caller whose organization role
+         *     cannot use ECR delegations gets 403.
          *
          *     The CUDA constraints live on `gpu` — `gpu.allowedCudaVersions` and
          *     `gpu.minCudaVersion` — so a CPU create cannot express them and the
@@ -956,7 +1039,12 @@ export interface paths {
          *     `scaling` (`type`/`value`/`idleTimeout`), `dataCenterIds`,
          *     `networkVolumes`, `timeout`, `flashboot`, and the
          *     container settings (`image`, `args`, `disk`, `ports`, `env`,
-         *     `registry`).
+         *     `registry`). A patch that leaves the endpoint pulling a private
+         *     Amazon ECR image with no `registry` credential is checked against
+         *     your ECR delegations as on create (400 when none covers the
+         *     repository, 403 when the caller's organization role cannot use
+         *     delegations); a patch that changes neither `image` nor `registry`
+         *     is not.
          *
          *     Omitted compute preserves the current selection. `cpu` completely
          *     replaces a CPU endpoint's selection; compute family is immutable.
@@ -2339,7 +2427,7 @@ export interface components {
         Paginated: {
             pagination: components["schemas"]["Pagination"];
         };
-        /** @description Container configuration universal to every containerized resource. Compose ContainerConfig instead unless the resource cannot support a direct registry credential (clusters — there the registry credential arrives via a pod template, see CreateClusterRequest.templateId). */
+        /** @description Container configuration universal to every containerized resource. ContainerConfig composes it and adds `registry`; resources compose ContainerConfig. */
         BaseContainerConfig: {
             /**
              * @description The container's command, as a single raw string. This is the field `entrypoint` and `cmd` encode into, exposed in its stored form.
@@ -2398,10 +2486,17 @@ export interface components {
              */
             ports?: string[];
         };
-        /** @description Reusable container configuration shared across templates, pods, and serverless endpoints. Adding a field here automatically propagates to all three resources. */
+        /** @description Reusable container configuration shared across templates, pods, serverless endpoints, and clusters. Adding a field here automatically propagates to all of them. */
         ContainerConfig: components["schemas"]["BaseContainerConfig"] & {
             /**
-             * @description Container registry credential ID (for private images)
+             * @description Container registry credential ID for a private image: one of
+             *     your credentials from `/v2/registries`. Leave it unset for a
+             *     private Amazon ECR image. Runpod pulls those with an ECR
+             *     delegation (`/v2/registries/delegations`) matched to the
+             *     image's account, region and repository at pull time, so there
+             *     is no delegation ID to pass here (a delegation ID is not a
+             *     credential ID). A credential set here is used instead of any
+             *     delegation.
              * @example null
              */
             registry?: string | null;
@@ -3121,7 +3216,11 @@ export interface components {
          */
         WorkerStatus: "RUNNING" | "IDLE" | "INITIALIZING" | "THROTTLED" | "UNHEALTHY";
         Worker: {
-            /** @example worker_abc */
+            /**
+             * @description Identifier of the pod backing this worker. Each worker is one pod,
+             *     so there is no separate pod identifier.
+             * @example worker_abc
+             */
             id: string;
             status: components["schemas"]["WorkerStatus"];
             /**
@@ -3681,6 +3780,19 @@ export interface components {
             /** @description Connection straight to the pod's sshd over its published `22/tcp` mapping. Supports the full SSH feature set. Null unless `22/tcp` is in `ports` and the running pod has been assigned a public port for it — so it is usually absent while the pod is provisioning or stopped. It can still appear on a stopped pod, so check that `status` is `RUNNING` before connecting. Also null when listing pods with `GET /v2/pods`; fetch a single pod by ID to obtain the live mapping. */
             direct: components["schemas"]["PodSshEndpoint"] | null;
         };
+        /** @description The account the API key belongs to. */
+        Account: {
+            /**
+             * @description Account ID. For a request that acts for a team (a key created inside the team, or `X-Team-Id`) this is the team owner's account. For an organization member it is the member's own account; see `GET /v2/organization` for the organization.
+             * @example user_2abc123
+             */
+            id: string;
+            /**
+             * @description Email of the same account. Null when the account has no email on file.
+             * @example dev@example.com
+             */
+            email: string | null;
+        };
         SshKeys: {
             /**
              * @description The account's registered SSH public keys, one authorized_keys-style entry per element (`<type> <base64-key> [comment]`).
@@ -3868,7 +3980,14 @@ export interface components {
                 [key: string]: string;
             };
             /**
-             * @description Container registry credential ID (for private images)
+             * @description Container registry credential ID for a private image: one of
+             *     your credentials from `/v2/registries`. Leave it unset for a
+             *     private Amazon ECR image. Runpod pulls those with an ECR
+             *     delegation (`/v2/registries/delegations`) matched to the
+             *     image's account, region and repository at pull time, so there
+             *     is no delegation ID to pass here (a delegation ID is not a
+             *     credential ID). A credential set here is used instead of any
+             *     delegation.
              * @example null
              */
             registry: string | null;
@@ -4008,6 +4127,7 @@ export interface components {
              * @example 30zmvf89kd
              */
             templateId?: string;
+            queue?: components["schemas"]["PodQueueOptions"];
         };
         UpdatePodRequest: components["schemas"]["ContainerConfig"] & {
             /** @description Enable (true) or disable (false) global networking. Takes effect on the next pod start/restart, not live. Requires an NVIDIA GPU and a global-networking-enabled data center. See `GET /v2/catalog/datacenters` (`globalNetwork`) for eligible data centers. */
@@ -4107,6 +4227,181 @@ export interface components {
             pods: components["schemas"]["Pod"][];
         };
         ListPodsResponse: components["schemas"]["PodList"] & components["schemas"]["Paginated"];
+        /**
+         * @description Hours of the day, in UTC, during which the queued pod may deploy, per
+         *     weekday. Omit the object to allow any time. A weekday that is omitted
+         *     is unrestricted; an empty array blocks that whole day. Each entry is
+         *     an hour from 0 to 23 and allows deploys from that hour to the next.
+         */
+        PodQueueAllowedHours: {
+            monday?: components["schemas"]["PodQueueHours"];
+            tuesday?: components["schemas"]["PodQueueHours"];
+            wednesday?: components["schemas"]["PodQueueHours"];
+            thursday?: components["schemas"]["PodQueueHours"];
+            friday?: components["schemas"]["PodQueueHours"];
+            saturday?: components["schemas"]["PodQueueHours"];
+            sunday?: components["schemas"]["PodQueueHours"];
+        };
+        /**
+         * @example [
+         *       9,
+         *       10,
+         *       11,
+         *       12,
+         *       13,
+         *       14,
+         *       15,
+         *       16
+         *     ]
+         */
+        PodQueueHours: number[];
+        /** @description The `queue` options as stored, with the defaults applied. */
+        QueuedPodSchedule: {
+            /**
+             * Format: date-time
+             * @description When waiting begins. Null when it began with the request.
+             * @example null
+             */
+            startsAt: string | null;
+            /**
+             * Format: date-time
+             * @description When waiting ends.
+             * @example 2026-07-01T12:00:00Z
+             */
+            expiresAt: string;
+            /** @description Null when any hour is allowed. */
+            allowedHours: components["schemas"]["PodQueueAllowedHours"] | null;
+            /**
+             * Format: email
+             * @description Null when no email was asked for.
+             * @example null
+             */
+            notifyEmail: string | null;
+        };
+        /**
+         * @description Where a queued pod is in its life.
+         *     - `QUEUED`    — waiting for capacity (from `queue.startsAt` when set)
+         *     - `DEPLOYED`  — capacity came and a pod was created; `podId` names it
+         *     - `FAILED`    — capacity came but the deploy was refused for good; `failureReason` says why
+         *     - `EXPIRED`   — `queue.expiresAt` passed without capacity
+         *     - `CANCELLED` — cancelled with `DELETE /v2/queued-pods/{id}`
+         * @enum {string}
+         */
+        QueuedPodStatus: "QUEUED" | "DEPLOYED" | "FAILED" | "EXPIRED" | "CANCELLED";
+        /**
+         * @description Why a `FAILED` queued pod could not deploy once capacity came.
+         *     - `INSUFFICIENT_BALANCE`     — the account balance was too low
+         *     - `SPENDING_LIMIT`           — the deploy would have passed the spending limit
+         *     - `GPU_QUOTA_EXCEEDED`       — the account's quota for this GPU type was reached
+         *     - `GPU_CONCURRENCY_EXCEEDED` — the plan's concurrent GPU cap was reached
+         *     - `ORG_RESTRICTED`           — the account joined an organization, which cannot use queued deploys
+         *     - `UNKNOWN`                  — anything else; contact support
+         * @enum {string}
+         */
+        QueuedPodFailureReason: "INSUFFICIENT_BALANCE" | "SPENDING_LIMIT" | "GPU_QUOTA_EXCEEDED" | "GPU_CONCURRENCY_EXCEEDED" | "ORG_RESTRICTED" | "UNKNOWN";
+        /**
+         * @description A pod waiting for capacity, or the record of one that waited. It
+         *     carries what identifies and schedules the request; the full container
+         *     settings are not echoed back, keep your create request.
+         */
+        QueuedPod: {
+            /** @example clz1x9k4a0000qw3h8s7d2f1g */
+            id: string;
+            status: components["schemas"]["QueuedPodStatus"];
+            /**
+             * @description The pod created once capacity came; null until then. Read it with `GET /v2/pods/{id}`.
+             * @example null
+             */
+            podId: string | null;
+            /** @description Set only when `status` is `FAILED`. */
+            failureReason: components["schemas"]["QueuedPodFailureReason"] | null;
+            /**
+             * @description The name the pod will carry.
+             * @example pytorch-training
+             */
+            name: string;
+            /**
+             * @description The image the pod will run. Null when it comes from `templateId` at deploy time.
+             * @example runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
+             */
+            image: string | null;
+            /**
+             * @description The template the scheduler resolves at deploy time. Null for queued
+             *     pods from this API, which expands `templateId` into `image` when
+             *     the request is made.
+             * @example null
+             */
+            templateId: string | null;
+            gpu: components["schemas"]["BaseGpuConfig"];
+            cloud: components["schemas"]["Cloud"];
+            /**
+             * @description The data centers the deploy is limited to; empty when any will do.
+             * @example [
+             *       "EU-RO-1"
+             *     ]
+             */
+            dataCenterIds: string[];
+            queue: components["schemas"]["QueuedPodSchedule"];
+            /**
+             * Format: date-time
+             * @example 2026-06-01T12:00:00Z
+             */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description When the queued pod deployed, failed or expired. Null while it waits, and after a cancel.
+             * @example null
+             */
+            resolvedAt: string | null;
+        };
+        /**
+         * @description Queue the pod for deploy-when-available instead of failing when the
+         *     requested GPU has no capacity. The create call still tries to deploy
+         *     first; only a capacity failure queues the request, and any other
+         *     failure is returned as it would be without `queue`. A queued pod is
+         *     placed by a scheduler that retries about every five minutes, in plan
+         *     priority order, during `allowedHours`, until `expiresAt`. An empty
+         *     object queues with the defaults.
+         *
+         *     GPU pods on the secure cloud only: `queue` with `cpu` or
+         *     `globalNetworking` is rejected with `400`. A plan without
+         *     deploy-when-available is refused with `403`, and one whose queue is
+         *     full with `409`. A request that matches a pod still queued (same GPU
+         *     type and count, same settings) returns that queued pod rather than a
+         *     second one.
+         */
+        PodQueueOptions: {
+            /**
+             * Format: date-time
+             * @description Begin waiting at this future time instead of now. The create call
+             *     then does not try to deploy first; the pod is queued at once. A
+             *     time already past is a `400`.
+             * @example 2026-06-02T08:00:00Z
+             */
+            startsAt?: string;
+            /**
+             * Format: date-time
+             * @description Stop waiting at this time; the queued pod then reports `EXPIRED`.
+             *     Defaults to, and is capped at, 30 days after `startsAt` (or after
+             *     the request when `startsAt` is omitted). A time already past, or
+             *     one not after `startsAt`, is a `400`.
+             * @example 2026-06-03T08:00:00Z
+             */
+            expiresAt?: string;
+            allowedHours?: components["schemas"]["PodQueueAllowedHours"];
+            /**
+             * Format: email
+             * @description Also email this address when the pod deploys, or when the queued
+             *     pod fails or expires. Must be an address on your account (`422`
+             *     otherwise).
+             * @example ops@example.com
+             */
+            notifyEmail?: string;
+        };
+        QueuedPodList: {
+            queuedPods: components["schemas"]["QueuedPod"][];
+        };
+        ListQueuedPodsResponse: components["schemas"]["QueuedPodList"] & components["schemas"]["Paginated"];
         /**
          * @description Cluster type. TRAINING is the generic distributed-training cluster; SLURM provisions a managed Slurm controller/compute topology; RAY provisions a managed Ray head/worker topology; APPLICATION is a general multi-node application cluster.
          * @example TRAINING
@@ -4237,7 +4532,7 @@ export interface components {
              */
             createdAt: string;
         };
-        CreateClusterRequest: components["schemas"]["BaseContainerConfig"] & {
+        CreateClusterRequest: components["schemas"]["ContainerConfig"] & {
             compute: components["schemas"]["ClusterCompute"];
             /** @example my-training-cluster */
             name: string;
@@ -4246,11 +4541,13 @@ export interface components {
              * @description ID of a pod template to provision every member pod from. The
              *     template supplies the container settings (image, args, disk,
              *     env, ports) and the container registry credential for private
-             *     images — the only private-image path for clusters. Mutually
-             *     exclusive with `image`, `args`, `entrypoint`, `cmd`, `disk`,
-             *     `env`, and `ports` (rejected with 400). `mounts` combines with
-             *     it: the volume in `mounts` is attached to every member pod,
-             *     overriding the template's volume settings. The cluster
+             *     images. Mutually exclusive with `image`, `args`, `entrypoint`,
+             *     `cmd`, `disk`, `env`, and `ports` (rejected with 400). `registry`
+             *     combines with it: an explicit `registry` overrides the
+             *     template's credential; omit it (or send `null` or an empty
+             *     string) to use the template's. `mounts`
+             *     combines with it too: the volume in `mounts` is attached to
+             *     every member pod, overriding the template's volume settings. The cluster
              *     retains the link: the `template` response field is set. Must be
              *     a non-serverless pod template accessible to the caller.
              * @example 30zmvf89kd
@@ -4330,7 +4627,14 @@ export interface components {
                 [key: string]: string;
             };
             /**
-             * @description Container registry credential ID (for private images)
+             * @description Container registry credential ID for a private image: one of
+             *     your credentials from `/v2/registries`. Leave it unset for a
+             *     private Amazon ECR image. Runpod pulls those with an ECR
+             *     delegation (`/v2/registries/delegations`) matched to the
+             *     image's account, region and repository at pull time, so there
+             *     is no delegation ID to pass here (a delegation ID is not a
+             *     credential ID). A credential set here is used instead of any
+             *     delegation.
              * @example null
              */
             registry: string | null;
@@ -6204,6 +6508,42 @@ export interface operations {
             };
         };
     };
+    getAccount: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Account"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     getSshKeys: {
         parameters: {
             query?: never;
@@ -7444,10 +7784,44 @@ export interface operations {
                     "application/json": components["schemas"]["Pod"];
                 };
             };
+            /**
+             * @description Queued. The request carried `queue` and the GPU had no capacity
+             *     (or `queue.startsAt` is in the future), so no pod exists yet. The
+             *     body is the queued pod; poll `Location` until its `status` leaves
+             *     `QUEUED`, or cancel it with `DELETE /v2/queued-pods/{id}`.
+             */
+            202: {
+                headers: {
+                    /**
+                     * @description Where to read the queued pod (`GET /v2/queued-pods/{id}`).
+                     * @example /v2/queued-pods/clz1x9k4a0000qw3h8s7d2f1g
+                     */
+                    Location?: string;
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueuedPod"];
+                };
+            };
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
+            /**
+             * @description The request carried `queue`, but the account already has as many
+             *     queued pods as its plan allows. Cancel a queued pod or upgrade the
+             *     plan.
+             */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description The incoming request body, or the request it expands into, exceeds the 102400 byte limit or is rejected as too large. */
             413: {
                 headers: {
@@ -7874,6 +8248,139 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    listQueuedPods: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected with 422.
+                 * @example Y3JlYXRlZEF0PTE3NDg3ODA0MDA
+                 */
+                cursor?: components["parameters"]["PaginationCursor"];
+                /**
+                 * @description Page size, 1–1000. Defaults to 1000 when omitted.
+                 * @example 50
+                 */
+                limit?: components["parameters"]["PaginationLimit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListQueuedPodsResponse"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["ResponseTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getQueuedPod: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Queued pod identifier
+                 * @example clz1x9k4a0000qw3h8s7d2f1g
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueuedPod"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteQueuedPod: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Queued pod identifier
+                 * @example clz1x9k4a0000qw3h8s7d2f1g
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cancelled. Response has no body. */
+            204: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
             default: {
                 headers: {
