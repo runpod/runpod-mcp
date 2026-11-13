@@ -20,6 +20,8 @@ interface CapacityGpu {
   memoryInGb: number;
   secureCloud: boolean;
   communityCloud: boolean;
+  securePrice?: number | null;
+  communityPrice?: number | null;
   lowestPrice?: {
     stockStatus: string | null;
     uninterruptablePrice: number | null;
@@ -35,6 +37,20 @@ interface CapacityResponse {
 }
 
 const stockPriority: Record<string, number> = { High: 3, Medium: 2, Low: 1 };
+
+// Without secureCloudOnly, lowestPrice.uninterruptablePrice can be the
+// Community price even for a GPU Community Cloud does not offer (A40 read
+// 0.35 against a 0.59 Secure price), so the pod is billed above the quote.
+// These per-cloud fields are each cloud's on-demand price for one GPU, null
+// when that cloud does not offer the GPU.
+function perCloudPrices(gpu: CapacityGpu) {
+  const price = (offered: boolean, value: number | null | undefined) =>
+    offered && typeof value === 'number' && value > 0 ? value : null;
+  return {
+    securePricePerGpuHr: price(gpu.secureCloud, gpu.securePrice),
+    communityPricePerGpuHr: price(gpu.communityCloud, gpu.communityPrice),
+  };
+}
 
 // The arguments both modes share, re-validated at runtime (the low-level
 // server never validates inputSchema): gpuCount coerced to an int in [1,8],
@@ -104,7 +120,7 @@ export const getCapacity: CuratedTool = {
     'GPU capacity across host CUDA versions, as a matrix. By default one call returns, for each GPU type, overall stock plus AVAILABLE or UNAVAILABLE per host CUDA version. With cudaVersions it checks each listed version and returns graded stock (High, Medium, Low, Out) and the lowest on-demand price per version; a check that fails transiently reports an error for that version only. Out-of-stock GPUs are included unless includeUnavailable is false. Live public catalog data, so page cursors can shift between calls.',
   annotations: readOnly,
   description:
-    "GPU capacity across host CUDA versions, as a matrix. Use this to choose an endpoint's allowedCudaVersions/minCudaVersion (or diagnose/widen a capacity-starved one) and to distinguish capacity problems from compatibility problems. Default mode is one call returning, per GPU type, overall stock plus AVAILABLE/UNAVAILABLE per host-reported CUDA version. Pass cudaVersions to deep-probe instead: one stock lookup per listed version, returning graded stock (High/Medium/Low/Out) and the lowest on-demand price per version; a probe that fails transiently reports a per-version error instead of failing the call. Nothing is hidden by default — set includeUnavailable:false to drop GPUs with no stock on any listed version. Credential-free public catalog data. Stock is live, so page cursors can shift between calls.",
+    "GPU capacity across host CUDA versions, as a matrix. Use this to choose an endpoint's allowedCudaVersions/minCudaVersion (or diagnose/widen a capacity-starved one) and to distinguish capacity problems from compatibility problems. Default mode is one call returning, per GPU type, overall stock plus AVAILABLE/UNAVAILABLE per host-reported CUDA version. Pass cudaVersions to deep-probe instead: one stock lookup per listed version, returning graded stock (High/Medium/Low/Out) and the lowest on-demand price per version; a probe that fails transiently reports a per-version error instead of failing the call. Nothing is hidden by default — set includeUnavailable:false to drop GPUs with no stock on any listed version. pricePerHr is the cheapest across both clouds unless secureCloudOnly; quote securePricePerGpuHr or communityPricePerGpuHr (null if that cloud lacks the GPU) for the cloud you create in. Credential-free public catalog data. Stock is live, so page cursors can shift between calls.",
   inputSchema: {
     type: 'object',
     properties: {
@@ -162,6 +178,8 @@ async function matrixMode(ctx: ToolContext, query: CapacityQuery) {
         memoryInGb
         secureCloud
         communityCloud
+        securePrice
+        communityPrice
         lowestPrice(input: { gpuCount: ${query.gpuCount}${query.secureArg} }) {
           stockStatus
           uninterruptablePrice
@@ -188,6 +206,7 @@ async function matrixMode(ctx: ToolContext, query: CapacityQuery) {
         communityCloud: gpu.communityCloud,
         stockStatus: gpu.lowestPrice?.stockStatus || 'unavailable',
         pricePerHr: gpu.lowestPrice?.uninterruptablePrice ?? null,
+        ...perCloudPrices(gpu),
         cudaVersions: cuda,
       };
     });
@@ -210,6 +229,8 @@ interface ProbeRow {
   memoryGb: number;
   secureCloud: boolean;
   communityCloud: boolean;
+  securePricePerGpuHr: number | null;
+  communityPricePerGpuHr: number | null;
   cudaVersions: Record<string, { stock: string; pricePerHr: number | null }>;
 }
 
@@ -240,6 +261,8 @@ async function probeMode(
             memoryInGb
             secureCloud
             communityCloud
+            securePrice
+            communityPrice
             lowestPrice(input: { gpuCount: ${query.gpuCount}, allowedCudaVersions: ["${v}"]${query.secureArg} }) {
               stockStatus
               uninterruptablePrice
@@ -271,6 +294,7 @@ async function probeMode(
           memoryGb: gpu.memoryInGb,
           secureCloud: gpu.secureCloud,
           communityCloud: gpu.communityCloud,
+          ...perCloudPrices(gpu),
           cudaVersions: {},
         };
         byId.set(gpu.id, row);
