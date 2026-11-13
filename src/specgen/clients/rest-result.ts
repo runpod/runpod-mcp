@@ -6,8 +6,8 @@ import { withRateLimitHint } from '../../_shared/rate-limit.js';
  *  The payload always carries the upstream HTTP `status` (a number): a client
  *  reads it to tell a Runpod 401/429 from an MCP-side failure, and an empty or
  *  non-JSON body (an edge answering a bare 403/429, an empty 401) would
- *  otherwise reach it as `{ error }` alone. A body that already has a status
- *  (REST v2 ErrorResponse) keeps its own shape. */
+ *  otherwise reach it as `{ error }` alone. A body that already has a numeric
+ *  status (REST v2 ErrorResponse) keeps its own shape. */
 export function restError(response: Response, error: unknown): ToolResult {
   const payload = withStatus(error, response);
   return {
@@ -29,10 +29,5 @@ function withStatus(error: unknown, response: Response): unknown {
     return { error, status };
   }
   const body = error as Record<string, unknown>;
-  const detail = body.detail;
-  const detailHasStatus =
-    detail !== null &&
-    typeof detail === 'object' &&
-    'status' in (detail as Record<string, unknown>);
-  return 'status' in body || detailHasStatus ? body : { ...body, status };
+  return typeof body.status === 'number' ? body : { ...body, status };
 }

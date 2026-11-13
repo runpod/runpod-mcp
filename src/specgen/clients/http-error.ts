@@ -1,15 +1,24 @@
 // Shared error type for the non-SDK clients (runtime, GraphQL, SSE): carries
 // the HTTP status and the response body so tool handlers can map it onto a
 // ToolResult instead of leaking a bare exception to the MCP client.
+//
+// `upstream` is true only when Runpod answered with a non-OK HTTP response:
+// runTool then puts `status` in the tool result payload. An error the MCP
+// raises itself (no request sent, a deadline, a GraphQL error on an HTTP 200)
+// leaves it false, so a client never reads it as a Runpod rejection.
 
 export class HttpError extends Error {
+  readonly upstream: boolean;
+
   constructor(
     message: string,
     readonly status: number,
-    readonly payload: unknown = undefined
+    readonly payload: unknown = undefined,
+    options: { upstream?: boolean } = {}
   ) {
     super(message);
     this.name = 'HttpError';
+    this.upstream = options.upstream ?? false;
   }
 }
 

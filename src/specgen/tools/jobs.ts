@@ -112,6 +112,8 @@ async function pollUntilTerminal(deps: {
   let consecutiveErrors = 0;
   let lastError: string | undefined;
   let lastErrorStatus = 502;
+  // True only when the last error was a non-OK Runpod response (see HttpError).
+  let lastErrorUpstream = false;
 
   while (elapsed() < deps.budgetMs) {
     try {
@@ -142,11 +144,13 @@ async function pollUntilTerminal(deps: {
               ['TimeoutError', 'AbortError'].includes(error.name)
             ? 504
             : 502;
+      lastErrorUpstream = error instanceof HttpError && error.upstream;
       if (consecutiveErrors >= MAX_CONSECUTIVE_STREAM_ERRORS) {
         throw new HttpError(
           `Polling aborted after ${MAX_CONSECUTIVE_STREAM_ERRORS} consecutive errors: ${lastError}`,
           lastErrorStatus,
-          { ...result, note: deps.abortedNote }
+          { ...result, note: deps.abortedNote },
+          { upstream: lastErrorUpstream }
         );
       }
     }
@@ -165,7 +169,8 @@ async function pollUntilTerminal(deps: {
       {
         ...result,
         note: 'The latest job status could not be retrieved. Retry after addressing the upstream error.',
-      }
+      },
+      { upstream: lastErrorUpstream }
     );
   }
   return { ...result, pollingTimedOut: true, note: deps.timedOutNote };
@@ -195,12 +200,17 @@ export async function collectJobStream(deps: {
     });
   } catch (error) {
     if (error instanceof HttpError) {
-      throw new HttpError(error.message, error.status, {
-        ...(error.payload && typeof error.payload === 'object'
-          ? error.payload
-          : { error: error.payload }),
-        stream: chunks,
-      });
+      throw new HttpError(
+        error.message,
+        error.status,
+        {
+          ...(error.payload && typeof error.payload === 'object'
+            ? error.payload
+            : { error: error.payload }),
+          stream: chunks,
+        },
+        { upstream: error.upstream }
+      );
     }
     throw error;
   }

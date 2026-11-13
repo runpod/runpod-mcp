@@ -91,11 +91,12 @@ export async function runTool(
       return {
         ok: false,
         status: error.status,
-        // `status` is in the payload too: the client reads it there to tell
-        // an upstream 401/429 from an MCP-side failure (see restError).
+        // `status` is in the payload only for a non-OK Runpod response: the
+        // client reads it there to tell an upstream 401/429 from an MCP-side
+        // failure (see restError and HttpError.upstream).
         payload: {
           error: error.message,
-          status: error.status,
+          ...(error.upstream ? { status: error.status } : {}),
           detail: error.payload,
         },
       };
