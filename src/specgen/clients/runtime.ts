@@ -72,7 +72,8 @@ export function createRuntimeClient(
       throw new HttpError(
         `Runpod runtime API error (${response.status})`,
         response.status,
-        detail
+        detail,
+        { upstream: true }
       );
     }
     return payload;

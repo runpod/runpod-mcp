@@ -86,7 +86,8 @@ export function createSseReader(
           response.status,
           response.status === 429
             ? withRateLimitHint({ error: body }, response.headers)
-            : body
+            : body,
+          { upstream: true }
         );
       }
       streamEstablished = true;

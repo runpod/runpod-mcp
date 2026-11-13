@@ -91,7 +91,14 @@ export async function runTool(
       return {
         ok: false,
         status: error.status,
-        payload: { error: error.message, detail: error.payload },
+        // `status` is in the payload only for a non-OK Runpod response: the
+        // client reads it there to tell an upstream 401/429 from an MCP-side
+        // failure (see restError and HttpError.upstream).
+        payload: {
+          error: error.message,
+          ...(error.upstream ? { status: error.status } : {}),
+          detail: error.payload,
+        },
       };
     }
     // A request deadline firing (boundedFetch on the SDK/GraphQL/runtime paths,

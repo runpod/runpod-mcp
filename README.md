@@ -106,6 +106,8 @@ The hosted server records one anonymous event per tool call (tool name, status, 
 
 To act for a team on the hosted server, send the header `X-Team-Id: <team id>` with a Console (Clerk) token; a team API key already acts for its team. The server forwards it on REST v2 calls only, and refuses `deploy-hub-repo`, which cannot carry it. A value that is not 1-128 letters, digits, `_` or `-` gets HTTP 400.
 
+To join a call to your own request log, send `X-Trace-ID: <id>` to the hosted server. The server forwards it on REST v2 calls only. A value that is not 1-128 letters, digits, `.`, `_` or `-` is dropped, and the call still runs.
+
 ## Run locally with `npx`
 
 Run the server as a local `stdio` process with your own API key:

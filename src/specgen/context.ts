@@ -41,6 +41,8 @@ export interface ToolContextOptions {
   apiKey?: string;
   /** Team the caller acts for (hosted: the inbound X-Team-Id header). */
   teamId?: string;
+  /** Caller's request trace id (hosted: the inbound X-Trace-ID header). */
+  traceId?: string;
   /** Caller identity stamped on every outbound API call (User-Agent +
    *  X-Runpod-Session-Id). Ported from the pre-specgen server. */
   tracking?: {
@@ -110,6 +112,9 @@ export function createToolContext(
   //    documents it (spec securitySchemes.bearerAuth), so only the clients that
   //    call REST v2 (`sdk`, and `sse` for the /v2 log streams) get it. The
   //    Serverless runtime and GraphQL never do, whatever their hosts are.
+  //  - X-Trace-ID joins a REST v2 call to the caller's request in the API
+  //    request log. REST v2 forwards it to GraphQL itself, so the same REST v2
+  //    clients are the only ones that send it.
   let trackingHeaders: Record<string, string> = {};
   let setClientInfo: ToolContext['setClientInfo'];
   if (options.tracking) {
@@ -125,10 +130,14 @@ export function createToolContext(
   }
   const teamId = options.teamId;
   const trackingFetch = withHeaders(() => trackingHeaders, !!options.tracking);
+  const traceId = options.traceId;
   const restFetch = withHeaders(
-    () =>
-      teamId ? { ...trackingHeaders, 'X-Team-Id': teamId } : trackingHeaders,
-    !!options.tracking || !!teamId
+    () => ({
+      ...trackingHeaders,
+      ...(teamId ? { 'X-Team-Id': teamId } : {}),
+      ...(traceId ? { 'X-Trace-ID': traceId } : {}),
+    }),
+    !!options.tracking || !!teamId || !!traceId
   );
 
   let sdk: RunpodClient | undefined;

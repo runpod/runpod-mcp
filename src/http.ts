@@ -69,6 +69,20 @@ export function parseTeamIdHeader(
   return { teamId: value };
 }
 
+// Request trace: a caller (the Runpod Console assistant) sends `X-Trace-ID` so
+// a REST v2 call joins the caller's turn in the API request log. REST v2 also
+// forwards it to GraphQL, so only the REST v2 clients send it. Tracing must
+// never break a request: a malformed value is dropped, not refused. Node joins
+// a repeated custom header with ", ", which the charset rejects.
+const TRACE_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
+
+export function parseTraceIdHeader(req: IncomingMessage): string | undefined {
+  const value = req.headers['x-trace-id'];
+  return typeof value === 'string' && TRACE_ID_PATTERN.test(value)
+    ? value
+    : undefined;
+}
+
 // Per-request analytics opt-out: any client can send
 // `X-Runpod-Analytics: off` (or 0/false) and no usage event is captured for
 // its calls. Checked case-insensitively; absence means opted in (the capture
@@ -631,6 +645,7 @@ export async function handleMcpRequest(
     createSpecgenContext({
       apiKey: bearerToken,
       teamId: team.teamId,
+      traceId: parseTraceIdHeader(req),
       tracking: {
         // Stateless HTTP never sees the MCP clientInfo; the inbound
         // User-Agent is the best identity available.
