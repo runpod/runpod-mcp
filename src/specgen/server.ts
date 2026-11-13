@@ -162,9 +162,9 @@ export interface SpecgenServerOptions {
    *  src/specgen/not-found-limiter.ts). */
   onToolResult?: (tool: string, status: number) => void;
   /** ALP tools (report_feedback / save_to_journal / ask_question /
-   *  read_journal / report_how_user_found_runpod). Enablement follows
-   *  configuration: when absent, the tools do not appear in tools/list at
-   *  all. See docs/agent-learning-protocol.md. */
+   *  read_journal / report_how_user_found_runpod / rate_nps_score).
+   *  Enablement follows configuration: when absent, the tools do not appear
+   *  in tools/list at all. See docs/agent-learning-protocol.md. */
   alp?: AlpToolsOptions;
   /** Deliver the once-per-account referral ask in the initialize
    *  instructions (needs `alp`). Default true; the hosted path sets false

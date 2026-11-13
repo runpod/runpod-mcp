@@ -20,12 +20,15 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { defaultCredentialChecker } from '../http.js';
 import { scrubSubmission, SCRUB_VERSION } from './scrub.js';
 import {
+  ALP_FEEDBACK_TAGS,
   ALP_REFERRAL_SOURCES,
   ALP_REFERRAL_USE_CASES,
   ALP_ROUTES,
   type AlpRoute,
   ALREADY_SUBMITTED_NOTE,
   isSinkUrl,
+  npsScore,
+  type AlpFeedbackTag,
   type AlpReferralSource,
   type AlpReferralUseCase,
 } from './sink.js';
@@ -66,6 +69,10 @@ export interface AlpSubmitBody {
   useCase?: AlpReferralUseCase;
   /** Referral route: the agent had no context on how the user found Runpod. */
   noContext?: boolean;
+  /** NPS route: the agent's score, an integer 0 to 10. */
+  score?: number;
+  /** Feedback route: ties the report to another ask (`nps`). */
+  tag?: AlpFeedbackTag;
   harness?: string;
   harnessSource?: 'client_info' | 'user_agent';
   transport?: 'stdio' | 'http';
@@ -116,8 +123,15 @@ export async function handleAlpSubmit(
   const body = (
     req.body && typeof req.body === 'object' ? req.body : {}
   ) as Partial<AlpSubmitBody>;
-  const content = typeof body.content === 'string' ? body.content : '';
   const referral = body.route === 'referral';
+  // NPS route: the score is the whole answer. No text rides along; the agent
+  // explains its score, if at all, through report_feedback with tag nps.
+  const nps = body.route === 'nps';
+  const score = nps ? npsScore(body.score) : undefined;
+  // Routes that answer an ask rather than report an observation take none of
+  // the feedback/journal/question fields.
+  const answerRoute = referral || nps;
+  const content = !nps && typeof body.content === 'string' ? body.content : '';
   // Referral route only: content is an optional note, so an answer with a
   // use case, or a no-context answer, is complete without it. A 400 there
   // would leave the account's one slot open and the ask repeating every
@@ -139,11 +153,13 @@ export async function handleAlpSubmit(
       : undefined;
   if (
     !ALP_ROUTES.includes(body.route as AlpRoute) ||
-    (content.trim().length === 0 && !noContextAnswer && !useCase)
+    (nps
+      ? score === undefined
+      : content.trim().length === 0 && !noContextAnswer && !useCase)
   ) {
     send(400, {
       recorded: false,
-      error: `Body must carry route (${ALP_ROUTES.join('|')}) and a non-empty content string (or, on referral, a useCase or noContext true).`,
+      error: `Body must carry route (${ALP_ROUTES.join('|')}) and a non-empty content string (or, on referral, a useCase or noContext true; on nps, an integer score from 0 to 10).`,
     });
     return;
   }
@@ -186,12 +202,12 @@ export async function handleAlpSubmit(
   // Scrub before truncation so cutting a token cannot hide its shape.
   const clean = scrubSubmission({
     content,
-    // Feedback/journal/question fields are not stored on the referral route
-    // even if a client sends them: the tool does not offer them, and the
-    // route's 200-character cap would mean nothing if a transcript could
-    // ride in `trigger` or `workaround` under the general cap instead.
+    // Feedback/journal/question fields are not stored on the referral or NPS
+    // route even if a client sends them: the tools do not offer them, and the
+    // referral route's 200-character cap would mean nothing if a transcript
+    // could ride in `trigger` or `workaround` under the general cap instead.
     intention:
-      !referral && typeof body.intention === 'string'
+      !answerRoute && typeof body.intention === 'string'
         ? body.intention
         : undefined,
     modelType: typeof body.modelType === 'string' ? body.modelType : undefined,
@@ -200,21 +216,25 @@ export async function handleAlpSubmit(
     // ("critical", "high") turns a dimension back into prose, and the loss of
     // one label costs less than that.
     severity:
-      !referral && ALP_SEVERITIES.includes(body.severity as AlpSeverity)
+      !answerRoute && ALP_SEVERITIES.includes(body.severity as AlpSeverity)
         ? (body.severity as AlpSeverity)
         : undefined,
     // Same rule as severity: a free-text tool would turn a grouping key back
     // into prose, so only a value shaped like a tool name is kept.
     tool:
-      !referral && typeof body.tool === 'string' && TOOL_NAME.test(body.tool)
+      !answerRoute &&
+      typeof body.tool === 'string' &&
+      TOOL_NAME.test(body.tool)
         ? body.tool
         : undefined,
     workaround:
-      !referral && typeof body.workaround === 'string'
+      !answerRoute && typeof body.workaround === 'string'
         ? body.workaround
         : undefined,
     trigger:
-      !referral && typeof body.trigger === 'string' ? body.trigger : undefined,
+      !answerRoute && typeof body.trigger === 'string'
+        ? body.trigger
+        : undefined,
     // Referral-only fields. source follows the severity rule (off-enum is
     // dropped, not stored as prose) and is dropped on a no-context answer,
     // which by definition has no source. noContext is always a boolean on the
@@ -255,6 +275,14 @@ export async function handleAlpSubmit(
     source: clean.source,
     noContext: clean.noContext,
     useCase: clean.useCase,
+    // Enums and a number, so they skip the scrub. tag follows the severity
+    // rule: feedback only, and an off-enum value is dropped.
+    score,
+    tag:
+      body.route === 'feedback' &&
+      ALP_FEEDBACK_TAGS.includes(body.tag as AlpFeedbackTag)
+        ? (body.tag as AlpFeedbackTag)
+        : undefined,
     harness: clean.harness?.slice(0, MAX_FIELD_CHARS),
     harnessSource: clean.harnessSource?.slice(0, MAX_FIELD_CHARS),
     transport: clean.transport?.slice(0, MAX_FIELD_CHARS),
