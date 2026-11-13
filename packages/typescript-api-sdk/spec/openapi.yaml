@@ -31,11 +31,13 @@ x-runpod-scopes:
     levels: [read, write]
   catalog:
     levels: [read]
+  account:
+    levels: [read]
 tags:
   - name: Organization
     description: Organization identity, membership, and access management.
   - name: Account
-    description: Account-scoped settings and primitives (SSH public keys).
+    description: The account the API key belongs to, and its settings (SSH public keys, secrets).
   - name: Signup
     description: Email sign-in and account creation for callers without an API key.
   - name: Pods
@@ -1068,9 +1070,8 @@ components:
     BaseContainerConfig:
       type: object
       description: >
-        Container configuration universal to every containerized resource. Compose ContainerConfig instead
-        unless the resource cannot support a direct registry credential (clusters — there the registry
-        credential arrives via a pod template, see CreateClusterRequest.templateId).
+        Container configuration universal to every containerized resource. ContainerConfig composes it
+        and adds `registry`; resources compose ContainerConfig.
       properties:
         args:
           type: string
@@ -1130,15 +1131,23 @@ components:
           examples: [[8888/http, 22/tcp]]
     ContainerConfig:
       description: >
-        Reusable container configuration shared across templates, pods, and serverless endpoints. Adding
-        a field here automatically propagates to all three resources.
+        Reusable container configuration shared across templates, pods, serverless endpoints, and clusters.
+        Adding a field here automatically propagates to all of them.
       allOf:
         - $ref: '#/components/schemas/BaseContainerConfig'
         - type: object
           properties:
             registry:
               type: [string, 'null']
-              description: Container registry credential ID (for private images)
+              description: |
+                Container registry credential ID for a private image: one of
+                your credentials from `/v2/registries`. Leave it unset for a
+                private Amazon ECR image. Runpod pulls those with an ECR
+                delegation (`/v2/registries/delegations`) matched to the
+                image's account, region and repository at pull time, so there
+                is no delegation ID to pass here (a delegation ID is not a
+                credential ID). A credential set here is used instead of any
+                delegation.
               examples: [null]
     BaseMounts:
       type: object
@@ -1976,6 +1985,9 @@ components:
       properties:
         id:
           type: string
+          description: |
+            Identifier of the pod backing this worker. Each worker is one pod,
+            so there is no separate pod identifier.
           examples: [worker_abc]
         status:
           $ref: '#/components/schemas/WorkerStatus'
@@ -2786,6 +2798,21 @@ components:
           anyOf:
             - $ref: '#/components/schemas/PodSshEndpoint'
             - type: 'null'
+    Account:
+      type: object
+      description: The account the API key belongs to.
+      required: [id, email]
+      properties:
+        id:
+          type: string
+          description: Account ID. For a request that acts for a team (a key created inside the team,
+            or `X-Team-Id`) this is the team owner's account. For an organization member it is the member's
+            own account; see `GET /v2/organization` for the organization.
+          examples: [user_2abc123]
+        email:
+          type: [string, 'null']
+          description: Email of the same account. Null when the account has no email on file.
+          examples: [dev@example.com]
     SshKeys:
       type: object
       required: [keys]
@@ -3191,6 +3218,8 @@ components:
                 404) — and must not be a serverless template (→ 422). CPU
                 pods do not inherit a template's persistent mount.
               examples: [30zmvf89kd]
+            queue:
+              $ref: '#/components/schemas/PodQueueOptions'
       unevaluatedProperties: false
       if:
         not:
@@ -3352,6 +3381,231 @@ components:
     ListPodsResponse:
       allOf:
         - $ref: '#/components/schemas/PodList'
+        - $ref: '#/components/schemas/Paginated'
+    PodQueueAllowedHours:
+      type: object
+      description: |
+        Hours of the day, in UTC, during which the queued pod may deploy, per
+        weekday. Omit the object to allow any time. A weekday that is omitted
+        is unrestricted; an empty array blocks that whole day. Each entry is
+        an hour from 0 to 23 and allows deploys from that hour to the next.
+      properties:
+        monday:
+          $ref: '#/components/schemas/PodQueueHours'
+        tuesday:
+          $ref: '#/components/schemas/PodQueueHours'
+        wednesday:
+          $ref: '#/components/schemas/PodQueueHours'
+        thursday:
+          $ref: '#/components/schemas/PodQueueHours'
+        friday:
+          $ref: '#/components/schemas/PodQueueHours'
+        saturday:
+          $ref: '#/components/schemas/PodQueueHours'
+        sunday:
+          $ref: '#/components/schemas/PodQueueHours'
+      unevaluatedProperties: false
+    PodQueueHours:
+      type: array
+      items:
+        type: integer
+        minimum: 0
+        maximum: 23
+      examples: [[9, 10, 11, 12, 13, 14, 15, 16]]
+    QueuedPodSchedule:
+      type: object
+      description: The `queue` options as stored, with the defaults applied.
+      required: [startsAt, expiresAt, allowedHours, notifyEmail]
+      properties:
+        startsAt:
+          type: [string, 'null']
+          format: date-time
+          description: When waiting begins. Null when it began with the request.
+          examples: [null]
+        expiresAt:
+          type: string
+          format: date-time
+          description: When waiting ends.
+          examples: ['2026-07-01T12:00:00Z']
+        allowedHours:
+          anyOf:
+            - $ref: '#/components/schemas/PodQueueAllowedHours'
+            - type: 'null'
+          description: Null when any hour is allowed.
+        notifyEmail:
+          type: [string, 'null']
+          format: email
+          description: Null when no email was asked for.
+          examples: [null]
+    QueuedPodStatus:
+      type: string
+      description: |
+        Where a queued pod is in its life.
+        - `QUEUED`    — waiting for capacity (from `queue.startsAt` when set)
+        - `DEPLOYED`  — capacity came and a pod was created; `podId` names it
+        - `FAILED`    — capacity came but the deploy was refused for good; `failureReason` says why
+        - `EXPIRED`   — `queue.expiresAt` passed without capacity
+        - `CANCELLED` — cancelled with `DELETE /v2/queued-pods/{id}`
+      x-enum-varnames:
+        - QueuedPodStatusQueued
+        - QueuedPodStatusDeployed
+        - QueuedPodStatusFailed
+        - QueuedPodStatusExpired
+        - QueuedPodStatusCancelled
+      enum: [QUEUED, DEPLOYED, FAILED, EXPIRED, CANCELLED]
+    QueuedPodFailureReason:
+      type: string
+      description: |
+        Why a `FAILED` queued pod could not deploy once capacity came.
+        - `INSUFFICIENT_BALANCE`     — the account balance was too low
+        - `SPENDING_LIMIT`           — the deploy would have passed the spending limit
+        - `GPU_QUOTA_EXCEEDED`       — the account's quota for this GPU type was reached
+        - `GPU_CONCURRENCY_EXCEEDED` — the plan's concurrent GPU cap was reached
+        - `ORG_RESTRICTED`           — the account joined an organization, which cannot use queued deploys
+        - `UNKNOWN`                  — anything else; contact support
+      x-enum-varnames:
+        - QueuedPodFailureReasonInsufficientBalance
+        - QueuedPodFailureReasonSpendingLimit
+        - QueuedPodFailureReasonGpuQuotaExceeded
+        - QueuedPodFailureReasonGpuConcurrencyExceeded
+        - QueuedPodFailureReasonOrgRestricted
+        - QueuedPodFailureReasonUnknown
+      enum:
+        - INSUFFICIENT_BALANCE
+        - SPENDING_LIMIT
+        - GPU_QUOTA_EXCEEDED
+        - GPU_CONCURRENCY_EXCEEDED
+        - ORG_RESTRICTED
+        - UNKNOWN
+    QueuedPod:
+      type: object
+      description: |
+        A pod waiting for capacity, or the record of one that waited. It
+        carries what identifies and schedules the request; the full container
+        settings are not echoed back, keep your create request.
+      required:
+        - id
+        - status
+        - podId
+        - failureReason
+        - name
+        - image
+        - templateId
+        - gpu
+        - cloud
+        - dataCenterIds
+        - queue
+        - createdAt
+        - resolvedAt
+      properties:
+        id:
+          type: string
+          examples: [clz1x9k4a0000qw3h8s7d2f1g]
+        status:
+          $ref: '#/components/schemas/QueuedPodStatus'
+        podId:
+          type: [string, 'null']
+          description: The pod created once capacity came; null until then. Read it with `GET /v2/pods/{id}`.
+          examples: [null]
+        failureReason:
+          anyOf:
+            - $ref: '#/components/schemas/QueuedPodFailureReason'
+            - type: 'null'
+          description: Set only when `status` is `FAILED`.
+        name:
+          type: string
+          description: The name the pod will carry.
+          examples: [pytorch-training]
+        image:
+          type: [string, 'null']
+          description: The image the pod will run. Null when it comes from `templateId` at deploy time.
+          examples: ['runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404']
+        templateId:
+          type: [string, 'null']
+          description: |
+            The template the scheduler resolves at deploy time. Null for queued
+            pods from this API, which expands `templateId` into `image` when
+            the request is made.
+          examples: [null]
+        gpu:
+          $ref: '#/components/schemas/BaseGpuConfig'
+        cloud:
+          $ref: '#/components/schemas/Cloud'
+        dataCenterIds:
+          type: array
+          items:
+            type: string
+          description: The data centers the deploy is limited to; empty when any will do.
+          examples: [[EU-RO-1]]
+        queue:
+          $ref: '#/components/schemas/QueuedPodSchedule'
+        createdAt:
+          type: string
+          format: date-time
+          examples: ['2026-06-01T12:00:00Z']
+        resolvedAt:
+          type: [string, 'null']
+          format: date-time
+          description: When the queued pod deployed, failed or expired. Null while it waits, and after
+            a cancel.
+          examples: [null]
+    PodQueueOptions:
+      type: object
+      description: |
+        Queue the pod for deploy-when-available instead of failing when the
+        requested GPU has no capacity. The create call still tries to deploy
+        first; only a capacity failure queues the request, and any other
+        failure is returned as it would be without `queue`. A queued pod is
+        placed by a scheduler that retries about every five minutes, in plan
+        priority order, during `allowedHours`, until `expiresAt`. An empty
+        object queues with the defaults.
+
+        GPU pods on the secure cloud only: `queue` with `cpu` or
+        `globalNetworking` is rejected with `400`. A plan without
+        deploy-when-available is refused with `403`, and one whose queue is
+        full with `409`. A request that matches a pod still queued (same GPU
+        type and count, same settings) returns that queued pod rather than a
+        second one.
+      properties:
+        startsAt:
+          type: string
+          format: date-time
+          description: |
+            Begin waiting at this future time instead of now. The create call
+            then does not try to deploy first; the pod is queued at once. A
+            time already past is a `400`.
+          examples: ['2026-06-02T08:00:00Z']
+        expiresAt:
+          type: string
+          format: date-time
+          description: |
+            Stop waiting at this time; the queued pod then reports `EXPIRED`.
+            Defaults to, and is capped at, 30 days after `startsAt` (or after
+            the request when `startsAt` is omitted). A time already past, or
+            one not after `startsAt`, is a `400`.
+          examples: ['2026-06-03T08:00:00Z']
+        allowedHours:
+          $ref: '#/components/schemas/PodQueueAllowedHours'
+        notifyEmail:
+          type: string
+          format: email
+          description: |
+            Also email this address when the pod deploys, or when the queued
+            pod fails or expires. Must be an address on your account (`422`
+            otherwise).
+          examples: [ops@example.com]
+      unevaluatedProperties: false
+    QueuedPodList:
+      type: object
+      required: [queuedPods]
+      properties:
+        queuedPods:
+          type: array
+          items:
+            $ref: '#/components/schemas/QueuedPod'
+    ListQueuedPodsResponse:
+      allOf:
+        - $ref: '#/components/schemas/QueuedPodList'
         - $ref: '#/components/schemas/Paginated'
     ClusterType:
       type: string
@@ -3524,17 +3778,17 @@ components:
           examples: ['2026-06-29T20:00:00Z']
     CreateClusterRequest:
       allOf:
-        - $ref: '#/components/schemas/BaseContainerConfig'
+        - $ref: '#/components/schemas/ContainerConfig'
         - type: object
           required: [name, type, compute]
           description: |
             Request body for creating a cluster. `compute` defines the
             homogeneous pod shape; the container configuration (image, env, ports,
-            …) applies to every pod. Pass `templateId` to provision every member
-            pod from a pod template instead of inline container fields — the
-            template also supplies the container registry credential, the only
-            private-image path for clusters (a bare `registry` property on this
-            body is rejected).
+            registry, …) applies to every pod. Pass `templateId` to provision
+            every member pod from a pod template instead of inline container
+            fields. For a private image, pass `registry` (one of your
+            credentials from `/v2/registries`); it is attached to every member
+            pod, and an ID that does not exist or is not yours is a 400.
           properties:
             compute:
               $ref: '#/components/schemas/ClusterCompute'
@@ -3551,11 +3805,13 @@ components:
                 ID of a pod template to provision every member pod from. The
                 template supplies the container settings (image, args, disk,
                 env, ports) and the container registry credential for private
-                images — the only private-image path for clusters. Mutually
-                exclusive with `image`, `args`, `entrypoint`, `cmd`, `disk`,
-                `env`, and `ports` (rejected with 400). `mounts` combines with
-                it: the volume in `mounts` is attached to every member pod,
-                overriding the template's volume settings. The cluster
+                images. Mutually exclusive with `image`, `args`, `entrypoint`,
+                `cmd`, `disk`, `env`, and `ports` (rejected with 400). `registry`
+                combines with it: an explicit `registry` overrides the
+                template's credential; omit it (or send `null` or an empty
+                string) to use the template's. `mounts`
+                combines with it too: the volume in `mounts` is attached to
+                every member pod, overriding the template's volume settings. The cluster
                 retains the link: the `template` response field is set. Must be
                 a non-serverless pod template accessible to the caller.
               examples: [30zmvf89kd]
@@ -5782,6 +6038,51 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /v2/account:
+    get:
+      operationId: getAccount
+      x-runpod-scope: account:read
+      summary: Get your account
+      x-mint:
+        metadata:
+          description: Retrieve the ID and email of the Runpod account your API key belongs to.
+      description: Returns the account the API key belongs to.
+      tags: [Account]
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+              examples:
+                account:
+                  summary: Successful response
+                  value:
+                    id: user_2abc123
+                    email: dev@example.com
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v2/account/ssh-keys:
     get:
       operationId: getSshKeys
@@ -7716,6 +8017,49 @@ paths:
                     runtime: null
                     createdAt: '2026-06-01T12:00:00Z'
                     startedAt: null
+        '202':
+          headers:
+            Location:
+              description: Where to read the queued pod (`GET /v2/queued-pods/{id}`).
+              schema:
+                type: string
+              example: /v2/queued-pods/clz1x9k4a0000qw3h8s7d2f1g
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: |
+            Queued. The request carried `queue` and the GPU had no capacity
+            (or `queue.startsAt` is in the future), so no pod exists yet. The
+            body is the queued pod; poll `Location` until its `status` leaves
+            `QUEUED`, or cancel it with `DELETE /v2/queued-pods/{id}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueuedPod'
+              examples:
+                queuedPod:
+                  summary: Queued for capacity
+                  value:
+                    id: clz1x9k4a0000qw3h8s7d2f1g
+                    status: QUEUED
+                    podId: null
+                    failureReason: null
+                    name: pytorch-training
+                    image: runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
+                    templateId: null
+                    gpu:
+                      id: NVIDIA GeForce RTX 4090
+                      count: 1
+                    cloud: SECURE
+                    dataCenterIds: [EU-RO-1]
+                    queue:
+                      startsAt: null
+                      expiresAt: '2026-07-01T12:00:00Z'
+                      allowedHours: null
+                      notifyEmail: null
+                    createdAt: '2026-06-01T12:00:00Z'
+                    resolvedAt: null
         '401':
           $ref: '#/components/responses/UnauthorizedError'
         '403':
@@ -7724,6 +8068,15 @@ paths:
           $ref: '#/components/responses/BadRequestError'
         '404':
           $ref: '#/components/responses/NotFoundError'
+        '409':
+          description: |
+            The request carried `queue`, but the account already has as many
+            queued pods as its plan allows. Cancel a queued pod or upgrade the
+            plan.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '413':
           description: The incoming request body, or the request it expands into, exceeds the 102400 byte
             limit or is rejected as too large.
@@ -8505,6 +8858,201 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /v2/queued-pods:
+    get:
+      operationId: listQueuedPods
+      x-runpod-scope: pods:read
+      summary: List queued pods
+      x-mint:
+        metadata:
+          description: List the Runpod Pods queued for deploy-when-available, with each one's status,
+            the pod it created, and why any failed.
+      description: |
+        Returns the caller's queued pods, cursor-paginated newest-first; an
+        omitted `limit` defaults to 1000. Every queued pod is listed whatever
+        its `status`, so the outcome of a queued create can be read after the
+        fact. Follow `pagination.nextCursor` until `hasNextPage` is false.
+      tags: [Pods]
+      parameters:
+        - $ref: '#/components/parameters/PaginationCursor'
+        - $ref: '#/components/parameters/PaginationLimit'
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListQueuedPodsResponse'
+              examples:
+                queuedPods:
+                  summary: Successful response
+                  value:
+                    queuedPods:
+                      - id: clz1x9k4a0000qw3h8s7d2f1g
+                        status: DEPLOYED
+                        podId: 7h9k2m4n6p
+                        failureReason: null
+                        name: pytorch-training
+                        image: runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
+                        templateId: null
+                        gpu:
+                          id: NVIDIA GeForce RTX 4090
+                          count: 1
+                        cloud: SECURE
+                        dataCenterIds: [EU-RO-1]
+                        queue:
+                          startsAt: null
+                          expiresAt: '2026-07-01T12:00:00Z'
+                          allowedHours: null
+                          notifyEmail: null
+                        createdAt: '2026-06-01T12:00:00Z'
+                        resolvedAt: '2026-06-01T13:05:00Z'
+                    pagination:
+                      nextCursor: null
+                      hasNextPage: false
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '413':
+          $ref: '#/components/responses/ResponseTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/queued-pods/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Queued pod identifier
+        example: clz1x9k4a0000qw3h8s7d2f1g
+    get:
+      operationId: getQueuedPod
+      x-runpod-scope: pods:read
+      summary: Get a queued pod
+      x-mint:
+        metadata:
+          description: Retrieve a queued Runpod Pod by ID to see whether it is still waiting for capacity,
+            which pod it created, or why it failed.
+      description: |
+        Returns a single queued pod by ID. Poll it after a `202` from
+        `createPod`: `status` moves from `QUEUED` to `DEPLOYED` (with
+        `podId`), `FAILED` (with `failureReason`), `EXPIRED`, or `CANCELLED`.
+      tags: [Pods]
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueuedPod'
+              examples:
+                queuedPod:
+                  summary: Still waiting
+                  value:
+                    id: clz1x9k4a0000qw3h8s7d2f1g
+                    status: QUEUED
+                    podId: null
+                    failureReason: null
+                    name: pytorch-training
+                    image: runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
+                    templateId: null
+                    gpu:
+                      id: NVIDIA GeForce RTX 4090
+                      count: 1
+                    cloud: SECURE
+                    dataCenterIds: [EU-RO-1]
+                    queue:
+                      startsAt: null
+                      expiresAt: '2026-07-01T12:00:00Z'
+                      allowedHours:
+                        monday: [9, 10, 11, 12, 13, 14, 15, 16]
+                      notifyEmail: null
+                    createdAt: '2026-06-01T12:00:00Z'
+                    resolvedAt: null
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      operationId: deleteQueuedPod
+      x-runpod-scope: pods:write
+      summary: Cancel a queued pod
+      x-mint:
+        metadata:
+          description: Cancel a queued Runpod Pod so it is no longer deployed when capacity opens.
+      description: |
+        Cancels a queued pod: it leaves the queue and is never deployed. A
+        pod it already created is untouched; terminate that with
+        `DELETE /v2/pods/{id}`. Cancelling a queued pod that already
+        deployed, failed or expired changes nothing and still answers `204`.
+      tags: [Pods]
+      responses:
+        '204':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Cancelled. Response has no body.
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v2/clusters:
     get:
       operationId: listClusters
@@ -8872,6 +9420,11 @@ paths:
         body, from a serverless template referenced by `templateId` (body
         fields override the template's), or both; `image` is required unless
         `templateId` is set. See `CreateEndpointRequest` for the full body.
+        An image in a private Amazon ECR registry with no `registry`
+        credential must be covered by one of your ECR delegations (see
+        `registry`); otherwise the create returns 400 here rather than
+        workers failing their image pull. A caller whose organization role
+        cannot use ECR delegations gets 403.
 
         The CUDA constraints live on `gpu` — `gpu.allowedCudaVersions` and
         `gpu.minCudaVersion` — so a CPU create cannot express them and the
@@ -9186,7 +9739,12 @@ paths:
         `scaling` (`type`/`value`/`idleTimeout`), `dataCenterIds`,
         `networkVolumes`, `timeout`, `flashboot`, and the
         container settings (`image`, `args`, `disk`, `ports`, `env`,
-        `registry`).
+        `registry`). A patch that leaves the endpoint pulling a private
+        Amazon ECR image with no `registry` credential is checked against
+        your ECR delegations as on create (400 when none covers the
+        repository, 403 when the caller's organization role cannot use
+        delegations); a patch that changes neither `image` nor `registry`
+        is not.
 
         Omitted compute preserves the current selection. `cpu` completely
         replaces a CPU endpoint's selection; compute family is immutable.

@@ -201,8 +201,9 @@ descriptions:
     after the user's explicit go on that quoted shape and total hourly price.
     Verify GPU stock first via the catalog tools. The compute shape and type
     are fixed at creation; only the name can be changed later. The container
-    configuration applies to every pod, and templateId is the only
-    private-image path — a bare registry property is rejected. Delete with
+    configuration applies to every pod. For a private image, pass registry (a
+    credential id from list-registries) or a templateId whose template has
+    one; an explicit registry overrides the template's. Delete with
     delete-cluster when finished.
   deleteCluster: >-
     Delete a cluster permanently: it terminates every member pod. Verify the id
@@ -240,8 +241,9 @@ directoryDescriptions:
     compute.gpuTypeId. Billable from creation for every Pod in the cluster, at
     the GPU type's hourly price times the total GPU count. The compute shape
     and type are fixed at creation; only the name can change later. The
-    container configuration applies to every Pod, and templateId is the only
-    way to use a private image; a bare registry property is rejected.
+    container configuration applies to every Pod. A private image uses
+    registry (a container registry credential id) or a template that has one;
+    an explicit registry overrides the template's.
   createEndpoint: >-
     Create a Serverless endpoint. Billable while its workers run, at the
     worker's hourly price. Worker hardware is either the gpu object (gpu.pools
@@ -347,12 +349,11 @@ propertyDescriptions:
     replaces the endpoint's existing env. Applied once; must be a serverless
     template you can access.
   CreateClusterRequest.templateId: >-
-    ID of a pod template to provision every member pod from: it supplies the
-    container settings (image, args, disk, env, ports) and the registry
-    credential for private images — the only private-image path for clusters.
-    Mutually exclusive with the inline container fields (`image`, `args`,
-    `entrypoint`, `cmd`, `disk`, `env`, `ports`, `mounts`). Must be a
-    non-serverless template you can access.
+    Pod template for every member pod: it supplies the container settings and
+    the registry credential (an explicit `registry` overrides it). Mutually
+    exclusive with `image`, `args`, `entrypoint`, `cmd`, `disk`, `env`,
+    `ports`; `mounts` combines with it. Must be a non-serverless template you
+    can access.
   CreatePodRequest.startSsh: >-
     Create-time flag: sets up SSH access by injecting a `PUBLIC_KEY`
     environment variable with your account's registered SSH keys
