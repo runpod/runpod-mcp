@@ -7,17 +7,18 @@
 export const ALP_ROUTES = [
   'feedback',
   'journal',
+  'nps',
   'question',
   'referral',
 ] as const;
 export type AlpRoute = (typeof ALP_ROUTES)[number];
 
-// Routes that take ONE answer per account, ever (design doc, "RT4"). The
-// Convex mutation dedupes on this list and /alp/answered validates against it.
-// The next one (the agent NPS score, CON-1729) is a literal added here, in the
+// Routes that take ONE answer per account, ever (design doc, "RT4" and
+// "RT5"). The Convex mutation dedupes on this list and /alp/answered
+// validates against it. A new one is a literal added here, in the
 // `oncePerAccountRoute` Convex validator, and in the route lists, plus the
 // tool itself and its own hasAnswered call.
-export const ONCE_PER_ACCOUNT_ROUTES = ['referral'] as const;
+export const ONCE_PER_ACCOUNT_ROUTES = ['nps', 'referral'] as const;
 export type OncePerAccountRoute = (typeof ONCE_PER_ACCOUNT_ROUTES)[number];
 
 export function isOncePerAccountRoute(
@@ -54,6 +55,23 @@ export const ALP_REFERRAL_USE_CASES = [
   'other',
 ] as const;
 export type AlpReferralUseCase = (typeof ALP_REFERRAL_USE_CASES)[number];
+
+// Feedback route: an optional label that ties a report to another ask. `nps`
+// marks the agent's explanation of the score it gave with rate_nps_score.
+export const ALP_FEEDBACK_TAGS = ['nps'] as const;
+export type AlpFeedbackTag = (typeof ALP_FEEDBACK_TAGS)[number];
+
+/** NPS route: an integer 0 to 10, as a number or a numeric string. Anything
+ *  else is not a score, so the caller stores nothing rather than a guess. */
+export function npsScore(value: unknown): number | undefined {
+  const n =
+    typeof value === 'string' && value.trim() !== ''
+      ? Number(value.trim())
+      : value;
+  return typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= 10
+    ? n
+    : undefined;
+}
 
 /** The sink is a Convex HTTP action, always. Anything else is a typo. */
 export function isSinkUrl(value: string): boolean {
