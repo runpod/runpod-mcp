@@ -95,3 +95,24 @@ describe('tool result — upstream status reaches the MCP client', () => {
     assert.equal(payload.status, 403);
   });
 });
+
+describe('runTool — an HttpError result carries the status', () => {
+  it('an empty 429 from a log stream reaches the client with status 429', async () => {
+    const { runTool } = await import('#src/specgen/tools/util');
+    const { createSseReader } = await import('#src/specgen/clients/sse');
+    const reader = createSseReader({
+      apiKey: 'rpa_x',
+      fetchImpl: (async () =>
+        new Response('', { status: 429 })) as typeof fetch,
+    });
+    const result = await runTool(async () => {
+      await reader('https://api.runpod.io/v2/pods/p1/logs', {
+        maxWaitMs: 10,
+        maxBytes: 1000,
+      });
+      return { ok: true, status: 200, payload: {} };
+    });
+    assert.equal(result.ok, false);
+    assert.equal((result.payload as { status?: number }).status, 429);
+  });
+});
