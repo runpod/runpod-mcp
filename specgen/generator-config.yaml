@@ -154,9 +154,15 @@ descriptions:
     on the first job: expect minutes, poll with get-job-status wait.
   updateEndpoint: >-
     Partially update a serverless endpoint (PATCH): only fields present in the
-    body change, omitted ones are untouched, with one exception. DESTRUCTIVE
-    GOTCHA: gpu.pools and gpu.excludedTypes are a single selection, so sending
-    pools without excludedTypes clears any exclusions pinned elsewhere (the
+    body change, omitted ones are untouched, with two exceptions. DESTRUCTIVE
+    GOTCHA: an env you send replaces the endpoint's env instead of merging,
+    so a partial map drops the rest — read the endpoint first with
+    get-endpoint and send the full env map. get-endpoint shows
+    secret-looking values as [redacted]: never send that placeholder back,
+    supply the real value or a {{ RUNPOD_SECRET_<name> }} reference, and ask
+    the user when you have neither. DESTRUCTIVE GOTCHA: gpu.pools and
+    gpu.excludedTypes are a single selection, so sending pools without
+    excludedTypes clears any exclusions pinned elsewhere (the
     console or set-endpoint-gpus) — read the endpoint first with get-endpoint
     and resend excludedTypes if you still want them. An exclusion naming a type
     outside pools returns 400. A CUDA-only or count-only change does not need
