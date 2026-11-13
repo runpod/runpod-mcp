@@ -4,6 +4,7 @@ import {
   generateTools,
   type SpecDocument,
 } from '../specgen/generator/tools.js';
+import { schemaViolations } from '#src/specgen/validate';
 
 function bodySpec(schema: unknown): SpecDocument {
   return {
@@ -430,5 +431,51 @@ test('schemaOnDemand flags the listed operations and rejects stale ids', () => {
   assert.throws(
     () => generateTools(spec, { schemaOnDemand: ['oldCreateName'] }),
     /schemaOnDemand operations missing from spec: oldCreateName/
+  );
+});
+
+test('a conditional beside unevaluatedProperties moves into allOf and keeps its meaning', () => {
+  const conditional = {
+    if: { required: ['kind'], properties: { kind: { const: 'a' } } },
+    then: { required: ['a'], properties: { a: { type: 'string' } } },
+    else: { required: ['b'], properties: { b: { type: 'integer' } } },
+  };
+  const [tool] = generateTools(
+    bodySpec({
+      type: 'object',
+      properties: { kind: { enum: ['a', 'b'] }, a: {}, b: {} },
+      unevaluatedProperties: false,
+      ...conditional,
+    })
+  );
+  const body = (
+    tool.inputSchema.properties as Record<string, Record<string, unknown>>
+  ).body;
+  for (const key of ['if', 'then', 'else'])
+    assert.equal(key in body, false, `${key} must leave the closed schema`);
+  // No allOf before, so the conditional is its only member.
+  assert.deepEqual(body.allOf, [conditional]);
+  assert.equal(body.unevaluatedProperties, false);
+
+  const violations = (value: unknown) =>
+    schemaViolations(tool.inputSchema, { body: value }).length;
+  assert.equal(violations({ kind: 'a', a: 'x' }), 0, 'then branch accepts');
+  // The else branch is the one Ajv mishandled before the rewrite.
+  assert.equal(violations({ kind: 'b', b: 1 }), 0, 'else branch accepts');
+  assert.notEqual(violations({ kind: 'a' }), 0, 'then still requires a');
+  assert.notEqual(violations({ kind: 'b' }), 0, 'else still requires b');
+  assert.notEqual(violations({ kind: 'b', b: 1, z: 1 }), 0, 'still closed');
+});
+
+test('a conditional without unevaluatedProperties is left in place', () => {
+  const schema = {
+    type: 'object',
+    if: { required: ['kind'] },
+    then: { required: ['a'] },
+  };
+  const [tool] = generateTools(bodySpec(schema));
+  assert.deepEqual(
+    (tool.inputSchema.properties as Record<string, unknown>).body,
+    schema
   );
 });

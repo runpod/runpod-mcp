@@ -157,6 +157,27 @@ interface ProseContext {
 
 const UNICODE_PROPERTY_ESCAPE = /\\[pP]\{/;
 
+// Ajv 8 (2020-12) rejects a valid object when `unevaluatedProperties: false`
+// sits beside an `if`/`then` whose `then` declares `properties` and the `if`
+// does not match: every property is reported unevaluated. That rejected every
+// QUEUE create-endpoint under MCP_SCHEMA_VALIDATION=enforce. Moving the
+// conditional into an `allOf` member means the same thing in JSON Schema and
+// Ajv evaluates it correctly; tests/specgen-spec-examples.test.ts pins it.
+function wrapConditionalBesideUnevaluated(schema: Record<string, unknown>) {
+  if (!('if' in schema) || !('unevaluatedProperties' in schema)) return;
+  const conditional: Record<string, unknown> = {};
+  for (const key of ['if', 'then', 'else']) {
+    if (key in schema) {
+      conditional[key] = schema[key];
+      delete schema[key];
+    }
+  }
+  schema.allOf = [
+    ...(Array.isArray(schema.allOf) ? schema.allOf : []),
+    conditional,
+  ];
+}
+
 function normalizeSchema(
   node: unknown,
   address: string,
@@ -191,6 +212,7 @@ function normalizeSchema(
         UNICODE_PROPERTY_ESCAPE.test(schema.pattern)
       )
         delete schema.pattern;
+      wrapConditionalBesideUnevaluated(schema);
       const discriminator = schema.discriminator as
         | { mapping?: Record<string, string> }
         | undefined;
