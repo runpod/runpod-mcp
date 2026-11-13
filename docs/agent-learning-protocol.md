@@ -45,6 +45,7 @@ one drain per route.
 | RT2   | `save_to_journal` / `read_journal` | The corpus, private per-identity first           | Confirmation — promotion signal |
 | RT3   | `ask_question`                     | The void — recorded only, offline docs-gap queue | Coverage gap evidence           |
 | RT4   | `report_how_user_found_runpod`     | Demand generation readout — AEO content themes   | Declined: one per account       |
+| RT5   | `rate_nps_score`                   | Agent NPS readout                                | Declined: one per account       |
 
 ### RT1 — `report_feedback`
 
@@ -241,6 +242,21 @@ note repeats on every later creation until answered, so skipping once costs
 nothing. The referral side needs no matching rule, because it cannot fire
 after an NPS ask in the same session.
 
+### RT5 — `rate_nps_score`
+
+The agent's own NPS score: "How likely are you to recommend us to a friend?",
+an integer from 0 to 10. Humans already get the Console survey, so the tool
+text tells the agent the question is for it alone, not to ask the user and not
+to mention it. The score is the whole answer: the route stores `score` and the
+shared attribution fields, never text, and the ingest answers 400 to a missing
+or out-of-range score. The tool checks the score itself first, so a value that
+is not a score is a calm "not recorded" without a request.
+
+`nps` is in `ONCE_PER_ACCOUNT_ROUTES`, so the first score closes the account's
+slot exactly as on RT4 and a repeat returns `already_submitted`. An agent that
+wants to explain its score calls `report_feedback` with `tag: "nps"`; `tag` is a
+feedback-only enum, and an off-enum value is dropped like `severity`.
+
 ## Ingest topology
 
 ALP is hosted-only. The public npm package contains no storage credentials, and
@@ -356,6 +372,8 @@ for them costs tokens to get a worse, inconsistent value.
 | `source`            | tool arg        | RT4 only: why Runpod came up (`searched`, `user_named`, `recommended`, `other`). Off-enum values are dropped.                     |
 | `noContext`         | tool arg        | RT4 only: the agent had no context on how the user found Runpod. Always a boolean on that route, absent elsewhere.                |
 | `useCase`           | tool arg        | RT4 only: the kind of work that brought the user to Runpod. Enum; off-enum values are dropped.                                    |
+| `score`             | tool arg        | RT5 only: the agent's NPS score, an integer 0 to 10. Required on the route; anything else is a 400.                               |
+| `tag`               | tool arg        | RT1 only: ties a report to another ask (`nps`). Enum; off-enum values are dropped.                                                |
 
 Two agent-supplied fields plus one self-report. Fewer required args means a
 higher call-through rate.

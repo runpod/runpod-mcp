@@ -176,6 +176,7 @@ const expectedHints = new Map<string, string>([
   ['lookup-concept', 'TFTF'],
   ['pod-action', 'FTFT'],
   ['purge-endpoint-queue', 'FTTT'],
+  ['rate_nps_score', 'FFTT'],
   ['read-guide', 'TFTF'],
   ['read_journal', 'TFTT'],
   ['remove-organization-group-member', 'FTTT'],
