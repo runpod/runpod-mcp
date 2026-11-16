@@ -6,6 +6,7 @@ import {
   type JSONRPCMessage,
 } from '@modelcontextprotocol/sdk/types.js';
 import { hasAnswered } from './alp/answered.js';
+import { recordCreation } from './alp/created.js';
 import { createSpecgenServer, responseHoldingTools } from './specgen/server.js';
 import { createToolContext as createSpecgenContext } from './specgen/context.js';
 import { callerId } from './specgen/ops.js';
@@ -636,6 +637,11 @@ export async function handleMcpRequest(
     ).catch(() => null);
     promptReferral = answered !== true;
   }
+  // The agent NPS ask (docs/agent-learning-protocol.md, "RT5") counts this
+  // account's creations in the sink, so it needs a resolved account, and it
+  // feeds the PostHog survey, so the analytics opt-out skips it whole.
+  const npsAccount =
+    alpServed && accountId && !analyticsOptedOut(req) ? accountId : undefined;
 
   // SPEC-GENERATED SURFACE (feat/specgen-server): the tool set generated from
   // the v2 OpenAPI spec plus its curated overlay, mounted behind this shell's
@@ -687,6 +693,16 @@ export async function handleMcpRequest(
               harnessSource: 'user_agent' as const,
             },
             promptReferral,
+          }
+        : {}),
+      ...(npsAccount
+        ? {
+            nps: {
+              recordCreation: (tool) =>
+                (opts.recordCreation ?? recordCreation)(npsAccount, tool),
+              hasAnswered: () =>
+                (opts.hasAnswered ?? hasAnswered)(npsAccount, 'nps'),
+            },
           }
         : {}),
       // search-docs: listed only where the deployment holds the assistant's
