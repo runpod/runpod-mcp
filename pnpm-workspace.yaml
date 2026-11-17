@@ -1,2 +1,7 @@
+# Keep "." listed: without a packages list, Changesets treats the repo as a
+# single package and tags releases v<version> instead of
+# @runpod/mcp-server@<version>.
+packages:
+  - .
 allowBuilds:
   esbuild: true
