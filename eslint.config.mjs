@@ -46,8 +46,6 @@ export default [
       'dist/**',
       'build/**',
       'node_modules/**',
-      // The SDK package has its own typecheck and tests (packages/typescript-api-sdk).
-      'packages/**',
       '*.js',
       '*.mjs',
     ],

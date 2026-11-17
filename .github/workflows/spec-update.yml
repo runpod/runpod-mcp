@@ -1,17 +1,16 @@
-# Daily and manual production spec and plugin knowledge update. Run it from the
-# Actions tab (Run workflow) to catch up sooner, for example right after a
+# Daily and manual SDK and plugin knowledge update. Run it from the Actions
+# tab (Run workflow) to catch up sooner, for example right after an SDK or
 # plugin release.
 #
-# It re-vendors packages/typescript-api-sdk/spec/openapi.yaml from production
-# through the SDK's patch layer, updates @runpod/plugin-knowledge to latest,
-# regenerates the SDK schema (packages/typescript-api-sdk/src/generated/
-# schema.ts) and the MCP tools (src/specgen/generated/tools.gen.ts) from that
-# one spec, validates both packages, and opens or updates one PR on
-# automation/production-spec. A new upstream operation fails the specgen gates
-# until it is generated or excluded with a reason, and until it has a directory
-# decision (an agent makes it when ANTHROPIC_API_KEY is set; see
-# specgen/DIRECTORY_POLICY.md). That PR still opens, as a draft, so the fix can
-# be pushed onto the branch.
+# The tools generate from the OpenAPI spec that @runpod/typescript-api-sdk
+# ships. runpod/js-sdk vendors that spec from production and releases the SDK.
+# This workflow moves to the latest SDK release and @runpod/plugin-knowledge,
+# regenerates the MCP tools (src/specgen/generated/tools.gen.ts), validates,
+# and opens or updates one PR on automation/production-spec. A new upstream
+# operation fails the specgen gates until it is generated or excluded with a
+# reason, and until it has a directory decision (an agent makes it when
+# ANTHROPIC_API_KEY is set; see specgen/DIRECTORY_POLICY.md). That PR still
+# opens, as a draft, so the fix can be pushed onto the branch.
 name: Production spec update
 
 on:
@@ -50,22 +49,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
       - run: pnpm install --frozen-lockfile
-      - run: python -m pip install -r packages/typescript-api-sdk/scripts/requirements.txt
-      # sync_spec.py validates the download in a temporary file and leaves the
-      # vendored spec untouched when it fails.
-      - run: pnpm spec:pull
-      - name: Detect a spec change
-        id: spec
-        run: |
-          if git diff --quiet -- packages/typescript-api-sdk/spec/openapi.yaml; then
-            echo 'changed=false' >> "$GITHUB_OUTPUT"
-          else
-            echo 'changed=true' >> "$GITHUB_OUTPUT"
-          fi
       # list-guides and read-guide serve this bundle. runpod-plugins-official
       # publishes it on every plugin release. `pnpm add <pkg>@latest` keeps a
       # range that already matches, so the version is read with npm view and
@@ -92,6 +76,29 @@ jobs:
       - name: Verify knowledge package provenance
         if: steps.knowledge.outputs.changed == 'true'
         run: pnpm knowledge:provenance
+      # Runs after the knowledge step, which resets package.json when the
+      # knowledge is already current.
+      - name: Update the SDK to latest
+        id: spec
+        env:
+          KNOWLEDGE: ${{ steps.knowledge.outputs.changed }}
+        run: |
+          before=$(jq -r '.devDependencies["@runpod/typescript-api-sdk"]' package.json)
+          latest=$(npm view @runpod/typescript-api-sdk version)
+          pnpm add --workspace-root --save-dev "@runpod/typescript-api-sdk@^$latest"
+          after=$(jq -r '.devDependencies["@runpod/typescript-api-sdk"]' package.json)
+          echo "before=$before" >> "$GITHUB_OUTPUT"
+          echo "after=$after" >> "$GITHUB_OUTPUT"
+          if [ "$before" = "$after" ]; then
+            # Drop transitive lockfile churn, unless the knowledge update
+            # changed the same files.
+            if [ "$KNOWLEDGE" != true ]; then
+              git checkout -- package.json pnpm-lock.yaml
+            fi
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
       - name: Decide whether to update
         id: any
         env:
@@ -127,7 +134,7 @@ jobs:
           prompt: |
             These tools have no directory decision: ${{ steps.directory.outputs.unclassified }}
 
-            Read specgen/DIRECTORY_POLICY.md and decide each one by its rules. Read the tool's definition in src/specgen/generated/tools.gen.ts (or src/specgen/tools/ for a curated tool) and its operation in packages/typescript-api-sdk/spec/openapi.yaml.
+            Read specgen/DIRECTORY_POLICY.md and decide each one by its rules. Read the tool's definition in src/specgen/generated/tools.gen.ts (or src/specgen/tools/ for a curated tool) and its operation in node_modules/@runpod/typescript-api-sdk/spec/openapi.yaml.
 
             For each tool, add an entry to DIRECTORY_TOOLS in src/specgen/profile.ts: an include, an include with omitInputs, or an exclude with a one-sentence reason naming the rule. For an included generated tool whose description breaks the description rules, add a directoryDescriptions entry in specgen/generator-config.yaml and run pnpm generate:tools.
 
@@ -138,14 +145,12 @@ jobs:
       # Regeneration is part of validation. The generator throws on some
       # upstream changes, such as a removed excluded operation or a header
       # parameter. That must still open a draft PR, not fail the run.
-      - name: Regenerate the SDK and tools and validate
+      - name: Regenerate the tools and validate
         id: validate
         if: steps.any.outputs.changed == 'true'
         continue-on-error: true
         run: |
           pnpm generate
-          pnpm --filter @runpod/typescript-api-sdk build
-          pnpm sdk:check
           pnpm generate:check
           pnpm run type-check
           pnpm run lint
@@ -156,22 +161,24 @@ jobs:
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SPEC: ${{ steps.spec.outputs.changed }}
+          SDK_BEFORE: ${{ steps.spec.outputs.before }}
+          SDK_AFTER: ${{ steps.spec.outputs.after }}
           KNOWLEDGE: ${{ steps.knowledge.outputs.changed }}
           KNOWLEDGE_BEFORE: ${{ steps.knowledge.outputs.before }}
           KNOWLEDGE_AFTER: ${{ steps.knowledge.outputs.after }}
         run: |
-          # A knowledge-only update changes guide content, not the tool surface
-          # or the SDK. A spec change moves both packages.
+          # A knowledge-only update changes guide content, not the tool surface.
           {
             printf -- '---\n'
             if [ "$SPEC" = true ]; then
-              printf -- "'@runpod/mcp-server': minor\n'@runpod/typescript-api-sdk': minor\n"
+              printf -- "'@runpod/mcp-server': minor\n"
             else
               printf -- "'@runpod/mcp-server': patch\n"
             fi
             printf -- '---\n\n'
             if [ "$SPEC" = true ]; then
-              printf 'Resync the vendored v2 OpenAPI spec with production as of %s and regenerate the SDK schema and the tools.\n' "$(date -u +%Y-%m-%d)"
+              # shellcheck disable=SC2016
+              printf 'Update `@runpod/typescript-api-sdk` from %s to %s and regenerate the tools from its v2 OpenAPI spec.\n' "$SDK_BEFORE" "$SDK_AFTER"
             fi
             if [ "$KNOWLEDGE" = true ]; then
               # shellcheck disable=SC2016
@@ -238,22 +245,15 @@ jobs:
           PR: ${{ steps.guard.outputs.pr }}
           EDITORS: ${{ steps.guard.outputs.editors }}
           KNOWLEDGE_AFTER: ${{ steps.knowledge.outputs.after }}
+          SDK_AFTER: ${{ steps.spec.outputs.after }}
         run: |
           git fetch origin refs/heads/automation/production-spec
-          git show FETCH_HEAD:packages/typescript-api-sdk/spec/openapi.yaml > "$RUNNER_TEMP/pr-openapi.yaml"
-          if git diff --no-index --quiet \
-              "$RUNNER_TEMP/pr-openapi.yaml" packages/typescript-api-sdk/spec/openapi.yaml; then
-            spec_drift=false
-          else
-            rc=$?
-            if [ "$rc" -ne 1 ]; then exit "$rc"; fi
-            spec_drift=true
-          fi
+          pr_sdk=$(git show FETCH_HEAD:package.json | jq -r '.devDependencies["@runpod/typescript-api-sdk"]')
           pr_knowledge=$(git show FETCH_HEAD:package.json | jq -r '.dependencies["@runpod/plugin-knowledge"]')
-          if [ "$spec_drift" = false ] && [ "$pr_knowledge" = "$KNOWLEDGE_AFTER" ]; then
+          if [ "$pr_sdk" = "$SDK_AFTER" ] && [ "$pr_knowledge" = "$KNOWLEDGE_AFTER" ]; then
             exit 0
           fi
-          fingerprint=$( { cat packages/typescript-api-sdk/spec/openapi.yaml; printf '\n%s\n' "$KNOWLEDGE_AFTER"; } | shasum -a 256 | cut -d ' ' -f 1)
+          fingerprint=$(printf '%s\n%s\n' "$SDK_AFTER" "$KNOWLEDGE_AFTER" | shasum -a 256 | cut -d ' ' -f 1)
           marker="<!-- production-spec-update:$fingerprint -->"
           comments=$(gh api --paginate "repos/$GH_REPO/issues/$PR/comments?per_page=100" --jq '.[].body')
           if printf '%s\n' "$comments" | grep -Fq "$marker"; then
@@ -263,17 +263,10 @@ jobs:
           for editor in $EDITORS; do mentions="$mentions @$editor"; done
           {
             printf '%s\n' "$marker"
-            printf 'Production has newer spec or plugin knowledge changes than this PR.%s Please update this branch when ready. The daily workflow will leave your edits intact.\n' "$mentions"
-            printf '\nSpec differs: %s. Plugin knowledge on PR: %s; latest: %s.\n' "$spec_drift" "$pr_knowledge" "$KNOWLEDGE_AFTER"
+            printf 'A newer SDK or plugin knowledge release is out than this PR uses.%s Please update this branch when ready. The daily workflow will leave your edits intact.\n' "$mentions"
+            printf '\nSDK on PR: %s; latest: %s. Plugin knowledge on PR: %s; latest: %s.\n' "$pr_sdk" "$SDK_AFTER" "$pr_knowledge" "$KNOWLEDGE_AFTER"
           } > "$RUNNER_TEMP/spec-update-comment.md"
           gh pr comment "$PR" --body-file "$RUNNER_TEMP/spec-update-comment.md"
-      - name: Refresh spec drift status on the edited PR
-        if: steps.guard.outputs.skip == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          HEAD_SHA: ${{ steps.guard.outputs.head_sha }}
-        run: gh workflow run spec-drift.yml --ref automation/production-spec -f update_pr_head_sha="$HEAD_SHA"
       # Runs even with no change so the action closes a superseded update PR.
       - name: Create or update the spec update PR
         id: update-pr
@@ -283,33 +276,30 @@ jobs:
           branch: automation/production-spec
           base: ${{ github.event.repository.default_branch }}
           add-paths: |
-            packages/typescript-api-sdk/spec/openapi.yaml
-            packages/typescript-api-sdk/src/generated/schema.ts
             src/specgen/generated/tools.gen.ts
             src/specgen/profile.ts
             specgen/generator-config.yaml
             package.json
             pnpm-lock.yaml
             .changeset/production-spec-update.md
-          commit-message: 'chore(spec): resync the v2 spec and plugin knowledge'
+          commit-message: 'chore(spec): update the SDK and plugin knowledge'
           author: 'github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>'
           committer: 'github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>'
-          title: 'chore(spec): resync the v2 spec and plugin knowledge'
+          title: 'chore(spec): update the SDK and plugin knowledge'
           draft: ${{ steps.validate.outcome != 'success' }}
           body: |
-            Re-vendor `packages/typescript-api-sdk/spec/openapi.yaml` from production, update `@runpod/plugin-knowledge` to latest, and regenerate the SDK schema and `src/specgen/generated/tools.gen.ts`.
+            Update `@runpod/typescript-api-sdk` and `@runpod/plugin-knowledge` to latest, and regenerate `src/specgen/generated/tools.gen.ts` from the SDK's spec.
 
-            Spec changed: ${{ steps.spec.outputs.changed }}
+            SDK: ${{ steps.spec.outputs.before }} → ${{ steps.spec.outputs.after }}
             Plugin knowledge: ${{ steps.knowledge.outputs.before }} → ${{ steps.knowledge.outputs.after }}
-            Source: https://api.runpod.io/v2/openapi.json
             Update run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-            Validation (generate, sdk:check, generate:check, type-check, lint, test, build): **${{ steps.validate.outcome }}**. The `automation/spec-update-validation` commit status reports this result on the PR head.
+            Validation (generate, generate:check, type-check, lint, test, build): **${{ steps.validate.outcome }}**. The `automation/spec-update-validation` commit status reports this result on the PR head.
 
             Tools that needed a directory decision: ${{ steps.directory.outputs.unclassified || 'none' }}. When there were some, an agent classified them in `src/specgen/profile.ts` (and `specgen/generator-config.yaml` for directory descriptions) against `specgen/DIRECTORY_POLICY.md`, if the repo has an `ANTHROPIC_API_KEY` secret. Check each decision before merging; the `/directory` surface ships on merge.
 
             If validation failed, read the run log. A new upstream operation must be generated or excluded with a reason (see `specgen/README.md`). Push the fix onto this branch.
 
-            The changeset is a minor bump for both packages when the spec changed and an MCP patch bump for a knowledge-only update. Edit it to describe the user-facing changes before merging. CI is dispatched on this branch because PRs opened by the Actions token do not trigger it.
+            The changeset is a minor bump when the SDK changed and a patch bump for a knowledge-only update. Edit it to describe the user-facing changes before merging. CI is dispatched on this branch because PRs opened by the Actions token do not trigger it.
 
             The workflow runs daily. While this branch has only bot commits, each run regenerates it from main. Once a person edits it, runs leave it alone and comment when production moves again. Updates resume after the PR merges.
       - name: Sync draft state with validation
@@ -353,14 +343,6 @@ jobs:
           UPDATE_BRANCH: ${{ steps.update-pr.outputs.pull-request-branch }}
           HEAD_SHA: ${{ steps.update-pr.outputs.pull-request-head-sha }}
         run: gh workflow run ci.yml --ref "$UPDATE_BRANCH" -f update_pr_head_sha="$HEAD_SHA"
-      - name: Check spec drift on the update branch
-        if: steps.update-pr.outputs.pull-request-number != '' && steps.update-pr.outputs.pull-request-operation != 'closed'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          UPDATE_BRANCH: ${{ steps.update-pr.outputs.pull-request-branch }}
-          HEAD_SHA: ${{ steps.update-pr.outputs.pull-request-head-sha }}
-        run: gh workflow run spec-drift.yml --ref "$UPDATE_BRANCH" -f update_pr_head_sha="$HEAD_SHA"
       - name: Report result
         env:
           UPDATE_URL: ${{ steps.update-pr.outputs.pull-request-url }}
