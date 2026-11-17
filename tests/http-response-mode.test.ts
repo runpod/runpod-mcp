@@ -11,7 +11,7 @@ import {
   requestLogSampleRate,
   summarizeRpc,
 } from '#src/http';
-import { responseHoldingTools } from '#src/specgen/server';
+import { npsNote, responseHoldingTools } from '#src/specgen/server';
 
 // ============== Response mode: JSON for the handshake, SSE for tool calls ==============
 // The CDN compresses application/json and never text/event-stream, so every
@@ -230,7 +230,7 @@ class FakeResponse extends EventEmitter {
   }
 }
 
-function fakeReqRes(body: unknown) {
+function fakeReqRes(body: unknown, headers: Record<string, string> = {}) {
   const req = {
     method: 'POST',
     url: '/',
@@ -241,6 +241,7 @@ function fakeReqRes(body: unknown) {
       authorization: 'Bearer rpa_x',
       'user-agent': 'probe/0',
       'x-real-ip': '203.0.113.9',
+      ...headers,
     },
     body,
     socket: { remoteAddress: '127.0.0.1' },
@@ -544,5 +545,123 @@ describe('the referral ask when ALP is not configured', () => {
     assert.deepEqual(calls, []);
     assert.doesNotMatch(instructions, PROMPT);
     assert.doesNotMatch(instructions, /CONTRIBUTING BACK IS OPTIONAL/);
+  });
+});
+
+// ---- the agent NPS ask on hosted creations (docs/agent-learning-protocol.md, "RT5") ----
+// A successful creation is counted in the sink for the resolved account and,
+// from the account's third on, carries the note until the account has scored.
+// Covers what the count is keyed on and each case that skips the flow whole.
+
+const createPod = {
+  jsonrpc: '2.0',
+  id: 4,
+  method: 'tools/call',
+  params: {
+    name: 'create-pod',
+    arguments: { body: { name: 'nps-test', image: 'runpod/base' } },
+  },
+};
+
+async function createOnHosted(opts: {
+  accountId?: string;
+  headers?: Record<string, string>;
+}) {
+  const counted: Array<[string, string]> = [];
+  const looked: Array<[string, string]> = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ id: 'pod_1' }), {
+      status: 201,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch;
+  try {
+    const { req, res, written, finished } = fakeReqRes(createPod, opts.headers);
+    await handleMcpRequest(req, res, {
+      verifyCredential: async () => ({
+        status: 'valid' as const,
+        ...(opts.accountId ? { accountId: opts.accountId } : {}),
+      }),
+      recordCreation: async (identity, tool) => {
+        counted.push([identity, tool]);
+        return 3;
+      },
+      hasAnswered: async (identity, route) => {
+        looked.push([identity, route]);
+        return false;
+      },
+    });
+    await finished;
+    assert.equal(written.statusCode, 200);
+    const parsed = JSON.parse(written.chunks.join('')) as {
+      result: { isError?: boolean; content: Array<{ text: string }> };
+    };
+    assert.equal(parsed.result.isError ?? false, false);
+    return {
+      counted,
+      looked,
+      texts: parsed.result.content.map((block) => block.text),
+    };
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+describe('the NPS ask on hosted creations', () => {
+  const saved: Record<string, string | undefined> = {};
+  before(() => {
+    for (const key of [
+      'ALP_SINK_URL',
+      'ALP_SINK_SECRET',
+      'MCP_SKIP_CREDENTIAL_CHECK',
+    ]) {
+      saved[key] = process.env[key];
+      delete process.env[key];
+    }
+    process.env.ALP_SINK_URL = 'https://sink.convex.site/alp/submit';
+    process.env.ALP_SINK_SECRET = 'shh';
+  });
+  after(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  it('counts the creation for the resolved account and adds the note from the third', async () => {
+    const { counted, looked, texts } = await createOnHosted({
+      accountId: 'acct_1',
+    });
+    assert.deepEqual(counted, [['acct_1', 'create-pod']]);
+    assert.deepEqual(looked, [['acct_1', 'nps']]);
+    assert.equal(texts.length, 2);
+    assert.equal(texts[1], npsNote('create-pod'));
+  });
+
+  it('the analytics opt-out skips the count and the note', async () => {
+    const { counted, looked, texts } = await createOnHosted({
+      accountId: 'acct_1',
+      headers: { 'x-runpod-analytics': 'off' },
+    });
+    assert.deepEqual(counted, []);
+    assert.deepEqual(looked, []);
+    assert.equal(texts.length, 1);
+  });
+
+  it('without a resolved account there is nothing to count on', async () => {
+    const { counted, texts } = await createOnHosted({});
+    assert.deepEqual(counted, []);
+    assert.equal(texts.length, 1);
+  });
+
+  it('without the sink configured there is no count and no note', async () => {
+    delete process.env.ALP_SINK_URL;
+    try {
+      const { counted, texts } = await createOnHosted({ accountId: 'acct_1' });
+      assert.deepEqual(counted, []);
+      assert.equal(texts.length, 1);
+    } finally {
+      process.env.ALP_SINK_URL = 'https://sink.convex.site/alp/submit';
+    }
   });
 });

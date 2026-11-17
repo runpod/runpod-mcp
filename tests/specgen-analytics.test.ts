@@ -5,8 +5,10 @@ import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import {
+  AGENT_NPS_SURVEY,
   captureLoopBlocked,
   captureResourceCall,
+  captureSurveySent,
   captureToolCall,
   analyticsCallerId,
   recordedArgumentValues,
@@ -324,6 +326,58 @@ test('the loop-blocked event carries the tool and block length, never the key', 
     'tool',
     'transport',
   ]);
+});
+
+test('the survey response carries the survey ids, the score and nothing beyond its extras', () => {
+  process.env.POSTHOG_API_KEY = 'phc_test';
+  captureSurveySent('rpa_SECRETKEY', {
+    score: 7,
+    transport: 'http',
+    clientName: 'cursor',
+    accountId: 'user_123',
+    modelType: `probably GPT-5.6, key rpa_abcdefghijklmnop1234 ${'x'.repeat(300)}`,
+    triggerTool: 'create-endpoint',
+  });
+  assert.ok(!captured[0].body.includes('rpa_SECRETKEY'), 'key leaked');
+  assert.ok(!captured[0].body.includes('user_123'), 'raw account id leaked');
+  const [event] = events();
+  assert.equal(event.event, 'survey sent');
+  assert.equal(
+    (JSON.parse(captured[0].body) as { distinct_id: string }).distinct_id,
+    analyticsCallerId('rpa_SECRETKEY', 'user_123')
+  );
+  const response = `$survey_response_${AGENT_NPS_SURVEY.questionId}`;
+  assert.deepEqual(Object.keys(event.properties).sort(), [
+    '$process_person_profile',
+    '$survey_id',
+    response,
+    'client_name',
+    'model_type',
+    'surface_version',
+    'transport',
+    'trigger_tool',
+  ]);
+  assert.equal(event.properties.$survey_id, AGENT_NPS_SURVEY.id);
+  assert.equal(event.properties[response], 7);
+  assert.equal(event.properties.$process_person_profile, false);
+  assert.equal(event.properties.trigger_tool, 'create-endpoint');
+  // The model is a free-text self-report: scrubbed and bounded like any
+  // recorded value.
+  const modelType = String(event.properties.model_type);
+  assert.ok(!modelType.includes('rpa_abcdefghijklmnop1234'), 'unscrubbed');
+  assert.match(modelType, /^probably GPT-5\.6, key \[redacted:runpod_key\]/);
+  assert.equal(modelType.length, 200);
+
+  captured = [];
+  captureSurveySent(undefined, { score: 0, transport: 'http' });
+  assert.deepEqual(Object.keys(events()[0].properties).sort(), [
+    '$process_person_profile',
+    '$survey_id',
+    response,
+    'surface_version',
+    'transport',
+  ]);
+  assert.equal(events()[0].properties[response], 0);
 });
 
 test('errorClass separates capacity and balance 400s from bad input', () => {
