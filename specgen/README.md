@@ -12,9 +12,9 @@ resources. The only intended difference is wait budgets: 45 s hosted
 ## Layout
 
 ```
-packages/typescript-api-sdk/spec/openapi.yaml
-                                vendored v2 OpenAPI document (production generation,
-                                after the SDK's patch layer) — shared with the SDK
+node_modules/@runpod/typescript-api-sdk/spec/openapi.yaml
+                                v2 OpenAPI document shipped in the SDK package
+                                (vendored and patched in runpod/js-sdk)
 specgen/generator-config.yaml   exclusions / renames / description overrides
 specgen/generator/              the generator (pnpm generate:tools)
 src/specgen/generated/          machine-written output — never hand-edited
@@ -27,10 +27,11 @@ src/specgen/ops.ts              tool-call logging + the rate-limit stub seam
 
 The management API client is
 [`@runpod/typescript-api-sdk`](https://www.npmjs.com/package/@runpod/typescript-api-sdk),
-which lives in this repository at `packages/typescript-api-sdk/`. The MCP takes it
-as a `workspace:*` dependency and bundles it into both entrypoints, so an SDK change
-reaches the MCP in the same PR, without a publish in between. The SDK is still
-published to npm on its own for other consumers. Node.js 20+ is required.
+which lives in [runpod/js-sdk](https://github.com/runpod/js-sdk). The MCP takes it
+as a devDependency and bundles it into both entrypoints. The tools generate from the
+`spec/openapi.yaml` the package ships, so the tools and the client always describe
+the same API, and an API change reaches the MCP when it moves to an SDK release
+that contains it. Node.js 20+ is required.
 Each tool context creates its own client with the caller's API key and tracking
 headers. The SDK owns retries, the whole-request deadline, and SSE event parsing;
 MCP owns bounded log snapshots, agent-facing error hints, and the separate
@@ -39,25 +40,20 @@ Serverless runtime and GraphQL clients.
 ## Workflows
 
 ```bash
-pnpm spec:pull         # re-vendor the spec (production; SPEC_URL=... overrides)
-pnpm spec:check        # diff the vendored spec against the live one
-pnpm generate          # regenerate the SDK schema and src/specgen/generated/tools.gen.ts
-pnpm generate:tools    # regenerate only the tools
+pnpm generate          # regenerate src/specgen/generated/tools.gen.ts from the SDK's spec
+pnpm generate:check    # fail if the generated tools are stale
 pnpm test              # includes the specgen drift gates
-pnpm sdk:check         # the SDK package's own checks
 ```
 
-`spec:pull` and `spec:check` need Python 3 with PyYAML
-(`pip install -r packages/typescript-api-sdk/scripts/requirements.txt`).
-`spec:pull` invokes `python3` from `PATH`; `spec:check` also accepts `PYTHON`
-to choose an interpreter. The pull runs the production spec through
-the SDK's patch layer (`packages/typescript-api-sdk/scripts/fix_spec.py`), which
-fixes known spec errors and scrubs values that must not ship, such as real AWS
-account IDs. Fix the spec there, never by hand-editing the vendored file.
+Spec pulls, the patch layer (`scripts/fix_spec.py`), and the drift check against
+the live API live in runpod/js-sdk. Fix the spec there.
 
-New API endpoint: `pnpm spec:pull`, then `pnpm generate`. The gates fail if an
-operation is neither generated nor excluded with a reason, or if a curated
-replacement disappears.
+New API endpoint: release it in `@runpod/typescript-api-sdk`, bump the
+devDependency here, then `pnpm generate`. The daily **Production spec update**
+workflow does this bump on its own. The gates fail if an operation is neither
+generated nor excluded with a reason, or if a curated replacement disappears.
+
+To generate against an unreleased spec, set `RUNPOD_SPEC_PATH` to its file.
 
 ## Playbooks over MCP
 

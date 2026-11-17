@@ -1,5 +1,5 @@
 # Controls the spec-to-tools generation. Every operation in
-# packages/typescript-api-sdk/spec/openapi.yaml
+# @runpod/typescript-api-sdk/spec/openapi.yaml (the installed SDK package)
 # becomes a tool unless excluded here; the parity test enforces exactly that.
 
 # The generator rejects exclusions whose operationId is absent from the spec.

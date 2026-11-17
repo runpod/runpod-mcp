@@ -203,15 +203,15 @@ pnpm test    # offline unit suite — no network or API key required
 pnpm build
 ```
 
-Tools are generated from the vendored v2 OpenAPI spec rather than hand-written: see [specgen/DESIGN.md](specgen/DESIGN.md) for the walkthrough and [specgen/README.md](specgen/README.md) for the regeneration workflow and drift gates.
+Tools are generated from the v2 OpenAPI spec rather than hand-written: see [specgen/DESIGN.md](specgen/DESIGN.md) for the walkthrough and [specgen/README.md](specgen/README.md) for the regeneration workflow and drift gates.
 
-The REST client the tools call, [`@runpod/typescript-api-sdk`](https://www.npmjs.com/package/@runpod/typescript-api-sdk), lives in [`packages/typescript-api-sdk/`](packages/typescript-api-sdk/) and is published to npm separately. The vendored spec is in that package; both the SDK types and the MCP tools generate from it.
+The REST client the tools call, [`@runpod/typescript-api-sdk`](https://www.npmjs.com/package/@runpod/typescript-api-sdk), lives in [runpod/js-sdk](https://github.com/runpod/js-sdk). The package ships the v2 spec; both the SDK types and the MCP tools generate from it.
 
 This project uses [changesets](https://github.com/changesets/changesets) for versioning and npm publishing; every PR with user-facing changes needs a changeset. See `CLAUDE.md` and `docs/context.md` for full contributor guidance, architecture, and the test suite.
 
 ## License
 
-Apache-2.0. The SDK in `packages/typescript-api-sdk/` is MIT-licensed; see its `LICENSE`.
+Apache-2.0.
 
 ### JavaScript API migration
 

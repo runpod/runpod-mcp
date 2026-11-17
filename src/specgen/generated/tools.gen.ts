@@ -1,4 +1,4 @@
-// Code generated from packages/typescript-api-sdk/spec/openapi.yaml by specgen/generator/generate-tools.ts; DO NOT EDIT.
+// Code generated from @runpod/typescript-api-sdk/spec/openapi.yaml by specgen/generator/generate-tools.ts; DO NOT EDIT.
 
 export interface GeneratedToolParam {
   name: string;

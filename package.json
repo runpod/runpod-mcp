@@ -34,11 +34,8 @@
     "directory:unclassified": "tsx scripts/directory-unclassified.ts",
     "generate:check": "tsx specgen/generator/generate-tools.ts --check",
     "generate:tools": "tsx specgen/generator/generate-tools.ts && prettier --write src/specgen/generated/tools.gen.ts",
-    "spec:check": "tsx scripts/check-spec-drift.ts",
     "knowledge:provenance": "tsx scripts/check-knowledge-provenance.ts",
-    "spec:pull": "pnpm --filter @runpod/typescript-api-sdk spec:pull",
-    "generate": "pnpm --filter @runpod/typescript-api-sdk generate && pnpm generate:tools",
-    "sdk:check": "pnpm --filter @runpod/typescript-api-sdk run generate:check && pnpm --filter @runpod/typescript-api-sdk run test:spec && pnpm --filter @runpod/typescript-api-sdk run test:scripts && pnpm --filter @runpod/typescript-api-sdk run typecheck && pnpm --filter @runpod/typescript-api-sdk run test && pnpm --filter @runpod/typescript-api-sdk run test:package && pnpm --filter @runpod/typescript-api-sdk run test:examples"
+    "generate": "pnpm generate:tools"
   },
   "exports": {
     "./package.json": "./package.json",
@@ -81,7 +78,7 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.6",
-    "@runpod/typescript-api-sdk": "workspace:*",
+    "@runpod/typescript-api-sdk": "^2.0.0",
     "@types/node": "^20.10.5",
     "@typescript-eslint/eslint-plugin": "^8.39.1",
     "@typescript-eslint/parser": "^8.39.1",

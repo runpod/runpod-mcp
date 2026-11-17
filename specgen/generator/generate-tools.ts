@@ -1,10 +1,11 @@
-// Generate MCP tool metadata from the vendored OpenAPI spec and overrides.
+// Generate MCP tool metadata from the SDK's OpenAPI spec and overrides.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { parse } from 'yaml';
 import { generateTools, type GeneratorConfig } from './tools.js';
+import { SPEC_PATH } from './spec-path.js';
 
-const spec = parse(readFileSync('packages/typescript-api-sdk/spec/openapi.yaml', 'utf8'));
+const spec = parse(readFileSync(SPEC_PATH, 'utf8'));
 const config: GeneratorConfig =
   parse(readFileSync('specgen/generator-config.yaml', 'utf8')) ?? {};
 const tools = generateTools(spec, config);
@@ -19,11 +20,11 @@ if (process.argv.includes('--check')) {
     );
     process.exit(1);
   }
-  console.log('Generated tools match the vendored spec and generator config.');
+  console.log('Generated tools match the SDK spec and generator config.');
   process.exit(0);
 }
 
-const header = `// Code generated from packages/typescript-api-sdk/spec/openapi.yaml by specgen/generator/generate-tools.ts; DO NOT EDIT.
+const header = `// Code generated from @runpod/typescript-api-sdk/spec/openapi.yaml by specgen/generator/generate-tools.ts; DO NOT EDIT.
 
 export interface GeneratedToolParam {
   name: string;

@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
+import { SPEC_PATH } from '../specgen/generator/spec-path.js';
 import { Ajv } from 'ajv';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -16,9 +17,7 @@ import { curatedTools, createSpecgenServer } from '#src/specgen/server';
 import { createToolContext } from '#src/specgen/context';
 import { createSearchDocsTool } from '#src/specgen/tools/search';
 
-const spec = parse(
-  readFileSync('packages/typescript-api-sdk/spec/openapi.yaml', 'utf8')
-);
+const spec = parse(readFileSync(SPEC_PATH, 'utf8'));
 const config = parse(readFileSync('specgen/generator-config.yaml', 'utf8'));
 const exclusions: Record<string, { replacedBy?: string; reason?: string }> =
   config.exclude ?? {};
@@ -300,18 +299,13 @@ test('generation freshness check rejects stale schemas and config without writin
   const check = () =>
     spawnSync(process.execPath, ['--import', loader, generator, '--check'], {
       cwd: temp,
+      env: { ...process.env, RUNPOD_SPEC_PATH: join(temp, 'openapi.yaml') },
       encoding: 'utf8',
       timeout: 10000,
     });
   try {
-    mkdirSync(join(temp, 'packages/typescript-api-sdk/spec'), {
-      recursive: true,
-    });
     mkdirSync(join(temp, 'specgen'));
-    writeFileSync(
-      join(temp, 'packages/typescript-api-sdk/spec/openapi.yaml'),
-      stringify(spec)
-    );
+    writeFileSync(join(temp, 'openapi.yaml'), stringify(spec));
     writeFileSync(
       join(temp, 'specgen/generator-config.yaml'),
       stringify(config)
@@ -327,17 +321,11 @@ test('generation freshness check rejects stale schemas and config without writin
         schema: { type: 'string' },
       },
     ];
-    writeFileSync(
-      join(temp, 'packages/typescript-api-sdk/spec/openapi.yaml'),
-      stringify(changed)
-    );
+    writeFileSync(join(temp, 'openapi.yaml'), stringify(changed));
     const staleSchema = check();
     assert.equal(staleSchema.status, 1, staleSchema.stderr);
     assert.match(staleSchema.stderr, /Generated tools are stale/);
-    writeFileSync(
-      join(temp, 'packages/typescript-api-sdk/spec/openapi.yaml'),
-      stringify(spec)
-    );
+    writeFileSync(join(temp, 'openapi.yaml'), stringify(spec));
     const changedConfig = structuredClone(config);
     changedConfig.rename.getPod = 'renamed-get-pod';
     writeFileSync(
