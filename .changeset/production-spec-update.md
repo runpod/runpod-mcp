@@ -1,7 +1,8 @@
 ---
-'@runpod/mcp-server': patch
+'@runpod/mcp-server': minor
+'@runpod/typescript-api-sdk': minor
 ---
 
-Update `@runpod/plugin-knowledge` from 2.1.0 to 2.1.1, so `list-guides` and `read-guide` serve the latest plugin guides.
+Resync the vendored v2 OpenAPI spec with production as of 2026-11-18 and regenerate the SDK schema and the tools.
 
-Update run: https://github.com/runpod/runpod-mcp/actions/runs/44275974959
+Update run: https://github.com/runpod/runpod-mcp/actions/runs/44422808030

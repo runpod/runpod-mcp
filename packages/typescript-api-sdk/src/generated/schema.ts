@@ -13,7 +13,7 @@ export interface paths {
         };
         /**
          * Get your current organization
-         * @description Returns the authenticated caller's current organization. Organization context comes from the caller's membership; no organization selector is required. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.
+         * @description Returns the authenticated caller's current organization. Organization context comes from the caller's membership; no selector is required. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.
          */
         get: operations["getOrganization"];
         put?: never;
@@ -129,6 +129,26 @@ export interface paths {
          * @description Returns the account the API key belongs to.
          */
         get: operations["getAccount"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/account/limits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get account limits
+         * @description Returns the limits that apply to the account this request acts for. A create or resume that would go past a limit is refused. Not available for organizations (403).
+         */
+        get: operations["getAccountLimits"];
         put?: never;
         post?: never;
         delete?: never;
@@ -767,8 +787,8 @@ export interface paths {
          *     `Retry-After`. A pod whose machine has not been updated for exec yet
          *     answers `503` with `Retry-After`.
          *
-         *     `X-Team-Id` is not applied on this route: it reaches only pods owned by
-         *     the caller's own account.
+         *     A caller whose team or organization role lacks the Terminal permission
+         *     gets `403`.
          */
         post: operations["execPod"];
         delete?: never;
@@ -1035,7 +1055,7 @@ export interface paths {
          *     fields present in the body are changed; omitted fields are left
          *     untouched. See `UpdateEndpointRequest` for the full body.
          *
-         *     Mutable fields: `name`, `gpu`, `cpu`, `workers` (`min`/`max`),
+         *     Mutable fields: `name`, `gpu`, `cpu`, `workers` (`min`/`max`/`initTimeout`),
          *     `scaling` (`type`/`value`/`idleTimeout`), `dataCenterIds`,
          *     `networkVolumes`, `timeout`, `flashboot`, and the
          *     container settings (`image`, `args`, `disk`, `ports`, `env`,
@@ -1457,6 +1477,32 @@ export interface paths {
         patch: operations["updateTemplate"];
         trace?: never;
     };
+    "/v2/templates/{id}/readme": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example tpl_abc */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get a template README
+         * @description Returns the template's README as raw Markdown. Serves the same
+         *     templates as `GET /v2/templates/{id}`: templates you own and public
+         *     catalog templates. Returns `404` when the template does not exist,
+         *     is not readable by you, or has no README.
+         */
+        get: operations["getTemplateReadme"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v2/network-volumes": {
         parameters: {
             query?: never;
@@ -1650,7 +1696,21 @@ export interface paths {
         delete: operations["deleteRegistry"];
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Update a container registry credential
+         * @description Replaces the username and password stored in a container registry
+         *     credential. The ID and `name` stay the same, so every pod, template,
+         *     and Serverless endpoint that references the credential keeps
+         *     referencing it and needs no change.
+         *
+         *     Send both `username` and `password`, even when only one of them
+         *     changed. They are stored together and are write-only, so there is no
+         *     stored value to keep for an omitted field.
+         *
+         *     The new credentials apply to image pulls that start after the update.
+         *     Running pods and workers keep the image they already pulled.
+         */
+        patch: operations["updateRegistry"];
         trace?: never;
     };
     "/v2/registries/delegations": {
@@ -1851,6 +1911,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v2/catalog/templates/{id}/readme": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example 30zmvf89kd */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get a public template README
+         * @description Returns the README of a public catalog template as raw Markdown.
+         *     Only public templates are served. Returns `404` when the template does
+         *     not exist, is not public, or has no README. Use
+         *     `GET /v2/templates/{id}/readme` for your private templates.
+         */
+        get: operations["getPublicTemplateReadme"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v2/cost-centers": {
         parameters: {
             query?: never;
@@ -1975,6 +2061,121 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v2/tags": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List tags
+         * @description Returns the caller's tags, newest first, cursor-paginated. Tags under
+         *     the reserved `runpod:` prefix, such as cost centers, are never listed.
+         *     Follow `pagination.nextCursor` until `hasNextPage` is false.
+         */
+        get: operations["listTags"];
+        put?: never;
+        /**
+         * Create a tag
+         * @description Creates a tag. Pass `resources` to attach it at creation time; the tag is created and attached in one step, so if any resource cannot be attached, no tag is created.
+         */
+        post: operations["createTag"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/tags/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Tag identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get a tag
+         * @description Returns one tag. Its ID stays the same when the key or value changes. Returns 404 when the tag does not exist, is deleted, is not the caller's, or is reserved: a cost center ID is a reserved tag, so read it through `GET /v2/cost-centers/{id}`.
+         */
+        get: operations["getTag"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a tag
+         * @description Deletes a tag and removes it from every resource it is attached to. The resources themselves are unchanged, and nothing needs to be detached first. Returns 404 when the tag does not exist, is already deleted, is not the caller's, or is reserved: a cost center ID is a reserved tag, so delete it through `DELETE /v2/cost-centers/{id}`.
+         */
+        delete: operations["deleteTag"];
+        options?: never;
+        head?: never;
+        /**
+         * Update a tag
+         * @description Changes a tag's key, value, or both. The tag keeps its ID and stays attached to the same resources. Returns 404 when the tag does not exist or is not the caller's.
+         */
+        patch: operations["updateTag"];
+        trace?: never;
+    };
+    "/v2/tags/{id}/resources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Tag identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * List a tag's resources
+         * @description Returns the resources a tag is attached to, newest attachment first,
+         *     cursor-paginated. Each entry is the `{type}/{id}` pair
+         *     `/v2/tags/{id}/resources/{resourceType}/{resourceId}` takes. A tag
+         *     attached to nothing returns an empty list; one that does not exist, is
+         *     deleted, is not the caller's, or is reserved returns 404.
+         */
+        get: operations["listTagResources"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/tags/{id}/resources/{resourceType}/{resourceId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Tag identifier. */
+                id: string;
+                /** @description Kind of resource. */
+                resourceType: components["schemas"]["ResourceType"];
+                /** @description Resource identifier. */
+                resourceId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Attach a tag to a resource
+         * @description Attaches a tag to a resource. Repeating the request is a no-op. A resource can carry several tags. Returns 404 when the tag or the resource does not exist or is not the caller's; the detail names a missing resource as `{resourceType}/{resourceId}`.
+         */
+        put: operations["attachTagResource"];
+        post?: never;
+        /**
+         * Remove a tag from a resource
+         * @description Removes a tag from one resource. The tag, the resource and the tag's other attachments are untouched. Returns 404 when the tag does not exist, is not the caller's, or is reserved (a cost center); when the resource does not carry it, so repeating a DELETE that succeeded returns 404; or when the resource is not the caller's to change. The detail names that last resource as `{resourceType}/{resourceId}`.
+         */
+        delete: operations["detachTagResource"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v2/audit-logs": {
         parameters: {
             query?: never;
@@ -1987,6 +2188,26 @@ export interface paths {
          * @description Returns the account's audit trail, newest first, cursor-paginated; an omitted `limit` defaults to 200. Each entry records who acted (`actorId`, `email`), what they did (`action`), to which resource (`resourceType`, `resourceId`), and the details of the change (`value`). When the caller belongs to an organization the trail is the organization's, and `actorIds` narrows it to specific members; otherwise it is the trail of the account the request acts for. Filters combine with AND. Entries older than the account's audit log retention window are not returned, and an account whose plan does not include audit logs is answered 403. Follow `pagination.nextCursor` until `hasNextPage` is false.
          */
         get: operations["listAuditLogs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/billing/balance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the account balance
+         * @description Returns the balance of the account this request acts for: your own account, the team selected for the request, or your organization. An organization with no billing account answers 404.
+         */
+        get: operations["getBalance"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2119,7 +2340,7 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** @description The authenticated caller's current organization. */
+        /** @description The authenticated caller's current organization. Its role and groups are the caller's membership in this organization. */
         Organization: {
             /**
              * @description Organization ID.
@@ -2131,6 +2352,9 @@ export interface components {
              * @example my-org
              */
             name: string;
+            role: components["schemas"]["OrganizationRoleRef"];
+            /** @description The caller's groups in this organization. Empty when the caller belongs to no groups. */
+            groups: components["schemas"]["OrganizationGroupRef"][];
         };
         /** @description A pending invitation to join the caller's organization. An invite stops being listed once it is accepted, revoked or expired. */
         OrganizationInvite: {
@@ -2539,10 +2763,10 @@ export interface components {
             /** @description Up to 4 network volumes, all in the pod's data center. */
             network?: components["schemas"]["NetworkMount"][];
             /**
-             * @description At most one global volume, on GPU and CPU pods, with no data
-             *     center constraint. Combinable with `network` but not with
-             *     `persistent` (rejected with 400): a persistent disk is dropped
-             *     whenever a volume is attached. Same PATCH rules as `network`.
+             * @description At most one global volume, with no data center constraint.
+             *     Combinable with `network` but not with `persistent` (rejected
+             *     with 400): a persistent disk is dropped whenever a volume is
+             *     attached. Same PATCH rules as `network`.
              */
             global?: components["schemas"]["GlobalMount"][];
         };
@@ -3106,6 +3330,15 @@ export interface components {
              * @example 5
              */
             idleTimeout?: number;
+            /**
+             * @description Seconds a worker may take to become ready before it is terminated
+             *     and replaced. In responses, the endpoint setting, or null if none is
+             *     set. In PATCH, null clears the endpoint setting so the platform
+             *     default applies. Changes apply to workers that start initializing
+             *     after the change and do not trigger a rollout.
+             * @example 1800
+             */
+            initTimeout?: number | null;
         };
         /** @description Scale on queue wait time. Queue-based endpoints only. */
         QueueDelayScaling: {
@@ -3172,7 +3405,16 @@ export interface components {
                  * @example 5
                  */
                 max: number;
-            } & WithRequired<components["schemas"]["EndpointWorkers"], "min" | "max">;
+                /**
+                 * @description Seconds a worker may take to become ready before it is terminated
+                 *     and replaced. In responses, the endpoint setting, or null if none is
+                 *     set. In PATCH, null clears the endpoint setting so the platform
+                 *     default applies. Changes apply to workers that start initializing
+                 *     after the change and do not trigger a rollout.
+                 * @example 1800
+                 */
+                initTimeout: number | null;
+            } & WithRequired<components["schemas"]["EndpointWorkers"], "min" | "max" | "initTimeout">;
             scaling: components["schemas"]["EndpointScaling"];
             /**
              * @example [
@@ -3199,6 +3441,24 @@ export interface components {
              * @example 2026-03-13T20:00:00Z
              */
             createdAt: string;
+            /**
+             * @description ID of the account the endpoint is stamped to. This is its
+             *     creator, unless the endpoint was migrated from a team. Omitted
+             *     when unknown.
+             * @example user_abc123
+             */
+            userId?: string | null;
+            /**
+             * @description The endpoint's current worker configuration version. To see
+             *     whether a worker runs an older configuration, use its
+             *     `isStale`: comparing versions directly can disagree on legacy
+             *     endpoints (version 1). It changes on edits that roll out new
+             *     workers (image, template, compute, volumes, CUDA versions,
+             *     data centers) and not on scaling, worker count or timeout
+             *     edits. Omitted when unknown.
+             * @example 4
+             */
+            version?: number | null;
         };
         ListEndpointsResponse: {
             endpoints: components["schemas"]["Endpoint"][];
@@ -3779,6 +4039,32 @@ export interface components {
             proxy: components["schemas"]["PodSshEndpoint"] | null;
             /** @description Connection straight to the pod's sshd over its published `22/tcp` mapping. Supports the full SSH feature set. Null unless `22/tcp` is in `ports` and the running pod has been assigned a public port for it — so it is usually absent while the pod is provisioning or stopped. It can still appear on a stopped pod, so check that `status` is `RUNNING` before connecting. Also null when listing pods with `GET /v2/pods`; fetch a single pod by ID to obtain the live mapping. */
             direct: components["schemas"]["PodSshEndpoint"] | null;
+        };
+        Limit: {
+            /**
+             * @description The cap. Null when the account has no limit.
+             * @example 10
+             */
+            limit: number | null;
+        };
+        AccountLimits: {
+            /** @description Spend rate limit: the hourly cap checked when a Pod or serverless worker starts. The start is refused when the hourly cost of running Pods and serverless workers plus the new one's cost would exceed it. */
+            spendRate: {
+                /**
+                 * Format: double
+                 * @description Spend rate limit in USD per hour. Null when the account has no spend rate limit (postpaid accounts).
+                 * @example 80
+                 */
+                limit: number | null;
+                /**
+                 * Format: double
+                 * @description Current spend rate in USD per hour, the same value the console shows next to the limit. It also counts storage (network volumes, stopped Pods' disks), so it can be slightly higher than what the limit is checked against.
+                 * @example 12.4
+                 */
+                current: number;
+            };
+            /** @description Sum of workersMax across all serverless endpoints. */
+            serverlessWorkers: components["schemas"]["Limit"];
         };
         /** @description The account the API key belongs to. */
         Account: {
@@ -4881,9 +5167,9 @@ export interface components {
          *     an empty list detaches it, and an omitted list is left unchanged. Both
          *     kinds cannot be present on the endpoint at once, so to switch kinds send
          *     `[]` for one and the new list for the other in the same request. Changes
-         *     apply to workers created afterwards. At most one global volume, GPU
-         *     endpoints only. `network` may accompany the deprecated `networkVolumes` field
-         *     only if the two agree exactly.
+         *     apply to workers created afterwards. At most one global volume. `network`
+         *     may accompany the deprecated `networkVolumes` field only if the two agree
+         *     exactly.
          */
         EndpointMountsInput: {
             /** @description Network volumes, at most one per data center. */
@@ -4902,6 +5188,12 @@ export interface components {
             /** @description Registry password (write-only, not returned in responses) */
             password: string;
             /** @description Registry username (write-only, not returned in responses) */
+            username: string;
+        };
+        UpdateRegistryRequest: {
+            /** @description New registry password (write-only, not returned in responses) */
+            password: string;
+            /** @description Registry username to store with the new password (write-only, not returned in responses) */
             username: string;
         };
         ListRegistriesResponse: {
@@ -5340,7 +5632,7 @@ export interface components {
             tags?: components["schemas"]["TagCondition"][];
         };
         TagCondition: {
-            key: components["schemas"]["TagFilterKey"];
+            key: components["schemas"]["TagKey"];
             /**
              * @description Matches a tag under `key` with any one of these values, compared exactly. Omitted or empty, the condition only requires the key to be present. `""` matches a tag whose value is empty. At most 100.
              * @example [
@@ -5354,7 +5646,58 @@ export interface components {
          * @description Tag key, 1–191 characters as sent, with at least one that is not whitespace. Leading and trailing whitespace is ignored. Keys under the reserved `runpod:` prefix, in any letter case, are rejected.
          * @example env
          */
-        TagFilterKey: string;
+        TagKey: string;
+        Tag: {
+            /**
+             * @description Shared by every resource the tag is attached to.
+             * @example clz1x9k4a0000qw3h8s7d2f1g
+             */
+            id: string;
+            /**
+             * @description Returned exactly as stored.
+             * @example env
+             */
+            key: string;
+            /**
+             * @description Returned exactly as stored. May be empty.
+             * @example dev
+             */
+            value: string;
+            /**
+             * Format: date-time
+             * @example 2026-11-04T09:00:00Z
+             */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @example 2026-11-04T09:00:00Z
+             */
+            updatedAt: string;
+        };
+        ListTagsResponse: {
+            tags: components["schemas"]["Tag"][];
+            pagination: components["schemas"]["Pagination"];
+        };
+        ListTagResourcesResponse: {
+            resources: components["schemas"]["CostCenterResource"][];
+            pagination: components["schemas"]["Pagination"];
+        };
+        CreateTagRequest: {
+            key: components["schemas"]["TagKey"];
+            value: components["schemas"]["TagValue"];
+            /** @description Existing resources to attach the new tag to. */
+            resources?: components["schemas"]["CostCenterResource"][];
+        };
+        /** @description The fields to change; omitted fields are unchanged. Resources the tag is attached to stay attached. */
+        UpdateTagRequest: {
+            key?: components["schemas"]["TagKey"];
+            value?: components["schemas"]["TagValue"];
+        };
+        /**
+         * @description Tag value, at most 191 characters. May be empty. Stored exactly as sent, whitespace included.
+         * @example dev
+         */
+        TagValue: string;
         /** @description One recorded action on the account. */
         AuditLog: {
             /**
@@ -5426,6 +5769,21 @@ export interface components {
          * @enum {string}
          */
         BillingBucketSize: "hour" | "day" | "week" | "month" | "year";
+        /**
+         * @description PREPAID accounts spend from the balance. POSTPAID accounts are invoiced, so a low balance doesn't stop them.
+         * @example PREPAID
+         * @enum {string}
+         */
+        BillingMode: "PREPAID" | "POSTPAID";
+        Balance: {
+            /**
+             * Format: double
+             * @description Account balance in USD. On a prepaid account, new Pods and workers are refused when it runs out.
+             * @example 42.18
+             */
+            balanceAmount: number;
+            billingMode: components["schemas"]["BillingMode"];
+        };
         /** @description Total spend across all billable Runpod resources with each cost component broken out, fully prefixed by resource. Backs the aggregate record's amounts and the metadata totals. Serverless amounts are inclusive of platform charges. */
         BillingAmounts: {
             /**
@@ -5819,6 +6177,17 @@ export interface components {
             };
             content: {
                 "application/problem+json": components["schemas"]["ErrorResponse"];
+            };
+        };
+        /** @description The template's README, as Markdown. */
+        TemplateReadme: {
+            headers: {
+                RateLimit: components["headers"]["RateLimit"];
+                "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                [name: string]: unknown;
+            };
+            content: {
+                "text/markdown; charset=utf-8": string;
             };
         };
         /** @description The requested resource was not found or is not accessible to the caller. */
@@ -6526,6 +6895,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Account"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getAccountLimits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountLimits"];
                 };
             };
             401: components["responses"]["UnauthorizedError"];
@@ -9610,6 +10015,36 @@ export interface operations {
             };
         };
     };
+    getTemplateReadme: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example tpl_abc */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["TemplateReadme"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     listNetworkVolumes: {
         parameters: {
             query?: {
@@ -10262,6 +10697,53 @@ export interface operations {
             };
         };
     };
+    updateRegistry: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example reg_abc */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateRegistryRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Registry"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            413: components["responses"]["RequestTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     listDelegations: {
         parameters: {
             query?: never;
@@ -10796,6 +11278,36 @@ export interface operations {
             };
         };
     };
+    getPublicTemplateReadme: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example 30zmvf89kd */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["TemplateReadme"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     listCostCenters: {
         parameters: {
             query?: {
@@ -11188,6 +11700,394 @@ export interface operations {
             };
         };
     };
+    listTags: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected with 422.
+                 * @example Y3JlYXRlZEF0PTE3NDg3ODA0MDA
+                 */
+                cursor?: components["parameters"]["PaginationCursor"];
+                /**
+                 * @description Page size, 1–1000. Defaults to 1000 when omitted.
+                 * @example 50
+                 */
+                limit?: components["parameters"]["PaginationLimit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListTagsResponse"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["ResponseTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    createTag: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateTagRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Tag"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            /** @description A tag with this key and value already exists, or a resource already carries 25 public tags, the most one resource can carry. In the second case the detail names the resource. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            413: components["responses"]["RequestTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getTag: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Tag identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Tag"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteTag: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Tag identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. Response has no body. */
+            204: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    updateTag: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Tag identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateTagRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Tag"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            /** @description Another tag already has this key and value. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            413: components["responses"]["RequestTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    listTagResources: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected with 422.
+                 * @example Y3JlYXRlZEF0PTE3NDg3ODA0MDA
+                 */
+                cursor?: components["parameters"]["PaginationCursor"];
+                /**
+                 * @description Page size, 1–1000. Defaults to 1000 when omitted.
+                 * @example 50
+                 */
+                limit?: components["parameters"]["PaginationLimit"];
+            };
+            header?: never;
+            path: {
+                /** @description Tag identifier. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListTagResourcesResponse"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            413: components["responses"]["ResponseTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    attachTagResource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Tag identifier. */
+                id: string;
+                /** @description Kind of resource. */
+                resourceType: components["schemas"]["ResourceType"];
+                /** @description Resource identifier. */
+                resourceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Attached. Response has no body. */
+            204: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            /** @description The resource already carries 25 public tags, the most one resource can carry. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            413: components["responses"]["RequestTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    detachTagResource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Tag identifier. */
+                id: string;
+                /** @description Kind of resource. */
+                resourceType: components["schemas"]["ResourceType"];
+                /** @description Resource identifier. */
+                resourceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. Response has no body. */
+            204: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     listAuditLogs: {
         parameters: {
             query?: {
@@ -11255,6 +12155,43 @@ export interface operations {
             403: components["responses"]["ForbiddenError"];
             413: components["responses"]["ResponseTooLargeError"];
             422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getBalance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Balance"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
             default: {
