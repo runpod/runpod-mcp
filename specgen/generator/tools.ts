@@ -41,12 +41,17 @@ interface RequestBody {
   required?: boolean;
   content?: Record<string, { schema?: unknown }>;
 }
+interface Response {
+  $ref?: string;
+  content?: Record<string, unknown>;
+}
 interface Operation {
   operationId: string;
   summary?: string;
   description?: string;
   parameters?: Parameter[];
   requestBody?: RequestBody;
+  responses?: Record<string, Response>;
 }
 const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'patch'] as const;
 type PathItem = Partial<Record<(typeof HTTP_METHODS)[number], Operation>> & {
@@ -58,6 +63,7 @@ export interface SpecDocument {
     schemas?: Record<string, unknown>;
     parameters?: Record<string, Parameter>;
     requestBodies?: Record<string, RequestBody>;
+    responses?: Record<string, Response>;
   };
 }
 
@@ -278,7 +284,7 @@ function reachableDefs(
 
 function resolveComponent<T extends { $ref?: string }>(
   value: T,
-  kind: 'parameters' | 'requestBodies',
+  kind: 'parameters' | 'requestBodies' | 'responses',
   components: Record<string, T> = {}
 ): T {
   const seen = new Set<string>();
@@ -293,6 +299,23 @@ function resolveComponent<T extends { $ref?: string }>(
     value = resolved;
   }
   return value;
+}
+
+// True when the operation's success body is not JSON (getTemplateReadme
+// answers text/markdown). openapi-fetch parses a success body as JSON unless
+// told otherwise, so a Markdown 200 would throw a SyntaxError in dispatch.
+function successIsText(op: Operation, spec: SpecDocument): boolean {
+  const success = Object.entries(op.responses ?? {}).find(([status]) =>
+    /^2(\d\d|XX)$/.test(status)
+  )?.[1];
+  if (!success) return false;
+  const content = resolveComponent(
+    success,
+    'responses',
+    spec.components?.responses
+  ).content;
+  const types = Object.keys(content ?? {});
+  return types.length > 0 && !types.some((type) => /\bjson\b/i.test(type));
 }
 
 function operationParameters(
@@ -467,6 +490,7 @@ function buildTool(
   }
   const $defs = reachableDefs({ type: 'object', properties }, defs);
   const name = toolName(op.operationId, config);
+  const textResponse = successIsText(op, spec);
   return {
     name,
     title: config.titles?.[op.operationId] ?? titleFromName(name),
@@ -494,6 +518,7 @@ function buildTool(
     ...(config.schemaOnDemand?.includes(op.operationId)
       ? { schemaOnDemand: true as const }
       : {}),
+    ...(textResponse ? { textResponse: true as const } : {}),
     inputSchema: {
       type: 'object',
       properties,

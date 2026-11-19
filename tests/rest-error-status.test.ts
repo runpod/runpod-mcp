@@ -242,3 +242,32 @@ describe('runTool — payload status only for an upstream HTTP error', () => {
     assert.equal(payload.status, 503);
   });
 });
+
+describe('tool result — a text success body', () => {
+  it('reaches the MCP client as raw Markdown, not a JSON string', async () => {
+    const readme = '# PyTorch 2.8\n\nRun `python app.py`.';
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(readme, {
+        status: 200,
+        headers: { 'content-type': 'text/markdown; charset=utf-8' },
+      })) as typeof fetch;
+    try {
+      const server = createSpecgenServer(
+        createToolContext({ apiKey: 'rpa_x', sdkRetry: false })
+      );
+      const client = new Client({ name: 'probe', version: '0' });
+      const [a, b] = InMemoryTransport.createLinkedPair();
+      await Promise.all([server.connect(a), client.connect(b)]);
+      const result = await client.callTool({
+        name: 'get-template-readme',
+        arguments: { id: 'tpl_abc' },
+      });
+      await client.close();
+      assert.equal(result.isError, false);
+      assert.equal((result.content as { text: string }[])[0].text, readme);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
