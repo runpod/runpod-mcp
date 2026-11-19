@@ -376,10 +376,14 @@ test('generation freshness check rejects stale schemas and config without writin
 // with its background-download guidance.
 // The 2026-11-13 resync adds get-account and the three queued-pod tools, and
 // the queue option on create-pod: 106,605 B to 109,068 B.
+// The 2026-11-18 resync adds 13 operations served in full: tags (8), template
+// READMEs (2), balance, account limits and update-registry: 109,068 B to
+// 121,066 B.
 // 2026-11-19, budgets switch from bytes to tokens with no change to the
 // surface: generated 109,068 B is 24,860 tokens, curated 29,980 B is 7,123
 // tokens. The token budgets keep about the headroom the byte budgets had.
-const GENERATED_SURFACE_TOKEN_BUDGET = 25_000;
+// With the 2026-11-18 resync merged in, generated is 121,066 B, 27,761 tokens.
+const GENERATED_SURFACE_TOKEN_BUDGET = 28_000;
 const CURATED_SURFACE_TOKEN_BUDGET = 7_150;
 // No one argument description may crowd the surface. The cap was 400 B; the
 // longest description on 2026-11-19 is 94 tokens (385 B). Units for every
