@@ -154,13 +154,14 @@ descriptions:
     on the first job: expect minutes, poll with get-job-status wait.
   updateEndpoint: >-
     Partially update a serverless endpoint (PATCH): only fields present in the
-    body change, omitted ones are untouched, with two exceptions. DESTRUCTIVE
-    GOTCHA: an env you send replaces the endpoint's env instead of merging,
-    so a partial map drops the rest — read the endpoint first with
+    body change, omitted ones are untouched, with the exceptions below.
+    DESTRUCTIVE GOTCHA: an env you send replaces the endpoint's env instead of
+    merging, so a partial map drops the rest — read the endpoint first with
     get-endpoint and send the full env map. get-endpoint shows
-    secret-looking values as [redacted]: never send that placeholder back,
-    supply the real value or a {{ RUNPOD_SECRET_<name> }} reference, and ask
-    the user when you have neither. DESTRUCTIVE GOTCHA: gpu.pools and
+    secret-looking values as [redacted]: never send that placeholder back, it
+    would overwrite the secret with the literal string. Supply the real value
+    or a {{ RUNPOD_SECRET_<name> }} reference, and ask the user when you have
+    neither. DESTRUCTIVE GOTCHA: gpu.pools and
     gpu.excludedTypes are a single selection, so sending pools without
     excludedTypes clears any exclusions pinned elsewhere (the
     console or set-endpoint-gpus) — read the endpoint first with get-endpoint
@@ -298,7 +299,9 @@ directoryDescriptions:
     (min/max/idleTimeout), scaling (type plus queueDelay or requestCount),
     dataCenterIds, networkVolumes, timeout, flashboot, and the container
     settings (image, args, disk, ports, env, registry). cpu replaces a CPU
-    endpoint's whole flavor selection. The compute family is fixed: gpu on a
+    endpoint's whole flavor selection. An env sent replaces the endpoint's
+    whole env map, so keys left out are removed, and secret-looking env values
+    are returned as [redacted]. The compute family is fixed: gpu on a
     CPU endpoint, cpu on a GPU one, or both returns 400. Worker, scaling and
     timeout changes apply promptly; container changes (image, env) create a
     new release that rolls out as workers cycle, so in-flight workers keep the
