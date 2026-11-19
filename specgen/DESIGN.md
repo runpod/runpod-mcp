@@ -42,7 +42,7 @@ There is a third box that never runs in production:
 ```
    ┌──────────────────────────────────────────────┐
    │ BOX 3 — THE INGREDIENTS    (dev-time only)   │
-   │ packages/typescript-api-sdk/spec/openapi.yaml│
+   │ @runpod/typescript-api-sdk/spec/openapi.yaml │
    │                             the API's menu   │
    │ specgen/generator-config.yaml  our judgment  │
    │ specgen/generator/          the script       │
@@ -84,7 +84,7 @@ env key instead of a bearer token). Every request is independent:
    - fills the URL, splits args into path/query/body
    - calls the SDK:  ctx.sdk.GET('/v2/pods/{podId}', {...})
 
-5. the `@runpod/typescript-api-sdk` package (packages/typescript-api-sdk,
+5. the `@runpod/typescript-api-sdk` package (from runpod/js-sdk,
    bundled into the build)
    - a thin wrapper over fetch: fills the URL template, adds the
      Authorization header, retries safe requests on 429/5xx
@@ -109,11 +109,12 @@ each other's anything.
 The 49 generated tools are produced, not written:
 
 ```
-packages/typescript-api-sdk/spec/openapi.yaml
+@runpod/typescript-api-sdk/spec/openapi.yaml
                                    the API's description of itself
-        +                          (vendored from
-specgen/generator-config.yaml       api.runpod.io/v2/openapi.json
-                                    through the SDK's patch layer)
+        +                          (shipped in the SDK package;
+specgen/generator-config.yaml       runpod/js-sdk vendors it from
+                                    api.runpod.io/v2/openapi.json
+                                    through its patch layer)
   our judgment:
   - skip these operations (each skip needs a written reason)
   - override these descriptions ("BILLABLE: state the price first")
@@ -146,12 +147,12 @@ generation cannot reach:
 Three moments where things are checked, weakest to strongest:
 
 ```
-DAILY + EVERY PR ─ "did the API change under us?"
-  .github/workflows/spec-drift.yml  +  a step in ci.yml
-  downloads the live openapi.json, diffs operation-by-operation
-  against our vendored copy; prints exactly what appeared,
-  disappeared, or moved. Real drift fails CI; an unreachable
-  spec only warns (a network blip is not a verdict).
+DAILY ─ "did the API change under us?"
+  runpod/js-sdk compares its vendored spec with the live openapi.json
+  every day and every PR, and its spec update workflow releases a new
+  @runpod/typescript-api-sdk when production moves. Here, the daily
+  .github/workflows/spec-update.yml moves to the latest SDK release,
+  regenerates the tools, and opens a PR.
 
 EVERY PR ─ "is the repo consistent with itself?"   (pnpm test, no network)
   - every spec operation is generated OR excluded-with-a-reason
@@ -160,9 +161,9 @@ EVERY PR ─ "is the repo consistent with itself?"   (pnpm test, no network)
   - waits stay under the hosting platform's 60s kill deadline
   - a tool-call log line never contains the key or the arguments
 
-WHEN DRIFT IS RED ─ the human update loop (two commands)
-  pnpm spec:pull          re-vendor (production by default)
-  pnpm generate           SDK schema + tools
+WHEN THE SDK MOVES ─ the update loop
+  bump @runpod/typescript-api-sdk   (the daily workflow does this)
+  pnpm generate                     tools
   ...then review generator-config.yaml: does the new operation need a
   billable warning? an exclusion? That judgment is deliberately manual.
 ```
@@ -170,37 +171,34 @@ WHEN DRIFT IS RED ─ the human update loop (two commands)
 One trap this caught already: the spec has a DEV generation
 (`v2-rest.runpod.dev`, paths like `/v2/gpu-types`) and a PROD generation
 (`api.runpod.io`, paths like `/v2/catalog/gpus`). Production is the
-default everywhere; to build against dev (or any host), override with an
-env var:
+default everywhere; to build against dev (or any host), pull that spec in
+runpod/js-sdk and point the generator at the file:
 
-    SPEC_URL=https://v2-rest.runpod.dev/v2/openapi.yaml pnpm spec:pull
-    SPEC_URL=... pnpm spec:check      # judge drift against that host too
+    SPEC_URL=https://v2-rest.runpod.dev/v2/openapi.yaml pnpm spec:pull   # in js-sdk
+    RUNPOD_SPEC_PATH=.../openapi.yaml pnpm generate                      # here
     RUNPOD_API_BASE_URL=...           # and point the RUNTIME at the same
                                       # environment, or the tools will call
                                       # prod paths that dev does not serve
 
-While dev-vendored, the drift check against production goes red — that
-red is correct (you are deliberately drifted), not a bug.
-
 ### The other half of the update loop: the SDK
 
-Two generators read the one vendored spec, and they generate different
-things.
+Two generators read the one spec, and they generate different things.
 
 The MCP generates **tool definitions**: `src/specgen/generated/tools.gen.ts`
 is an array of plain objects — tool name, description written for a language
 model, JSON Schema for the arguments, and the method and path to call. It is
 data, read at runtime to answer `tools/list` and to route a call.
 
-The SDK in `packages/typescript-api-sdk/`
+The SDK, in runpod/js-sdk,
 generates **types**: its `src/generated/schema.ts` is TypeScript declarations
 and no runtime code, which is what makes `ctx.sdk.GET('/v2/pods')` know the
 path exists, which query parameters it takes, and what comes back.
 
 The two are stacked. Our generated tools say what to call; the call itself
-goes out through the SDK, a `workspace:*` dependency bundled into the build.
-`pnpm generate` regenerates both from the same file, so a new upstream
-parameter reaches both halves of the surface in one PR:
+goes out through the SDK, a devDependency bundled into the build. The tools
+generate from the spec the installed SDK ships, so the tools and the SDK
+types always describe the same API. A new upstream parameter reaches both
+halves once the SDK releases it and the devDependency moves:
 
 ```
 GENERATED TOOLS (src/specgen/generated/)
@@ -213,14 +211,9 @@ CURATED TOOLS (src/specgen/tools/)
   taught to pass it.
 ```
 
-When the SDK lived in its own repository, curated tools waited for an SDK
-release and a pin bump: after the v2 API added cursor pagination, `list-pods`
-(generated) had `cursor`/`limit` immediately, while `list-endpoints` and
-`list-templates` (curated, because they trim fat fields) gained them only
-after SDK 0.2.0 shipped. That wait is gone, but the last step is not: when a
-spec resync touches an endpoint a curated tool serves, check
-`src/specgen/tools/` for a handler on the affected path before assuming a
-re-vendor was enough.
+When an SDK bump touches an endpoint a curated tool serves, check
+`src/specgen/tools/` for a handler on the affected path before assuming the
+bump was enough.
 
 ---
 
@@ -269,10 +262,9 @@ plugin and this server serve one copy.
   limiting is the stub: `src/specgen/ops.ts` defines the seat (consulted
   before every call, denial → retryable error with a wait hint);
   enforcement is a later one-function swap to a KV-backed counter.
-- **The SDK lives in this repo.** `@runpod/typescript-api-sdk`
-  (`packages/typescript-api-sdk/`) is a `workspace:*` build dependency
-  bundled into both entrypoints, and is still published to npm on its own.
-  It owns management API retries,
+- **The SDK lives in runpod/js-sdk.** `@runpod/typescript-api-sdk` is a
+  devDependency bundled into both entrypoints, and ships the spec the tools
+  generate from. It owns management API retries,
   request deadlines, and SSE parsing; MCP retains snapshot limits and
   agent-facing formatting. Node.js 20+ is required.
 - **One surface everywhere.** stdio and hosted serve the same tools and
@@ -294,19 +286,17 @@ src/specgen/context.ts           Box 2: per-request clients from the caller's ke
 src/specgen/tools/               Box 2: the 17 hand-written tools
 src/specgen/ops.ts               Box 2: log line + rate-limit stub
 src/specgen/generated/           Box 2: machine-written output (DO NOT EDIT)
-packages/typescript-api-sdk/     the REST SDK, published as @runpod/typescript-api-sdk
-packages/typescript-api-sdk/spec/openapi.yaml
-                                 Box 3: vendored production spec (patched)
+@runpod/typescript-api-sdk/spec/openapi.yaml
+                                 Box 3: production spec (patched), from the SDK package
+specgen/generator/spec-path.ts   Box 3: where the generator finds that spec
 specgen/generator-config.yaml    Box 3: exclusions / description + argument overrides / on-demand schemas
 specgen/generator/               Box 3: the generator
-scripts/check-spec-drift.ts      live-vs-vendored spec diff
 tests/specgen-*.test.ts          the gates described in level 4
 ```
 
 ```
-pnpm generate          regenerate the SDK schema and the tool surface from the spec
-pnpm generate:tools    regenerate only the tool surface
-pnpm spec:check        am I drifted from the live API?
+pnpm generate          regenerate the tool surface from the SDK's spec
+pnpm generate:check    are the generated tools current?
 pnpm test              all gates (no network, no credentials needed)
 npx vercel deploy      preview deployment (prod promotion is manual)
 ```
