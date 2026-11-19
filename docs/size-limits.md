@@ -36,3 +36,10 @@ Never use characters to stand in for tokens. Measured on log snapshots, one char
 | `MAX_RECORDED_VALUE_LENGTH` (200)                                    | `src/specgen/analytics.ts`    | One analytics value      | Characters | Follows this rule; the name predates the suffix convention.                                                                                                                               |
 
 Add a row when you add a limit.
+
+## Follow-ups
+
+Log tools (`stream-pod-logs`, `stream-worker-logs`):
+
+1. Cap a snapshot in UTF-8 bytes instead of characters, about 22,500 bytes (the 25,000-token client limit less 10%), so a log in any language fits.
+2. Page with a cursor built from the API's event id (`Last-Event-ID`, a timestamp plus a sequence number), returned as `pagination.nextCursor` like every other list. Today an agent pages by hand, passing the last container line's `ts` as `since`, which can skip lines that share a timestamp and never replays system lines. Do not page by skipping a number of lines, characters or tokens: the API cannot skip, and a live log grows and rotates between calls, so an offset points at different lines each time.
