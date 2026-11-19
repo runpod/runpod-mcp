@@ -938,23 +938,25 @@ export const generatedTools: GeneratedTool[] = [
                 },
               },
             },
+            {
+              if: {
+                required: ['type'],
+                properties: {
+                  type: {
+                    const: 'LOAD_BALANCER',
+                  },
+                },
+              },
+              then: {
+                properties: {
+                  scaling: {
+                    $ref: '#/$defs/RequestCountScaling',
+                  },
+                },
+              },
+            },
           ],
           unevaluatedProperties: false,
-          if: {
-            required: ['type'],
-            properties: {
-              type: {
-                const: 'LOAD_BALANCER',
-              },
-            },
-          },
-          then: {
-            properties: {
-              scaling: {
-                $ref: '#/$defs/RequestCountScaling',
-              },
-            },
-          },
         },
         EndpointMount: {
           type: 'object',
@@ -1698,16 +1700,18 @@ export const generatedTools: GeneratedTool[] = [
                 },
               },
             },
+            {
+              if: {
+                not: {
+                  required: ['templateId'],
+                },
+              },
+              then: {
+                required: ['image'],
+              },
+            },
           ],
           unevaluatedProperties: false,
-          if: {
-            not: {
-              required: ['templateId'],
-            },
-          },
-          then: {
-            required: ['image'],
-          },
         },
         GlobalMount: {
           type: 'object',
