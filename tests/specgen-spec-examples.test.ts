@@ -1,4 +1,4 @@
-// Every request-body example in the vendored spec is a call the API documents
+// Every request-body example in the spec the tools generate from is a call the API documents
 // as valid, so MCP_SCHEMA_VALIDATION=enforce must accept it. This is the gate
 // that caught enforce rejecting every QUEUE create-endpoint (an Ajv quirk with
 // `if`/`then` beside `unevaluatedProperties`; see specgen/generator/tools.ts).
@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
 import { generatedTools } from '#src/specgen/generated/tools.gen';
 import { schemaViolations } from '#src/specgen/validate';
+import { SPEC_PATH } from '../specgen/generator/spec-path.js';
 
 interface Example {
   operationId: string;
@@ -16,9 +17,7 @@ interface Example {
 }
 
 function requestBodyExamples(): Example[] {
-  const spec = parse(
-    readFileSync('packages/typescript-api-sdk/spec/openapi.yaml', 'utf8')
-  );
+  const spec = parse(readFileSync(SPEC_PATH, 'utf8'));
   const examples: Example[] = [];
   for (const item of Object.values(spec.paths) as Record<string, unknown>[]) {
     for (const op of Object.values(item)) {
