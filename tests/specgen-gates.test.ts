@@ -381,9 +381,10 @@ test('generation freshness check rejects stale schemas and config without writin
 // tokens. The token budgets keep about the headroom the byte budgets had.
 const GENERATED_SURFACE_TOKEN_BUDGET = 25_000;
 const CURATED_SURFACE_TOKEN_BUDGET = 7_150;
-// A length cap on one argument's text, not a cost budget, so it stays in
-// bytes.
-const ARGUMENT_DESCRIPTION_CAP_BYTES = 400;
+// No one argument description may crowd the surface. The cap was 400 B; the
+// longest description on 2026-11-19 is 94 tokens (385 B). Units for every
+// size limit in this repo: docs/size-limits.md.
+const ARGUMENT_DESCRIPTION_CAP_TOKENS = 100;
 
 type Served = ListableTool;
 const servedTokens = (tools: Served[]) =>
@@ -399,9 +400,9 @@ function longArgumentDescriptions(tools: Served[]): string[] {
     if (!node || typeof node !== 'object') return;
     for (const [key, value] of Object.entries(node)) {
       if (key === 'description' && typeof value === 'string') {
-        const bytes = Buffer.byteLength(value);
-        if (bytes > ARGUMENT_DESCRIPTION_CAP_BYTES)
-          offenders.push(`${at} (${bytes} B)`);
+        const tokens = countTokens(value);
+        if (tokens > ARGUMENT_DESCRIPTION_CAP_TOKENS)
+          offenders.push(`${at} (${tokens} tokens)`);
       } else walk(value, `${at}.${key}`);
     }
   };
