@@ -80,7 +80,7 @@
   "devDependencies": {
     "@anthropic-ai/tokenizer": "^0.0.4",
     "@changesets/cli": "^2.29.6",
-    "@runpod/typescript-api-sdk": "^2.0.0",
+    "@runpod/typescript-api-sdk": "^0.7.0",
     "@types/node": "^20.10.5",
     "@typescript-eslint/eslint-plugin": "^8.39.1",
     "@typescript-eslint/parser": "^8.39.1",

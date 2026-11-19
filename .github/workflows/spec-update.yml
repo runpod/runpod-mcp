@@ -134,7 +134,7 @@ jobs:
           prompt: |
             These tools have no directory decision: ${{ steps.directory.outputs.unclassified }}
 
-            Read specgen/DIRECTORY_POLICY.md and decide each one by its rules. Read the tool's definition in src/specgen/generated/tools.gen.ts (or src/specgen/tools/ for a curated tool) and its operation in node_modules/@runpod/typescript-api-sdk/spec/openapi.yaml.
+            Read specgen/DIRECTORY_POLICY.md and decide each one by its rules. Read the tool's definition in src/specgen/generated/tools.gen.ts (or src/specgen/tools/ for a curated tool) and its operation in the spec that specgen/generator/spec-path.ts resolves (specgen/spec/openapi.yaml until the SDK ships one).
 
             For each tool, add an entry to DIRECTORY_TOOLS in src/specgen/profile.ts: an include, an include with omitInputs, or an exclude with a one-sentence reason naming the rule. For an included generated tool whose description breaks the description rules, add a directoryDescriptions entry in specgen/generator-config.yaml and run pnpm generate:tools.
 

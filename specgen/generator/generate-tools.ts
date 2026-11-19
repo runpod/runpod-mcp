@@ -24,7 +24,7 @@ if (process.argv.includes('--check')) {
   process.exit(0);
 }
 
-const header = `// Code generated from @runpod/typescript-api-sdk/spec/openapi.yaml by specgen/generator/generate-tools.ts; DO NOT EDIT.
+const header = `// Code generated from specgen/spec/openapi.yaml by specgen/generator/generate-tools.ts; DO NOT EDIT.
 
 export interface GeneratedToolParam {
   name: string;
