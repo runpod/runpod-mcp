@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
 import { Ajv } from 'ajv';
+import { countTokens } from '@anthropic-ai/tokenizer';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { generatedTools } from '#src/specgen/generated/tools.gen';
@@ -356,10 +357,16 @@ test('generation freshness check rejects stale schemas and config without writin
   }
 });
 
-// Every byte below is sent on every client handshake and sits in the agent's
+// Every token below is sent on every client handshake and sits in the agent's
 // context for the whole session. The budgets pin today's surface as listed
 // (schemaOnDemand tools count at their call shape) so a spec pull or a new
 // tool cannot regrow it unnoticed; raise one only with the reason in the PR.
+// Budgets are in tokens, counted with @anthropic-ai/tokenizer (offline,
+// pinned in devDependencies), because tokens are what the agent pays for.
+// Counts are approximate: the package's tokenizer predates current Claude
+// models, so real counts can drift a few percent, and other model families
+// tokenize differently again. The gate catches growth, not exact billing.
+// History before 2026-11-19 was kept in serialized bytes (~4.3 B per token):
 // The audit-log lookup adds 2,418 B to the default tools/list surface. Keep
 // its five filters and pagination inputs visible; this 2 KB increase covers it.
 // The 2026-11-05 spec resync adds 31 operations served in full: organization
@@ -369,13 +376,18 @@ test('generation freshness check rejects stale schemas and config without writin
 // with its background-download guidance.
 // The 2026-11-13 resync adds get-account and the three queued-pod tools, and
 // the queue option on create-pod: 106,605 B to 109,068 B.
-const GENERATED_SURFACE_BUDGET_BYTES = 110_000;
-const CURATED_SURFACE_BUDGET_BYTES = 30_000;
+// 2026-11-19, budgets switch from bytes to tokens with no change to the
+// surface: generated 109,068 B is 24,860 tokens, curated 29,980 B is 7,123
+// tokens. The token budgets keep about the headroom the byte budgets had.
+const GENERATED_SURFACE_TOKEN_BUDGET = 25_000;
+const CURATED_SURFACE_TOKEN_BUDGET = 7_150;
+// A length cap on one argument's text, not a cost budget, so it stays in
+// bytes.
 const ARGUMENT_DESCRIPTION_CAP_BYTES = 400;
 
 type Served = ListableTool;
-const servedBytes = (tools: Served[]) =>
-  Buffer.byteLength(JSON.stringify(tools.map((tool) => listTool(tool))));
+const servedTokens = (tools: Served[]) =>
+  countTokens(JSON.stringify(tools.map((tool) => listTool(tool))));
 
 function longArgumentDescriptions(tools: Served[]): string[] {
   const offenders: string[] = [];
@@ -403,16 +415,16 @@ const stdioCuratedTools = [
   createSearchDocsTool(async () => ({ status: 200, body: {} as never })),
 ];
 
-test('the served tool surface stays within its byte budgets', () => {
-  const generated = servedBytes(generatedTools);
-  const curated = servedBytes(stdioCuratedTools);
+test('the served tool surface stays within its token budgets', () => {
+  const generated = servedTokens(generatedTools);
+  const curated = servedTokens(stdioCuratedTools);
   assert.ok(
-    generated <= GENERATED_SURFACE_BUDGET_BYTES,
-    `generated tools serialize to ${generated} B, budget ${GENERATED_SURFACE_BUDGET_BYTES} B`
+    generated <= GENERATED_SURFACE_TOKEN_BUDGET,
+    `generated tools are ${generated} tokens, budget ${GENERATED_SURFACE_TOKEN_BUDGET}`
   );
   assert.ok(
-    curated <= CURATED_SURFACE_BUDGET_BYTES,
-    `curated tools serialize to ${curated} B, budget ${CURATED_SURFACE_BUDGET_BYTES} B`
+    curated <= CURATED_SURFACE_TOKEN_BUDGET,
+    `curated tools are ${curated} tokens, budget ${CURATED_SURFACE_TOKEN_BUDGET}`
   );
 });
 

@@ -80,6 +80,7 @@
     "zod": "^3.22.4"
   },
   "devDependencies": {
+    "@anthropic-ai/tokenizer": "^0.0.4",
     "@changesets/cli": "^2.29.6",
     "@runpod/typescript-api-sdk": "workspace:*",
     "@types/node": "^20.10.5",
