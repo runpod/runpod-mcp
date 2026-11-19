@@ -4,6 +4,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeUaToken, buildTrackingHeaders } from '#src/_shared/tracking';
+import { createToolContext } from '#src/specgen/context';
 
 describe('tracking headers', () => {
   it('sanitizeUaToken strips reserved chars and bounds length', () => {
@@ -19,6 +20,32 @@ describe('tracking headers', () => {
   it('sanitizeUaToken: all-reserved → underscores, empty → empty', () => {
     assert.equal(sanitizeUaToken('(),;'), '____');
     assert.equal(sanitizeUaToken(''), '');
+  });
+
+  it('sanitizeUaToken keeps every RFC 9110 token character', () => {
+    const tchars = "!#$%&'*+-.^_`|~0123456789ABCXYZabcxyz";
+    assert.equal(sanitizeUaToken(tchars), tchars);
+  });
+
+  it('sanitizeUaToken maps non-ASCII and control characters to _', () => {
+    assert.equal(sanitizeUaToken('クロード'), '____');
+    assert.equal(sanitizeUaToken('🤖 agent'), '__agent');
+    assert.equal(sanitizeUaToken('a\u0000b\u007fc'), 'a_b_c');
+    assert.equal(sanitizeUaToken('café'), 'caf_');
+  });
+
+  it('a CJK, emoji or NUL client name still builds valid headers', () => {
+    for (const clientName of ['クロード', '🤖 agent', 'a\u0000b']) {
+      const h = buildTrackingHeaders({
+        clientName,
+        clientVersion: '1.0-β',
+        transport: 'stdio',
+        serverVersion: '1.0.0',
+        sessionId: 's',
+      });
+      assert.doesNotThrow(() => new Headers(h), JSON.stringify(clientName));
+      assert.match(h['User-Agent'], /client=[^;]+; client_version=1\.0-_;/);
+    }
   });
 
   it('uses unknown for an empty-string clientName/clientVersion (|| not ??)', () => {
@@ -57,5 +84,40 @@ describe('tracking headers', () => {
       h['User-Agent'],
       /client=unknown; client_version=unknown; transport=http/
     );
+  });
+});
+
+describe('createToolContext — tracking User-Agent outbound', () => {
+  it('a non-ASCII client name from the handshake goes out sanitized', async () => {
+    const original = globalThis.fetch;
+    const seen: Array<string | null> = [];
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit
+    ) => {
+      const request = new Request(input, init);
+      seen.push(request.headers.get('user-agent'));
+      const isGraphql = request.url.endsWith('/graphql');
+      return new Response(isGraphql ? '{"data":{}}' : '[]', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+    try {
+      const ctx = createToolContext({
+        apiKey: 'rpa_x',
+        sdkRetry: false,
+        tracking: { transport: 'stdio', serverVersion: '1.0.0' },
+      });
+      assert.ok(ctx.setClientInfo);
+      ctx.setClientInfo('クロード', '2.0');
+      await ctx.sdk.GET('/v2/pods');
+      await ctx.graphql.public('{ x }');
+      const ua =
+        'runpod-mcp-server/1.0.0 (caller=mcp; surface=v2; client=____; client_version=2.0; transport=stdio)';
+      assert.deepEqual(seen, [ua, ua]);
+    } finally {
+      globalThis.fetch = original;
+    }
   });
 });

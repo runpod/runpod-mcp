@@ -5,11 +5,15 @@
 // handshake) stays at the call site and is reduced to plain strings before
 // reaching `buildTrackingHeaders`.
 
-// Sanitizes a value for inclusion in a User-Agent token. RFC 7230 reserves
-// parens and a few other chars; strip them so the structured UA stays
-// parseable, and bound the length so a hostile client can't blow up a header.
+// Reduces a value to the RFC 9110 token characters (letters, digits and
+// !#$%&'*+-.^_`|~) so it can sit inside the structured User-Agent. Every other
+// character becomes `_`, one per code point. That keeps out the separators the
+// warehouse reader splits on, and everything Fetch refuses in a header value:
+// a character above U+00FF or a NUL makes `Headers` throw, which would fail
+// every outbound request of a session whose client name holds one. The length
+// cap stops a hostile client from inflating the header.
 export function sanitizeUaToken(value: string): string {
-  return value.replace(/[()<>@,;:\\"/[\]?={}\s]/g, '_').slice(0, 64);
+  return value.replace(/[^A-Za-z0-9!#$%&'*+.^_`|~-]/gu, '_').slice(0, 64);
 }
 
 export interface TrackingInput {
@@ -22,9 +26,16 @@ export interface TrackingInput {
   sessionId: string;
 }
 
-// Builds the `User-Agent` + `X-Runpod-Session-Id` headers. The clientInfo →
-// fallback → 'unknown' resolution is the caller's job (it owns the SDK handle);
-// this function just sanitizes and formats whatever identity it's given.
+// Builds the `User-Agent` and `X-Runpod-Session-Id` headers. The User-Agent is
+//
+//   runpod-mcp-server/<serverVersion> (caller=mcp; surface=v2; client=<name>; client_version=<version>; transport=<stdio|http>)
+//
+// Runpod's usage analytics parse this header: they file a request under MCP by
+// its `runpod-mcp` prefix, take the version from the text after the first `/`,
+// and take the calling agent from `client=` up to the next `;` or `)`. The
+// prefix, the separators and the key names are a contract with that reader. The clientInfo → fallback → 'unknown' resolution is the
+// caller's job (it owns the SDK handle); this function only sanitizes and
+// formats the identity it is given.
 export function buildTrackingHeaders(
   input: TrackingInput
 ): Record<string, string> {
