@@ -1,5 +1,11 @@
 # @runpod/typescript-api-sdk
 
+## 0.8.0
+
+### Minor Changes
+
+- 02d28f6: Resync the v2 spec. New tools: `get-account` (the ID and email of the account the API key belongs to), and `list-queued-pods`, `get-queued-pod` and `delete-queued-pod` (cancel) for Pods queued for deploy-when-available. `create-pod` takes a `queue` option that queues the Pod when its GPU has no capacity. `create-cluster` now accepts `registry` for a private image.
+
 ## 0.7.0
 
 ### Minor Changes
