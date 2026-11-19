@@ -1,5 +1,21 @@
 # @runpod/mcp-server
 
+## 4.13.0
+
+### Minor Changes
+
+- e2f1925: Hosted servers with ALP configured add `rate_nps_score`, which records the agent's own 0 to 10 NPS score once per account, and `report_feedback` takes an optional `tag` (`nps`) for an agent explaining its score. The `nps` route is once per account, like the referral route. From an account's third successful `create-pod`, `create-endpoint`, `deploy-hub-repo` or `create-cluster`, counted per account in the ALP sink, the result carries a note asking the agent for its score until the account has given one. A stored score is sent to the PostHog agent NPS survey, with the creation tool the agent passes in the new optional `triggerTool` argument. Clients that send `X-Runpod-Analytics: off` are not counted, asked or captured.
+- 02d28f6: Resync the v2 spec. New tools: `get-account` (the ID and email of the account the API key belongs to), and `list-queued-pods`, `get-queued-pod` and `delete-queued-pod` (cancel) for Pods queued for deploy-when-available. `create-pod` takes a `queue` option that queues the Pod when its GPU has no capacity. `create-cluster` now accepts `registry` for a private image.
+- 906469c: The hosted server now forwards an inbound `X-Trace-ID` header to REST v2, so a caller can join a Runpod API call to its own request. A malformed value is dropped and the call still runs. A tool error payload now has a numeric `status` when Runpod answered with a non-OK HTTP response, also when the body is empty or not JSON, so a client can tell a Runpod 401 or 429 from an MCP-side failure. An error the MCP raises itself (no API key, an invalid endpoint id, a request deadline, a GraphQL error on an HTTP 200) has no payload `status`.
+
+### Patch Changes
+
+- 6808131: Fix `create-endpoint` being rejected under `MCP_SCHEMA_VALIDATION=enforce`. The validator reported every field of a valid queue endpoint body as an unevaluated property, because of how Ajv handles an `if`/`then` placed beside `unevaluatedProperties`. The generator now moves such conditionals into an `allOf` member, which means the same thing and validates correctly. `create-pod` gets the same reshaping. A new test checks every request-body example in the API spec against full-schema validation.
+- 32cd4a2: `get-capacity` now returns `securePricePerGpuHr` and `communityPricePerGpuHr` next to `pricePerHr`, which is the cheapest price across both clouds unless `secureCloudOnly` is set.
+- e5dfe0a: Update `@runpod/plugin-knowledge` from 2.1.0 to 2.1.1, so `list-guides` and `read-guide` serve the latest plugin guides.
+
+  Update run: https://github.com/runpod/runpod-mcp/actions/runs/44275974959
+
 ## 4.12.0
 
 ### Minor Changes

@@ -167,6 +167,9 @@ export async function dispatchGeneratedTool(
   const { data, error, response } = await verbs[tool.method](tool.path, {
     params: { path: pathParams, query },
     ...(tool.hasBody && requestBody !== undefined ? { body: requestBody } : {}),
+    // openapi-fetch parses a success body as JSON by default, which throws on
+    // a Markdown README. Error bodies are still parsed as JSON when they are.
+    ...(tool.textResponse ? { parseAs: 'text' } : {}),
   });
 
   // Branch on the RESPONSE, not on `error`: openapi-fetch returns

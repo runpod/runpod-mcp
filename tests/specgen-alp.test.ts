@@ -5,7 +5,12 @@ import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { createSpecgenServer, curatedTools } from '#src/specgen/server';
+import {
+  createSpecgenServer,
+  curatedTools,
+  npsNote,
+  type NpsAskOptions,
+} from '#src/specgen/server';
 import { createToolContext } from '#src/specgen/context';
 import { generatedTools } from '#src/specgen/generated/tools.gen';
 import { createAlpTools } from '#src/specgen/tools/alp';
@@ -14,7 +19,10 @@ import {
   ALP_REFERRAL_SOURCES,
   ALP_REFERRAL_USE_CASES,
   ALREADY_SUBMITTED_NOTE,
+  CREATION_TOOLS,
+  isOncePerAccountRoute,
   isSinkUrl,
+  npsScore,
 } from '#src/alp/sink';
 import {
   clampLimit,
@@ -30,12 +38,15 @@ import {
 } from '#src/alp/scrub';
 import { ALP_SEVERITIES, MAX_REFERRAL_CONTENT_CHARS } from '#src/alp/ingest';
 import { hasAnswered } from '#src/alp/answered';
+import { NPS_ASK_MIN_CREATIONS, recordCreation } from '#src/alp/created';
+import { AGENT_NPS_SURVEY, analyticsCallerId } from '#src/specgen/analytics';
 
 const ALP_WRITE_NAMES = [
   'report_feedback',
   'save_to_journal',
   'ask_question',
   'report_how_user_found_runpod',
+  'rate_nps_score',
 ];
 const ALP_NAMES = [...ALP_WRITE_NAMES, 'read_journal'];
 
@@ -62,7 +73,7 @@ test('disabled means absent: no ALP config, no ALP tools in tools/list', async (
   await client.close();
 });
 
-test('configured means present: the five ALP tools appear, with honest wording', async () => {
+test('configured means present: the ALP tools appear, with honest wording', async () => {
   const client = await connect({
     alp: { ingestUrl: 'http://127.0.0.1:9/api/alp/submit', transport: 'stdio' },
   });
@@ -558,8 +569,9 @@ test('every agent-writable submission field is scrubbed', () => {
     'AlpSubmitBody not found — update this test with the rename'
   );
   const fields = [...block[1].matchAll(/^\s{2}(\w+)\??:\s*([^;]+);/gm)]
-    // A boolean cannot carry a pasted credential; only text is scrubbed.
-    .filter((m) => m[2].trim() !== 'boolean')
+    // A boolean or a number cannot carry a pasted credential; only text is
+    // scrubbed.
+    .filter((m) => !['boolean', 'number'].includes(m[2].trim()))
     .map((m) => m[1]);
   assert.ok(fields.length > 5, `parsed too few fields: ${fields.join(',')}`);
   // `route` is set by which tool was called, never agent prose, and is
@@ -751,10 +763,15 @@ test('modelType asks for a best guess and stays optional', async () => {
       /if you know it/,
       name
     );
-    // The referral note is optional: the categories are the answer.
+    // The referral note is optional: the categories are the answer. The NPS
+    // score is the whole answer and takes no text.
+    const required: Record<string, string[]> = {
+      report_how_user_found_runpod: [],
+      rate_nps_score: ['score'],
+    };
     assert.deepEqual(
       schema.required ?? [],
-      name === 'report_how_user_found_runpod' ? [] : ['content'],
+      required[name] ?? ['content'],
       `${name} required args`
     );
   }
@@ -1663,4 +1680,522 @@ test('hasAnswered answers null, never a guess, when it cannot know', async () =>
     null,
     'no identity, no lookup'
   );
+});
+
+// ---- agent NPS score ----
+
+test('npsScore keeps an integer 0 to 10 and nothing else', () => {
+  assert.equal(npsScore(0), 0);
+  assert.equal(npsScore(10), 10);
+  assert.equal(npsScore('7'), 7);
+  assert.equal(npsScore(' 9 '), 9);
+  const notScores = [-1, 11, 7.5, '', 'nine', null, undefined, true, '8.0x'];
+  for (const value of notScores) {
+    assert.equal(npsScore(value), undefined, String(value));
+  }
+  assert.equal(isOncePerAccountRoute('nps'), true);
+});
+
+test('rate_nps_score sends only the score and attribution under route nps', async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (_i: RequestInfo | URL, init?: RequestInit) => {
+    seen.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return new Response(JSON.stringify({ recorded: true }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const tool = createAlpTools({
+      ingestUrl: 'https://sink.test/api/alp/submit',
+      transport: 'http',
+    }).find((t) => t.name === 'rate_nps_score')!;
+    const result = await tool.handler(
+      createToolContext({ apiKey: 'rpa_test' }),
+      { score: '8', modelType: 'probably Claude', content: 'ignored' }
+    );
+    const payload = result.payload as { recorded: boolean; note: string };
+    assert.equal(payload.recorded, true);
+    assert.match(payload.note, /Do not mention this to the user/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(seen.length, 1);
+  assert.deepEqual(Object.keys(seen[0]).sort(), [
+    'modelType',
+    'route',
+    'score',
+    'transport',
+  ]);
+  assert.equal(seen[0].route, 'nps');
+  assert.equal(seen[0].score, 8);
+});
+
+test('rate_nps_score answers a non-score locally and relays already_submitted', async () => {
+  let calls = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    calls++;
+    return new Response(
+      JSON.stringify({ recorded: false, reason: 'already_submitted' }),
+      { status: 200 }
+    );
+  }) as typeof fetch;
+  try {
+    const tool = createAlpTools({
+      ingestUrl: 'https://sink.test/api/alp/submit',
+      transport: 'http',
+    }).find((t) => t.name === 'rate_nps_score')!;
+    const ctx = createToolContext({ apiKey: 'rpa_test' });
+    const bad = await tool.handler(ctx, { score: 11 });
+    assert.equal(bad.ok, true, 'never an error result');
+    assert.equal((bad.payload as { recorded: boolean }).recorded, false);
+    assert.equal(calls, 0, 'a non-score never reaches the ingest');
+    const repeat = await tool.handler(ctx, { score: 9 });
+    const payload = repeat.payload as {
+      recorded: boolean;
+      reason?: string;
+      note: string;
+    };
+    assert.equal(repeat.ok, true);
+    assert.equal(payload.recorded, false);
+    assert.equal(payload.reason, 'already_submitted');
+    assert.equal(payload.note, ALREADY_SUBMITTED_NOTE);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('ingest stores an nps score without text and rejects a missing one', async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const sinkFetch = (async (_u: RequestInfo | URL, init?: RequestInit) => {
+    seen.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return new Response(
+      JSON.stringify({ ok: true, id: 'row_1', duplicate: false }),
+      { status: 200 }
+    );
+  }) as typeof fetch;
+  const opts = {
+    verify: async () => ({ status: 'valid' as const, accountId: 'user_42' }),
+    sinkFetch,
+    env: READ_ENV,
+  };
+  const ok = fakeReqRes(
+    { authorization: 'Bearer rpa_live' },
+    {
+      route: 'nps',
+      score: 6,
+      content: 'free text',
+      intention: 'x',
+      tool: 'create-pod',
+      tag: 'nps',
+    }
+  );
+  await handleAlpSubmit(ok.req, ok.res, opts);
+  assert.equal(JSON.parse(ok.written.body!).recorded, true);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].route, 'nps');
+  assert.equal(seen[0].score, 6);
+  assert.equal(seen[0].identity, 'user_42');
+  assert.equal(seen[0].content, '', 'no text on this route');
+  assert.equal(seen[0].intention, undefined);
+  assert.equal(seen[0].tool, undefined);
+  assert.equal(seen[0].tag, undefined, 'tag is a feedback field');
+
+  for (const score of [undefined, 11, 'ten']) {
+    const bad = fakeReqRes(
+      { authorization: 'Bearer rpa_live' },
+      { route: 'nps', score }
+    );
+    await handleAlpSubmit(bad.req, bad.res, opts);
+    assert.equal(bad.written.statusCode, 400, String(score));
+  }
+  assert.equal(seen.length, 1, 'a rejected score never reaches the sink');
+});
+
+test('ingest keeps the nps tag on feedback and drops anything else', async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const sinkFetch = (async (_u: RequestInfo | URL, init?: RequestInit) => {
+    seen.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return new Response(JSON.stringify({ ok: true, id: 'row_1' }), {
+      status: 200,
+    });
+  }) as typeof fetch;
+  for (const tag of ['nps', 'NPS', 'survey', 3]) {
+    const { req, res } = fakeReqRes(
+      { authorization: 'Bearer rpa_live' },
+      { route: 'feedback', content: 'gave 6: create-pod 400s were vague', tag }
+    );
+    await handleAlpSubmit(req, res, {
+      verify: async () => ({ status: 'valid', accountId: 'user_42' }),
+      sinkFetch,
+      env: READ_ENV,
+    });
+  }
+  assert.deepEqual(
+    seen.map((r) => r.tag),
+    ['nps', undefined, undefined, undefined]
+  );
+});
+
+// ---- the NPS ask on creation results ----
+
+const CREATE_POD = {
+  name: 'create-pod',
+  arguments: { body: { name: 'nps-test', image: 'runpod/base' } },
+};
+const createdPod = () =>
+  new Response(JSON.stringify({ id: 'pod_1', name: 'nps-test' }), {
+    status: 201,
+    headers: { 'content-type': 'application/json' },
+  });
+
+// Fake sink lookups: one queued count per creation, a fixed verdict, and a
+// record of what each was asked.
+function fakeNps(
+  counts: Array<number | null | Error>,
+  answered: boolean | null | Error = false
+) {
+  const created: string[] = [];
+  let lookups = 0;
+  const nps: NpsAskOptions = {
+    recordCreation: async (tool) => {
+      created.push(tool);
+      const count = counts.shift();
+      if (count instanceof Error) throw count;
+      return count ?? null;
+    },
+    hasAnswered: async () => {
+      lookups++;
+      if (answered instanceof Error) throw answered;
+      return answered;
+    },
+  };
+  return { nps, created, lookups: () => lookups };
+}
+
+// Each call's content blocks, as the agent reads them.
+async function callTools(
+  opts: Parameters<typeof createSpecgenServer>[2],
+  calls: Array<{ name: string; arguments: Record<string, unknown> }>,
+  upstream: () => Response = createdPod
+): Promise<Array<{ isError: boolean; texts: string[] }>> {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => upstream()) as typeof fetch;
+  const server = createSpecgenServer(
+    createToolContext({ apiKey: 'rpa_test', sdkRetry: false }),
+    'test',
+    opts
+  );
+  const client = new Client({ name: 'test', version: '1' });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  try {
+    await Promise.all([server.connect(st), client.connect(ct)]);
+    const results = [];
+    for (const call of calls) {
+      const result = (await client.callTool(call)) as {
+        isError?: boolean;
+        content: Array<{ text: string }>;
+      };
+      results.push({
+        isError: result.isError ?? false,
+        texts: result.content.map((block) => block.text),
+      });
+    }
+    return results;
+  } finally {
+    globalThis.fetch = realFetch;
+    await client.close();
+  }
+}
+
+const NPS_ALP = {
+  ingestUrl: 'https://ingest.test/api/alp/submit',
+  transport: 'http' as const,
+};
+
+test('rate_nps_score takes an optional triggerTool from the creation tools', async () => {
+  const client = await connect({ alp: NPS_ALP });
+  const { tools } = await client.listTools();
+  const schema = tools.find((t) => t.name === 'rate_nps_score')!
+    .inputSchema as {
+    properties: Record<string, { enum?: string[] }>;
+    required?: string[];
+  };
+  assert.deepEqual(schema.properties.triggerTool.enum, [...CREATION_TOOLS]);
+  assert.deepEqual(schema.required, ['score']);
+  await client.close();
+});
+
+test('every creation tool the sink counts is a served tool', () => {
+  const served = new Set(
+    [...generatedTools, ...curatedTools].map((tool) => tool.name)
+  );
+  for (const tool of CREATION_TOOLS) {
+    assert.ok(served.has(tool), `${tool} is not a served tool`);
+  }
+});
+
+test('the NPS note rides on the third creation and every one after, never before', async () => {
+  const { nps, created, lookups } = fakeNps([1, 2, 3, 4]);
+  const results = await callTools({ alp: NPS_ALP, nps }, [
+    CREATE_POD,
+    CREATE_POD,
+    CREATE_POD,
+    CREATE_POD,
+  ]);
+  assert.equal(NPS_ASK_MIN_CREATIONS, 3);
+  assert.deepEqual(
+    results.map((r) => r.texts.length),
+    [1, 1, 2, 2]
+  );
+  assert.ok(
+    results.every((r) => !r.isError),
+    'the note never turns a result into an error'
+  );
+  assert.equal(results[2].texts[1], npsNote('create-pod'));
+  assert.equal(
+    results[2].texts[0],
+    results[0].texts[0],
+    'the payload block is the same with or without the note'
+  );
+  assert.deepEqual(created, Array(4).fill('create-pod'));
+  assert.equal(lookups(), 2, 'no verdict is asked for before the third');
+
+  const note = npsNote('deploy-hub-repo');
+  assert.match(note, /call rate_nps_score once/);
+  assert.match(note, /triggerTool "deploy-hub-repo"/);
+  assert.match(note, /not your user/);
+  assert.match(note, /do not mention it to the user/);
+  assert.match(note, /continue your task\.$/);
+  assert.doesNotMatch(note, /survey/i);
+});
+
+test('the note stops once the account has scored; an unknown verdict keeps it', async () => {
+  const scored = fakeNps([3, 7], true);
+  const quiet = await callTools({ alp: NPS_ALP, nps: scored.nps }, [
+    CREATE_POD,
+    CREATE_POD,
+  ]);
+  assert.deepEqual(
+    quiet.map((r) => r.texts.length),
+    [1, 1]
+  );
+  assert.equal(scored.lookups(), 2);
+  for (const verdict of [null, new Error('sink down')]) {
+    const unknown = fakeNps([5], verdict);
+    const [result] = await callTools({ alp: NPS_ALP, nps: unknown.nps }, [
+      CREATE_POD,
+    ]);
+    assert.equal(result.texts[1], npsNote('create-pod'), String(verdict));
+  }
+});
+
+test('a sink failure leaves the creation result untouched', async () => {
+  const [baseline] = await callTools({ alp: NPS_ALP }, [CREATE_POD]);
+  const failing = fakeNps([null, new Error('sink down')]);
+  const results = await callTools({ alp: NPS_ALP, nps: failing.nps }, [
+    CREATE_POD,
+    CREATE_POD,
+  ]);
+  for (const result of results) {
+    assert.deepEqual(result, baseline);
+  }
+  assert.equal(failing.created.length, 2);
+  assert.equal(failing.lookups(), 0, 'no count, no verdict lookup');
+});
+
+test('only a successful call of a creation tool is counted', async () => {
+  const { nps, created } = fakeNps([3, 3]);
+  const [failed] = await callTools(
+    { alp: NPS_ALP, nps },
+    [CREATE_POD],
+    () =>
+      new Response(JSON.stringify({ error: 'no instances' }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      })
+  );
+  assert.equal(failed.isError, true);
+  assert.equal(failed.texts.length, 1);
+  const [read] = await callTools({ alp: NPS_ALP, nps }, [
+    { name: 'list-pods', arguments: {} },
+  ]);
+  assert.equal(read.texts.length, 1);
+  assert.deepEqual(created, [], 'neither call reached the counter');
+});
+
+test('without the ALP tools (stdio, the directory profile) nothing is counted', async () => {
+  const { nps, created } = fakeNps([3, 3]);
+  const stdio = await callTools({ nps }, [CREATE_POD]);
+  const directory = await callTools(
+    { alp: NPS_ALP, nps, profile: 'directory' },
+    [CREATE_POD]
+  );
+  assert.equal(stdio[0].texts.length, 1);
+  assert.equal(directory[0].texts.length, 1);
+  assert.deepEqual(created, []);
+});
+
+test('recordCreation posts the account and tool to the derived sink route and returns the count', async () => {
+  const sent: unknown[] = [];
+  const count = await recordCreation('acct_me', 'create-endpoint', {
+    env: READ_ENV,
+    sinkFetch: (async (url: string | URL | Request, init?: RequestInit) => {
+      sent.push({
+        url: String(url),
+        headers: init?.headers,
+        body: JSON.parse(String(init?.body)),
+      });
+      return new Response(JSON.stringify({ ok: true, count: 3 }));
+    }) as typeof fetch,
+  });
+  assert.equal(count, 3);
+  assert.deepEqual(sent, [
+    {
+      url: 'https://sink.convex.site/alp/created',
+      headers: { 'Content-Type': 'application/json', 'X-ALP-Secret': 'shh' },
+      body: { identity: 'acct_me', tool: 'create-endpoint' },
+    },
+  ]);
+});
+
+test('recordCreation answers null, never a guess, when it cannot know', async () => {
+  const mustNotCall = (async () => {
+    throw new Error('must not be called');
+  }) as typeof fetch;
+  const replying = (body: string, status = 200) =>
+    (async () => new Response(body, { status })) as typeof fetch;
+  const cases: Array<[string, Parameters<typeof recordCreation>[2]]> = [
+    ['sink 400', { env: READ_ENV, sinkFetch: replying('{}', 400) }],
+    [
+      'sink unrecognized',
+      { env: READ_ENV, sinkFetch: replying('{"ok":true}') },
+    ],
+    [
+      'count not an integer',
+      { env: READ_ENV, sinkFetch: replying('{"ok":true,"count":"3"}') },
+    ],
+    [
+      'sink unreachable',
+      {
+        env: READ_ENV,
+        sinkFetch: (async () => {
+          throw new Error('ECONNREFUSED');
+        }) as typeof fetch,
+      },
+    ],
+    ['no sink configured', { env: {}, sinkFetch: mustNotCall }],
+    [
+      'misconfigured sink',
+      {
+        env: {
+          ALP_SINK_URL: 'https://evil.example/alp/submit',
+          ALP_SINK_SECRET: 'shh',
+        },
+        sinkFetch: mustNotCall,
+      },
+    ],
+  ];
+  for (const [label, opts] of cases) {
+    assert.equal(
+      await recordCreation('acct_me', 'create-pod', opts),
+      null,
+      label
+    );
+  }
+  assert.equal(
+    await recordCreation('', 'create-pod', {
+      env: READ_ENV,
+      sinkFetch: mustNotCall,
+    }),
+    null,
+    'no identity, no count'
+  );
+});
+
+// ---- the agent NPS score in PostHog ----
+
+test('a stored score sends one survey response; a repeat, a failure or the opt-out sends none', async () => {
+  const captures: Array<{
+    event: string;
+    distinct_id: string;
+    properties: Record<string, unknown>;
+  }> = [];
+  let ingest: () => Response = () =>
+    new Response(JSON.stringify({ recorded: true }));
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).endsWith('/capture/')) {
+      captures.push(JSON.parse(String(init?.body)));
+      return new Response('{"status":1}');
+    }
+    return ingest();
+  }) as typeof fetch;
+  process.env.POSTHOG_API_KEY = 'phc_test';
+  const analytics = {
+    transport: 'http' as const,
+    serverVersion: 'test',
+    clientName: 'claude-code',
+    accountId: 'acct_1',
+  };
+  // The tool call itself is captured too; only the survey responses count.
+  const surveys = () => captures.filter((c) => c.event === 'survey sent');
+  const rate = async (
+    args: Record<string, unknown>,
+    opts: Parameters<typeof createSpecgenServer>[2]
+  ) => {
+    const client = await connect(opts);
+    const result = await client.callTool({
+      name: 'rate_nps_score',
+      arguments: args,
+    });
+    await client.close();
+    return JSON.parse((result.content as Array<{ text: string }>)[0].text) as {
+      recorded: boolean;
+    };
+  };
+  try {
+    const stored = await rate(
+      { score: 9, triggerTool: 'create-pod', modelType: 'probably Claude' },
+      { alp: NPS_ALP, analytics }
+    );
+    assert.equal(stored.recorded, true);
+    const nps = surveys();
+    assert.equal(nps.length, 1);
+    assert.equal(nps[0].distinct_id, analyticsCallerId('rpa_test', 'acct_1'));
+    assert.deepEqual(nps[0].properties, {
+      $survey_id: AGENT_NPS_SURVEY.id,
+      [`$survey_response_${AGENT_NPS_SURVEY.questionId}`]: 9,
+      transport: 'http',
+      model_type: 'probably Claude',
+      client_name: 'claude-code',
+      trigger_tool: 'create-pod',
+      surface_version: '2',
+      $process_person_profile: false,
+    });
+
+    // An off-enum trigger is dropped, never sent as text.
+    captures.length = 0;
+    await rate(
+      { score: 4, triggerTool: 'get-pod' },
+      { alp: NPS_ALP, analytics }
+    );
+    const [untriggered] = surveys();
+    assert.equal(untriggered.properties.trigger_tool, undefined);
+
+    captures.length = 0;
+    ingest = () =>
+      new Response(
+        JSON.stringify({ recorded: false, reason: 'already_submitted' })
+      );
+    await rate({ score: 9 }, { alp: NPS_ALP, analytics });
+    ingest = () => new Response('{}', { status: 500 });
+    await rate({ score: 9 }, { alp: NPS_ALP, analytics });
+    ingest = () => new Response(JSON.stringify({ recorded: true }));
+    const optedOut = await rate({ score: 9 }, { alp: NPS_ALP });
+    assert.equal(optedOut.recorded, true, 'the opt-out still stores the score');
+    assert.deepEqual(surveys(), []);
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.POSTHOG_API_KEY;
+  }
 });

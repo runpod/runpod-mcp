@@ -369,7 +369,10 @@ test('generation freshness check rejects stale schemas and config without writin
 // with its background-download guidance.
 // The 2026-11-13 resync adds get-account and the three queued-pod tools, and
 // the queue option on create-pod: 106,605 B to 109,068 B.
-const GENERATED_SURFACE_BUDGET_BYTES = 110_000;
+// The 2026-11-18 resync adds 13 operations served in full: tags (8), template
+// READMEs (2), balance, account limits and update-registry: 109,068 B to
+// 121,066 B.
+const GENERATED_SURFACE_BUDGET_BYTES = 122_000;
 const CURATED_SURFACE_BUDGET_BYTES = 30_000;
 const ARGUMENT_DESCRIPTION_CAP_BYTES = 400;
 

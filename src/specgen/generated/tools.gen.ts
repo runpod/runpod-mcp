@@ -31,6 +31,8 @@ export interface GeneratedTool {
   annotations: ToolAnnotations;
   /** Listed with its call shape only; describe-tool serves the full schema. */
   schemaOnDemand?: true;
+  /** The success body is not JSON (e.g. Markdown); dispatch reads it as text. */
+  textResponse?: true;
   inputSchema: Record<string, unknown>;
 }
 
@@ -113,6 +115,65 @@ export const generatedTools: GeneratedTool[] = [
           type: 'string',
           minLength: 1,
           description: 'Cost center identifier.',
+        },
+        resourceType: {
+          $ref: '#/$defs/ResourceType',
+          description: 'Kind of resource.',
+          type: 'string',
+        },
+        resourceId: {
+          type: 'string',
+          minLength: 1,
+          description: 'Resource identifier.',
+        },
+      },
+      required: ['id', 'resourceType', 'resourceId'],
+      $defs: {
+        ResourceType: {
+          type: 'string',
+          description:
+            'Kind of resource a cost center or tag can be attached to.',
+          enum: ['POD', 'CLUSTER', 'SERVERLESS_ENDPOINT', 'NETWORK_VOLUME'],
+        },
+      },
+    },
+  },
+  {
+    name: 'attach-tag-resource',
+    title: 'Attach tag resource',
+    operationId: 'attachTagResource',
+    description:
+      "Attach a tag to a resource. Attaches a tag to a resource. Repeating the request is a no-op. A resource can carry several tags. Returns 404 when the tag or the resource does not exist or is not the caller's; the detail names a missing resource as `{resourceType}/{resourceId}`.",
+    method: 'PUT',
+    path: '/v2/tags/{id}/resources/{resourceType}/{resourceId}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+      {
+        name: 'resourceType',
+        location: 'path',
+      },
+      {
+        name: 'resourceId',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          minLength: 1,
+          description: 'Tag identifier.',
         },
         resourceType: {
           $ref: '#/$defs/ResourceType',
@@ -879,23 +940,25 @@ export const generatedTools: GeneratedTool[] = [
                 },
               },
             },
+            {
+              if: {
+                required: ['type'],
+                properties: {
+                  type: {
+                    const: 'LOAD_BALANCER',
+                  },
+                },
+              },
+              then: {
+                properties: {
+                  scaling: {
+                    $ref: '#/$defs/RequestCountScaling',
+                  },
+                },
+              },
+            },
           ],
           unevaluatedProperties: false,
-          if: {
-            required: ['type'],
-            properties: {
-              type: {
-                const: 'LOAD_BALANCER',
-              },
-            },
-          },
-          then: {
-            properties: {
-              scaling: {
-                $ref: '#/$defs/RequestCountScaling',
-              },
-            },
-          },
         },
         EndpointMount: {
           type: 'object',
@@ -982,6 +1045,19 @@ export const generatedTools: GeneratedTool[] = [
               description:
                 'Seconds before idle workers scale down. Not applicable to queue-based endpoints scaling on `requestCount` — rejected on create/update and omitted from responses for that combination.',
               examples: [5],
+            },
+            initTimeout: {
+              type: ['integer', 'null'],
+              minimum: 60,
+              maximum: 14400,
+              'x-go-type': 'nullable.Nullable[int]',
+              'x-go-type-import': {
+                path: 'github.com/oapi-codegen/nullable',
+              },
+              'x-go-type-skip-optional-pointer': true,
+              description:
+                'Seconds a worker may take to become ready before it is terminated and replaced. In responses, the endpoint setting, or null if none is set. In PATCH, null clears the endpoint setting so the platform default applies.',
+              examples: [1800],
             },
           },
         },
@@ -1626,16 +1702,18 @@ export const generatedTools: GeneratedTool[] = [
                 },
               },
             },
+            {
+              if: {
+                not: {
+                  required: ['templateId'],
+                },
+              },
+              then: {
+                required: ['image'],
+              },
+            },
           ],
           unevaluatedProperties: false,
-          if: {
-            not: {
-              required: ['templateId'],
-            },
-          },
-          then: {
-            required: ['image'],
-          },
         },
         GlobalMount: {
           type: 'object',
@@ -1680,7 +1758,7 @@ export const generatedTools: GeneratedTool[] = [
                   type: 'array',
                   maxItems: 1,
                   description:
-                    'At most one global volume, on GPU and CPU pods, with no data center constraint. Combinable with `network` but not with `persistent` (rejected): a persistent disk is dropped whenever a volume is attached. Same PATCH rules as `network`.',
+                    'At most one global volume, with no data center constraint. Combinable with `network` but not with `persistent` (rejected): a persistent disk is dropped whenever a volume is attached. Same PATCH rules as `network`.',
                   items: {
                     $ref: '#/$defs/GlobalMount',
                   },
@@ -1918,6 +1996,96 @@ export const generatedTools: GeneratedTool[] = [
               examples: ['Hugging Face read token'],
             },
           },
+        },
+      },
+    },
+  },
+  {
+    name: 'create-tag',
+    title: 'Create tag',
+    operationId: 'createTag',
+    description:
+      'Create a tag. Creates a tag. Pass `resources` to attach it at creation time; the tag is created and attached in one step, so if any resource cannot be attached, no tag is created.',
+    method: 'POST',
+    path: '/v2/tags',
+    params: [],
+    hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        body: {
+          $ref: '#/$defs/CreateTagRequest',
+          type: 'object',
+        },
+      },
+      required: ['body'],
+      $defs: {
+        CostCenterResource: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['id', 'type'],
+          properties: {
+            id: {
+              type: 'string',
+              minLength: 1,
+              examples: ['p9k2m4n6q8'],
+            },
+            type: {
+              $ref: '#/$defs/ResourceType',
+            },
+          },
+        },
+        CreateTagRequest: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['key', 'value'],
+          properties: {
+            key: {
+              $ref: '#/$defs/TagKey',
+            },
+            value: {
+              $ref: '#/$defs/TagValue',
+            },
+            resources: {
+              type: 'array',
+              description: 'Existing resources to attach the new tag to.',
+              maxItems: 100,
+              items: {
+                $ref: '#/$defs/CostCenterResource',
+              },
+            },
+          },
+        },
+        ResourceType: {
+          type: 'string',
+          description:
+            'Kind of resource a cost center or tag can be attached to.',
+          enum: ['POD', 'CLUSTER', 'SERVERLESS_ENDPOINT', 'NETWORK_VOLUME'],
+        },
+        TagKey: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 191,
+          pattern: '[^\\t-\\r    -     　﻿]',
+          not: {
+            pattern: '^[\\t-\\r    -     　﻿]*[Rr][Uu][Nn][Pp][Oo][Dd]:',
+          },
+          description:
+            'Tag key, 1–191 characters as sent, with at least one that is not whitespace. Leading and trailing whitespace is ignored. Keys under the reserved `runpod:` prefix, in any letter case, are rejected.',
+          examples: ['env'],
+        },
+        TagValue: {
+          type: 'string',
+          maxLength: 191,
+          description:
+            'Tag value, at most 191 characters. May be empty. Stored exactly as sent, whitespace included.',
+          examples: ['dev'],
         },
       },
     },
@@ -2564,6 +2732,39 @@ export const generatedTools: GeneratedTool[] = [
     },
   },
   {
+    name: 'delete-tag',
+    title: 'Delete tag',
+    operationId: 'deleteTag',
+    description:
+      "Delete a tag. Deletes a tag and removes it from every resource it is attached to. The resources themselves are unchanged, and nothing needs to be detached first. Returns 404 when the tag does not exist, is already deleted, is not the caller's, or is reserved: a cost center ID is a reserved tag, so delete it through `DELETE /v2/cost-centers/{id}`.",
+    method: 'DELETE',
+    path: '/v2/tags/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          minLength: 1,
+          description: 'Tag identifier.',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
     name: 'delete-template',
     title: 'Delete template',
     operationId: 'deleteTemplate',
@@ -2632,6 +2833,65 @@ export const generatedTools: GeneratedTool[] = [
           type: 'string',
           minLength: 1,
           description: 'Cost center identifier.',
+        },
+        resourceType: {
+          $ref: '#/$defs/ResourceType',
+          description: 'Kind of resource.',
+          type: 'string',
+        },
+        resourceId: {
+          type: 'string',
+          minLength: 1,
+          description: 'Resource identifier.',
+        },
+      },
+      required: ['id', 'resourceType', 'resourceId'],
+      $defs: {
+        ResourceType: {
+          type: 'string',
+          description:
+            'Kind of resource a cost center or tag can be attached to.',
+          enum: ['POD', 'CLUSTER', 'SERVERLESS_ENDPOINT', 'NETWORK_VOLUME'],
+        },
+      },
+    },
+  },
+  {
+    name: 'detach-tag-resource',
+    title: 'Detach tag resource',
+    operationId: 'detachTagResource',
+    description:
+      "Remove a tag from a resource. Removes a tag from one resource. The tag, the resource and the tag's other attachments are untouched. Returns 404 when the tag does not exist, is not the caller's, or is reserved (a cost center); when the resource does not carry it, so repeating a DELETE that succeeded returns 404; or when the resource is not the caller's to change. The detail names that last resource as `{resourceType}/{resourceId}`.",
+    method: 'DELETE',
+    path: '/v2/tags/{id}/resources/{resourceType}/{resourceId}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+      {
+        name: 'resourceType',
+        location: 'path',
+      },
+      {
+        name: 'resourceId',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          minLength: 1,
+          description: 'Tag identifier.',
         },
         resourceType: {
           $ref: '#/$defs/ResourceType',
@@ -2772,6 +3032,48 @@ export const generatedTools: GeneratedTool[] = [
       'Get your account. Returns the account the API key belongs to.',
     method: 'GET',
     path: '/v2/account',
+    params: [],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'get-account-limits',
+    title: 'Get account limits',
+    operationId: 'getAccountLimits',
+    description:
+      'Get account limits. Returns the limits that apply to the account this request acts for. A create or resume that would go past a limit is refused. Not available for organizations (403).',
+    method: 'GET',
+    path: '/v2/account/limits',
+    params: [],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'get-balance',
+    title: 'Get balance',
+    operationId: 'getBalance',
+    description:
+      'Get the account balance. Returns the balance of the account this request acts for: your own account, the team selected for the request, or your organization. An organization with no billing account answers 404.',
+    method: 'GET',
+    path: '/v2/billing/balance',
     params: [],
     hasBody: false,
     annotations: {
@@ -3528,7 +3830,7 @@ export const generatedTools: GeneratedTool[] = [
     title: 'Get organization',
     operationId: 'getOrganization',
     description:
-      "Get your current organization. Returns the authenticated caller's current organization. Organization context comes from the caller's membership; no organization selector is required. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.",
+      "Get your current organization. Returns the authenticated caller's current organization. Organization context comes from the caller's membership; no selector is required. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.",
     method: 'GET',
     path: '/v2/organization',
     params: [],
@@ -3754,6 +4056,38 @@ export const generatedTools: GeneratedTool[] = [
     },
   },
   {
+    name: 'get-public-template-readme',
+    title: 'Get public template readme',
+    operationId: 'getPublicTemplateReadme',
+    description:
+      'Get a public template README. Returns the README of a public catalog template as raw Markdown. Only public templates are served. Returns `404` when the template does not exist, is not public, or has no README. Use `GET /v2/templates/{id}/readme` for your private templates.',
+    method: 'GET',
+    path: '/v2/catalog/templates/{id}/readme',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    textResponse: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
     name: 'get-queued-pod',
     title: 'Get queued Pod',
     operationId: 'getQueuedPod',
@@ -3870,6 +4204,39 @@ export const generatedTools: GeneratedTool[] = [
     },
   },
   {
+    name: 'get-tag',
+    title: 'Get tag',
+    operationId: 'getTag',
+    description:
+      "Get a tag. Returns one tag. Its ID stays the same when the key or value changes. Returns 404 when the tag does not exist, is deleted, is not the caller's, or is reserved: a cost center ID is a reserved tag, so read it through `GET /v2/cost-centers/{id}`.",
+    method: 'GET',
+    path: '/v2/tags/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          minLength: 1,
+          description: 'Tag identifier.',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
     name: 'get-template',
     title: 'Get template',
     operationId: 'getTemplate',
@@ -3890,6 +4257,38 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'get-template-readme',
+    title: 'Get template readme',
+    operationId: 'getTemplateReadme',
+    description:
+      "Get a template README. Returns the template's README as raw Markdown. Serves the same templates as `GET /v2/templates/{id}`: templates you own and public catalog templates. Returns `404` when the template does not exist, is not readable by you, or has no README.",
+    method: 'GET',
+    path: '/v2/templates/{id}/readme',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    textResponse: true,
     inputSchema: {
       type: 'object',
       properties: {
@@ -5572,6 +5971,102 @@ export const generatedTools: GeneratedTool[] = [
     },
   },
   {
+    name: 'list-tag-resources',
+    title: 'List tag resources',
+    operationId: 'listTagResources',
+    description:
+      "List a tag's resources. Returns the resources a tag is attached to, newest attachment first, cursor-paginated. Each entry is the `{type}/{id}` pair `/v2/tags/{id}/resources/{resourceType}/{resourceId}` takes. A tag attached to nothing returns an empty list; one that does not exist, is deleted, is not the caller's, or is reserved returns 404.",
+    method: 'GET',
+    path: '/v2/tags/{id}/resources',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+      {
+        name: 'cursor',
+        location: 'query',
+      },
+      {
+        name: 'limit',
+        location: 'query',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          minLength: 1,
+          description: 'Tag identifier.',
+        },
+        cursor: {
+          type: 'string',
+          minLength: 1,
+          description:
+            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 1000,
+          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'list-tags',
+    title: 'List tags',
+    operationId: 'listTags',
+    description:
+      "List tags. Returns the caller's tags, newest first, cursor-paginated. Tags under the reserved `runpod:` prefix, such as cost centers, are never listed. Follow `pagination.nextCursor` until `hasNextPage` is false.",
+    method: 'GET',
+    path: '/v2/tags',
+    params: [
+      {
+        name: 'cursor',
+        location: 'query',
+      },
+      {
+        name: 'limit',
+        location: 'query',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cursor: {
+          type: 'string',
+          minLength: 1,
+          description:
+            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 1000,
+          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+        },
+      },
+    },
+  },
+  {
     name: 'pod-action',
     title: 'Start, stop, restart, or terminate a Pod',
     operationId: 'podAction',
@@ -6063,6 +6558,19 @@ export const generatedTools: GeneratedTool[] = [
               description:
                 'Seconds before idle workers scale down. Not applicable to queue-based endpoints scaling on `requestCount` — rejected on create/update and omitted from responses for that combination.',
               examples: [5],
+            },
+            initTimeout: {
+              type: ['integer', 'null'],
+              minimum: 60,
+              maximum: 14400,
+              'x-go-type': 'nullable.Nullable[int]',
+              'x-go-type-import': {
+                path: 'github.com/oapi-codegen/nullable',
+              },
+              'x-go-type-skip-optional-pointer': true,
+              description:
+                'Seconds a worker may take to become ready before it is terminated and replaced. In responses, the endpoint setting, or null if none is set. In PATCH, null clears the endpoint setting so the platform default applies.',
+              examples: [1800],
             },
           },
         },
@@ -6821,6 +7329,64 @@ export const generatedTools: GeneratedTool[] = [
     },
   },
   {
+    name: 'update-registry',
+    title: 'Update registry',
+    operationId: 'updateRegistry',
+    description:
+      'Update a container registry credential. Replaces the username and password stored in a container registry credential. The ID and `name` stay the same, so every pod, template, and Serverless endpoint that references the credential keeps referencing it and needs no change. Send both `username` and `password`, even when only one of them changed. They are stored together and are write-only, so there is no stored value to keep for an omitted field. The new credentials apply to image pulls that start after the update. Running pods and workers keep the image they already pulled.',
+    method: 'PATCH',
+    path: '/v2/registries/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+        },
+        body: {
+          $ref: '#/$defs/UpdateRegistryRequest',
+          type: 'object',
+        },
+      },
+      required: ['id', 'body'],
+      $defs: {
+        UpdateRegistryRequest: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['username', 'password'],
+          properties: {
+            password: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 16384,
+              description:
+                'New registry password (write-only, not returned in responses)',
+            },
+            username: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 191,
+              description:
+                'Registry username to store with the new password (write-only, not returned in responses)',
+            },
+          },
+        },
+      },
+    },
+  },
+  {
     name: 'update-secret',
     title: 'Update secret',
     operationId: 'updateSecret',
@@ -6925,6 +7491,79 @@ export const generatedTools: GeneratedTool[] = [
                   'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILXGDN/SclOozk1xsDztpmhGiKkkrfQB9SKoO8dSIQQZ me@example.com',
                 ],
               ],
+            },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: 'update-tag',
+    title: 'Update tag',
+    operationId: 'updateTag',
+    description:
+      "Update a tag. Changes a tag's key, value, or both. The tag keeps its ID and stays attached to the same resources. Returns 404 when the tag does not exist or is not the caller's.",
+    method: 'PATCH',
+    path: '/v2/tags/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: true,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          minLength: 1,
+          description: 'Tag identifier.',
+        },
+        body: {
+          $ref: '#/$defs/UpdateTagRequest',
+          type: 'object',
+        },
+      },
+      required: ['id', 'body'],
+      $defs: {
+        TagKey: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 191,
+          pattern: '[^\\t-\\r    -     　﻿]',
+          not: {
+            pattern: '^[\\t-\\r    -     　﻿]*[Rr][Uu][Nn][Pp][Oo][Dd]:',
+          },
+          description:
+            'Tag key, 1–191 characters as sent, with at least one that is not whitespace. Leading and trailing whitespace is ignored. Keys under the reserved `runpod:` prefix, in any letter case, are rejected.',
+          examples: ['env'],
+        },
+        TagValue: {
+          type: 'string',
+          maxLength: 191,
+          description:
+            'Tag value, at most 191 characters. May be empty. Stored exactly as sent, whitespace included.',
+          examples: ['dev'],
+        },
+        UpdateTagRequest: {
+          type: 'object',
+          additionalProperties: false,
+          minProperties: 1,
+          description:
+            'The fields to change; omitted fields are unchanged. Resources the tag is attached to stay attached.',
+          properties: {
+            key: {
+              $ref: '#/$defs/TagKey',
+            },
+            value: {
+              $ref: '#/$defs/TagValue',
             },
           },
         },

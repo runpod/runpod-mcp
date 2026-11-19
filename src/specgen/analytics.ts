@@ -7,16 +7,20 @@
 // never captures at all.
 //
 // SECURITY: the event payload is the closed set of fields in ToolCallEvent,
-// ResourceEvent and LoopBlockedEvent — never the API key, the Authorization header, resource ids,
+// ResourceEvent, LoopBlockedEvent and SurveySentEvent — never the API key, the Authorization header, resource ids,
 // or response payloads. Tool arguments are dropped unless the tool names them
 // in CuratedTool.recordedArguments; only the bundled guide and concept tools
-// do, and their arguments are guide ids, concept names and search words. The caller identity is an HMAC of the key with a
+// do, and their arguments are guide ids, concept names and search words. The
+// agent NPS score is the one other exception: the score, a creation tool name
+// from a fixed list, and the agent's self-reported model, scrubbed and
+// bounded. The caller identity is an HMAC of the key with a
 // server-side salt (MCP_ANALYTICS_SALT): stable across instances so per-user
 // frequency works in PostHog, irreversible without the salt, and never
 // joinable to the key itself. $process_person_profile stays false — no
 // person profiles, just anonymous distinct ids.
 
 import { createHmac } from 'node:crypto';
+import { scrub } from '../alp/scrub.js';
 
 /** Closed set of failure causes recorded on analytics events. A fixed enum,
  *  never the upstream message, so no response text reaches PostHog. */
@@ -83,7 +87,28 @@ export interface ResourceEvent {
   accountId?: string;
 }
 
+/** The agent's own NPS score (rate_nps_score), sent as a response to the
+ *  PostHog survey once the ALP sink has stored it. */
+export interface SurveySentEvent {
+  score: number;
+  transport: 'stdio' | 'http';
+  clientName?: string;
+  accountId?: string;
+  /** The agent's self-reported model, as given to rate_nps_score. */
+  modelType?: string;
+  /** The creation tool whose response asked for the score, when the agent
+   *  passed it along. */
+  triggerTool?: string;
+}
+
 const CAPTURE_TIMEOUT_MS = 3_000;
+
+// The "NPS - MCP agent" survey in PostHog. The server answers it on the
+// agent's behalf, so the survey and its one question are addressed by id.
+export const AGENT_NPS_SURVEY = {
+  id: '01a11376-53be-0000-3e24-dca3b2d735e6',
+  questionId: '1ca9c785-6566-4c31-b5fa-54172b2eb279',
+} as const;
 
 // Durable generation marker for v1-vs-v2 attribution, independent of the npm
 // package version: '2' is the spec-generated surface (v1 was the hand-written
@@ -211,6 +236,23 @@ export function captureLoopBlocked(
       ...(event.clientName ? { client_name: event.clientName } : {}),
     }
   );
+}
+
+export function captureSurveySent(
+  apiKey: string | undefined,
+  event: SurveySentEvent
+): void {
+  const modelType = event.modelType
+    ? bounded(scrub(event.modelType).text.trim())
+    : undefined;
+  capture('survey sent', analyticsCallerId(apiKey, event.accountId), {
+    $survey_id: AGENT_NPS_SURVEY.id,
+    [`$survey_response_${AGENT_NPS_SURVEY.questionId}`]: event.score,
+    transport: event.transport,
+    ...(modelType ? { model_type: modelType } : {}),
+    ...(event.clientName ? { client_name: event.clientName } : {}),
+    ...(event.triggerTool ? { trigger_tool: event.triggerTool } : {}),
+  });
 }
 
 export function captureResourceCall(
