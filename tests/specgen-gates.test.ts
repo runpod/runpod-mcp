@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
 import { Ajv } from 'ajv';
-import { countTokens } from '@anthropic-ai/tokenizer';
+import { getTokenizer } from '@anthropic-ai/tokenizer';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { generatedTools } from '#src/specgen/generated/tools.gen';
@@ -385,6 +385,12 @@ const CURATED_SURFACE_TOKEN_BUDGET = 7_150;
 // longest description on 2026-11-19 is 94 tokens (385 B). Units for every
 // size limit in this repo: docs/size-limits.md.
 const ARGUMENT_DESCRIPTION_CAP_TOKENS = 100;
+
+// One tokenizer for the file: the package's countTokens rebuilds it per call,
+// which made the per-field walk below take ~9 s.
+const tokenizer = getTokenizer();
+const countTokens = (text: string) =>
+  tokenizer.encode(text.normalize('NFKC'), 'all').length;
 
 type Served = ListableTool;
 const servedTokens = (tools: Served[]) =>
