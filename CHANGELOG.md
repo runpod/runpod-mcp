@@ -1,5 +1,22 @@
 # @runpod/mcp-server
 
+## 4.14.0
+
+### Minor Changes
+
+- 9ba5bbf: Resync the vendored v2 OpenAPI spec with production as of 2026-11-18 and regenerate the SDK schema and the tools.
+
+  New tools: `get-template-readme` and `get-public-template-readme` return a template's README as Markdown. `list-tags`, `get-tag`, `create-tag`, `update-tag`, `delete-tag`, `list-tag-resources`, `attach-tag-resource` and `detach-tag-resource` manage tags on resources. `get-balance` returns the account balance, `get-account-limits` returns the account limits, and `update-registry` replaces a container registry credential's username and password.
+
+  `create-pod`, `create-endpoint` and `update-endpoint` take the updated request schemas from production.
+
+  Breaking SDK type change: `components['schemas']['TagFilterKey']` is renamed to `TagKey`, following the production spec. Replace each `components['schemas']['TagFilterKey']` reference with `components['schemas']['TagKey']`. The shape is the same.
+
+### Patch Changes
+
+- 8ccdc44: `update-endpoint` now warns that an `env` you send replaces the endpoint's env, and that the `[redacted]` values `get-endpoint` shows must never be sent back.
+- 12fd2c7: A client whose name or version contains CJK text, an emoji or a NUL character no longer fails every Runpod request on stdio. The tracking User-Agent now keeps only RFC 9110 token characters and maps every other character to `_`.
+
 ## 4.13.0
 
 ### Minor Changes
