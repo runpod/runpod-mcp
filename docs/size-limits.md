@@ -1,0 +1,45 @@
+# Size limits: which unit to use
+
+Every size limit in this server is in one of three units: tokens, bytes or characters. Pick the unit by what the limit protects, not by what is easiest to count.
+
+| The limit protects                                                                                           | Unit           | Why                                                                                                                                                                                                |
+| ------------------------------------------------------------------------------------------------------------ | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The model's context: tool definitions, tool results, anything an agent reads                                 | **Tokens**     | Tokens are what the agent pays for and what clients cap: Claude Code moves a tool result over 25,000 tokens (or 50,000 characters) out of the conversation into a file the agent has to read back. |
+| Transport or memory: request bodies, raw stream reads                                                        | **Bytes**      | Networks and buffers are sized in bytes.                                                                                                                                                           |
+| Text a person or agent writes that the server stores or forwards: feedback, search queries, analytics values | **Characters** | The writer reads the limit as a length ("500 characters"), and an error can say so in those terms.                                                                                                 |
+
+Name every new size constant with its unit as a suffix: `_TOKENS`, `_BYTES` or `_CHARS`.
+
+## Tokens
+
+Count tokens with `@anthropic-ai/tokenizer` (a devDependency). Its counts are approximate for current Claude models, and other model families tokenize differently, so a token limit guards against growth rather than predicting exact billing. Keep about 10% headroom under any hard client limit.
+
+The tokenizer is a test-time tool. It is not shipped in the server, so a token limit is enforced either:
+
+1. **In a test**, when the size is fixed at build time: tool definitions and argument descriptions (`tests/specgen-gates.test.ts`).
+2. **At runtime, in UTF-8 bytes**, when the size depends on live data such as logs. A byte-level BPE token always covers at least one byte, so a text of N bytes is at most N tokens. A byte cap is therefore a hard upper bound on tokens, whatever the language or symbols. Typical English JSON runs about 4.4 bytes per token, so the bound costs headroom on plain text and never overruns.
+
+Never use characters to stand in for tokens. Measured on log snapshots, one character ranged from 0.46 to 2.4 tokens: a 32,000-character snapshot was 13,361 tokens of emoji progress bars and 68,548 tokens of rare CJK characters.
+
+## Current limits
+
+| Limit                                                                | Where                         | Protects                 | Unit       | Status                                                                                                                                                                                                                         |
+| -------------------------------------------------------------------- | ----------------------------- | ------------------------ | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GENERATED_SURFACE_TOKEN_BUDGET`, `CURATED_SURFACE_TOKEN_BUDGET`     | `tests/specgen-gates.test.ts` | Tool definitions         | Tokens     | Follows this rule.                                                                                                                                                                                                             |
+| `ARGUMENT_DESCRIPTION_CAP_TOKENS` (100)                              | `tests/specgen-gates.test.ts` | One argument description | Tokens     | Follows this rule.                                                                                                                                                                                                             |
+| `DESCRIPTION_CAP` (240)                                              | `specgen/generator/prose.ts`  | One argument description | Characters | A writing guideline: the generator keeps whole sentences up to 240 characters. `ARGUMENT_DESCRIPTION_CAP_TOKENS` is the enforced limit.                                                                                        |
+| `LOG_SNAPSHOT_MAX_CHARS` (32,000), `LOG_ENTRY_MAX_CHARS` (16,000)    | `src/specgen/clients/sse.ts`  | A log tool result        | Characters | **Breaks this rule.** Stands in for the 25,000-token client limit, and logs with CJK, Korean or Devanagari text exceed it (29,301 to 68,548 tokens at the cap), so Claude Code moves them to a file. Should become a byte cap. |
+| `LOG_STREAM_MAX_BYTES` (256 KiB)                                     | `src/specgen/clients/sse.ts`  | Raw log stream read      | Bytes      | Follows this rule.                                                                                                                                                                                                             |
+| `MAX_BODY_BYTES` (4 MiB)                                             | `src/http.ts`                 | Incoming HTTP request    | Bytes      | Follows this rule.                                                                                                                                                                                                             |
+| `MAX_CONTENT_CHARS`, `MAX_FIELD_CHARS`, `MAX_REFERRAL_CONTENT_CHARS` | `src/alp/ingest.ts`           | Stored feedback text     | Characters | Follows this rule.                                                                                                                                                                                                             |
+| `MAX_QUERY_CHARS` (2,000)                                            | `src/search/knowledge.ts`     | A search query           | Characters | Follows this rule.                                                                                                                                                                                                             |
+| `MAX_RECORDED_VALUE_LENGTH` (200)                                    | `src/specgen/analytics.ts`    | One analytics value      | Characters | Follows this rule; the name predates the suffix convention.                                                                                                                                                                    |
+
+Add a row when you add a limit.
+
+## Follow-ups
+
+Log tools (`stream-pod-logs`, `stream-worker-logs`):
+
+1. Cap a snapshot in UTF-8 bytes instead of characters, about 22,500 bytes (the 25,000-token client limit less 10%), so a log in any language fits.
+2. Page with a cursor built from the API's event id (`Last-Event-ID`, a timestamp plus a sequence number), returned as `pagination.nextCursor` like every other list. Today an agent pages by hand, passing the last container line's `ts` as `since`, which can skip lines that share a timestamp and never replays system lines. Do not page by skipping a number of lines, characters or tokens: the API cannot skip, and a live log grows and rotates between calls, so an offset points at different lines each time.
