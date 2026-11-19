@@ -56,6 +56,8 @@ export interface GeneratedTool {
   annotations: ToolAnnotations;
   /** Listed with its call shape only; describe-tool serves the full schema. */
   schemaOnDemand?: true;
+  /** The success body is not JSON (e.g. Markdown); dispatch reads it as text. */
+  textResponse?: true;
   inputSchema: Record<string, unknown>;
 }
 

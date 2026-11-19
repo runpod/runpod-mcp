@@ -50,3 +50,32 @@ test('runtime client rejects endpoint path injection before sending a key', asyn
   await runtime('endpoint_123-ab', '/health');
   assert.equal(requests, 1);
 });
+
+test('a Markdown success body is returned as text, not parsed as JSON', async () => {
+  const readme = '# PyTorch 2.8\n\nRun `python app.py`.';
+  const sdk = createRunpodClient({
+    apiKey: 'test',
+    fetch: async () =>
+      new Response(readme, {
+        headers: { 'content-type': 'text/markdown; charset=utf-8' },
+      }),
+  });
+  for (const name of ['get-template-readme', 'get-public-template-readme']) {
+    const tool = generatedTools.find((tool) => tool.name === name)!;
+    assert.equal(tool.textResponse, true);
+    const result = await dispatchGeneratedTool(sdk, tool, { id: 'tpl_abc' });
+    assert.equal(result.ok, true);
+    assert.equal(result.payload, readme);
+  }
+});
+
+test('only non-JSON success bodies are flagged as text', () => {
+  const flagged = generatedTools
+    .filter((tool) => tool.textResponse)
+    .map((tool) => tool.name)
+    .sort();
+  assert.deepEqual(flagged, [
+    'get-public-template-readme',
+    'get-template-readme',
+  ]);
+});

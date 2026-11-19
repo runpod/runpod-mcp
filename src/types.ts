@@ -1,5 +1,5 @@
 import type { CredentialChecker } from './_shared/credential-check.js';
-import type { OncePerAccountRoute } from './alp/sink.js';
+import type { CreationTool, OncePerAccountRoute } from './alp/sink.js';
 
 export interface HandleMcpRequestOptions {
   serverVersion?: string;
@@ -12,6 +12,12 @@ export interface HandleMcpRequestOptions {
     identity: string,
     route: OncePerAccountRoute
   ) => Promise<boolean | null>;
+  /** Creation counter behind the agent NPS ask (src/alp/created.ts).
+   *  Resolve, never reject: a rejection is treated as an unknown count. */
+  recordCreation?: (
+    identity: string,
+    tool: CreationTool
+  ) => Promise<number | null>;
 }
 
 export interface RpcSummary {

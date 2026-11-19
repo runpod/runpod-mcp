@@ -41,12 +41,17 @@ interface RequestBody {
   required?: boolean;
   content?: Record<string, { schema?: unknown }>;
 }
+interface Response {
+  $ref?: string;
+  content?: Record<string, unknown>;
+}
 interface Operation {
   operationId: string;
   summary?: string;
   description?: string;
   parameters?: Parameter[];
   requestBody?: RequestBody;
+  responses?: Record<string, Response>;
 }
 const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'patch'] as const;
 type PathItem = Partial<Record<(typeof HTTP_METHODS)[number], Operation>> & {
@@ -58,6 +63,7 @@ export interface SpecDocument {
     schemas?: Record<string, unknown>;
     parameters?: Record<string, Parameter>;
     requestBodies?: Record<string, RequestBody>;
+    responses?: Record<string, Response>;
   };
 }
 
@@ -157,6 +163,27 @@ interface ProseContext {
 
 const UNICODE_PROPERTY_ESCAPE = /\\[pP]\{/;
 
+// Ajv 8 (2020-12) rejects a valid object when `unevaluatedProperties: false`
+// sits beside an `if`/`then` whose `then` declares `properties` and the `if`
+// does not match: every property is reported unevaluated. That rejected every
+// QUEUE create-endpoint under MCP_SCHEMA_VALIDATION=enforce. Moving the
+// conditional into an `allOf` member means the same thing in JSON Schema and
+// Ajv evaluates it correctly; tests/specgen-spec-examples.test.ts pins it.
+function wrapConditionalBesideUnevaluated(schema: Record<string, unknown>) {
+  if (!('if' in schema) || !('unevaluatedProperties' in schema)) return;
+  const conditional: Record<string, unknown> = {};
+  for (const key of ['if', 'then', 'else']) {
+    if (key in schema) {
+      conditional[key] = schema[key];
+      delete schema[key];
+    }
+  }
+  schema.allOf = [
+    ...(Array.isArray(schema.allOf) ? schema.allOf : []),
+    conditional,
+  ];
+}
+
 function normalizeSchema(
   node: unknown,
   address: string,
@@ -191,6 +218,7 @@ function normalizeSchema(
         UNICODE_PROPERTY_ESCAPE.test(schema.pattern)
       )
         delete schema.pattern;
+      wrapConditionalBesideUnevaluated(schema);
       const discriminator = schema.discriminator as
         | { mapping?: Record<string, string> }
         | undefined;
@@ -256,7 +284,7 @@ function reachableDefs(
 
 function resolveComponent<T extends { $ref?: string }>(
   value: T,
-  kind: 'parameters' | 'requestBodies',
+  kind: 'parameters' | 'requestBodies' | 'responses',
   components: Record<string, T> = {}
 ): T {
   const seen = new Set<string>();
@@ -271,6 +299,23 @@ function resolveComponent<T extends { $ref?: string }>(
     value = resolved;
   }
   return value;
+}
+
+// True when the operation's success body is not JSON (getTemplateReadme
+// answers text/markdown). openapi-fetch parses a success body as JSON unless
+// told otherwise, so a Markdown 200 would throw a SyntaxError in dispatch.
+function successIsText(op: Operation, spec: SpecDocument): boolean {
+  const success = Object.entries(op.responses ?? {}).find(([status]) =>
+    /^2(\d\d|XX)$/.test(status)
+  )?.[1];
+  if (!success) return false;
+  const content = resolveComponent(
+    success,
+    'responses',
+    spec.components?.responses
+  ).content;
+  const types = Object.keys(content ?? {});
+  return types.length > 0 && !types.some((type) => /\bjson\b/i.test(type));
 }
 
 function operationParameters(
@@ -445,6 +490,7 @@ function buildTool(
   }
   const $defs = reachableDefs({ type: 'object', properties }, defs);
   const name = toolName(op.operationId, config);
+  const textResponse = successIsText(op, spec);
   return {
     name,
     title: config.titles?.[op.operationId] ?? titleFromName(name),
@@ -472,6 +518,7 @@ function buildTool(
     ...(config.schemaOnDemand?.includes(op.operationId)
       ? { schemaOnDemand: true as const }
       : {}),
+    ...(textResponse ? { textResponse: true as const } : {}),
     inputSchema: {
       type: 'object',
       properties,
