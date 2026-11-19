@@ -519,7 +519,15 @@ export function createSpecgenServer(
     );
     return {
       content: [
-        { type: 'text', text: JSON.stringify(payload, null, 2) },
+        {
+          type: 'text',
+          // A text success body (a Markdown README) goes out as written;
+          // JSON-encoding it would hand the agent one escaped string.
+          text:
+            result.ok && generated?.textResponse && typeof payload === 'string'
+              ? payload
+              : JSON.stringify(payload, null, 2),
+        },
         ...(npsAsk ? [{ type: 'text' as const, text: npsAsk }] : []),
       ],
       isError: !result.ok,
