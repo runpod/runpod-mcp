@@ -5,6 +5,16 @@
 import type { RunpodClient } from '@runpod/typescript-api-sdk';
 import type { GeneratedTool } from './generated/tools.gen.js';
 import { restError } from './clients/rest-result.js';
+import {
+  cursorError,
+  isEmptyValue,
+  pageFromApi,
+  pageInMemory,
+  apiPageRequest,
+  type PageResult,
+  type Pagination,
+  type ApiPageRequest,
+} from './pagination.js';
 
 // A client caches tools/list when it connects. If the served surface changes
 // under a live session — a release, or a deployment alias moving — the client
@@ -144,6 +154,25 @@ export async function dispatchGeneratedTool(
       param.explode === false && Array.isArray(value) ? value.join(',') : value;
   }
 
+  let page: ApiPageRequest | undefined;
+  // A list the API returns whole is paged after the fetch; reject a bad
+  // cursor before it.
+  if (tool.list?.paged === 'memory') {
+    const bad = cursorError(tool.name, args);
+    if (bad) return bad;
+  }
+  // A list the API pages: our cursor carries the API's cursor and how far
+  // into that API page the last page reached, so translate it here (and
+  // always send our page size: the API's own default is 1000 on most lists).
+  if (tool.list?.paged === 'api') {
+    const request = apiPageRequest(tool.name, args, tool.list.defaultLimit);
+    if (!request.ok) return request;
+    page = request;
+    query.limit = request.query.limit;
+    if (request.query.cursor) query.cursor = request.query.cursor;
+    else delete query.cursor;
+  }
+
   const sent = tool.hasBody ? bodyAsSent(tool, args.body) : { body: args.body };
   if (!sent)
     return {
@@ -178,11 +207,40 @@ export async function dispatchGeneratedTool(
   // and treating that as success would tell the agent a failed call worked
   // and bypass the 401 onUnauthorized gate.
   if (!response.ok) return restError(response, error);
-  return {
-    ok: true,
-    status: response.status,
-    payload: data ?? { status: response.status },
-  };
+  const payload = data ?? { status: response.status };
+  if (!tool.list) return { ok: true, status: response.status, payload };
+  const listed = pagedList(payload, tool.name, tool.list, args, page);
+  return listed.ok
+    ? { ok: true, status: response.status, payload: listed.payload }
+    : listed;
+}
+
+// A list response in the shared list shape: one page of rows, the pagination
+// block, and any other fields the API returned beside them (a billing list's
+// metadata, a worker list's summary).
+function pagedList(
+  payload: unknown,
+  name: string,
+  list: NonNullable<GeneratedTool['list']>,
+  args: Record<string, unknown>,
+  request: ApiPageRequest | undefined
+): PageResult {
+  const body = payload as Record<string, unknown>;
+  const rows = body[list.rows];
+  if (!Array.isArray(rows)) return { ok: true, payload: body };
+  const build = (page: unknown[], pagination: Pagination) => ({
+    ...body,
+    [list.rows]: page,
+    pagination,
+  });
+  if (request)
+    return pageFromApi(
+      rows,
+      body.pagination as Parameters<typeof pageFromApi>[1],
+      request,
+      build
+    );
+  return pageInMemory(name, rows, args, build, list.defaultLimit);
 }
 
 // The request body as dispatch sends it; null when it arrived as a string that
@@ -245,12 +303,6 @@ export function omittedEmptyQueryArg(
   );
   return (name, value) =>
     query.has(name) && !required.has(name) && isEmptyValue(value);
-}
-
-function isEmptyValue(value: unknown): boolean {
-  return (
-    value === null || value === '' || (Array.isArray(value) && !value.length)
-  );
 }
 
 type Schema = Record<string, unknown>;

@@ -4,6 +4,10 @@ import type {
   GeneratedToolParam,
   ToolAnnotations,
 } from '#src/specgen/generated/tools.gen';
+import {
+  listPaginationProperties,
+  MAX_LIST_LIMIT,
+} from '#src/specgen/pagination';
 import { titleFromName } from '#src/specgen/titles';
 import { compactDescription, type OperationNameLookup } from './prose.js';
 
@@ -25,6 +29,9 @@ export interface GeneratorConfig {
   /** operationIds listed with their call shape only; describe-tool serves the
    *  full schema (src/specgen/on-demand.ts). */
   schemaOnDemand?: string[];
+  /** List operationId -> its default page size, where 20 is wrong for it
+   *  (a small catalog agents compare across). Each entry says why. */
+  listDefaultLimits?: Record<string, number>;
 }
 
 interface Parameter {
@@ -43,7 +50,7 @@ interface RequestBody {
 }
 interface Response {
   $ref?: string;
-  content?: Record<string, unknown>;
+  content?: Record<string, { schema?: unknown }>;
 }
 interface Operation {
   operationId: string;
@@ -418,6 +425,127 @@ function operationNames(
   return (method, path) => names.get(`${method} ${path}`);
 }
 
+type Schema = Record<string, unknown>;
+
+// A schema's properties, through $ref and allOf, each with its own $ref
+// resolved.
+function schemaProperties(
+  schema: unknown,
+  spec: SpecDocument,
+  depth = 0
+): Record<string, Schema> {
+  const resolve = (node: unknown): Schema | undefined => {
+    let out = node as Schema | undefined;
+    for (let hop = 0; typeof out?.$ref === 'string' && hop < 8; hop++)
+      out = spec.components?.schemas?.[
+        pointerName(out.$ref as string, SCHEMA_PREFIX)
+      ] as Schema | undefined;
+    return out && typeof out === 'object' ? out : undefined;
+  };
+  const s = resolve(schema);
+  if (!s || depth > 8) return {};
+  return Object.assign(
+    {},
+    ...((s.allOf as unknown[] | undefined) ?? []).map((part) =>
+      schemaProperties(part, spec, depth + 1)
+    ),
+    Object.fromEntries(
+      Object.entries((s.properties ?? {}) as Record<string, unknown>).map(
+        ([key, property]) => [key, resolve(property) ?? {}]
+      )
+    )
+  );
+}
+
+// Every list operation pages through the shared list contract
+// (src/specgen/pagination.ts): the API's own limit/cursor when it has them,
+// otherwise dispatch pages the response. A list is a GET named list* or one
+// that takes a cursor (the endpoint metrics reads page too). A list whose
+// rows cannot be found fails generation, so a spec resync cannot add an
+// unpaged list unnoticed.
+function listShape(
+  method: string,
+  pathItem: PathItem,
+  op: Operation,
+  spec: SpecDocument,
+  params: GeneratedToolParam[],
+  config: GeneratorConfig
+): GeneratedTool['list'] {
+  const takesCursor = params.some((p) => p.name === 'cursor');
+  if (method !== 'get' || !(op.operationId.startsWith('list') || takesCursor))
+    return undefined;
+  const success = op.responses?.['200'];
+  if (!success) return undefined;
+  const body = resolveComponent(
+    success,
+    'responses',
+    spec.components?.responses
+  ).content?.['application/json']?.schema;
+  const properties = schemaProperties(body, spec);
+  const rows = Object.keys(properties).filter(
+    (key) => properties[key].type === 'array'
+  );
+  if (rows.length !== 1)
+    throw new Error(
+      `List operation ${op.operationId} needs exactly one array of rows in its 200 response, found ${rows.length}`
+    );
+  const apiMax = (
+    operationParameters(pathItem, op, spec).find((p) => p.name === 'limit')
+      ?.schema as { maximum?: number } | undefined
+  )?.maximum;
+  if (apiMax !== undefined && apiMax < MAX_LIST_LIMIT)
+    throw new Error(
+      `List operation ${op.operationId} caps limit at ${apiMax}, below the shared maximum ${MAX_LIST_LIMIT}`
+    );
+  // Without a pagination block the walk would stop after one API page.
+  if (takesCursor && !properties.pagination)
+    throw new Error(
+      `List operation ${op.operationId} takes a cursor but returns no pagination block`
+    );
+  const defaultLimit = config.listDefaultLimits?.[op.operationId];
+  if (
+    defaultLimit !== undefined &&
+    !(
+      Number.isInteger(defaultLimit) &&
+      defaultLimit >= 1 &&
+      defaultLimit <= MAX_LIST_LIMIT
+    )
+  )
+    throw new Error(
+      `listDefaultLimits for ${op.operationId} must be 1-${MAX_LIST_LIMIT}, got ${defaultLimit}`
+    );
+  return {
+    rows: rows[0],
+    paged: takesCursor ? 'api' : 'memory',
+    ...(defaultLimit === undefined ? {} : { defaultLimit }),
+  };
+}
+
+// Paging prose in the API's list descriptions. The shared limit and cursor
+// arguments and each page's pagination note say how to page, so a list
+// description keeps only what is specific to the list (its order, its
+// filters). Each entry is a statement the shared contract makes untrue or
+// repeats: the API's own default page size, "no pagination", "a page holds
+// `limit` rows" (the size budget can stop a page earlier), and "follow
+// nextCursor".
+const API_PAGING_PROSE: Array<[RegExp, string]> = [
+  [/;?\s*an omitted `limit` defaults to \d+[^.]*\./g, '.'],
+  [/\s*Cursor pagination is not yet supported here;.*?\)\./g, ''],
+  [/\s*The list is complete and takes no pagination parameters[^.]*\./g, ''],
+  [/, so a page holds `limit` \w+ whenever that many remain/g, ''],
+  [/\s*Follow `pagination\.nextCursor` until `hasNextPage` is false\./g, ''],
+  // The endpoint metrics reads: keep the order, drop the paging how-to.
+  [
+    /\*\*Paging\.\*\* Records are (\w+ first), at most `limit` \(default \d+\) per page\.[^*]*?(?=\s*\*\*|$)/g,
+    'Records are $1.',
+  ],
+];
+const withoutPagingProse = (text: string) =>
+  API_PAGING_PROSE.reduce(
+    (out, [pattern, replacement]) => out.replace(pattern, replacement),
+    text
+  );
+
 function buildTool(
   path: string,
   method: string,
@@ -457,6 +585,9 @@ function buildTool(
       ...(param.explode === false ? { explode: false as const } : {}),
     });
   }
+  const list = listShape(method, pathItem, op, spec, params, config);
+  if (list)
+    Object.assign(properties, listPaginationProperties(list.defaultLimit));
   const requestBody =
     op.requestBody &&
     resolveComponent(
@@ -498,11 +629,12 @@ function buildTool(
     description:
       config.descriptions?.[op.operationId] ??
       prose(
-        [op.summary, op.description]
-          .filter(Boolean)
-          .join('. ')
-          .replaceAll(/\s+/g, ' ')
-          .trim()
+        (list ? withoutPagingProse : (text: string) => text)(
+          [op.summary, op.description]
+            .filter(Boolean)
+            .join('. ')
+            .replaceAll(/\s+/g, ' ')
+        ).trim()
       ),
     ...(config.directoryDescriptions?.[op.operationId]
       ? { directoryDescription: config.directoryDescriptions[op.operationId] }
@@ -519,6 +651,7 @@ function buildTool(
       ? { schemaOnDemand: true as const }
       : {}),
     ...(textResponse ? { textResponse: true as const } : {}),
+    ...(list ? { list } : {}),
     inputSchema: {
       type: 'object',
       properties,
@@ -601,6 +734,14 @@ export function generateTools(
   if (unmatchedOnDemand.size)
     throw new Error(
       `schemaOnDemand operations missing from spec: ${[...unmatchedOnDemand].sort().join(', ')}`
+    );
+  const unknownDefaults = Object.keys(config.listDefaultLimits ?? {}).filter(
+    (operationId) =>
+      !tools.some((tool) => tool.operationId === operationId && tool.list)
+  );
+  if (unknownDefaults.length)
+    throw new Error(
+      `listDefaultLimits operations that are not generated lists: ${unknownDefaults.sort().join(', ')}`
     );
   const unmatchedOverrides = Object.keys(context.overrides).filter(
     (address) => !context.usedOverrides.has(address)
