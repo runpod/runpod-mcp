@@ -383,11 +383,15 @@ test('generation freshness check rejects stale schemas and config without writin
 // surface: generated 109,068 B is 24,860 tokens, curated 29,980 B is 7,123
 // tokens. The token budgets keep about the headroom the byte budgets had.
 // With the 2026-11-18 resync merged in, generated is 121,066 B, 27,761 tokens.
-const GENERATED_SURFACE_TOKEN_BUDGET = 28_000;
+// 2026-11-20, every list follows one paging contract: the lists the API
+// returns whole gain limit and cursor, net of the API's paging prose leaving
+// list descriptions: generated 121,423 B, 27,761 to 28,036 tokens (+275);
+// curated 29,918 B, 7,123 to 7,147 tokens (+24).
+const GENERATED_SURFACE_TOKEN_BUDGET = 28_150;
 const CURATED_SURFACE_TOKEN_BUDGET = 7_150;
 // No one argument description may crowd the surface. The cap was 400 B; the
-// longest description on 2026-11-19 is 94 tokens (385 B). Units for every
-// size limit in this repo: docs/size-limits.md.
+// longest description on 2026-11-20 is 94 tokens (377 B, templateId on
+// create-endpoint). Units for every size limit: docs/size-limits.md.
 const ARGUMENT_DESCRIPTION_CAP_TOKENS = 100;
 
 // One tokenizer for the file: the package's countTokens rebuilds it per call,

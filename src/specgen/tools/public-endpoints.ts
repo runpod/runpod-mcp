@@ -4,7 +4,11 @@
 // the official MCP server (Apache-2.0, runpod/runpod-mcp).
 
 import type { CuratedTool } from '../types.js';
-import { listPaginationProperties, capList } from '../pagination.js';
+import {
+  cursorError,
+  listPaginationProperties,
+  pageInMemory,
+} from '../pagination.js';
 import { ok, runTool } from './util.js';
 import { readOnly } from './annotations.js';
 
@@ -59,7 +63,7 @@ export const listPublicEndpoints: CuratedTool = {
   inputSchema: {
     type: 'object',
     properties: {
-      ...listPaginationProperties,
+      ...listPaginationProperties(),
       searchTerm: {
         type: 'string',
         description:
@@ -82,7 +86,9 @@ export const listPublicEndpoints: CuratedTool = {
       },
     },
   },
-  handler: (ctx, args) =>
+  // A bad cursor is rejected before the catalog is fetched.
+  handler: async (ctx, args) =>
+    cursorError('list-public-endpoints', args) ??
     runTool(async () => {
       const data = await ctx.graphql.public<PublicEndpointsResponse>(`
         query {
@@ -135,9 +141,12 @@ export const listPublicEndpoints: CuratedTool = {
         );
       }
 
-      // Stable, scannable order for the catalog.
-      configs = [...configs].sort((a, b) =>
-        a.config.displayName.localeCompare(b.config.displayName)
+      // Stable, scannable order for the catalog; the id breaks ties so
+      // equal names keep one order across calls and the cursor holds.
+      configs = [...configs].sort(
+        (a, b) =>
+          a.config.displayName.localeCompare(b.config.displayName) ||
+          a.config.aiApiId.localeCompare(b.config.aiApiId)
       );
 
       const result = configs.map(({ config, meta }) => ({
@@ -155,11 +164,12 @@ export const listPublicEndpoints: CuratedTool = {
         updatedAt: config.updatedAt,
       }));
 
-      return ok(
-        capList(result, {
-          limit: args.limit as number | undefined,
-          cursor: args.cursor as string | undefined,
-        })
+      const listed = pageInMemory(
+        'list-public-endpoints',
+        result,
+        args,
+        (endpoints, pagination) => ({ endpoints, pagination })
       );
+      return listed.ok ? ok(listed.payload) : listed;
     }),
 };

@@ -33,6 +33,16 @@ export interface GeneratedTool {
   schemaOnDemand?: true;
   /** The success body is not JSON (e.g. Markdown); dispatch reads it as text. */
   textResponse?: true;
+  /** A list: dispatch pages it through the shared list contract
+   *  (src/specgen/pagination.ts). `rows` is the response's array; `api`
+   *  when the API takes limit/cursor, `memory` when dispatch pages the whole
+   *  response. */
+  list?: {
+    rows: string;
+    paged: 'api' | 'memory';
+    /** Default page size when 20 is wrong for this list. */
+    defaultLimit?: number;
+  };
   inputSchema: Record<string, unknown>;
 }
 
@@ -3365,7 +3375,7 @@ export const generatedTools: GeneratedTool[] = [
     title: 'Get endpoint cold start metrics',
     operationId: 'getEndpointColdStartMetrics',
     description:
-      "Get serverless endpoint cold start metrics. Returns the cold start series shown on the endpoint's Metrics tab in the console. **Window.** `startTime` is inclusive and `endTime` is exclusive. Both are optional: `endTime` defaults to now and `startTime` to 24 hours before `endTime`, rounded down to the start of an `interval` bucket. An `endTime` in the future is treated as now. Metrics are kept for 90 days, so `startTime` must be within the last 90 days. **Interval.** Each record covers one `interval`-sized bucket, aligned to UTC. **Paging.** Records are oldest first, at most `limit` (default 1000) per page. Follow `pagination.nextCursor` while `pagination.hasNextPage` is true. The cursor keeps the first page's window, so `startTime`, `endTime`, and `interval` can be left out on later pages; if sent, they must match the first page or the cursor is rejected with 422. **Sparse series.** Buckets with no activity are omitted, not zero-filled, so `records` can be shorter than the number of buckets in the window, or empty. **Units.** `durationMs` is how long each cold start took, in milliseconds.",
+      "Get serverless endpoint cold start metrics. Returns the cold start series shown on the endpoint's Metrics tab in the console. **Window.** `startTime` is inclusive and `endTime` is exclusive. Both are optional: `endTime` defaults to now and `startTime` to 24 hours before `endTime`, rounded down to the start of an `interval` bucket. An `endTime` in the future is treated as now. Metrics are kept for 90 days, so `startTime` must be within the last 90 days. **Interval.** Each record covers one `interval`-sized bucket, aligned to UTC. Records are oldest first. **Sparse series.** Buckets with no activity are omitted, not zero-filled, so `records` can be shorter than the number of buckets in the window, or empty. **Units.** `durationMs` is how long each cold start took, in milliseconds.",
     method: 'GET',
     path: '/v2/serverless/{id}/metrics/cold-starts',
     params: [
@@ -3401,6 +3411,11 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'records',
+      paged: 'api',
+      defaultLimit: 100,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -3427,15 +3442,16 @@ export const generatedTools: GeneratedTool[] = [
         },
         cursor: {
           type: 'string',
-          minLength: 1,
           description:
-            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
         limit: {
           type: 'integer',
           minimum: 1,
-          maximum: 1000,
-          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+          maximum: 100,
+          default: 100,
+          description:
+            'Up to this many rows per page, 1-100 (default 100); a page can hold fewer.',
         },
       },
       required: ['id'],
@@ -3454,7 +3470,7 @@ export const generatedTools: GeneratedTool[] = [
     title: 'Get endpoint request metrics',
     operationId: 'getEndpointRequestMetrics',
     description:
-      "Get serverless endpoint request metrics. Returns the request series shown on the endpoint's Metrics tab in the console. **Window.** `startTime` is inclusive and `endTime` is exclusive. Both are optional: `endTime` defaults to now and `startTime` to 24 hours before `endTime`, rounded down to the start of an `interval` bucket. An `endTime` in the future is treated as now. Metrics are kept for 90 days, so `startTime` must be within the last 90 days. **Interval.** Each record covers one `interval`-sized bucket, aligned to UTC. **Paging.** Records are oldest first, at most `limit` (default 1000) per page. Follow `pagination.nextCursor` while `pagination.hasNextPage` is true. The cursor keeps the first page's window, so `startTime`, `endTime`, and `interval` can be left out on later pages; if sent, they must match the first page or the cursor is rejected with 422. **Sparse series.** Buckets with no activity are omitted, not zero-filled, so `records` can be shorter than the number of buckets in the window, or empty. **Units.** Durations are milliseconds. `executionTimeMs` is the time a worker spent running a request; `delayTimeMs` is the time a request waited in the queue before a worker picked it up.",
+      "Get serverless endpoint request metrics. Returns the request series shown on the endpoint's Metrics tab in the console. **Window.** `startTime` is inclusive and `endTime` is exclusive. Both are optional: `endTime` defaults to now and `startTime` to 24 hours before `endTime`, rounded down to the start of an `interval` bucket. An `endTime` in the future is treated as now. Metrics are kept for 90 days, so `startTime` must be within the last 90 days. **Interval.** Each record covers one `interval`-sized bucket, aligned to UTC. Records are oldest first. **Sparse series.** Buckets with no activity are omitted, not zero-filled, so `records` can be shorter than the number of buckets in the window, or empty. **Units.** Durations are milliseconds. `executionTimeMs` is the time a worker spent running a request; `delayTimeMs` is the time a request waited in the queue before a worker picked it up.",
     method: 'GET',
     path: '/v2/serverless/{id}/metrics/requests',
     params: [
@@ -3490,6 +3506,11 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'records',
+      paged: 'api',
+      defaultLimit: 100,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -3516,15 +3537,16 @@ export const generatedTools: GeneratedTool[] = [
         },
         cursor: {
           type: 'string',
-          minLength: 1,
           description:
-            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
         limit: {
           type: 'integer',
           minimum: 1,
-          maximum: 1000,
-          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+          maximum: 100,
+          default: 100,
+          description:
+            'Up to this many rows per page, 1-100 (default 100); a page can hold fewer.',
         },
       },
       required: ['id'],
@@ -3543,7 +3565,7 @@ export const generatedTools: GeneratedTool[] = [
     title: 'Get endpoint worker metrics',
     operationId: 'getEndpointWorkerMetrics',
     description:
-      "Get serverless endpoint worker metrics. Returns the worker state series shown on the endpoint's Metrics tab in the console. For the current worker list, use `GET /v2/serverless/{id}/workers`. **Window.** `startTime` is inclusive and `endTime` is exclusive. Both are optional: `endTime` defaults to now and `startTime` to 24 hours before `endTime`, rounded down to the start of an `interval` bucket. An `endTime` in the future is treated as now. Metrics are kept for 90 days, so `startTime` must be within the last 90 days. **Interval.** Each record covers one `interval`-sized bucket, aligned to UTC. **Paging.** Records are oldest first, at most `limit` (default 1000) per page. Follow `pagination.nextCursor` while `pagination.hasNextPage` is true. The cursor keeps the first page's window, so `startTime`, `endTime`, and `interval` can be left out on later pages; if sent, they must match the first page or the cursor is rejected with 422. **Sparse series.** Buckets with no activity are omitted, not zero-filled, so `records` can be shorter than the number of buckets in the window, or empty. **Snapshots.** Each record holds the last worker-count snapshot in its bucket, as point-in-time counts.",
+      "Get serverless endpoint worker metrics. Returns the worker state series shown on the endpoint's Metrics tab in the console. For the current worker list, use `GET /v2/serverless/{id}/workers`. **Window.** `startTime` is inclusive and `endTime` is exclusive. Both are optional: `endTime` defaults to now and `startTime` to 24 hours before `endTime`, rounded down to the start of an `interval` bucket. An `endTime` in the future is treated as now. Metrics are kept for 90 days, so `startTime` must be within the last 90 days. **Interval.** Each record covers one `interval`-sized bucket, aligned to UTC. Records are oldest first. **Sparse series.** Buckets with no activity are omitted, not zero-filled, so `records` can be shorter than the number of buckets in the window, or empty. **Snapshots.** Each record holds the last worker-count snapshot in its bucket, as point-in-time counts.",
     method: 'GET',
     path: '/v2/serverless/{id}/metrics/workers',
     params: [
@@ -3579,6 +3601,11 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'records',
+      paged: 'api',
+      defaultLimit: 100,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -3605,15 +3632,16 @@ export const generatedTools: GeneratedTool[] = [
         },
         cursor: {
           type: 'string',
-          minLength: 1,
           description:
-            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
         limit: {
           type: 'integer',
           minimum: 1,
-          maximum: 1000,
-          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+          maximum: 100,
+          default: 100,
+          description:
+            'Up to this many rows per page, 1-100 (default 100); a page can hold fewer.',
         },
       },
       required: ['id'],
@@ -4304,7 +4332,7 @@ export const generatedTools: GeneratedTool[] = [
     title: 'List audit logs',
     operationId: 'listAuditLogs',
     description:
-      "List audit logs. Returns the account's audit trail, newest first, cursor-paginated; an omitted `limit` defaults to 200. Each entry records who acted (`actorId`, `email`), what they did (`action`), to which resource (`resourceType`, `resourceId`), and the details of the change (`value`). When the caller belongs to an organization the trail is the organization's, and `actorIds` narrows it to specific members; otherwise it is the trail of the account the request acts for. Filters combine with AND. Entries older than the account's audit log retention window are not returned, and an account whose plan does not include audit logs is answered 403. Follow `pagination.nextCursor` until `hasNextPage` is false.",
+      "List audit logs. Returns the account's audit trail, newest first, cursor-paginated. Each entry records who acted (`actorId`, `email`), what they did (`action`), to which resource (`resourceType`, `resourceId`), and the details of the change (`value`). When the caller belongs to an organization the trail is the organization's, and `actorIds` narrows it to specific members; otherwise it is the trail of the account the request acts for. Filters combine with AND. Entries older than the account's audit log retention window are not returned, and an account whose plan does not include audit logs is answered 403.",
     directoryDescription:
       "List the account's audit trail, newest first. Results are cursor-paginated and record the actor, action, resource, timestamp, and change details. Filters include actor IDs, actions, time range, and text search. The account's retention window and plan determine which entries are available.",
     method: 'GET',
@@ -4348,6 +4376,10 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'auditLogs',
+      paged: 'api',
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -4387,15 +4419,16 @@ export const generatedTools: GeneratedTool[] = [
         },
         cursor: {
           type: 'string',
-          minLength: 1,
           description:
-            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
         limit: {
           type: 'integer',
           minimum: 1,
-          maximum: 200,
-          description: 'Page size, 1–200. Defaults to 200 when omitted.',
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
         },
       },
     },
@@ -4433,6 +4466,10 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'records',
+      paged: 'memory',
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -4458,6 +4495,19 @@ export const generatedTools: GeneratedTool[] = [
           minimum: 1,
           description:
             'Return the last N buckets of bucketSize, ending with the current (in-progress) bucket — e.g. lastN=100 with bucketSize=day is "last 100 days".',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        cursor: {
+          type: 'string',
+          description:
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
       },
       $defs: {
@@ -4508,6 +4558,10 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'records',
+      paged: 'memory',
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -4537,6 +4591,19 @@ export const generatedTools: GeneratedTool[] = [
         clusterId: {
           type: 'string',
           description: 'Filter to a specific cluster.',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        cursor: {
+          type: 'string',
+          description:
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
       },
       $defs: {
@@ -4571,12 +4638,29 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'pods',
+      paged: 'memory',
+    },
     inputSchema: {
       type: 'object',
       properties: {
         id: {
           type: 'string',
           description: 'Cluster identifier',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        cursor: {
+          type: 'string',
+          description:
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
       },
       required: ['id'],
@@ -4587,7 +4671,7 @@ export const generatedTools: GeneratedTool[] = [
     title: 'List clusters',
     operationId: 'listClusters',
     description:
-      'List clusters. Returns clusters owned by the authenticated user, cursor-paginated newest-first; an omitted `limit` defaults to 1000. Follow `pagination.nextCursor` until `hasNextPage` is false.',
+      'List clusters. Returns clusters owned by the authenticated user, cursor-paginated newest-first.',
     method: 'GET',
     path: '/v2/clusters',
     params: [
@@ -4607,20 +4691,25 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'clusters',
+      paged: 'api',
+    },
     inputSchema: {
       type: 'object',
       properties: {
         cursor: {
           type: 'string',
-          minLength: 1,
           description:
-            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
         limit: {
           type: 'integer',
           minimum: 1,
-          maximum: 1000,
-          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
         },
       },
     },
@@ -4630,7 +4719,7 @@ export const generatedTools: GeneratedTool[] = [
     title: 'List cost center resources',
     operationId: 'listCostCenterResources',
     description:
-      "List a cost center's resources. Returns the resources attributed to one cost center, cursor-paginated; an omitted `limit` defaults to 1000. Each entry is the `{type}/{id}` pair `DELETE /v2/cost-centers/{id}/{resourceType}/{resourceId}` takes. A cost center with nothing attributed returns an empty list; one that does not exist or is not the caller's returns 404.",
+      "List a cost center's resources. Returns the resources attributed to one cost center, cursor-paginated. Each entry is the `{type}/{id}` pair `DELETE /v2/cost-centers/{id}/{resourceType}/{resourceId}` takes. A cost center with nothing attributed returns an empty list; one that does not exist or is not the caller's returns 404.",
     method: 'GET',
     path: '/v2/cost-centers/{id}/resources',
     params: [
@@ -4654,6 +4743,10 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'resources',
+      paged: 'api',
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -4664,15 +4757,16 @@ export const generatedTools: GeneratedTool[] = [
         },
         cursor: {
           type: 'string',
-          minLength: 1,
           description:
-            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
         limit: {
           type: 'integer',
           minimum: 1,
-          maximum: 1000,
-          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
         },
       },
       required: ['id'],
@@ -4683,7 +4777,7 @@ export const generatedTools: GeneratedTool[] = [
     title: 'List cost centers',
     operationId: 'listCostCenters',
     description:
-      "List cost centers. Returns the caller's cost centers, cursor-paginated newest-first; an omitted `limit` defaults to 1000. Follow `pagination.nextCursor` until `hasNextPage` is false.",
+      "List cost centers. Returns the caller's cost centers, cursor-paginated newest-first.",
     method: 'GET',
     path: '/v2/cost-centers',
     params: [
@@ -4707,6 +4801,10 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'costCenters',
+      paged: 'api',
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -4717,15 +4815,16 @@ export const generatedTools: GeneratedTool[] = [
         },
         cursor: {
           type: 'string',
-          minLength: 1,
           description:
-            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
         limit: {
           type: 'integer',
           minimum: 1,
-          maximum: 1000,
-          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
         },
       },
     },
@@ -4761,6 +4860,11 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'cpus',
+      paged: 'memory',
+      defaultLimit: 100,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -4787,6 +4891,19 @@ export const generatedTools: GeneratedTool[] = [
           minimum: 2,
           description:
             'Availability vCPU count. Valid only with include=AVAILABILITY. Must be a power of two.',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          default: 100,
+          description:
+            'Up to this many rows per page, 1-100 (default 100); a page can hold fewer.',
+        },
+        cursor: {
+          type: 'string',
+          description:
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
       },
       $defs: {
@@ -4846,6 +4963,11 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'dataCenters',
+      paged: 'memory',
+      defaultLimit: 100,
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -4889,6 +5011,19 @@ export const generatedTools: GeneratedTool[] = [
           type: 'boolean',
           description:
             'Filter by global networking support. true returns only data centers that support global networking; false only those that do not. Different filter families combine with AND.',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          default: 100,
+          description:
+            'Up to this many rows per page, 1-100 (default 100); a page can hold fewer.',
+        },
+        cursor: {
+          type: 'string',
+          description:
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
       },
       $defs: {
@@ -4954,9 +5089,27 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'delegations',
+      paged: 'memory',
+    },
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        cursor: {
+          type: 'string',
+          description:
+            'pagination.nextCursor from the previous page; omit for the first page.',
+        },
+      },
     },
   },
   {
@@ -4992,6 +5145,10 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'records',
+      paged: 'memory',
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -5018,6 +5175,19 @@ export const generatedTools: GeneratedTool[] = [
           description:
             'Return the last N buckets of bucketSize, ending with the current (in-progress) bucket — e.g. lastN=100 with bucketSize=day is "last 100 days".',
         },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        cursor: {
+          type: 'string',
+          description:
+            'pagination.nextCursor from the previous page; omit for the first page.',
+        },
       },
       $defs: {
         BillingBucketSize: {
@@ -5035,7 +5205,7 @@ export const generatedTools: GeneratedTool[] = [
     title: 'List endpoint builds',
     operationId: 'listEndpointBuilds',
     description:
-      "List serverless endpoint builds. Returns the endpoint's GitHub build history, newest first (Runpod GitHub-build integration), cursor-paginated; an omitted `limit` defaults to 100, so a bare request returns at most the 100 most recent builds. Any build can also be fetched by id via `GET /v2/serverless/{id}/builds/{buildId}`. Stream a build's logs via `/v2/serverless/{id}/builds/{buildId}/logs`.",
+      "List serverless endpoint builds. Returns the endpoint's GitHub build history, newest first (Runpod GitHub-build integration), cursor-paginated. Any build can also be fetched by id via `GET /v2/serverless/{id}/builds/{buildId}`. Stream a build's logs via `/v2/serverless/{id}/builds/{buildId}/logs`.",
     method: 'GET',
     path: '/v2/serverless/{id}/builds',
     params: [
@@ -5059,6 +5229,10 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'builds',
+      paged: 'api',
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -5068,15 +5242,16 @@ export const generatedTools: GeneratedTool[] = [
         },
         cursor: {
           type: 'string',
-          minLength: 1,
           description:
-            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
         limit: {
           type: 'integer',
           minimum: 1,
           maximum: 100,
-          description: 'Page size, 1–100. Defaults to 100 when omitted.',
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
         },
       },
       required: ['id'],
@@ -5087,7 +5262,7 @@ export const generatedTools: GeneratedTool[] = [
     title: 'List endpoint releases',
     operationId: 'listEndpointReleases',
     description:
-      "List serverless endpoint releases. Returns the endpoint's release history (newest first) plus a rollout summary of how many workers are running the current version. Each release is a versioned configuration snapshot with a `diff` of what changed; build-driven releases carry a `buildId` (fetch build detail via the builds sub-routes). Releases are cursor-paginated newest-first; an omitted `limit` defaults to 1000. The rollout summary always describes the endpoint's current state, independent of the page requested.",
+      "List serverless endpoint releases. Returns the endpoint's release history (newest first) plus a rollout summary of how many workers are running the current version. Each release is a versioned configuration snapshot with a `diff` of what changed; build-driven releases carry a `buildId` (fetch build detail via the builds sub-routes). Releases are cursor-paginated newest-first. The rollout summary always describes the endpoint's current state, independent of the page requested.",
     method: 'GET',
     path: '/v2/serverless/{id}/releases',
     params: [
@@ -5111,6 +5286,10 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'releases',
+      paged: 'api',
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -5120,15 +5299,16 @@ export const generatedTools: GeneratedTool[] = [
         },
         cursor: {
           type: 'string',
-          minLength: 1,
           description:
-            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
         limit: {
           type: 'integer',
           minimum: 1,
-          maximum: 1000,
-          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
         },
       },
       required: ['id'],
@@ -5155,12 +5335,29 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'workers',
+      paged: 'memory',
+    },
     inputSchema: {
       type: 'object',
       properties: {
         id: {
           type: 'string',
           description: 'Serverless endpoint identifier',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        cursor: {
+          type: 'string',
+          description:
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
       },
       required: ['id'],
@@ -5171,7 +5368,7 @@ export const generatedTools: GeneratedTool[] = [
     title: 'List global volumes',
     operationId: 'listGlobalVolumes',
     description:
-      'List global volumes. Returns global volumes owned by the authenticated user, cursor-paginated newest-first; an omitted `limit` defaults to 1000. Follow `pagination.nextCursor` until `hasNextPage` is false.',
+      'List global volumes. Returns global volumes owned by the authenticated user, cursor-paginated newest-first.',
     method: 'GET',
     path: '/v2/global-volumes',
     params: [
@@ -5191,20 +5388,25 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'globalVolumes',
+      paged: 'api',
+    },
     inputSchema: {
       type: 'object',
       properties: {
         cursor: {
           type: 'string',
-          minLength: 1,
           description:
-            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
         limit: {
           type: 'integer',
           minimum: 1,
-          maximum: 1000,
-          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
         },
       },
     },
@@ -5257,6 +5459,11 @@ export const generatedTools: GeneratedTool[] = [
       destructiveHint: false,
       idempotentHint: true,
       openWorldHint: true,
+    },
+    list: {
+      rows: 'gpus',
+      paged: 'memory',
+      defaultLimit: 100,
     },
     inputSchema: {
       type: 'object',
@@ -5314,6 +5521,19 @@ export const generatedTools: GeneratedTool[] = [
           pattern: '^\\d+(\\.\\d+)?$',
           description:
             'Lowest acceptable CUDA version to scope availability and lowest-price calculations to, compared numerically.',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          default: 100,
+          description:
+            'Up to this many rows per page, 1-100 (default 100); a page can hold fewer.',
+        },
+        cursor: {
+          type: 'string',
+          description:
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
       },
       $defs: {
@@ -5374,6 +5594,10 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'records',
+      paged: 'memory',
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -5404,6 +5628,19 @@ export const generatedTools: GeneratedTool[] = [
           type: 'string',
           description: 'Filter to a specific network volume.',
         },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        cursor: {
+          type: 'string',
+          description:
+            'pagination.nextCursor from the previous page; omit for the first page.',
+        },
       },
       $defs: {
         BillingBucketSize: {
@@ -5421,7 +5658,7 @@ export const generatedTools: GeneratedTool[] = [
     title: 'List network volumes',
     operationId: 'listNetworkVolumes',
     description:
-      'List network volumes. Returns network volumes owned by the authenticated user, cursor-paginated newest-first; an omitted `limit` defaults to 1000. Follow `pagination.nextCursor` until `hasNextPage` is false.',
+      'List network volumes. Returns network volumes owned by the authenticated user, cursor-paginated newest-first.',
     method: 'GET',
     path: '/v2/network-volumes',
     params: [
@@ -5441,20 +5678,25 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'networkVolumes',
+      paged: 'api',
+    },
     inputSchema: {
       type: 'object',
       properties: {
         cursor: {
           type: 'string',
-          minLength: 1,
           description:
-            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
         limit: {
           type: 'integer',
           minimum: 1,
-          maximum: 1000,
-          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
         },
       },
     },
@@ -5488,6 +5730,10 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'members',
+      paged: 'api',
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -5498,15 +5744,16 @@ export const generatedTools: GeneratedTool[] = [
         },
         cursor: {
           type: 'string',
-          minLength: 1,
           description:
-            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
         limit: {
           type: 'integer',
           minimum: 1,
           maximum: 100,
-          description: 'Page size, 1–100. Defaults to 100 when omitted.',
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
         },
       },
       required: ['id'],
@@ -5541,6 +5788,10 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'groups',
+      paged: 'api',
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -5551,15 +5802,16 @@ export const generatedTools: GeneratedTool[] = [
         },
         cursor: {
           type: 'string',
-          minLength: 1,
           description:
-            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
         limit: {
           type: 'integer',
           minimum: 1,
           maximum: 100,
-          description: 'Page size, 1–100. Defaults to 100 when omitted.',
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
         },
       },
     },
@@ -5569,7 +5821,7 @@ export const generatedTools: GeneratedTool[] = [
     title: 'List organization invites',
     operationId: 'listOrganizationInvites',
     description:
-      "List pending organization invites. Returns the pending invitations to the authenticated caller's organization, newest first. Only unexpired invites are pending: an invite leaves the list once it is accepted, revoked or expired. The list is complete and takes no pagination parameters, because an organization's pending invites are capped. Reading invites requires the organization's invite-management capability, which the built-in admin role holds; other members receive 403. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.",
+      "List pending organization invites. Returns the pending invitations to the authenticated caller's organization, newest first. Only unexpired invites are pending: an invite leaves the list once it is accepted, revoked or expired. Reading invites requires the organization's invite-management capability, which the built-in admin role holds; other members receive 403. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.",
     method: 'GET',
     path: '/v2/organization/invites',
     params: [],
@@ -5580,9 +5832,27 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'invites',
+      paged: 'memory',
+    },
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        cursor: {
+          type: 'string',
+          description:
+            'pagination.nextCursor from the previous page; omit for the first page.',
+        },
+      },
     },
   },
   {
@@ -5590,7 +5860,7 @@ export const generatedTools: GeneratedTool[] = [
     title: 'List organization roles',
     operationId: 'listOrganizationRoles',
     description:
-      "List organization roles. Returns every role a member or invite of the authenticated caller's organization can hold: Runpod's built-in roles and the organization's custom roles, oldest first. The list is complete and takes no pagination parameters, because an organization's custom roles are capped. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.",
+      "List organization roles. Returns every role a member or invite of the authenticated caller's organization can hold: Runpod's built-in roles and the organization's custom roles, oldest first. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.",
     method: 'GET',
     path: '/v2/organization/roles',
     params: [],
@@ -5601,9 +5871,27 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'roles',
+      paged: 'memory',
+    },
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        cursor: {
+          type: 'string',
+          description:
+            'pagination.nextCursor from the previous page; omit for the first page.',
+        },
+      },
     },
   },
   {
@@ -5611,7 +5899,7 @@ export const generatedTools: GeneratedTool[] = [
     title: 'List organization users',
     operationId: 'listOrganizationUsers',
     description:
-      "List organization members. Returns every member of the authenticated caller's organization with the role each holds. Any member can read the roster. The list is complete and takes no pagination parameters. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.",
+      "List organization members. Returns every member of the authenticated caller's organization with the role each holds. Any member can read the roster. Returns 404 when the caller does not belong to an organization, or 403 when organizations are unavailable to the caller.",
     method: 'GET',
     path: '/v2/organization/users',
     params: [],
@@ -5622,9 +5910,27 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'users',
+      paged: 'memory',
+    },
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        cursor: {
+          type: 'string',
+          description:
+            'pagination.nextCursor from the previous page; omit for the first page.',
+        },
+      },
     },
   },
   {
@@ -5664,6 +5970,10 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'records',
+      paged: 'memory',
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -5694,6 +6004,19 @@ export const generatedTools: GeneratedTool[] = [
           type: 'string',
           description: 'Filter to a specific pod (GPU or CPU).',
         },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        cursor: {
+          type: 'string',
+          description:
+            'pagination.nextCursor from the previous page; omit for the first page.',
+        },
       },
       $defs: {
         BillingBucketSize: {
@@ -5711,7 +6034,7 @@ export const generatedTools: GeneratedTool[] = [
     title: 'List Pods',
     operationId: 'listPods',
     description:
-      'List pods. Returns pods owned by the authenticated user. Cluster member pods are excluded by default; set `includeClusterPods=true` to include them (each carries a non-null `cluster` membership block). Results are cursor-paginated newest-first; an omitted `limit` defaults to 1000. The cluster-member exclusion is applied before the page is cut, so a page holds `limit` pods whenever that many remain. Follow `pagination.nextCursor` until `hasNextPage` is false.',
+      'List pods. Returns pods owned by the authenticated user. Cluster member pods are excluded by default; set `includeClusterPods=true` to include them (each carries a non-null `cluster` membership block). Results are cursor-paginated newest-first. The cluster-member exclusion is applied before the page is cut.',
     method: 'GET',
     path: '/v2/pods',
     params: [
@@ -5735,6 +6058,10 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'pods',
+      paged: 'api',
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -5746,15 +6073,16 @@ export const generatedTools: GeneratedTool[] = [
         },
         cursor: {
           type: 'string',
-          minLength: 1,
           description:
-            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
         limit: {
           type: 'integer',
           minimum: 1,
-          maximum: 1000,
-          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
         },
       },
     },
@@ -5764,7 +6092,7 @@ export const generatedTools: GeneratedTool[] = [
     title: 'List public templates',
     operationId: 'listPublicTemplates',
     description:
-      "List public templates. Returns the public template catalog. `source` selects which slice: `official` (the default) is Runpod-curated templates, `verified` is community templates Runpod has verified, and `community` is everything else other users have shared publicly. Both pod and serverless templates appear — use each entry's `serverless` flag to tell them apart. `registry` is always null for templates you don't own. Your own templates (public or private) are managed under `/v2/templates`; fetch any individual template — catalog or owned — via `/v2/templates/{id}`. At most 100 templates are returned. Cursor pagination is not yet supported here; `pagination` is always the exhausted marker (`nextCursor: null`, `hasNextPage: false`).",
+      "List public templates. Returns the public template catalog. `source` selects which slice: `official` (the default) is Runpod-curated templates, `verified` is community templates Runpod has verified, and `community` is everything else other users have shared publicly. Both pod and serverless templates appear — use each entry's `serverless` flag to tell them apart. `registry` is always null for templates you don't own. Your own templates (public or private) are managed under `/v2/templates`; fetch any individual template — catalog or owned — via `/v2/templates/{id}`. At most 100 templates are returned.",
     method: 'GET',
     path: '/v2/catalog/templates',
     params: [
@@ -5780,6 +6108,10 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'templates',
+      paged: 'memory',
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -5790,6 +6122,19 @@ export const generatedTools: GeneratedTool[] = [
           description:
             'Which slice of the catalog to return: `official` for Runpod-curated templates (default), `verified` for Runpod-verified community templates, or `community` for all other publicly shared templates.',
         },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        cursor: {
+          type: 'string',
+          description:
+            'pagination.nextCursor from the previous page; omit for the first page.',
+        },
       },
     },
   },
@@ -5798,7 +6143,7 @@ export const generatedTools: GeneratedTool[] = [
     title: 'List queued Pods',
     operationId: 'listQueuedPods',
     description:
-      "List queued pods. Returns the caller's queued pods, cursor-paginated newest-first; an omitted `limit` defaults to 1000. Every queued pod is listed whatever its `status`, so the outcome of a queued create can be read after the fact. Follow `pagination.nextCursor` until `hasNextPage` is false.",
+      "List queued pods. Returns the caller's queued pods, cursor-paginated newest-first. Every queued pod is listed whatever its `status`, so the outcome of a queued create can be read after the fact.",
     method: 'GET',
     path: '/v2/queued-pods',
     params: [
@@ -5818,20 +6163,25 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'queuedPods',
+      paged: 'api',
+    },
     inputSchema: {
       type: 'object',
       properties: {
         cursor: {
           type: 'string',
-          minLength: 1,
           description:
-            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
         limit: {
           type: 'integer',
           minimum: 1,
-          maximum: 1000,
-          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
         },
       },
     },
@@ -5852,9 +6202,27 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'registries',
+      paged: 'memory',
+    },
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        cursor: {
+          type: 'string',
+          description:
+            'pagination.nextCursor from the previous page; omit for the first page.',
+        },
+      },
     },
   },
   {
@@ -5878,6 +6246,10 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'secrets',
+      paged: 'memory',
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -5885,6 +6257,19 @@ export const generatedTools: GeneratedTool[] = [
           type: 'string',
           description:
             'When provided, returns only the secret with this name (case-insensitive).',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        cursor: {
+          type: 'string',
+          description:
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
       },
     },
@@ -5894,9 +6279,9 @@ export const generatedTools: GeneratedTool[] = [
     title: 'List Serverless billing',
     operationId: 'listServerlessBilling',
     description:
-      'Get serverless billing history, split into time buckets. SIZE WARNING: with defaults this emits one record per endpoint PER BUCKET — on an account with many endpoints the response overflows the tool-result limit and becomes unusable. Always pass lastN: 1 (or a bucketSize spanning the whole window) for one record per endpoint, and serverlessId when you need one endpoint. Distinct from pod billing, which covers standalone pods.',
+      'Get Serverless billing history, split into time buckets: one record per endpoint per bucket. Pass lastN: 1 (or a bucketSize spanning the whole window) for one record per endpoint, and serverlessId for one endpoint. Distinct from Pod billing, which covers standalone Pods.',
     directoryDescription:
-      'Get Serverless billing history, split into time buckets. By default the response has one record per endpoint per bucket, which can be very large on accounts with many endpoints; lastN: 1 (or one bucket spanning the whole window) returns one record per endpoint, and serverlessId narrows it to a single endpoint. Pod billing is reported separately.',
+      'Get Serverless billing history, split into time buckets: one record per endpoint per bucket. lastN: 1 (or one bucket spanning the whole window) returns one record per endpoint, and serverlessId narrows it to a single endpoint. Pod billing is reported separately.',
     method: 'GET',
     path: '/v2/billing/serverless',
     params: [
@@ -5928,6 +6313,10 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'records',
+      paged: 'memory',
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -5957,6 +6346,19 @@ export const generatedTools: GeneratedTool[] = [
         serverlessId: {
           type: 'string',
           description: 'Filter to a specific serverless endpoint.',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        cursor: {
+          type: 'string',
+          description:
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
       },
       $defs: {
@@ -5999,6 +6401,10 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'resources',
+      paged: 'api',
+    },
     inputSchema: {
       type: 'object',
       properties: {
@@ -6009,15 +6415,16 @@ export const generatedTools: GeneratedTool[] = [
         },
         cursor: {
           type: 'string',
-          minLength: 1,
           description:
-            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
         limit: {
           type: 'integer',
           minimum: 1,
-          maximum: 1000,
-          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
         },
       },
       required: ['id'],
@@ -6028,7 +6435,7 @@ export const generatedTools: GeneratedTool[] = [
     title: 'List tags',
     operationId: 'listTags',
     description:
-      "List tags. Returns the caller's tags, newest first, cursor-paginated. Tags under the reserved `runpod:` prefix, such as cost centers, are never listed. Follow `pagination.nextCursor` until `hasNextPage` is false.",
+      "List tags. Returns the caller's tags, newest first, cursor-paginated. Tags under the reserved `runpod:` prefix, such as cost centers, are never listed.",
     method: 'GET',
     path: '/v2/tags',
     params: [
@@ -6048,20 +6455,25 @@ export const generatedTools: GeneratedTool[] = [
       idempotentHint: true,
       openWorldHint: true,
     },
+    list: {
+      rows: 'tags',
+      paged: 'api',
+    },
     inputSchema: {
       type: 'object',
       properties: {
         cursor: {
           type: 'string',
-          minLength: 1,
           description:
-            "Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected.",
+            'pagination.nextCursor from the previous page; omit for the first page.',
         },
         limit: {
           type: 'integer',
           minimum: 1,
-          maximum: 1000,
-          description: 'Page size, 1–1000. Defaults to 1000 when omitted.',
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
         },
       },
     },
