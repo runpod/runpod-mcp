@@ -354,7 +354,6 @@ test('default profile keeps its tools and guards REST fallback credentials', asy
     'read-guide',
     'describe-tool',
     'report_feedback',
-    'report_how_user_found_runpod',
     'create-secret',
     'update-secret',
     'create-registry',
