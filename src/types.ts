@@ -6,13 +6,13 @@ export interface HandleMcpRequestOptions {
   // Test seams — production uses the shared default checker.
   verifyCredential?: CredentialChecker;
   invalidateCredential?: (token: string) => void;
-  /** Once-per-account lookup behind the referral ask (src/alp/answered.ts).
+  /** Once-per-account lookup regression seam: the server no longer asks (src/alp/answered.ts).
    *  Resolve, never reject: a rejection is treated as an unknown verdict. */
   hasAnswered?: (
     identity: string,
     route: OncePerAccountRoute
   ) => Promise<boolean | null>;
-  /** Creation counter behind the agent NPS ask (src/alp/created.ts).
+  /** Creation counter regression seam: the server no longer asks (src/alp/created.ts).
    *  Resolve, never reject: a rejection is treated as an unknown count. */
   recordCreation?: (
     identity: string,

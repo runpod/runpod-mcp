@@ -157,6 +157,10 @@ afterward, which is the cheapest proxy for "the void was not good enough."
 
 ### RT4 — `report_how_user_found_runpod`
 
+The server stopped prompting for this route in 2026-11: the unsolicited
+referral and NPS asks were removed, and an agent may still call the two tools
+when its user asks for it. The route semantics below are unchanged.
+
 The referral ask ([CON-1762](https://linear.app/runpod/issue/CON-1762)), added
 2026-10 for the demand generation team. AEO (answer-engine optimization: content
 written so AI assistants cite it) needs to know what people asked an AI before
@@ -237,6 +241,8 @@ third creation comes in its first session meets both. The note does not look
 at when the referral was answered; `/alp/answered` says whether, not when.
 
 ### RT5 — `rate_nps_score`
+
+The server stopped prompting for this route in 2026-11 (see the note under RT4).
 
 The agent's own NPS score: "How likely are you to recommend us to a friend?",
 an integer from 0 to 10. Humans already get the Console survey, so the tool

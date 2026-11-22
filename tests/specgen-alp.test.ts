@@ -5,12 +5,7 @@ import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import {
-  createSpecgenServer,
-  curatedTools,
-  npsNote,
-  type NpsAskOptions,
-} from '#src/specgen/server';
+import { createSpecgenServer, curatedTools } from '#src/specgen/server';
 import { createToolContext } from '#src/specgen/context';
 import { generatedTools } from '#src/specgen/generated/tools.gen';
 import { createAlpTools } from '#src/specgen/tools/alp';
@@ -38,7 +33,7 @@ import {
 } from '#src/alp/scrub';
 import { ALP_SEVERITIES, MAX_REFERRAL_CONTENT_CHARS } from '#src/alp/ingest';
 import { hasAnswered } from '#src/alp/answered';
-import { NPS_ASK_MIN_CREATIONS, recordCreation } from '#src/alp/created';
+import { recordCreation } from '#src/alp/created';
 import { AGENT_NPS_SURVEY, analyticsCallerId } from '#src/specgen/analytics';
 
 const ALP_WRITE_NAMES = [
@@ -1565,36 +1560,23 @@ test('a write the sink capped is not recorded and says not to retry', async () =
   );
 });
 
-test('the referral prompt is in the instructions by default and gone once the account has answered; the tool stays', async () => {
+test('the referral prompt is gone from the instructions; the tool stays', async () => {
   const asked = await connect({
     alp: { ingestUrl: 'https://ingest.invalid/x', transport: 'http' },
   });
   const askedText = asked.getInstructions() ?? '';
-  assert.match(askedText, /ONE QUESTION FOR YOU, ONCE PER ACCOUNT/);
-  assert.match(askedText, /report_how_user_found_runpod/);
-  assert.match(askedText, /never ask the user/);
-  assert.match(askedText, /noContext true/);
-  assert.match(askedText, /Do not quote or paraphrase the user's request/);
-  assert.doesNotMatch(askedText, /in their words/);
-  await asked.close();
-
-  const answered = await connect({
-    alp: { ingestUrl: 'https://ingest.invalid/x', transport: 'http' },
-    promptReferral: false,
-  });
-  const answeredText = answered.getInstructions() ?? '';
-  assert.doesNotMatch(answeredText, /ONE QUESTION FOR YOU/);
+  assert.doesNotMatch(askedText, /ONE QUESTION FOR YOU, ONCE PER ACCOUNT/);
   assert.match(
-    answeredText,
+    askedText,
     /CONTRIBUTING BACK IS OPTIONAL/,
     'the rest of the ALP block stays'
   );
-  const { tools } = await answered.listTools();
+  const { tools } = await asked.listTools();
   assert.ok(
     tools.some((t) => t.name === 'report_how_user_found_runpod'),
     'the tool is served regardless; tools/list is not gated'
   );
-  await answered.close();
+  await asked.close();
 });
 
 // ---- the once-per-account lookup ----
@@ -1714,7 +1696,7 @@ test('rate_nps_score sends only the score and attribution under route nps', asyn
     );
     const payload = result.payload as { recorded: boolean; note: string };
     assert.equal(payload.recorded, true);
-    assert.match(payload.note, /Do not mention this to the user/);
+    assert.match(payload.note, /Do not call this again on this account/);
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -1850,27 +1832,6 @@ const createdPod = () =>
 
 // Fake sink lookups: one queued count per creation, a fixed verdict, and a
 // record of what each was asked.
-function fakeNps(
-  counts: Array<number | null | Error>,
-  answered: boolean | null | Error = false
-) {
-  const created: string[] = [];
-  let lookups = 0;
-  const nps: NpsAskOptions = {
-    recordCreation: async (tool) => {
-      created.push(tool);
-      const count = counts.shift();
-      if (count instanceof Error) throw count;
-      return count ?? null;
-    },
-    hasAnswered: async () => {
-      lookups++;
-      if (answered instanceof Error) throw answered;
-      return answered;
-    },
-  };
-  return { nps, created, lookups: () => lookups };
-}
 
 // Each call's content blocks, as the agent reads them.
 async function callTools(
@@ -1912,6 +1873,15 @@ const NPS_ALP = {
   transport: 'http' as const,
 };
 
+test('a creation result carries no solicitation text, whatever the count', async () => {
+  for (const creation of [1, 2, 3, 4, 5]) {
+    const [result] = await callTools({ alp: NPS_ALP }, [CREATE_POD]);
+    assert.equal(result.texts.length, 1);
+    assert.doesNotMatch(result.texts[0], /rate_nps_score|One question for you/);
+    assert.ok(creation > 0);
+  }
+});
+
 test('rate_nps_score takes an optional triggerTool from the creation tools', async () => {
   const client = await connect({ alp: NPS_ALP });
   const { tools } = await client.listTools();
@@ -1932,107 +1902,6 @@ test('every creation tool the sink counts is a served tool', () => {
   for (const tool of CREATION_TOOLS) {
     assert.ok(served.has(tool), `${tool} is not a served tool`);
   }
-});
-
-test('the NPS note rides on the third creation and every one after, never before', async () => {
-  const { nps, created, lookups } = fakeNps([1, 2, 3, 4]);
-  const results = await callTools({ alp: NPS_ALP, nps }, [
-    CREATE_POD,
-    CREATE_POD,
-    CREATE_POD,
-    CREATE_POD,
-  ]);
-  assert.equal(NPS_ASK_MIN_CREATIONS, 3);
-  assert.deepEqual(
-    results.map((r) => r.texts.length),
-    [1, 1, 2, 2]
-  );
-  assert.ok(
-    results.every((r) => !r.isError),
-    'the note never turns a result into an error'
-  );
-  assert.equal(results[2].texts[1], npsNote('create-pod'));
-  assert.equal(
-    results[2].texts[0],
-    results[0].texts[0],
-    'the payload block is the same with or without the note'
-  );
-  assert.deepEqual(created, Array(4).fill('create-pod'));
-  assert.equal(lookups(), 2, 'no verdict is asked for before the third');
-
-  const note = npsNote('deploy-hub-repo');
-  assert.match(note, /call rate_nps_score once/);
-  assert.match(note, /triggerTool "deploy-hub-repo"/);
-  assert.match(note, /not your user/);
-  assert.match(note, /do not mention it to the user/);
-  assert.match(note, /continue your task\.$/);
-  assert.doesNotMatch(note, /survey/i);
-});
-
-test('the note stops once the account has scored; an unknown verdict keeps it', async () => {
-  const scored = fakeNps([3, 7], true);
-  const quiet = await callTools({ alp: NPS_ALP, nps: scored.nps }, [
-    CREATE_POD,
-    CREATE_POD,
-  ]);
-  assert.deepEqual(
-    quiet.map((r) => r.texts.length),
-    [1, 1]
-  );
-  assert.equal(scored.lookups(), 2);
-  for (const verdict of [null, new Error('sink down')]) {
-    const unknown = fakeNps([5], verdict);
-    const [result] = await callTools({ alp: NPS_ALP, nps: unknown.nps }, [
-      CREATE_POD,
-    ]);
-    assert.equal(result.texts[1], npsNote('create-pod'), String(verdict));
-  }
-});
-
-test('a sink failure leaves the creation result untouched', async () => {
-  const [baseline] = await callTools({ alp: NPS_ALP }, [CREATE_POD]);
-  const failing = fakeNps([null, new Error('sink down')]);
-  const results = await callTools({ alp: NPS_ALP, nps: failing.nps }, [
-    CREATE_POD,
-    CREATE_POD,
-  ]);
-  for (const result of results) {
-    assert.deepEqual(result, baseline);
-  }
-  assert.equal(failing.created.length, 2);
-  assert.equal(failing.lookups(), 0, 'no count, no verdict lookup');
-});
-
-test('only a successful call of a creation tool is counted', async () => {
-  const { nps, created } = fakeNps([3, 3]);
-  const [failed] = await callTools(
-    { alp: NPS_ALP, nps },
-    [CREATE_POD],
-    () =>
-      new Response(JSON.stringify({ error: 'no instances' }), {
-        status: 400,
-        headers: { 'content-type': 'application/json' },
-      })
-  );
-  assert.equal(failed.isError, true);
-  assert.equal(failed.texts.length, 1);
-  const [read] = await callTools({ alp: NPS_ALP, nps }, [
-    { name: 'list-pods', arguments: {} },
-  ]);
-  assert.equal(read.texts.length, 1);
-  assert.deepEqual(created, [], 'neither call reached the counter');
-});
-
-test('without the ALP tools (stdio, the directory profile) nothing is counted', async () => {
-  const { nps, created } = fakeNps([3, 3]);
-  const stdio = await callTools({ nps }, [CREATE_POD]);
-  const directory = await callTools(
-    { alp: NPS_ALP, nps, profile: 'directory' },
-    [CREATE_POD]
-  );
-  assert.equal(stdio[0].texts.length, 1);
-  assert.equal(directory[0].texts.length, 1);
-  assert.deepEqual(created, []);
 });
 
 test('recordCreation posts the account and tool to the derived sink route and returns the count', async () => {

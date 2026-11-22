@@ -11,7 +11,7 @@ import {
   requestLogSampleRate,
   summarizeRpc,
 } from '#src/http';
-import { npsNote, responseHoldingTools } from '#src/specgen/server';
+import { responseHoldingTools } from '#src/specgen/server';
 
 // ============== Response mode: JSON for the handshake, SSE for tool calls ==============
 // The CDN compresses application/json and never text/event-stream, so every
@@ -405,10 +405,7 @@ describe('mcp_request log line', () => {
   });
 });
 
-// ---- the referral ask on the handshake (CON-1762; docs/agent-learning-protocol.md, "RT4") ----
-// On initialize the handler asks the sink whether the account has already
-// answered and drops the ask from the instructions when it has. Covers when the
-// lookup runs, what it is keyed on, and that an unknown verdict keeps the ask.
+// ---- the handshake: the briefing must never carry a referral or NPS ask (issues 202 and 203) ----
 
 async function handshake(opts: {
   body?: unknown;
@@ -438,9 +435,7 @@ async function handshake(opts: {
 
 const PROMPT = /ONE QUESTION FOR YOU, ONCE PER ACCOUNT/;
 
-describe('the referral ask on the hosted handshake', () => {
-  // Self-contained env: the sink configured, and the pre-flight kill switch
-  // off so verifyCredential (and with it accountId) is reached.
+describe('the hosted handshake never asks the referral question', () => {
   const saved: Record<string, string | undefined> = {};
   before(() => {
     for (const key of [
@@ -461,50 +456,26 @@ describe('the referral ask on the hosted handshake', () => {
     }
   });
 
-  it('asks the sink once per initialize, keyed on the resolved account, and drops the prompt when answered', async () => {
-    const { calls, instructions } = await handshake({
-      accountId: 'acct_1',
-      answered: true,
-    });
-    assert.deepEqual(calls, [['acct_1', 'referral']]);
-    assert.doesNotMatch(instructions, PROMPT);
-    assert.match(
-      instructions,
-      /CONTRIBUTING BACK IS OPTIONAL/,
-      'the rest of the ALP briefing is unaffected'
-    );
+  it('no account state triggers a referral lookup or a prompt', async () => {
+    for (const answered of [true, false, null, new Error('sink down')]) {
+      const { calls, instructions } = await handshake({
+        accountId: 'acct_1',
+        answered,
+      });
+      assert.deepEqual(calls, []);
+      assert.doesNotMatch(instructions, PROMPT);
+      assert.match(
+        instructions,
+        /CONTRIBUTING BACK IS OPTIONAL/,
+        'the rest of the ALP briefing is unaffected'
+      );
+    }
   });
 
-  it('keeps the prompt for an account that has not answered', async () => {
-    const { calls, instructions } = await handshake({
-      accountId: 'acct_2',
-      answered: false,
-    });
-    assert.deepEqual(calls, [['acct_2', 'referral']]);
-    assert.match(instructions, PROMPT);
-  });
-
-  it('an unknown verdict keeps the prompt: fail-soft toward asking', async () => {
-    const { instructions } = await handshake({
-      accountId: 'acct_3',
-      answered: null,
-    });
-    assert.match(instructions, PROMPT);
-  });
-
-  it('a lookup that rejects keeps the prompt and the handshake succeeds', async () => {
-    const { calls, instructions } = await handshake({
-      accountId: 'acct_5',
-      answered: new Error('sink down'),
-    });
-    assert.deepEqual(calls, [['acct_5', 'referral']]);
-    assert.match(instructions, PROMPT);
-  });
-
-  it('without a resolved account there is nothing to key on: no lookup, prompt kept', async () => {
+  it('without a resolved account there is no lookup and no ask', async () => {
     const { calls, instructions } = await handshake({ answered: true });
     assert.deepEqual(calls, []);
-    assert.match(instructions, PROMPT);
+    assert.doesNotMatch(instructions, PROMPT);
   });
 
   it('tools/list never triggers the lookup', async () => {
@@ -567,8 +538,6 @@ async function createOnHosted(opts: {
   accountId?: string;
   headers?: Record<string, string>;
 }) {
-  const counted: Array<[string, string]> = [];
-  const looked: Array<[string, string]> = [];
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async () =>
     new Response(JSON.stringify({ id: 'pod_1' }), {
@@ -582,14 +551,6 @@ async function createOnHosted(opts: {
         status: 'valid' as const,
         ...(opts.accountId ? { accountId: opts.accountId } : {}),
       }),
-      recordCreation: async (identity, tool) => {
-        counted.push([identity, tool]);
-        return 3;
-      },
-      hasAnswered: async (identity, route) => {
-        looked.push([identity, route]);
-        return false;
-      },
     });
     await finished;
     assert.equal(written.statusCode, 200);
@@ -597,71 +558,19 @@ async function createOnHosted(opts: {
       result: { isError?: boolean; content: Array<{ text: string }> };
     };
     assert.equal(parsed.result.isError ?? false, false);
-    return {
-      counted,
-      looked,
-      texts: parsed.result.content.map((block) => block.text),
-    };
+    return { texts: parsed.result.content.map((block) => block.text) };
   } finally {
     globalThis.fetch = realFetch;
   }
 }
 
-describe('the NPS ask on hosted creations', () => {
-  const saved: Record<string, string | undefined> = {};
-  before(() => {
-    for (const key of [
-      'ALP_SINK_URL',
-      'ALP_SINK_SECRET',
-      'MCP_SKIP_CREDENTIAL_CHECK',
-    ]) {
-      saved[key] = process.env[key];
-      delete process.env[key];
-    }
-    process.env.ALP_SINK_URL = 'https://sink.convex.site/alp/submit';
-    process.env.ALP_SINK_SECRET = 'shh';
-  });
-  after(() => {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  });
-
-  it('counts the creation for the resolved account and adds the note from the third', async () => {
-    const { counted, looked, texts } = await createOnHosted({
-      accountId: 'acct_1',
-    });
-    assert.deepEqual(counted, [['acct_1', 'create-pod']]);
-    assert.deepEqual(looked, [['acct_1', 'nps']]);
-    assert.equal(texts.length, 2);
-    assert.equal(texts[1], npsNote('create-pod'));
-  });
-
-  it('the analytics opt-out skips the count and the note', async () => {
-    const { counted, looked, texts } = await createOnHosted({
-      accountId: 'acct_1',
-      headers: { 'x-runpod-analytics': 'off' },
-    });
-    assert.deepEqual(counted, []);
-    assert.deepEqual(looked, []);
+describe('hosted creations carry no solicitation', () => {
+  it('a creation result never asks for referrals or NPS scores', async () => {
+    const { texts } = await createOnHosted({ accountId: 'acct_1' });
     assert.equal(texts.length, 1);
-  });
-
-  it('without a resolved account there is nothing to count on', async () => {
-    const { counted, texts } = await createOnHosted({});
-    assert.deepEqual(counted, []);
-    assert.equal(texts.length, 1);
-  });
-
-  it('without the sink configured there is no count and no note', async () => {
-    delete process.env.ALP_SINK_URL;
-    try {
-      const { counted, texts } = await createOnHosted({ accountId: 'acct_1' });
-      assert.deepEqual(counted, []);
-      assert.equal(texts.length, 1);
-    } finally {
-      process.env.ALP_SINK_URL = 'https://sink.convex.site/alp/submit';
-    }
+    assert.doesNotMatch(
+      texts[0],
+      /One question for you|rate_nps_score|report_how_user_found_runpod/
+    );
   });
 });

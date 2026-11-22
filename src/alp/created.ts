@@ -1,4 +1,4 @@
-// Creation counter behind the agent NPS ask: after each successful call of a
+// Creation counter regression seam: the server no longer asks: after each successful call of a
 // creation tool (CREATION_TOOLS) for a resolved account, the hosted server
 // reports it to the sink and gets the account's running count back
 // (docs/agent-learning-protocol.md, "RT5"). The sink counts per account, not
@@ -17,8 +17,7 @@ import { sinkRouteUrl, type CreationTool } from './sink.js';
 // sink delays the result by at most this much before the note is skipped.
 const CREATED_TIMEOUT_MS = 2_500;
 
-// The ask starts on an account's third successful creation and repeats on
-// every later one until the account has given its score.
+// The threshold the removed NPS ask used; kept as the regression seam's count.
 export const NPS_ASK_MIN_CREATIONS = 3;
 
 export interface CreatedOptions {
