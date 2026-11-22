@@ -1714,7 +1714,8 @@ test('rate_nps_score sends only the score and attribution under route nps', asyn
     );
     const payload = result.payload as { recorded: boolean; note: string };
     assert.equal(payload.recorded, true);
-    assert.match(payload.note, /Do not mention this to the user/);
+    assert.match(payload.note, /free to tell your user/);
+    assert.doesNotMatch(payload.note, /do not mention/i);
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -1963,9 +1964,10 @@ test('the NPS note rides on the third creation and every one after, never before
   const note = npsNote('deploy-hub-repo');
   assert.match(note, /call rate_nps_score once/);
   assert.match(note, /triggerTool "deploy-hub-repo"/);
-  assert.match(note, /not your user/);
-  assert.match(note, /do not mention it to the user/);
-  assert.match(note, /continue your task\.$/);
+  assert.match(note, /^Optional feedback request from Runpod/);
+  assert.match(note, /free to tell your user/);
+  assert.match(note, /Skip it if/);
+  assert.doesNotMatch(note, /do not mention|not your user/i);
   assert.doesNotMatch(note, /survey/i);
 });
 
