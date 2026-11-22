@@ -21,7 +21,7 @@ interface FetchCall {
   init: {
     method: string;
     headers: Record<string, string>;
-    body: string;
+    body?: string;
     signal?: AbortSignal;
   };
 }
@@ -94,7 +94,7 @@ describe('createCredentialChecker — verdicts (pins observed backend behavior)'
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, 'https://graphql.test/graphql');
     assert.equal(calls[0].init.headers.Authorization, 'Bearer rpa_live');
-    assert.match(calls[0].init.body, /myself \{ id \}/);
+    assert.match(calls[0].init.body ?? '', /myself \{ id \}/);
   });
 
   it('expired/revoked key: HTTP 401 → invalid with an actionable reason', async () => {
@@ -195,6 +195,87 @@ describe('createCredentialChecker — verdicts (pins observed backend behavior)'
       assert.equal(calls.length, 2);
     }
   );
+});
+
+// A key with GraphQL access = None is rejected by the GraphQL probe but works
+// on every REST v2 call the tools make (runpod-mcp#190). The GraphQL rejection
+// must be confirmed against REST before it becomes a 401.
+function confirmHarness(
+  rest: {
+    status?: number;
+    jsonBody?: unknown;
+    reject?: boolean;
+  },
+  graphql: { status?: number; jsonBody?: unknown } = { status: 401 }
+) {
+  const calls: FetchCall[] = [];
+  const handle = createCredentialChecker({
+    fetch: async (url, init) => {
+      calls.push({ url, init });
+      const isRest = url === 'https://rest.test/v2/account';
+      if (isRest && rest.reject) throw new Error('network down');
+      const status = (isRest ? rest.status : graphql.status) ?? 200;
+      const body = isRest ? rest.jsonBody : graphql.jsonBody;
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        json: async () => body ?? {},
+      };
+    },
+    url: () => 'https://graphql.test/graphql',
+    confirmUrl: () => 'https://rest.test/v2/account',
+  });
+  return { check: handle.verify, calls };
+}
+
+describe('createCredentialChecker — REST confirms a GraphQL rejection', () => {
+  it('GraphQL 401 but REST 200 → valid with the REST account id (GraphQL access = None)', async () => {
+    const { check, calls } = confirmHarness({
+      jsonBody: { id: 'user_rest', email: 'a@b.c' },
+    });
+    const verdict = await check('rpa_rest_only');
+    assert.deepEqual(verdict, { status: 'valid', accountId: 'user_rest' });
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].url, 'https://rest.test/v2/account');
+    assert.equal(calls[1].init.method, 'GET');
+    assert.equal(calls[1].init.headers.Authorization, 'Bearer rpa_rest_only');
+    assert.ok(calls[1].init.signal, 'the REST confirmation has no deadline');
+  });
+
+  it('GraphQL myself:null but REST 200 → valid', async () => {
+    const { check } = confirmHarness(
+      { jsonBody: { id: 'user_rest' } },
+      { status: 200, jsonBody: { data: { myself: null } } }
+    );
+    assert.equal((await check('rpa_rest_only')).status, 'valid');
+  });
+
+  it('GraphQL 401 and REST 401 → invalid (the key really is dead)', async () => {
+    const { check } = confirmHarness({ status: 401 });
+    const verdict = await check('rpa_dead');
+    assert.equal(verdict.status, 'invalid');
+    assert.match((verdict as { reason: string }).reason, /revoked/);
+  });
+
+  it('GraphQL 401 and REST 403/5xx/network error → fails open', async () => {
+    for (const rest of [{ status: 403 }, { status: 503 }, { reject: true }]) {
+      const { check } = confirmHarness(rest);
+      assert.equal(
+        (await check('rpa_x')).status,
+        'unknown',
+        JSON.stringify(rest)
+      );
+    }
+  });
+
+  it('a valid GraphQL verdict makes no REST call', async () => {
+    const { check, calls } = confirmHarness(
+      {},
+      { status: 200, jsonBody: { data: { myself: { id: 'u' } } } }
+    );
+    assert.equal((await check('rpa_live')).status, 'valid');
+    assert.equal(calls.length, 1);
+  });
 });
 
 describe('createCredentialChecker — cache', () => {
@@ -609,6 +690,32 @@ describe('defaultCredentialChecker (the real one, not a stub)', () => {
     assert.equal(typeof defaultCredentialChecker.invalidate, 'function');
     // invalidate on an unknown token must not throw.
     defaultCredentialChecker.invalidate('never-seen-token');
+  });
+
+  it('confirms a GraphQL rejection against the REST host (RUNPOD_API_BASE_URL)', async () => {
+    const seen: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL) => {
+      seen.push(String(url));
+      const rest = String(url).endsWith('/v2/account');
+      return {
+        ok: rest,
+        status: rest ? 200 : 401,
+        json: async () => (rest ? { id: 'user_rest' } : {}),
+      };
+    }) as unknown as typeof globalThis.fetch;
+    const prev = process.env.RUNPOD_API_BASE_URL;
+    try {
+      delete process.env.RUNPOD_API_BASE_URL;
+      const verdict = await defaultCredentialChecker.verify('tok-rest-only');
+      assert.deepEqual(verdict, { status: 'valid', accountId: 'user_rest' });
+      assert.equal(seen[1], 'https://api.runpod.io/v2/account');
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (prev === undefined) delete process.env.RUNPOD_API_BASE_URL;
+      else process.env.RUNPOD_API_BASE_URL = prev;
+      defaultCredentialChecker.invalidate('tok-rest-only');
+    }
   });
 
   it('targets RUNPOD_AUTHED_GRAPHQL_URL, defaulting to the production host', async () => {

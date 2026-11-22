@@ -16,6 +16,15 @@
 //   - anonymous (no ident) → HTTP 200 with `myself: null`
 //   - valid key            → HTTP 200 with `myself.id`
 //
+// GraphQL is NOT the surface the tools use. An API key can be scoped with
+// GraphQL access = None and still work on every REST v2 call (runpod-mcp#190),
+// so a GraphQL rejection on its own is not proof the credential is dead. When a
+// REST confirmation URL is configured, an `invalid` GraphQL verdict is
+// re-checked with `GET /v2/account`: a 200 there means the key works for the
+// tools (valid), only a REST 401 confirms it dead, and anything else fails
+// open. The extra call happens only on the reject path, so a healthy key pays
+// nothing.
+//
 // NOT yet observed: what a once-valid, since-REVOKED key returns. The assumption
 // is HTTP 401, same as a key that never existed — but if it instead answers
 // `{data: null, errors: [...]}` that lands in the indeterminate branch below and
@@ -66,7 +75,7 @@ type AuthProbeFetch = (
   init: {
     method: string;
     headers: Record<string, string>;
-    body: string;
+    body?: string;
     signal?: AbortSignal;
   }
 ) => Promise<AuthProbeResponse>;
@@ -96,6 +105,9 @@ export function createCredentialChecker(deps: {
   // Resolved per call so an env change takes effect without a module reload
   // (matches how the tool runtime resolves its base URLs).
   url: () => string;
+  // REST v2 `GET /v2/account` URL used to confirm a GraphQL rejection before
+  // answering 401 (see the header comment). Unset = the GraphQL verdict stands.
+  confirmUrl?: () => string;
   now?: () => number;
   validTtlMs?: number;
   invalidTtlMs?: number;
@@ -130,7 +142,44 @@ export function createCredentialChecker(deps: {
   }
   const entries = new Map<string, Entry>();
 
+  // A key scoped to REST only is rejected by GraphQL but works for every tool.
+  // Ask the REST surface before turning that into a 401: only a REST 401
+  // confirms the key is dead; any other non-200 or a network error is not an
+  // answer and fails open.
+  async function confirmWithRest(
+    token: string,
+    graphqlVerdict: CredentialVerdict
+  ): Promise<CredentialVerdict> {
+    if (!deps.confirmUrl) return graphqlVerdict;
+    try {
+      const response = await deps.fetch(deps.confirmUrl(), {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (response.status === 401) return graphqlVerdict;
+      if (!response.ok) return { status: 'unknown' };
+      const account = (await response.json().catch(() => null)) as {
+        id?: unknown;
+      } | null;
+      return typeof account?.id === 'string' && account.id
+        ? { status: 'valid', accountId: account.id }
+        : { status: 'valid' };
+    } catch {
+      return { status: 'unknown' };
+    }
+  }
+
   async function fetchVerdict(token: string): Promise<CredentialVerdict> {
+    const verdict = await fetchGraphqlVerdict(token);
+    return verdict.status === 'invalid'
+      ? confirmWithRest(token, verdict)
+      : verdict;
+  }
+
+  async function fetchGraphqlVerdict(
+    token: string
+  ): Promise<CredentialVerdict> {
     try {
       const response = await deps.fetch(deps.url(), {
         method: 'POST',

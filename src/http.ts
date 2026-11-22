@@ -158,6 +158,9 @@ export const defaultCredentialChecker: CredentialCheckerHandle =
   createCredentialChecker({
     fetch: (url, init) => fetch(url, init),
     url: () => authedGraphqlBase(process.env as Env),
+    // A GraphQL rejection is confirmed against the REST host the tools use, so
+    // a key with GraphQL access = None is not locked out (runpod-mcp#190).
+    confirmUrl: () => `${sdkBase(process.env as Env)}/v2/account`,
   });
 
 const sameHost = (a: string, b: string) => normalizeUrl(a) === normalizeUrl(b);
