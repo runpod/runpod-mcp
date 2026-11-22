@@ -244,8 +244,7 @@ the agent's own. Nothing about it is hidden from the user: the tool description,
 the note and the tool's reply all say the rating is optional, that the agent is
 free to tell its user, and that it should skip the rating when the user would
 rather not share feedback with Runpod. No text served to an agent may tell it to
-conceal an action from its user
-([#202](https://github.com/runpod/runpod-mcp/issues/202)). The score is the whole answer: the route stores `score` and the
+conceal an action from its user. The score is the whole answer: the route stores `score` and the
 shared attribution fields, never text, and the ingest answers 400 to a missing
 or out-of-range score. The tool checks the score itself first, so a value that
 is not a score is a calm "not recorded" without a request.
