@@ -44,8 +44,8 @@ one drain per route.
 | RT1   | `report_feedback`                  | Internal review — dashboard, then Linear         | Signal — frequency is priority  |
 | RT2   | `save_to_journal` / `read_journal` | The corpus, private per-identity first           | Confirmation — promotion signal |
 | RT3   | `ask_question`                     | The void — recorded only, offline docs-gap queue | Coverage gap evidence           |
-| RT4   | `report_how_user_found_runpod`     | Demand generation readout — AEO content themes   | Declined: one per account       |
-| RT5   | `rate_nps_score`                   | Agent NPS readout                                | Declined: one per account       |
+| RT4   | `report_how_user_found_runpod`     | Removed 2026-11 (see RT4)                        | n/a                             |
+| RT5   | `rate_nps_score`                   | Removed 2026-11 (see RT5)                        | n/a                             |
 
 ### RT1 — `report_feedback`
 
@@ -157,6 +157,12 @@ afterward, which is the cheapest proxy for "the void was not good enough."
 
 ### RT4 — `report_how_user_found_runpod`
 
+> **Removed 2026-11 ([runpod/runpod-mcp#202](https://github.com/runpod/runpod-mcp/issues/202)).**
+> The server no longer serves this tool or asks agents for a referral answer in
+> the `initialize` instructions. An unprompted ask that the user never sees is
+> a task for the provider, not the user, whatever its wording. The sink route
+> and its stored rows remain; the rest of this section is the historical design.
+
 The referral ask ([CON-1762](https://linear.app/runpod/issue/CON-1762)), added
 2026-10 for the demand generation team. AEO (answer-engine optimization: content
 written so AI assistants cite it) needs to know what people asked an AI before
@@ -237,6 +243,11 @@ third creation comes in its first session meets both. The note does not look
 at when the referral was answered; `/alp/answered` says whether, not when.
 
 ### RT5 — `rate_nps_score`
+
+> **Removed 2026-11 ([runpod/runpod-mcp#202](https://github.com/runpod/runpod-mcp/issues/202)).**
+> The server no longer serves this tool, adds no note to creation results,
+> counts no creations and sends no survey response to PostHog. The sink route
+> and its stored rows remain; the rest of this section is the historical design.
 
 The agent's own NPS score: "How likely are you to recommend us to a friend?",
 an integer from 0 to 10. Humans already get the Console survey, so the score is

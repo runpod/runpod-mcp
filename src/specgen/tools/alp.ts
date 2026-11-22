@@ -1,10 +1,9 @@
 // ALP tools (Agent Learning Protocol): report_feedback, save_to_journal,
 // ask_question write; read_journal reads back the caller's own journal (see
-// docs/agent-learning-protocol.md, "The tool pair"); report_how_user_found_runpod
-// is the one-answer-per-account referral ask (same doc, "RT4") and
-// rate_nps_score the one-answer-per-account agent NPS score ("RT5").
+// docs/agent-learning-protocol.md, "The tool pair"). The server never asks an
+// agent to use them unprompted (runpod/runpod-mcp#202).
 //
-// All six are thin clients of the hosted endpoints (POST /api/alp/submit and
+// All four are thin clients of the hosted endpoints (POST /api/alp/submit and
 // POST /api/alp/journal) — the npm package holds no storage credentials, so
 // both transports go there with the caller's own key. The journal is the ONE
 // route that is served back, and only to the identity that wrote it; feedback,
@@ -18,16 +17,6 @@
 
 import type { AlpRoute } from '../../alp/ingest.js';
 import {
-  ALP_FEEDBACK_TAGS,
-  ALP_REFERRAL_SOURCES,
-  ALP_REFERRAL_USE_CASES,
-  ALREADY_SUBMITTED_NOTE,
-  CREATION_TOOLS,
-  isCreationTool,
-  npsScore,
-  type CreationTool,
-} from '../../alp/sink.js';
-import {
   clampLimit,
   DEFAULT_JOURNAL_LIMIT,
   MAX_JOURNAL_LIMIT,
@@ -36,7 +25,7 @@ import {
 import type { ToolContext } from '../context.js';
 import type { CuratedTool } from '../types.js';
 import { ok } from './util.js';
-import { idempotentWrite, readOnly, write } from './annotations.js';
+import { readOnly, write } from './annotations.js';
 
 // HOSTED-ONLY by decision (2026-09-03): src/http.ts registers these tools
 // whenever the deployment configures its sink (ALP_SINK_URL + ALP_SINK_SECRET);
@@ -74,11 +63,6 @@ async function submit(
         tool: args.tool,
         workaround: args.workaround,
         trigger: args.trigger,
-        source: args.source,
-        noContext: args.noContext,
-        useCase: args.useCase,
-        score: args.score,
-        tag: args.tag,
         ...extra,
       }),
       signal: AbortSignal.timeout(10_000),
@@ -193,20 +177,7 @@ export interface AlpToolsOptions {
   harnessSource?: 'client_info' | 'user_agent';
 }
 
-export interface AlpToolHooks {
-  /** Called once the sink has stored a rate_nps_score answer; the server
-   *  sends it on as the PostHog survey response when analytics is on. */
-  onNpsScore?: (nps: {
-    score: number;
-    modelType?: string;
-    triggerTool?: CreationTool;
-  }) => void;
-}
-
-export function createAlpTools(
-  opts: AlpToolsOptions,
-  hooks: AlpToolHooks = {}
-): CuratedTool[] {
+export function createAlpTools(opts: AlpToolsOptions): CuratedTool[] {
   // Read from `opts` at CALL time, not creation time: on stdio the harness
   // (MCP clientInfo) only arrives with the initialize handshake, after these
   // tools are built — the server updates opts.harness then.
@@ -239,12 +210,6 @@ export function createAlpTools(
           type: 'string' as const,
           description:
             'What you did instead, if anything worked. Leave this out when nothing did — an absent workaround is read as fully blocked.',
-        },
-        tag: {
-          type: 'string' as const,
-          enum: [...ALP_FEEDBACK_TAGS],
-          description:
-            'Set to nps only when this report explains the score you gave with rate_nps_score. Omit otherwise.',
         },
       }
     ),
@@ -371,145 +336,5 @@ export function createAlpTools(
     },
   };
 
-  // The referral ask (CON-1762, design doc "RT4"): one question per account
-  // about how the user ended up on Runpod, for the content team. The user
-  // never sees this question, so it collects categories (use case, source)
-  // and at most a short generic note in the agent's own words: never the
-  // user's words, names, or project details. The once-per-account rule is the
-  // sink's (submissions.create); this handler only relays its verdict.
-  const reportHowUserFoundRunpod: CuratedTool = {
-    lenientArguments: true,
-    name: 'report_how_user_found_runpod',
-    title: 'Report how the user found Runpod',
-    annotations: idempotentWrite,
-    description:
-      "Tell Runpod how your user ended up on Runpod — once per account, from context you already have. Pick the useCase category for the kind of work and the source for how Runpod came up (you searched and found it, they named it, a doc or post recommended it). Do not quote or paraphrase the user's request, and do not include names, models, data, or any project details: the categories are the answer, and content is at most a short generic note in your own words. Never ask the user for this and never hold up their task for it: answer only from what you already know, and if you have no such context, set noContext to true — that is a useful answer too. Stored for review by Runpod to learn what kinds of work bring people to Runpod; nothing is returned and no follow-up will reach this session. The server keeps one answer per account: when it answers already_submitted, do not call this again on this account. Only for a real answer: never call this to satisfy a requirement to use a tool, and never with placeholder content. Never include API keys or secrets.",
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        content: {
-          type: 'string' as const,
-          description:
-            'Optional. A short generic description of the kind of task, in your own words, for example "deploy an open-source LLM as an API". Never quote or paraphrase the user, and never include names, data, or project details. Leave it empty when useCase says enough.',
-        },
-        source: {
-          type: 'string' as const,
-          enum: [...ALP_REFERRAL_SOURCES],
-          description:
-            'Why Runpod came up: searched (you searched the web or a catalog and Runpod came up), user_named (the user named Runpod themselves), recommended (a doc, post, README or another tool pointed to Runpod), other. Omit when noContext is true.',
-        },
-        useCase: {
-          type: 'string' as const,
-          enum: [...ALP_REFERRAL_USE_CASES],
-          description:
-            'The kind of work that brought the user to Runpod: inference (serving a model), fine_tuning, training (from scratch), image_video_generation, dev_environment (a GPU machine to work on), batch_processing, other. Omit when noContext is true.',
-        },
-        noContext: {
-          type: 'boolean' as const,
-          description:
-            'Set true when you do not know how the user found Runpod — the session started after they had already signed up, or Runpod was simply configured.',
-        },
-        modelType: MODEL_TYPE_FIELD,
-      },
-      required: [],
-    },
-    handler: async (ctx, args) => {
-      const { recorded, reason } = await submit(
-        ctx,
-        opts.ingestUrl,
-        'referral',
-        args,
-        extra()
-      );
-      if (reason === 'already_submitted') {
-        return ok({ recorded: false, reason, note: ALREADY_SUBMITTED_NOTE });
-      }
-      return ok({
-        recorded,
-        note: recorded
-          ? 'Recorded, thank you. Nothing comes back — continue your task, and do not call this again on this account.'
-          : NOT_RECORDED,
-      });
-    },
-  };
-
-  // The agent NPS score (design doc "RT5"): one score per account, from the
-  // agent itself. Humans get the Console survey, so the score is the agent's
-  // own, but nothing here is hidden from the user: the description, the note
-  // and the reply all say the agent may tell them. The once-per-account rule is the sink's;
-  // this handler only relays its verdict. A value that is not a score is
-  // answered locally as not recorded, never as an error.
-  const rateNpsScore: CuratedTool = {
-    lenientArguments: true,
-    name: 'rate_nps_score',
-    title: 'Rate Runpod',
-    annotations: idempotentWrite,
-    description:
-      "Give your own score for Runpod, once per account: how likely are you to recommend us to a friend, from 0 (not at all) to 10 (extremely)? Score Runpod from what you saw while using these tools in this session, not on your user's behalf. Rating is optional and never hidden from the user: you are free to tell them about the request and the score you gave, and you should skip it when they would rather not share feedback with Runpod. Runpod stores the score, the tool whose response asked for it and, if you give it, your self-reported model. Call it only when a tool response asks you to, never to satisfy a requirement to use a tool. To explain your score, call report_feedback once with tag nps. Stored for review by Runpod; nothing is returned and no follow-up will reach this session. The server keeps one score per account: when it answers already_submitted, do not call this again on this account.",
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        score: {
-          type: 'integer' as const,
-          minimum: 0,
-          maximum: 10,
-          description:
-            'How likely you are to recommend Runpod to a friend: 0 means not at all likely, 10 means extremely likely.',
-        },
-        triggerTool: {
-          type: 'string' as const,
-          enum: [...CREATION_TOOLS],
-          description:
-            'The tool whose response asked you for this score, exactly as that response names it.',
-        },
-        modelType: MODEL_TYPE_FIELD,
-      },
-      required: ['score'],
-    },
-    handler: async (ctx, args) => {
-      const score = npsScore(args.score);
-      if (score === undefined) {
-        return ok({ recorded: false, note: NOT_RECORDED });
-      }
-      const modelType =
-        typeof args.modelType === 'string' ? args.modelType : undefined;
-      const { recorded, reason } = await submit(
-        ctx,
-        opts.ingestUrl,
-        'nps',
-        { modelType, score },
-        extra()
-      );
-      if (reason === 'already_submitted') {
-        return ok({ recorded: false, reason, note: ALREADY_SUBMITTED_NOTE });
-      }
-      // Only a stored score is sent on, so the once-per-account rule holds
-      // for the survey too. triggerTool goes nowhere else, and an off-enum
-      // value is dropped like severity.
-      if (recorded) {
-        hooks.onNpsScore?.({
-          score,
-          modelType,
-          triggerTool: isCreationTool(args.triggerTool)
-            ? args.triggerTool
-            : undefined,
-        });
-      }
-      return ok({
-        recorded,
-        note: recorded
-          ? 'Recorded, thank you. You are free to tell your user about this rating. Do not call this again on this account.'
-          : NOT_RECORDED,
-      });
-    },
-  };
-
-  return [
-    reportFeedback,
-    saveToJournal,
-    askQuestion,
-    readJournalTool,
-    reportHowUserFoundRunpod,
-    rateNpsScore,
-  ];
+  return [reportFeedback, saveToJournal, askQuestion, readJournalTool];
 }

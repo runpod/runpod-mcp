@@ -185,8 +185,6 @@ export const DIRECTORY_TOOLS: Readonly<Record<string, DirectoryDecision>> = {
   'create-registry': { include: false, reason: CREDENTIAL_INPUT },
   'update-registry': { include: false, reason: CREDENTIAL_INPUT },
   report_feedback: { include: false, reason: ALP },
-  report_how_user_found_runpod: { include: false, reason: ALP },
-  rate_nps_score: { include: false, reason: ALP },
   save_to_journal: { include: false, reason: ALP },
   read_journal: { include: false, reason: ALP },
   ask_question: { include: false, reason: ALP },

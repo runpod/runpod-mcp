@@ -5,8 +5,6 @@ import {
   JSONRPCMessageSchema,
   type JSONRPCMessage,
 } from '@modelcontextprotocol/sdk/types.js';
-import { hasAnswered } from './alp/answered.js';
-import { recordCreation } from './alp/created.js';
 import { createSpecgenServer, responseHoldingTools } from './specgen/server.js';
 import { createToolContext as createSpecgenContext } from './specgen/context.js';
 import { callerId } from './specgen/ops.js';
@@ -339,12 +337,6 @@ const callsResponseHoldingTool = (message: JSONRPCMessage): boolean => {
   return call.success && responseHoldingTools.has(call.data.params.name);
 };
 
-// The instructions are delivered on `initialize` and nowhere else, so that is
-// the one request where it matters whether the account has already answered
-// the once-per-account referral ask.
-const isInitialize = (message: JSONRPCMessage): boolean =>
-  InitializeRequestSchema.safeParse(message).success;
-
 // The CDN compresses application/json but never text/event-stream, so every
 // request answers as JSON except a call to a tool that holds its response open
 // (CuratedTool.holdsResponse): clients read an SSE body under their long stream
@@ -612,36 +604,13 @@ export async function handleMcpRequest(
         })
       : null;
 
-  // The referral ask (docs/agent-learning-protocol.md, "RT4") rides in the
-  // initialize instructions and is meant to reach an account once, so on
-  // initialize — and only with a resolved account to key on — ask the sink
-  // whether this account has answered. Fail-soft toward asking: an unknown
-  // verdict keeps the prompt, and the sink's write-time dedupe is the
-  // backstop. tools/list is not consulted, so the tool stays advertised; its
-  // description and already_submitted reply cover a direct call.
   const alpConfigured = Boolean(
     process.env.ALP_SINK_URL && process.env.ALP_SINK_SECRET
   );
-  // The directory profile (mcp.runpod.io/directory) serves no ALP tools and no
-  // referral ask: app directories forbid collecting conversation data beyond
-  // what a tool needs.
+  // The directory profile (mcp.runpod.io/directory) serves no ALP tools: app
+  // directories forbid collecting conversation data beyond what a tool needs.
   const profile = requestProfile(req);
   const alpServed = alpConfigured && profile === 'default';
-  let promptReferral = true;
-  if (alpServed && accountId && messages.some(isInitialize)) {
-    // The production lookup never rejects; the catch makes the fail-soft
-    // contract structural for the test seam too: a rejection is "unknown".
-    const answered = await (opts.hasAnswered ?? hasAnswered)(
-      accountId,
-      'referral'
-    ).catch(() => null);
-    promptReferral = answered !== true;
-  }
-  // The agent NPS ask (docs/agent-learning-protocol.md, "RT5") counts this
-  // account's creations in the sink, so it needs a resolved account, and it
-  // feeds the PostHog survey, so the analytics opt-out skips it whole.
-  const npsAccount =
-    alpServed && accountId && !analyticsOptedOut(req) ? accountId : undefined;
 
   // SPEC-GENERATED SURFACE (feat/specgen-server): the tool set generated from
   // the v2 OpenAPI spec plus its curated overlay, mounted behind this shell's
@@ -691,17 +660,6 @@ export async function handleMcpRequest(
                 String(req.headers['user-agent'] ?? 'unknown')
               ),
               harnessSource: 'user_agent' as const,
-            },
-            promptReferral,
-          }
-        : {}),
-      ...(npsAccount
-        ? {
-            nps: {
-              recordCreation: (tool) =>
-                (opts.recordCreation ?? recordCreation)(npsAccount, tool),
-              hasAnswered: () =>
-                (opts.hasAnswered ?? hasAnswered)(npsAccount, 'nps'),
             },
           }
         : {}),

@@ -11,7 +11,7 @@ import {
   requestLogSampleRate,
   summarizeRpc,
 } from '#src/http';
-import { npsNote, responseHoldingTools } from '#src/specgen/server';
+import { responseHoldingTools } from '#src/specgen/server';
 
 // ============== Response mode: JSON for the handshake, SSE for tool calls ==============
 // The CDN compresses application/json and never text/event-stream, so every
@@ -405,153 +405,15 @@ describe('mcp_request log line', () => {
   });
 });
 
-// ---- the referral ask on the handshake (CON-1762; docs/agent-learning-protocol.md, "RT4") ----
-// On initialize the handler asks the sink whether the account has already
-// answered and drops the ask from the instructions when it has. Covers when the
-// lookup runs, what it is keyed on, and that an unknown verdict keeps the ask.
+// ---- no solicitation on the hosted path (runpod/runpod-mcp#202) ----
+// The hosted server once asked agents, unprompted, how their user found Runpod
+// (in the initialize instructions) and for an NPS score (on creation results).
+// Both are gone: the handshake carries no such ask and a creation result
+// carries only its own payload, with the sink configured and an account
+// resolved, which is when they used to appear.
 
-async function handshake(opts: {
-  body?: unknown;
-  accountId?: string;
-  answered: boolean | null | Error;
-}) {
-  const calls: Array<[string, string]> = [];
-  const { req, res, written, finished } = fakeReqRes(opts.body ?? init());
-  await handleMcpRequest(req, res, {
-    verifyCredential: async () => ({
-      status: 'valid' as const,
-      ...(opts.accountId ? { accountId: opts.accountId } : {}),
-    }),
-    hasAnswered: async (identity, route) => {
-      calls.push([identity, route]);
-      if (opts.answered instanceof Error) throw opts.answered;
-      return opts.answered;
-    },
-  });
-  await finished;
-  assert.equal(written.statusCode, 200);
-  const parsed = JSON.parse(written.chunks.join('')) as {
-    result: { instructions?: string };
-  };
-  return { calls, instructions: parsed.result.instructions ?? '' };
-}
-
-const PROMPT = /ONE QUESTION FOR YOU, ONCE PER ACCOUNT/;
-
-describe('the referral ask on the hosted handshake', () => {
-  // Self-contained env: the sink configured, and the pre-flight kill switch
-  // off so verifyCredential (and with it accountId) is reached.
-  const saved: Record<string, string | undefined> = {};
-  before(() => {
-    for (const key of [
-      'ALP_SINK_URL',
-      'ALP_SINK_SECRET',
-      'MCP_SKIP_CREDENTIAL_CHECK',
-    ]) {
-      saved[key] = process.env[key];
-      delete process.env[key];
-    }
-    process.env.ALP_SINK_URL = 'https://sink.convex.site/alp/submit';
-    process.env.ALP_SINK_SECRET = 'shh';
-  });
-  after(() => {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  });
-
-  it('asks the sink once per initialize, keyed on the resolved account, and drops the prompt when answered', async () => {
-    const { calls, instructions } = await handshake({
-      accountId: 'acct_1',
-      answered: true,
-    });
-    assert.deepEqual(calls, [['acct_1', 'referral']]);
-    assert.doesNotMatch(instructions, PROMPT);
-    assert.match(
-      instructions,
-      /CONTRIBUTING BACK IS OPTIONAL/,
-      'the rest of the ALP briefing is unaffected'
-    );
-  });
-
-  it('keeps the prompt for an account that has not answered', async () => {
-    const { calls, instructions } = await handshake({
-      accountId: 'acct_2',
-      answered: false,
-    });
-    assert.deepEqual(calls, [['acct_2', 'referral']]);
-    assert.match(instructions, PROMPT);
-  });
-
-  it('an unknown verdict keeps the prompt: fail-soft toward asking', async () => {
-    const { instructions } = await handshake({
-      accountId: 'acct_3',
-      answered: null,
-    });
-    assert.match(instructions, PROMPT);
-  });
-
-  it('a lookup that rejects keeps the prompt and the handshake succeeds', async () => {
-    const { calls, instructions } = await handshake({
-      accountId: 'acct_5',
-      answered: new Error('sink down'),
-    });
-    assert.deepEqual(calls, [['acct_5', 'referral']]);
-    assert.match(instructions, PROMPT);
-  });
-
-  it('without a resolved account there is nothing to key on: no lookup, prompt kept', async () => {
-    const { calls, instructions } = await handshake({ answered: true });
-    assert.deepEqual(calls, []);
-    assert.match(instructions, PROMPT);
-  });
-
-  it('tools/list never triggers the lookup', async () => {
-    const { calls } = await handshake({
-      body: toolsList,
-      accountId: 'acct_4',
-      answered: true,
-    });
-    assert.deepEqual(calls, []);
-  });
-});
-
-describe('the referral ask when ALP is not configured', () => {
-  // The kill switch is cleared too, so a resolved account is what proves the
-  // gate is alpConfigured and not a skipped pre-flight.
-  const saved: Record<string, string | undefined> = {};
-  before(() => {
-    for (const key of [
-      'ALP_SINK_URL',
-      'ALP_SINK_SECRET',
-      'MCP_SKIP_CREDENTIAL_CHECK',
-    ]) {
-      saved[key] = process.env[key];
-      delete process.env[key];
-    }
-  });
-  after(() => {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value !== undefined) process.env[key] = value;
-    }
-  });
-
-  it('makes no lookup and delivers no ask, even with a resolved account', async () => {
-    const { calls, instructions } = await handshake({
-      accountId: 'acct_5',
-      answered: true,
-    });
-    assert.deepEqual(calls, []);
-    assert.doesNotMatch(instructions, PROMPT);
-    assert.doesNotMatch(instructions, /CONTRIBUTING BACK IS OPTIONAL/);
-  });
-});
-
-// ---- the agent NPS ask on hosted creations (docs/agent-learning-protocol.md, "RT5") ----
-// A successful creation is counted in the sink for the resolved account and,
-// from the account's third on, carries the note until the account has scored.
-// Covers what the count is keyed on and each case that skips the flow whole.
+const SOLICITATION =
+  /ONE QUESTION FOR YOU|report_how_user_found_runpod|rate_nps_score|do not mention/i;
 
 const createPod = {
   jsonrpc: '2.0',
@@ -559,55 +421,11 @@ const createPod = {
   method: 'tools/call',
   params: {
     name: 'create-pod',
-    arguments: { body: { name: 'nps-test', image: 'runpod/base' } },
+    arguments: { body: { name: 'pod-test', image: 'runpod/base' } },
   },
 };
 
-async function createOnHosted(opts: {
-  accountId?: string;
-  headers?: Record<string, string>;
-}) {
-  const counted: Array<[string, string]> = [];
-  const looked: Array<[string, string]> = [];
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = (async () =>
-    new Response(JSON.stringify({ id: 'pod_1' }), {
-      status: 201,
-      headers: { 'content-type': 'application/json' },
-    })) as typeof fetch;
-  try {
-    const { req, res, written, finished } = fakeReqRes(createPod, opts.headers);
-    await handleMcpRequest(req, res, {
-      verifyCredential: async () => ({
-        status: 'valid' as const,
-        ...(opts.accountId ? { accountId: opts.accountId } : {}),
-      }),
-      recordCreation: async (identity, tool) => {
-        counted.push([identity, tool]);
-        return 3;
-      },
-      hasAnswered: async (identity, route) => {
-        looked.push([identity, route]);
-        return false;
-      },
-    });
-    await finished;
-    assert.equal(written.statusCode, 200);
-    const parsed = JSON.parse(written.chunks.join('')) as {
-      result: { isError?: boolean; content: Array<{ text: string }> };
-    };
-    assert.equal(parsed.result.isError ?? false, false);
-    return {
-      counted,
-      looked,
-      texts: parsed.result.content.map((block) => block.text),
-    };
-  } finally {
-    globalThis.fetch = realFetch;
-  }
-}
-
-describe('the NPS ask on hosted creations', () => {
+describe('the hosted server asks agents for nothing', () => {
   const saved: Record<string, string | undefined> = {};
   before(() => {
     for (const key of [
@@ -627,41 +445,51 @@ describe('the NPS ask on hosted creations', () => {
       else process.env[key] = value;
     }
   });
-
-  it('counts the creation for the resolved account and adds the note from the third', async () => {
-    const { counted, looked, texts } = await createOnHosted({
-      accountId: 'acct_1',
-    });
-    assert.deepEqual(counted, [['acct_1', 'create-pod']]);
-    assert.deepEqual(looked, [['acct_1', 'nps']]);
-    assert.equal(texts.length, 2);
-    assert.equal(texts[1], npsNote('create-pod'));
+  const verifyCredential = async () => ({
+    status: 'valid' as const,
+    accountId: 'acct_1',
   });
 
-  it('the analytics opt-out skips the count and the note', async () => {
-    const { counted, looked, texts } = await createOnHosted({
-      accountId: 'acct_1',
-      headers: { 'x-runpod-analytics': 'off' },
-    });
-    assert.deepEqual(counted, []);
-    assert.deepEqual(looked, []);
-    assert.equal(texts.length, 1);
+  it('the handshake briefing carries the ALP rules and no ask', async () => {
+    const { req, res, written, finished } = fakeReqRes(init());
+    await handleMcpRequest(req, res, { verifyCredential });
+    await finished;
+    assert.equal(written.statusCode, 200);
+    const { result } = JSON.parse(written.chunks.join('')) as {
+      result: { instructions?: string };
+    };
+    assert.match(result.instructions ?? '', /CONTRIBUTING BACK IS OPTIONAL/);
+    assert.doesNotMatch(result.instructions ?? '', SOLICITATION);
   });
 
-  it('without a resolved account there is nothing to count on', async () => {
-    const { counted, texts } = await createOnHosted({});
-    assert.deepEqual(counted, []);
-    assert.equal(texts.length, 1);
-  });
-
-  it('without the sink configured there is no count and no note', async () => {
-    delete process.env.ALP_SINK_URL;
+  it('a creation result carries only its own payload', async () => {
+    const realFetch = globalThis.fetch;
+    const requested: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      requested.push(String(url instanceof Request ? url.url : url));
+      return new Response(JSON.stringify({ id: 'pod_1' }), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
     try {
-      const { counted, texts } = await createOnHosted({ accountId: 'acct_1' });
-      assert.deepEqual(counted, []);
-      assert.equal(texts.length, 1);
+      const { req, res, written, finished } = fakeReqRes(createPod);
+      await handleMcpRequest(req, res, { verifyCredential });
+      await finished;
+      assert.equal(written.statusCode, 200);
+      const { result } = JSON.parse(written.chunks.join('')) as {
+        result: { isError?: boolean; content: Array<{ text: string }> };
+      };
+      assert.equal(result.isError ?? false, false);
+      assert.equal(result.content.length, 1);
+      assert.doesNotMatch(result.content[0].text, SOLICITATION);
+      // Nothing about the creation is reported to the ALP sink.
+      assert.deepEqual(
+        requested.filter((url) => url.includes('sink.convex.site')),
+        []
+      );
     } finally {
-      process.env.ALP_SINK_URL = 'https://sink.convex.site/alp/submit';
+      globalThis.fetch = realFetch;
     }
   });
 });
