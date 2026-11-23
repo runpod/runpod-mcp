@@ -254,18 +254,68 @@ describe('createCredentialChecker — REST confirms a GraphQL rejection', () => 
     const { check } = confirmHarness({ status: 401 });
     const verdict = await check('rpa_dead');
     assert.equal(verdict.status, 'invalid');
-    assert.match((verdict as { reason: string }).reason, /revoked/);
+    // The reason names both surfaces, so the client can tell this from a
+    // GraphQL-only rejection.
+    assert.match(
+      (verdict as { reason: string }).reason,
+      /both GraphQL and REST.*revoked/
+    );
   });
 
-  it('GraphQL 401 and REST 403/5xx/network error → fails open', async () => {
-    for (const rest of [{ status: 403 }, { status: 503 }, { reject: true }]) {
+  it('GraphQL 401 and REST 403 → fails open as rest_forbidden (key lacks account:read)', async () => {
+    const { check } = confirmHarness({ status: 403 });
+    assert.deepEqual(await check('rpa_no_account_scope'), {
+      status: 'unknown',
+      cause: 'rest_forbidden',
+    });
+  });
+
+  it('GraphQL 401 and REST 5xx/network error → fails open with no reason (outage)', async () => {
+    for (const rest of [{ status: 503 }, { reject: true }]) {
       const { check } = confirmHarness(rest);
-      assert.equal(
-        (await check('rpa_x')).status,
-        'unknown',
+      assert.deepEqual(
+        await check('rpa_x'),
+        { status: 'unknown' },
         JSON.stringify(rest)
       );
     }
+  });
+
+  it('REST 200 without a usable id → valid with no accountId', async () => {
+    for (const jsonBody of [{}, { id: '' }, { id: 42 }, { id: null }, null]) {
+      const { check } = confirmHarness({ jsonBody });
+      assert.deepEqual(
+        await check('rpa_rest_only'),
+        { status: 'valid' },
+        JSON.stringify(jsonBody)
+      );
+    }
+  });
+
+  it('REST 200 with a body that is not JSON → valid with no accountId', async () => {
+    const handle = createCredentialChecker({
+      fetch: async (url) => {
+        const isRest = url === 'https://rest.test/v2/account';
+        return {
+          ok: isRest,
+          status: isRest ? 200 : 401,
+          json: async () => {
+            if (isRest) throw new SyntaxError('Unexpected token <');
+            return {};
+          },
+        };
+      },
+      url: () => 'https://graphql.test/graphql',
+      confirmUrl: () => 'https://rest.test/v2/account',
+    });
+    assert.deepEqual(await handle.verify('rpa_rest_only'), { status: 'valid' });
+  });
+
+  it('a rest_forbidden verdict is not cached (both probes run again)', async () => {
+    const { check, calls } = confirmHarness({ status: 403 });
+    await check('rpa_no_account_scope');
+    await check('rpa_no_account_scope');
+    assert.equal(calls.length, 4);
   });
 
   it('a valid GraphQL verdict makes no REST call', async () => {
@@ -1661,5 +1711,28 @@ describe('an unknown verdict lets the request through', () => {
     // And it is logged distinctly from a real pass, so an auth-backend outage is
     // visible rather than looking like healthy traffic.
     assert.equal(logged, 'fail_open');
+  });
+
+  it('logs rest_forbidden, not fail_open, for a live key without account:read', async () => {
+    let logged: string | undefined;
+    const original = console.log;
+    console.log = (...args: unknown[]) => {
+      if (args[0] === 'credential_check') {
+        logged = (args[1] as { outcome: string }).outcome;
+      }
+    };
+    const { req, res, written } = fakeReqRes({ authorization: 'Bearer rpa_x' });
+    try {
+      await handleMcpRequest(req, res, {
+        verifyCredential: async () => ({
+          status: 'unknown' as const,
+          cause: 'rest_forbidden' as const,
+        }),
+      }).catch(() => {});
+    } finally {
+      console.log = original;
+    }
+    assert.notEqual(written.statusCode, 401);
+    assert.equal(logged, 'rest_forbidden');
   });
 });

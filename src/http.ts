@@ -442,7 +442,7 @@ function startRequestLog(
 }
 
 function logCredentialCheck(
-  outcome: SkipReason | 'pass' | 'reject' | 'fail_open'
+  outcome: SkipReason | 'pass' | 'reject' | 'fail_open' | 'rest_forbidden'
 ): void {
   // 'pass' is the bulk of traffic and is pure log spend; everything else —
   // rejections, fail-open guesses, every skip reason — always logs, because those
@@ -561,12 +561,14 @@ export async function handleMcpRequest(
     // 'unknown' is logged distinctly from 'pass': both let the request through,
     // but one is an answer and the other a guess made because the auth backend
     // could not be reached. Silently merging them hides an outage upstream.
+    // 'rest_forbidden' is a guess with a known cause (a live key whose scopes
+    // leave out account:read), kept apart so it does not read as an outage.
     logCredentialCheck(
       verdict.status === 'invalid'
         ? 'reject'
         : verdict.status === 'valid'
           ? 'pass'
-          : 'fail_open'
+          : (verdict.cause ?? 'fail_open')
     );
     if (verdict.status === 'invalid') {
       writeUnauthorized(
