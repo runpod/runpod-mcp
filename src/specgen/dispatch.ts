@@ -228,8 +228,12 @@ function pagedList(
   const body = payload as Record<string, unknown>;
   const rows = body[list.rows];
   if (!Array.isArray(rows)) return { ok: true, payload: body };
+  // The API's own pagination block is replaced by ours. Drop it first, so
+  // ours comes after the rows, as in every other list.
+  const rest = { ...body };
+  delete rest.pagination;
   const build = (page: unknown[], pagination: Pagination) => ({
-    ...body,
+    ...rest,
     [list.rows]: page,
     pagination,
   });

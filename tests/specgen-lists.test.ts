@@ -431,12 +431,13 @@ function pagedApi(all: Row[], calls: Call[]) {
       const start = found + 1;
       const pods = all.slice(start, start + limit);
       const more = start + pods.length < all.length;
+      // The live API sends its pagination block before the rows.
       return Response.json({
-        pods,
         pagination: {
           hasNextPage: more,
           nextCursor: more ? pods[pods.length - 1].id : null,
         },
+        pods,
       });
     },
   });
@@ -451,6 +452,19 @@ test('a list the API pages sends the shared page size, never the API 1000', asyn
   await dispatchGeneratedTool(api, listPods, { limit: 5000 });
   assert.equal(calls[0].url.searchParams.get('limit'), `${DEFAULT_LIST_LIMIT}`);
   assert.equal(calls[1].url.searchParams.get('limit'), `${MAX_LIST_LIMIT}`);
+});
+
+test('a list the API pages puts its rows before the pagination block, like every list', async () => {
+  const result = await dispatchGeneratedTool(
+    pagedApi(rows(30), []),
+    listPods,
+    {}
+  );
+  assert.ok(result.ok);
+  assert.deepEqual(Object.keys(result.payload as object), [
+    'pods',
+    'pagination',
+  ]);
 });
 
 test('walking a list the API pages returns every row once, one API call per page', async () => {
