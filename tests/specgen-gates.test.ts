@@ -390,8 +390,16 @@ test('generation freshness check rejects stale schemas and config without writin
 // the same amount, so each keeps the headroom it had before (about 239 and
 // 27 tokens): the gate fails at the same margin, and this change does not
 // use up the room the next tool change needs.
-const GENERATED_SURFACE_TOKEN_BUDGET = 28_275;
-const CURATED_SURFACE_TOKEN_BUDGET = 7_175;
+// 2026-11-23, 37 lists take a jmespath argument (filter, columns, sort; 29
+// tokens each, its forms explained once in SERVER_INSTRUCTIONS), rebased
+// onto compact JSON (its own PR adds no tool-definition tokens, measured
+// unchanged at 28,036 / 7,147 at its tip): generated 28,036 to 29,051
+// tokens (+1,015, 35 lists); curated 7,147 to 7,205 (+58, list-endpoints
+// and list-templates). SERVER_INSTRUCTIONS (not gated, already 1,683 with
+// compact JSON's own cursor-masking note) grows a further 178 tokens
+// explaining the forms and the paging-with-a-filter rule, to 1,861.
+const GENERATED_SURFACE_TOKEN_BUDGET = 29_150;
+const CURATED_SURFACE_TOKEN_BUDGET = 7_210;
 // No one argument description may crowd the surface. The cap was 400 B; the
 // longest description on 2026-11-20 is 94 tokens (377 B, templateId on
 // create-endpoint). Units for every size limit: docs/size-limits.md.

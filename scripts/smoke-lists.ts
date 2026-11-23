@@ -10,12 +10,17 @@
 //   equals the rows seen;
 // - walks at limit 7 and limit 100 return the same rows in the same order
 //   (on lists the API pages, this re-sends an API cursor with another limit);
-// - a cursor handed to another list tool is refused with invalid_cursor.
+// - a cursor handed to another list tool is refused with invalid_cursor;
+// - on a list that takes jmespath, a filtered and a sorted walk (limits 7 and
+//   100) return exactly what the expression gives on the unfiltered rows,
+//   and every field of a live row is in its row schema, with the schema's
+//   type and enum (otherwise the field check would refuse what an agent sees).
 //
 // The fake run is read-only. The live run creates free test data (a
-// Serverless endpoint that can never start a worker, and a tag and a cost
-// center attached to it, all named mcp-smoke-*) so every nested list has a
-// parent, walks every list, and deletes exactly that data. A skip fails
+// Serverless endpoint that can never start a worker, a tag and a cost
+// center attached to it, and a template, all named mcp-smoke-*) so every
+// nested list has a parent, walks every list, finds the endpoint and the
+// template by name with jmespath, and deletes exactly that data. A skip fails
 // the run; lists the live run cannot cover are named in FAKE_ONLY_LIVE.
 //
 //   pnpm smoke:lists                a local fake Runpod API over several
@@ -33,6 +38,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createToolContext } from '#src/specgen/context';
 import { generatedTools } from '#src/specgen/generated/tools.gen';
+import { search } from 'jmespath';
+import type { RowSchema } from '#src/specgen/list-query';
 import { PAGE_BUDGET_BYTES } from '#src/specgen/pagination';
 import { createSpecgenServer, curatedTools } from '#src/specgen/server';
 
@@ -94,6 +101,48 @@ const LISTS: ListSpec[] = [
   },
 ];
 
+// The lists that take jmespath, with their rows' fields.
+const ROW_SCHEMAS = new Map<string, RowSchema>([
+  ...generatedTools.flatMap((tool) =>
+    tool.list ? [[tool.name, tool.list.rowSchema] as const] : []
+  ),
+  ...curatedTools.flatMap((tool) =>
+    tool.rowSchema ? [[tool.name, tool.rowSchema] as const] : []
+  ),
+]);
+
+// Expressions every list's fields allow: to_string(@) reads the whole row.
+const QUERIES = [
+  "[?contains(to_string(@), '1')]",
+  'reverse(sort_by(@, &to_string(@)))',
+];
+
+// What in a live row its schema would get wrong: a key it lacks (refused as
+// unknown), a value outside its enum (refused as "never"), or another type
+// (a quoted-number or text check that misfires). Free-form maps excepted.
+function schemaDrift(value: unknown, schema: RowSchema, at = ''): string[] {
+  if (value === null || value === undefined) return [];
+  const kind = Array.isArray(value)
+    ? 'array'
+    : typeof value === 'object'
+      ? 'object'
+      : typeof value;
+  if (schema.type && schema.type !== kind)
+    return [`${at.slice(1)} is ${kind}, the schema says ${schema.type}`];
+  if (schema.enum && !schema.enum.includes(value))
+    return [`${at.slice(1)} is ${JSON.stringify(value)}, not in its enum`];
+  if (Array.isArray(value))
+    return value.flatMap((item) =>
+      schema.items ? schemaDrift(item, schema.items, `${at}[]`) : []
+    );
+  if (kind !== 'object' || schema.open || !schema.properties) return [];
+  return Object.entries(value).flatMap(([key, child]) =>
+    Object.hasOwn(schema.properties!, key)
+      ? schemaDrift(child, schema.properties![key], `${at}.${key}`)
+      : [`${`${at}.${key}`.slice(1)} is not in the schema`]
+  );
+}
+
 // A list under /parent/{id}/... takes its id from the list at /parent.
 const parentOf = (spec: ListSpec): ListSpec | undefined => {
   const prefix = spec.path?.split('/{id}')[0];
@@ -115,6 +164,7 @@ const MAX_PAGES = 40;
 
 interface Walk {
   keys: string[];
+  rows: Row[];
   pages: number;
   changed: boolean;
   partial: boolean;
@@ -131,6 +181,7 @@ async function walk(
 ): Promise<Walk> {
   const out: Walk = {
     keys: [],
+    rows: [],
     pages: 0,
     changed: false,
     partial: false,
@@ -197,13 +248,15 @@ async function walk(
       out.problems.push(
         `${at}: hasNextPage ${page.hasNextPage} with nextCursor ${page.nextCursor}`
       );
-    if (page.hasNextPage && rows.length === 0)
+    // A filtered page can be empty with more rows to scan; nothing else can.
+    if (page.hasNextPage && rows.length === 0 && !args.jmespath)
       out.problems.push(`${at}: empty page that says more exist`);
     if (page.total !== undefined) {
       total = page.total;
     }
     if (page.listChanged) out.changed = true;
     out.keys.push(...rows.map(keyOf));
+    out.rows.push(...rows);
     if (!page.hasNextPage) break;
     cursor = page.nextCursor!;
     out.cursor ??= cursor;
@@ -239,7 +292,8 @@ async function checkList(
   expectChange: boolean,
   // The data changes between calls (a churn shape): the two walks see
   // different lists, so they are not compared.
-  mayChange = false
+  mayChange = false,
+  live = false
 ): Promise<Outcome> {
   const walks: Walk[] = [];
   for (const limit of LIMITS) walks.push(await walk(client, spec, args, limit));
@@ -287,6 +341,52 @@ async function checkList(
     if (!other.isError || !other.content[0]?.text?.includes('invalid_cursor'))
       problems.push("another tool accepted this tool's cursor");
   }
+  const schema = ROW_SCHEMAS.get(spec.tool);
+  if (schema) {
+    if (live)
+      for (const drift of new Set(
+        large.rows.flatMap((row) => schemaDrift(row, schema))
+      ))
+        problems.push(`live rows differ from the row schema: ${drift}`);
+    const comparable =
+      !mayChange && !small.changed && !large.changed && !large.partial;
+    for (const jmespath of QUERIES) {
+      const expected = comparable
+        ? (search(large.rows, jmespath) as Row[])
+        : undefined;
+      // sort_by needs the whole list: over 500 rows on a list the API pages,
+      // the call is refused instead.
+      const tooLong =
+        jmespath.startsWith('reverse') &&
+        spec.paged === 'api' &&
+        (large.partial || large.rows.length > 500);
+      // Live, one page size: each filtered or sorted call reads up to five
+      // API pages, and the API limits calls per minute.
+      for (const limit of live ? [100] : LIMITS) {
+        const filtered = await walk(client, spec, { ...args, jmespath }, limit);
+        const at = `jmespath ${jmespath} at limit ${limit}`;
+        if (tooLong) {
+          if (!filtered.error?.text.includes('jmespath_list_too_long'))
+            problems.push(`${at}: over 500 rows but not refused`);
+          continue;
+        }
+        if (filtered.error) {
+          problems.push(`${at}: ${filtered.error.text}`);
+          continue;
+        }
+        problems.push(...filtered.problems.map((p) => `${at}: ${p}`));
+        if (
+          expected &&
+          !filtered.changed &&
+          !filtered.partial &&
+          JSON.stringify(filtered.rows) !== JSON.stringify(expected)
+        )
+          problems.push(
+            `${at}: ${filtered.rows.length} rows, the expression on the whole list gives ${expected.length}`
+          );
+      }
+    }
+  }
   const rows = Math.max(small.keys.length, large.keys.length);
   const detail = problems.length
     ? problems.join('; ')
@@ -294,7 +394,8 @@ async function checkList(
       (small.partial || large.partial
         ? ` (stopped at ${MAX_PAGES} pages)`
         : '') +
-      (small.changed || large.changed ? ', listChanged seen' : '');
+      (small.changed || large.changed ? ', listChanged seen' : '') +
+      (schema ? ', jmespath walks match' : '');
   return {
     status: problems.length ? 'FAIL' : 'PASS',
     tool: spec.tool,
@@ -303,7 +404,7 @@ async function checkList(
   };
 }
 
-async function connect(apiKey: string): Promise<Client> {
+async function connect(apiKey: string, live = false): Promise<Client> {
   const server = createSpecgenServer(
     createToolContext({ apiKey, sdkRetry: false }),
     'smoke-lists'
@@ -311,6 +412,25 @@ async function connect(apiKey: string): Promise<Client> {
   const client = new Client({ name: 'smoke-lists', version: '1' });
   const [clientEnd, serverEnd] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverEnd), client.connect(clientEnd)]);
+  if (live) {
+    // A live run makes hundreds of calls; the API allows a set number per
+    // minute. A 429 waits and retries instead of failing the list (or the
+    // cleanup, which would leave test data behind).
+    const call = client.callTool.bind(client);
+    client.callTool = (async (...args: Parameters<typeof call>) => {
+      for (let attempt = 1; ; attempt++) {
+        const result = (await call(...args)) as {
+          isError?: boolean;
+          content: Array<{ text?: string }>;
+        };
+        const limited =
+          result.isError &&
+          /"status": ?429/.test(result.content[0]?.text ?? '');
+        if (!limited || attempt === 10) return result;
+        await new Promise((resolve) => setTimeout(resolve, 10_000));
+      }
+    }) as typeof client.callTool;
+  }
   return client;
 }
 
@@ -526,8 +646,8 @@ const FAKE_ONLY_LIVE: Record<string, string> = {
 };
 
 // Creates the free rows the nested lists need: a Serverless endpoint that can
-// never start a worker (max 0), and a tag and a cost center it is attached
-// to, all named mcp-smoke-<run>. cleanup() deletes exactly those and returns
+// never start a worker (max 0), a tag and a cost center it is attached to,
+// and a template, all named mcp-smoke-<run>. cleanup() deletes exactly those and returns
 // what it could not delete.
 async function seedTestData(client: Client) {
   const run = `mcp-smoke-${Date.now().toString(36)}`;
@@ -559,6 +679,7 @@ async function seedTestData(client: Client) {
       ['list-cost-centers', 'delete-cost-center'],
       ['list-tags', 'delete-tag'],
       ['list-endpoints', 'delete-endpoint'],
+      ['list-templates', 'delete-template'],
     ] as const)
       if (ids[tool]) await attempt(remove, { id: ids[tool] });
     return leftovers;
@@ -577,6 +698,14 @@ async function seedTestData(client: Client) {
             workers: { min: 0, max: 0 },
             scaling: { type: 'QUEUE_DELAY', queueDelay: 4 },
           },
+        })
+      ).id
+    );
+    // A template costs nothing; it gives list-templates a real row.
+    ids['list-templates'] = String(
+      (
+        await call('create-template', {
+          body: { name: run, image: 'python:3.12-slim' },
         })
       ).id
     );
@@ -601,7 +730,7 @@ async function seedTestData(client: Client) {
       `${(error as Error).message}${leftovers.length ? `; not cleaned up: ${leftovers.join('; ')}` : ''}`
     );
   }
-  return { ids, cleanup };
+  return { ids, run, cleanup };
 }
 
 // The server logs every tool call to stderr; a walk makes hundreds.
@@ -688,7 +817,7 @@ async function main() {
       throw new Error(
         'Live mode needs RUNPOD_API_KEY in the environment: RUNPOD_API_KEY=… pnpm smoke:lists --live'
       );
-    const client = await connect(key);
+    const client = await connect(key, true);
     const created = await seedTestData(client);
     try {
       for (const spec of selected) {
@@ -721,9 +850,29 @@ async function main() {
               false,
               // A list ranked by live values (stock, deploy counts) can
               // reorder between the two walks; their order is not compared.
-              spec.ranked === true
+              spec.ranked === true,
+              true
             )
           );
+      }
+      // The seeded rows, found by name: jmespath on live rows.
+      for (const [tool, rows] of [
+        ['list-endpoints', 'endpoints'],
+        ['list-templates', 'templates'],
+      ] as const) {
+        const result = (await client.callTool({
+          name: tool,
+          arguments: { jmespath: `[?name=='${created.run}'].{id: id}` },
+        })) as { isError?: boolean; content: Array<{ text?: string }> };
+        const body = JSON.parse(result.content[0]?.text ?? '{}') as Row;
+        const found = JSON.stringify(body[rows]);
+        const want = JSON.stringify([{ id: created.ids[tool] }]);
+        report({
+          status: !result.isError && found === want ? 'PASS' : 'FAIL',
+          tool,
+          account: 'live (jmespath on the test row)',
+          detail: `[?name=='${created.run}'] gave ${found}, expected ${want}`,
+        });
       }
     } finally {
       for (const leftover of await created.cleanup())

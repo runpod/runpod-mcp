@@ -1,0 +1,88 @@
+diff --git a/jmespath.js b/jmespath.js
+index 0a3669142d32a97bc58314f3563f2ccf7749e62f..00084ee4104f576e0c9422ca33a06dc6064d1ac3 100644
+--- a/jmespath.js
++++ b/jmespath.js
+@@ -17,6 +17,15 @@
+     }
+   }
+ 
++  // Runpod patch: <, <=, > and >= compare two numbers or two strings and
++  // are null otherwise (the JMESPath spec has null for anything but
++  // numbers). Plain JavaScript comparison counted null as 0, so
++  // [?cost < `1`] matched rows with no cost.
++  function ordered(first, second) {
++    var kind = typeof first;
++    return (kind === "number" || kind === "string") && typeof second === kind;
++  }
++
+   function strictDeepEqual(first, second) {
+     // Check the scalar case first.
+     if (first === second) {
+@@ -985,16 +994,16 @@
+                   result = !strictDeepEqual(first, second);
+                   break;
+                 case TOK_GT:
+-                  result = first > second;
++                  result = ordered(first, second) ? first > second : null;
+                   break;
+                 case TOK_GTE:
+-                  result = first >= second;
++                  result = ordered(first, second) ? first >= second : null;
+                   break;
+                 case TOK_LT:
+-                  result = first < second;
++                  result = ordered(first, second) ? first < second : null;
+                   break;
+                 case TOK_LTE:
+-                  result = first <= second;
++                  result = ordered(first, second) ? first <= second : null;
+                   break;
+                 default:
+                   throw new Error("Unknown comparator: " + node.name);
+@@ -1322,7 +1331,9 @@
+     },
+ 
+     _functionStartsWith: function(resolvedArgs) {
+-        return resolvedArgs[0].lastIndexOf(resolvedArgs[1]) === 0;
++        // Runpod patch: lastIndexOf found the LAST occurrence, so
++        // starts_with('gpu-gpu', 'gpu') was false (last "gpu" is at index 4).
++        return resolvedArgs[0].indexOf(resolvedArgs[1]) === 0;
+     },
+ 
+     _functionEndsWith: function(resolvedArgs) {
+@@ -1595,12 +1606,16 @@
+       var exprefNode = resolvedArgs[1];
+       var resolvedArray = resolvedArgs[0];
+       var keyFunction = this.createKeyFunction(exprefNode, [TYPE_NUMBER, TYPE_STRING]);
+-      var maxNumber = -Infinity;
++      var maxNumber;
+       var maxRecord;
+       var current;
+       for (var i = 0; i < resolvedArray.length; i++) {
+         current = keyFunction(resolvedArray[i]);
+-        if (current > maxNumber) {
++        // Runpod patch: comparing a string key against the -Infinity seed
++        // with > coerces the string to a number (NaN), which is never
++        // greater than anything, so max_by on a text key always returned
++        // undefined. The first key seeds maxNumber instead of a sentinel.
++        if (maxRecord === undefined || (ordered(current, maxNumber) && current > maxNumber)) {
+           maxNumber = current;
+           maxRecord = resolvedArray[i];
+         }
+@@ -1612,12 +1627,14 @@
+       var exprefNode = resolvedArgs[1];
+       var resolvedArray = resolvedArgs[0];
+       var keyFunction = this.createKeyFunction(exprefNode, [TYPE_NUMBER, TYPE_STRING]);
+-      var minNumber = Infinity;
++      var minNumber;
+       var minRecord;
+       var current;
+       for (var i = 0; i < resolvedArray.length; i++) {
+         current = keyFunction(resolvedArray[i]);
+-        if (current < minNumber) {
++        // Runpod patch: same fix as max_by, mirrored for min_by's Infinity
++        // seed.
++        if (minRecord === undefined || (ordered(current, minNumber) && current < minNumber)) {
+           minNumber = current;
+           minRecord = resolvedArray[i];
+         }

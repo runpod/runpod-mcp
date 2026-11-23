@@ -6,13 +6,31 @@
 
 import { restError } from '../clients/rest-result.js';
 import type { ToolContext } from '../context.js';
-import type { CuratedTool } from '../types.js';
+import { generatedRowSchemas } from '../generated/tools.gen.js';
 import {
-  listPaginationProperties,
-  pageFromApi,
-  apiPageRequest,
-} from '../pagination.js';
+  compileListQuery,
+  listJmespathProperty,
+  pickFields,
+} from '../list-query.js';
+import type { CuratedTool } from '../types.js';
+import { listFromApi, listPaginationProperties } from '../pagination.js';
 import { readOnly } from './annotations.js';
+
+// What each row keeps; jmespath sees exactly these fields.
+const FIELDS = [
+  'id',
+  'name',
+  'type',
+  'image',
+  'gpu',
+  'cpu',
+  'workers',
+  'scaling',
+  'dataCenterIds',
+  'flashboot',
+  'createdAt',
+] as const;
+const ROW_SCHEMA = pickFields(generatedRowSchemas['list-endpoints'], FIELDS);
 
 export const listEndpoints: CuratedTool = {
   name: 'list-endpoints',
@@ -26,43 +44,44 @@ export const listEndpoints: CuratedTool = {
     'vars and request URLs are omitted; use get-endpoint for the full object).',
   inputSchema: {
     type: 'object',
-    properties: { ...listPaginationProperties() },
+    properties: {
+      ...listPaginationProperties(),
+      jmespath: listJmespathProperty,
+    },
   },
+  rowSchema: ROW_SCHEMA,
   async handler(ctx: ToolContext, args) {
-    const request = apiPageRequest('list-endpoints', args);
-    if (!request.ok) return request;
-    const { data, error, response } = await ctx.sdk.GET('/v2/serverless', {
-      params: { query: request.query },
-    });
-    if (!response.ok) return restError(response, error);
-    if (!data || !Array.isArray(data.endpoints)) {
-      return {
-        ok: false,
-        status: 502,
-        payload: { error: 'The Runpod API returned no list data.' },
-      };
-    }
-    const trimmed = data.endpoints.map((endpoint) => ({
-      id: endpoint.id,
-      name: endpoint.name,
-      type: endpoint.type,
-      image: endpoint.image,
-      gpu: endpoint.gpu,
-      cpu: endpoint.cpu,
-      workers: endpoint.workers,
-      scaling: endpoint.scaling,
-      dataCenterIds: endpoint.dataCenterIds,
-      flashboot: endpoint.flashboot,
-      createdAt: endpoint.createdAt,
-    }));
-    const listed = pageFromApi(
-      trimmed,
-      data.pagination,
-      request,
-      (endpoints, pagination) => ({ endpoints, pagination })
+    const compiled = compileListQuery(args.jmespath, ROW_SCHEMA, 'endpoints');
+    if (!compiled.ok) return compiled;
+    let status = 200;
+    const listed = await listFromApi(
+      'list-endpoints',
+      args,
+      async (query) => {
+        const { data, error, response } = await ctx.sdk.GET('/v2/serverless', {
+          params: { query },
+        });
+        if (!response.ok)
+          return { ...restError(response, error), ok: false as const };
+        if (!data || !Array.isArray(data.endpoints))
+          return {
+            ok: false as const,
+            status: 502,
+            payload: { error: 'The Runpod API returned no list data.' },
+          };
+        status = response.status;
+        return {
+          ok: true as const,
+          rows: data.endpoints.map((endpoint) =>
+            Object.fromEntries(FIELDS.map((field) => [field, endpoint[field]]))
+          ),
+          api: data.pagination,
+        };
+      },
+      (endpoints, pagination) => ({ endpoints, pagination }),
+      undefined,
+      compiled.query
     );
-    return listed.ok
-      ? { ok: true, status: response.status, payload: listed.payload }
-      : listed;
+    return listed.ok ? { ok: true, status, payload: listed.payload } : listed;
   },
 };

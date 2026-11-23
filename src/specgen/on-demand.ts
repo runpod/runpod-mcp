@@ -5,6 +5,7 @@
 // a tool accepts does not change — only what every handshake carries.
 
 import type { ToolAnnotations } from './generated/tools.gen.js';
+import type { RowSchema } from './list-query.js';
 import { directoryOmittedInputs, type ServerProfile } from './profile.js';
 import { leadSentence } from './prose.js';
 
@@ -28,6 +29,10 @@ export interface ListableTool extends ListedTool {
   /** Served instead of `description` in the directory profile: what the tool
    *  does, with no instructions to the model and no other tool named. */
   directoryDescription?: string;
+  /** A list that takes jmespath: its rows' fields (hand-written lists). */
+  rowSchema?: RowSchema;
+  /** A generated list: its rows' fields are list.rowSchema. */
+  list?: { rowSchema: RowSchema };
 }
 
 // Every tools/list carries the annotations of every tool, so idempotentHint is

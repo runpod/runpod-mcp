@@ -4,13 +4,19 @@
 
 import { restError } from '../clients/rest-result.js';
 import type { ToolContext } from '../context.js';
-import type { CuratedTool } from '../types.js';
+import { generatedRowSchemas } from '../generated/tools.gen.js';
 import {
-  listPaginationProperties,
-  pageFromApi,
-  apiPageRequest,
-} from '../pagination.js';
+  compileListQuery,
+  listJmespathProperty,
+  pickFields,
+} from '../list-query.js';
+import type { CuratedTool } from '../types.js';
+import { listFromApi, listPaginationProperties } from '../pagination.js';
 import { readOnly } from './annotations.js';
+
+// What each row keeps; jmespath sees exactly these fields.
+const FIELDS = ['id', 'name', 'image', 'serverless'] as const;
+const ROW_SCHEMA = pickFields(generatedRowSchemas['list-templates'], FIELDS);
 
 export const listTemplates: CuratedTool = {
   name: 'list-templates',
@@ -25,35 +31,44 @@ export const listTemplates: CuratedTool = {
     'hasNextPage is false: a name missing from one page may be on a later one.',
   inputSchema: {
     type: 'object',
-    properties: { ...listPaginationProperties() },
+    properties: {
+      ...listPaginationProperties(),
+      jmespath: listJmespathProperty,
+    },
   },
+  rowSchema: ROW_SCHEMA,
   async handler(ctx: ToolContext, args) {
-    const request = apiPageRequest('list-templates', args);
-    if (!request.ok) return request;
-    const { data, error, response } = await ctx.sdk.GET('/v2/templates', {
-      params: { query: request.query },
-    });
-    if (!response.ok) return restError(response, error);
-    if (!data || !Array.isArray(data.templates)) {
-      return {
-        ok: false,
-        status: 502,
-        payload: { error: 'The Runpod API returned no list data.' },
-      };
-    }
-    const listed = pageFromApi(
-      data.templates.map((template) => ({
-        id: template.id,
-        name: template.name,
-        image: template.image,
-        serverless: template.serverless,
-      })),
-      data.pagination,
-      request,
-      (templates, pagination) => ({ templates, pagination })
+    const compiled = compileListQuery(args.jmespath, ROW_SCHEMA, 'templates');
+    if (!compiled.ok) return compiled;
+    let status = 200;
+    const listed = await listFromApi(
+      'list-templates',
+      args,
+      async (query) => {
+        const { data, error, response } = await ctx.sdk.GET('/v2/templates', {
+          params: { query },
+        });
+        if (!response.ok)
+          return { ...restError(response, error), ok: false as const };
+        if (!data || !Array.isArray(data.templates))
+          return {
+            ok: false as const,
+            status: 502,
+            payload: { error: 'The Runpod API returned no list data.' },
+          };
+        status = response.status;
+        return {
+          ok: true as const,
+          rows: data.templates.map((template) =>
+            Object.fromEntries(FIELDS.map((field) => [field, template[field]]))
+          ),
+          api: data.pagination,
+        };
+      },
+      (templates, pagination) => ({ templates, pagination }),
+      undefined,
+      compiled.query
     );
-    return listed.ok
-      ? { ok: true, status: response.status, payload: listed.payload }
-      : listed;
+    return listed.ok ? { ok: true, status, payload: listed.payload } : listed;
   },
 };
