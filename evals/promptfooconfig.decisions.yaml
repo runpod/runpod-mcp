@@ -1,0 +1,31 @@
+# Does the agent pick the filter, follow the cursor, answer from `total`,
+# recover from a damaged cursor? Same question, compact or pretty results.
+# Run with: pnpm dlx promptfoo@latest eval -c evals/promptfooconfig.decisions.yaml
+# --repeat 10 -o evals/out/catalog-decisions-result.json
+description: Compact vs pretty tool results (catalog decisions)
+
+prompts:
+  - id: file://prompt.cjs:compact
+    label: compact
+  - id: file://prompt.cjs:pretty
+    label: pretty
+
+providers:
+  - id: openai:chat:glm-5.3
+    label: glm-5.3
+    config:
+      apiBaseUrl: https://api.runpod.ai/v2/b1dd8hy2hqo1nb/openai/v1
+      apiKeyEnvar: RUNPOD_API_KEY
+      temperature: 0
+      max_tokens: 4000
+      tools: file://tools/catalog-tools.json
+      # Unlike the reading suite, there's no tool result in context yet —
+      # the model must be free to call a tool, since the call it makes is
+      # exactly what's being graded.
+      tool_choice: auto
+
+tests: file://tests/catalog-decisions.json
+
+# Public Endpoints scale out; one request per case at a time would waste that.
+evaluateOptions:
+  maxConcurrency: 20

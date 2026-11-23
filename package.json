@@ -32,6 +32,7 @@
     "changeset:publish": "changeset publish",
     "smoke:crud": "tsx scripts/smoke-crud.ts",
     "smoke:lists": "tsx scripts/smoke-lists.ts",
+    "smoke:agent": "tsx evals/smoke-agent.ts",
     "directory:unclassified": "tsx scripts/directory-unclassified.ts",
     "generate:check": "tsx specgen/generator/generate-tools.ts --check",
     "generate:tools": "tsx specgen/generator/generate-tools.ts && prettier --write src/specgen/generated/tools.gen.ts",

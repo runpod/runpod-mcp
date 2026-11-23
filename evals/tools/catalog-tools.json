@@ -1,0 +1,591 @@
+[
+ {
+  "type": "function",
+  "function": {
+   "name": "get-capacity",
+   "description": "GPU capacity across host CUDA versions, as a matrix. Use this to choose an endpoint's allowedCudaVersions/minCudaVersion (or diagnose/widen a capacity-starved one) and to distinguish capacity problems from compatibility problems. Default mode is one call returning, per GPU type, overall stock plus AVAILABLE/UNAVAILABLE per host-reported CUDA version. Pass cudaVersions to deep-probe instead: one stock lookup per listed version, returning graded stock (High/Medium/Low/Out) and the lowest on-demand price per version; a probe that fails transiently reports a per-version error instead of failing the call. Nothing is hidden by default — set includeUnavailable:false to drop GPUs with no stock on any listed version. pricePerHr is the cheapest across both clouds unless secureCloudOnly; quote securePricePerGpuHr or communityPricePerGpuHr (null if that cloud lacks the GPU) for the cloud you create in. Credential-free public catalog data. Stock is live, so page cursors can shift between calls.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "default": 100,
+      "description": "Up to this many rows per page, 1-100 (default 100); a page can hold fewer."
+     },
+     "cursor": {
+      "type": "string",
+      "description": "pagination.nextCursor from the previous page; omit for the first page."
+     },
+     "cudaVersions": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "pattern": "^\\d{1,2}\\.\\d{1,2}$"
+      },
+      "minItems": 1,
+      "maxItems": 12,
+      "description": "Deep-probe these host CUDA versions (e.g. [\"12.8\", \"13.0\"], max 12): one stock lookup per version returns graded stock and price. Omit for the single-call AVAILABLE/UNAVAILABLE matrix across all versions the fleet currently reports."
+     },
+     "includeUnavailable": {
+      "type": "boolean",
+      "description": "Out-of-stock GPUs are included by default (explicit \"Out\" cells / all-UNAVAILABLE rows, sorted last). Set false to hide GPUs with no stock on any listed version."
+     },
+     "gpuTypeIds": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "Filter to GPU types matching any of these ids or display names (case-insensitive substring, e.g. ['NVIDIA GeForce RTX 4090'] or ['4090', 'H200'])."
+     },
+     "gpuCount": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8,
+      "description": "GPUs per worker/pod to check stock for (default 1)."
+     },
+     "secureCloudOnly": {
+      "type": "boolean",
+      "description": "Restrict the stock lookup to Secure Cloud hosts."
+     }
+    }
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "list-hub-repos",
+   "description": "List repos published to the Runpod Hub (prebuilt Serverless workers and Pod templates, e.g. vLLM, ComfyUI). Public catalog — no auth required. Each result includes the currently listed release with its hubReleaseId and prebuilt image name. Results are sorted by deploy count (most popular first). Set includeConfig:true to also return the release config (hardware requirements and environment-variable schema) — it is large, so prefer requesting it for a single repo via the repoOwner/searchTerm filters.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "default": 20,
+      "description": "Up to this many rows per page, 1-100 (default 20); a page can hold fewer."
+     },
+     "cursor": {
+      "type": "string",
+      "description": "pagination.nextCursor from the previous page; omit for the first page."
+     },
+     "searchTerm": {
+      "type": "string",
+      "description": "Case-insensitive search across title, description, repo name, owner, and tags (e.g. 'vllm', 'comfyui', 'fine-tuning')"
+     },
+     "category": {
+      "type": "string",
+      "description": "Filter by category (e.g. 'language', 'image', 'audio', 'video', 'embedding')"
+     },
+     "type": {
+      "type": "string",
+      "enum": [
+       "SERVERLESS",
+       "POD"
+      ],
+      "description": "Filter by listing type: SERVERLESS (endpoint workers) or POD (pod templates)"
+     },
+     "repoOwner": {
+      "type": "string",
+      "description": "Filter to listings from this GitHub owner/org (e.g. 'runpod-workers', 'axolotl-ai-cloud')"
+     },
+     "includeConfig": {
+      "type": "boolean",
+      "description": "Include the listed release config (hardware requirements + env-var input schema, parsed from .runpod/hub.json). Large — off by default."
+     }
+    }
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "list-public-endpoints",
+   "description": "List Runpod Public Endpoints — managed, pay-per-use model APIs (text, image, video, audio) that require no deployment. Public catalog, no auth required. Each result includes the endpointId to call with run-endpoint/runsync-endpoint (or via https://api.runpod.ai/v2/{endpointId}), the model name, modality, owner, and pricing. Only live endpoints are returned by default; set includeOffline:true to also list ones that are not currently live.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "default": 20,
+      "description": "Up to this many rows per page, 1-100 (default 20); a page can hold fewer."
+     },
+     "cursor": {
+      "type": "string",
+      "description": "pagination.nextCursor from the previous page; omit for the first page."
+     },
+     "searchTerm": {
+      "type": "string",
+      "description": "Case-insensitive search across display name, model name, endpoint id, description, owner, and tag (e.g. 'kimi', 'video', 'flux')"
+     },
+     "modality": {
+      "type": "string",
+      "description": "Filter by modality/category (the metadata source field, e.g. 'language', 'image', 'video', 'audio')"
+     },
+     "owner": {
+      "type": "string",
+      "description": "Filter by model owner (e.g. 'moonshot', 'minimax', 'google')"
+     },
+     "includeOffline": {
+      "type": "boolean",
+      "description": "Include endpoints that are not currently live (isLive:false). Default false — only live endpoints are listed."
+     }
+    }
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "list-guides",
+   "description": "List the official Runpod guides: skills (how to work with each tool), reference docs (how Runpod works), and golden paths (live-verified end-to-end walkthroughs such as a dev pod, a Whisper endpoint or a fine-tune-to-serverless pipeline). Read one with read-guide. For a golden path, mcp says whether an agent with only these MCP tools can finish it: full (follow it with tool calls), partial (use it for the plan and facts; name the step the user must run in a terminal), none (reference only). Skills and reference docs have mcp null. concepts lists the concept ids it works with (see lookup-concept). Filter with kind, query or concept.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "kind": {
+      "type": "string",
+      "enum": [
+       "skill",
+       "reference",
+       "golden-path"
+      ],
+      "description": "Only this kind of guide."
+     },
+     "query": {
+      "type": "string",
+      "description": "Words to match against the id, title and description."
+     },
+     "concept": {
+      "type": "string",
+      "description": "Only guides linked to this concept id, for example \"network-volume\"."
+     },
+     "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "default": 20,
+      "description": "Up to this many rows per page, 1-100 (default 20); a page can hold fewer."
+     },
+     "cursor": {
+      "type": "string",
+      "description": "pagination.nextCursor from the previous page; omit for the first page."
+     }
+    },
+    "additionalProperties": false
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "get-gpu-type",
+   "description": "Get a GPU type. Returns a single GPU type with pricing. Availability details are included only when requested with include=AVAILABILITY, which requires `product` — stock differs by product context.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "include": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+       "$ref": "#/$defs/CatalogInclude"
+      },
+      "description": "Comma-separated optional expansions; see `CatalogInclude` for the supported values."
+     },
+     "product": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/Product"
+      },
+      "description": "Comma-separated availability product contexts. Supported values: POD, CLUSTER, SERVERLESS. Required with include=AVAILABILITY, and valid only with it (400 either way)."
+     },
+     "count": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1,
+      "description": "GPU count for availability and lowest-price calculations. Valid only with include=AVAILABILITY. Defaults to 1."
+     },
+     "cloud": {
+      "$ref": "#/$defs/GpuCloudFilter",
+      "description": "Cloud type for availability and lowest-price calculations. Valid only with include=AVAILABILITY. Supported values: SECURE, COMMUNITY. Default when omitted: SECURE.",
+      "type": "string"
+     },
+     "countryCodes": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "pattern": "^[A-Z]{2}$"
+      },
+      "description": "Comma-separated ISO 3166-1 alpha-2 country codes, uppercase, to constrain availability to — e.g. FR or FR,DE. Values within this filter use OR semantics. Valid only with include=AVAILABILITY; a malformed entry is a 422."
+     },
+     "cudaVersions": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "pattern": "^\\d+\\.\\d+$"
+      },
+      "description": "Comma-separated CUDA versions to scope availability and lowest-price calculations to, matched exactly. Format: major.minor, e.g. 12.8 — a bare major is rejected here because it identifies no version."
+     },
+     "minCudaVersion": {
+      "type": "string",
+      "pattern": "^\\d+(\\.\\d+)?$",
+      "description": "Lowest acceptable CUDA version to scope availability and lowest-price calculations to, compared numerically."
+     }
+    },
+    "required": [
+     "id"
+    ],
+    "$defs": {
+     "CatalogInclude": {
+      "type": "string",
+      "description": "Catalog include expansion. `AVAILABILITY` is the only supported value.",
+      "enum": [
+       "AVAILABILITY"
+      ]
+     },
+     "GpuCloudFilter": {
+      "type": "string",
+      "description": "GPU availability cloud filter.",
+      "enum": [
+       "SECURE",
+       "COMMUNITY"
+      ]
+     },
+     "Product": {
+      "type": "string",
+      "description": "Catalog product availability context. Availability is product-specific, so this is required whenever availability is requested.",
+      "enum": [
+       "POD",
+       "CLUSTER",
+       "SERVERLESS"
+      ]
+     }
+    }
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "list-cpu-types",
+   "description": "List CPU types. Returns available CPU flavors. Availability is included only when requested with include=AVAILABILITY, which requires `product` — stock differs by product context.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "include": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+       "$ref": "#/$defs/CatalogInclude"
+      },
+      "description": "Comma-separated optional expansions; see `CatalogInclude` for the supported values."
+     },
+     "product": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/CpuProduct"
+      },
+      "example": [
+       "POD",
+       "SERVERLESS"
+      ],
+      "description": "Comma-separated availability product contexts. Supported values for CPUs: POD, SERVERLESS. Required with include=AVAILABILITY, and valid only with it (400 either way). There is no default: availability differs by product."
+     },
+     "vcpuCount": {
+      "type": "integer",
+      "minimum": 2,
+      "description": "Availability vCPU count. Valid only with include=AVAILABILITY. Must be a power of two."
+     },
+     "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "default": 100,
+      "description": "Up to this many rows per page, 1-100 (default 100); a page can hold fewer."
+     },
+     "cursor": {
+      "type": "string",
+      "description": "pagination.nextCursor from the previous page; omit for the first page."
+     }
+    },
+    "$defs": {
+     "CatalogInclude": {
+      "type": "string",
+      "description": "Catalog include expansion. `AVAILABILITY` is the only supported value.",
+      "enum": [
+       "AVAILABILITY"
+      ]
+     },
+     "CpuProduct": {
+      "type": "string",
+      "description": "CPU catalog product availability context. Availability is product-specific, so this is required whenever availability is requested.",
+      "enum": [
+       "POD",
+       "SERVERLESS"
+      ]
+     }
+    }
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "list-data-centers",
+   "description": "List data centers. Returns available data center locations with region, compliance, supported network volume tiers, and global networking support. Use include=GPU_AVAILABILITY or include=CPU_AVAILABILITY to add per-resource availability arrays to each data center. The regions, networkVolumeTypes, compliance, and globalNetwork query parameters filter the list before it is returned.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "include": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/DataCenterInclude"
+      },
+      "example": [
+       "GPU_AVAILABILITY"
+      ],
+      "description": "Comma-separated optional expansions. Supported value: GPU_AVAILABILITY, CPU_AVAILABILITY."
+     },
+     "regions": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/DataCenterRegion"
+      },
+      "example": [
+       "EUROPE",
+       "ASIA"
+      ],
+      "description": "Comma-separated DataCenterRegion enum values. Values within this filter use OR semantics. Different filter families combine with AND."
+     },
+     "networkVolumeTypes": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/VolumeType"
+      },
+      "example": [
+       "STANDARD",
+       "HIGH_PERFORMANCE"
+      ],
+      "description": "Comma-separated volume types. Supported values: STANDARD, HIGH_PERFORMANCE. Values within this filter use AND semantics; volumes=STANDARD,HIGH_PERFORMANCE requires both storage types. Different filter families combine with AND."
+     },
+     "compliance": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/Compliance"
+      },
+      "example": [
+       "GDPR",
+       "SOC_2_TYPE_2"
+      ],
+      "description": "Comma-separated Compliance enum values. Values within this filter use AND semantics; compliance=GDPR,SOC_2_TYPE_2 requires both certifications. Different filter families combine with AND."
+     },
+     "globalNetwork": {
+      "type": "boolean",
+      "description": "Filter by global networking support. true returns only data centers that support global networking; false only those that do not. Different filter families combine with AND."
+     },
+     "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "default": 100,
+      "description": "Up to this many rows per page, 1-100 (default 100); a page can hold fewer."
+     },
+     "cursor": {
+      "type": "string",
+      "description": "pagination.nextCursor from the previous page; omit for the first page."
+     }
+    },
+    "$defs": {
+     "Compliance": {
+      "type": "string",
+      "description": "Compliance certifications.",
+      "enum": [
+       "GDPR",
+       "ISO_IEC_27001",
+       "ISO_14001",
+       "PCI_DSS",
+       "HITRUST",
+       "SOC_1_TYPE_2",
+       "SOC_2_TYPE_2",
+       "SOC_3_TYPE_2",
+       "ITAR",
+       "FISMA_HIGH",
+       "HIPAA",
+       "RENEWABLE"
+      ]
+     },
+     "DataCenterInclude": {
+      "type": "string",
+      "description": "Data center catalog availability expansion.",
+      "enum": [
+       "GPU_AVAILABILITY",
+       "CPU_AVAILABILITY"
+      ]
+     },
+     "DataCenterRegion": {
+      "type": "string",
+      "description": "Continental region containing the data center.",
+      "examples": [
+       "EUROPE"
+      ],
+      "enum": [
+       "NORTH_AMERICA",
+       "SOUTH_AMERICA",
+       "EUROPE",
+       "ASIA",
+       "MIDDLE_EAST",
+       "AFRICA",
+       "OCEANIA",
+       "ANTARCTICA",
+       "UNKNOWN"
+      ]
+     },
+     "VolumeType": {
+      "type": "string",
+      "description": "Data center network volume storage type.",
+      "enum": [
+       "STANDARD",
+       "HIGH_PERFORMANCE"
+      ]
+     }
+    }
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "list-gpu-types",
+   "description": "List GPU types. Returns available GPU types with pricing. Availability is included only when requested with include=AVAILABILITY, which requires `product` — stock differs by product context. With countryCodes, the list is narrowed to GPU types deployable in those countries, so \"this geography + this chip\" resolves in one read.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "include": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+       "$ref": "#/$defs/CatalogInclude"
+      },
+      "description": "Comma-separated optional expansions; see `CatalogInclude` for the supported values."
+     },
+     "product": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/Product"
+      },
+      "description": "Comma-separated availability product contexts. Supported values: POD, CLUSTER, SERVERLESS. Required with include=AVAILABILITY, and valid only with it (400 either way)."
+     },
+     "count": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 1,
+      "description": "GPU count for availability and lowest-price calculations. Valid only with include=AVAILABILITY. Defaults to 1."
+     },
+     "cloud": {
+      "$ref": "#/$defs/GpuCloudFilter",
+      "description": "Cloud type for availability and lowest-price calculations. Valid only with include=AVAILABILITY. Supported values: SECURE, COMMUNITY. Default when omitted: SECURE.",
+      "type": "string"
+     },
+     "countryCodes": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "pattern": "^[A-Z]{2}$"
+      },
+      "description": "Comma-separated ISO 3166-1 alpha-2 country codes, uppercase, to constrain availability to — e.g. FR or FR,DE. Values within this filter use OR semantics. Valid only with include=AVAILABILITY; a malformed entry is a 422."
+     },
+     "cudaVersions": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "pattern": "^\\d+\\.\\d+$"
+      },
+      "description": "Comma-separated CUDA versions to scope availability and lowest-price calculations to, matched exactly. Format: major.minor, e.g. 12.8 — a bare major is rejected here because it identifies no version."
+     },
+     "minCudaVersion": {
+      "type": "string",
+      "pattern": "^\\d+(\\.\\d+)?$",
+      "description": "Lowest acceptable CUDA version to scope availability and lowest-price calculations to, compared numerically."
+     },
+     "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "default": 100,
+      "description": "Up to this many rows per page, 1-100 (default 100); a page can hold fewer."
+     },
+     "cursor": {
+      "type": "string",
+      "description": "pagination.nextCursor from the previous page; omit for the first page."
+     }
+    },
+    "$defs": {
+     "CatalogInclude": {
+      "type": "string",
+      "description": "Catalog include expansion. `AVAILABILITY` is the only supported value.",
+      "enum": [
+       "AVAILABILITY"
+      ]
+     },
+     "GpuCloudFilter": {
+      "type": "string",
+      "description": "GPU availability cloud filter.",
+      "enum": [
+       "SECURE",
+       "COMMUNITY"
+      ]
+     },
+     "Product": {
+      "type": "string",
+      "description": "Catalog product availability context. Availability is product-specific, so this is required whenever availability is requested.",
+      "enum": [
+       "POD",
+       "CLUSTER",
+       "SERVERLESS"
+      ]
+     }
+    }
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "list-public-templates",
+   "description": "List public templates. Returns the public template catalog. `source` selects which slice: `official` (the default) is Runpod-curated templates, `verified` is community templates Runpod has verified, and `community` is everything else other users have shared publicly. Both pod and serverless templates appear — use each entry's `serverless` flag to tell them apart. `registry` is always null for templates you don't own. Your own templates (public or private) are managed under `/v2/templates`; fetch any individual template — catalog or owned — via `/v2/templates/{id}`. At most 100 templates are returned.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "source": {
+      "type": "string",
+      "enum": [
+       "official",
+       "verified",
+       "community"
+      ],
+      "default": "official",
+      "description": "Which slice of the catalog to return: `official` for Runpod-curated templates (default), `verified` for Runpod-verified community templates, or `community` for all other publicly shared templates."
+     },
+     "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "default": 20,
+      "description": "Up to this many rows per page, 1-100 (default 20); a page can hold fewer."
+     },
+     "cursor": {
+      "type": "string",
+      "description": "pagination.nextCursor from the previous page; omit for the first page."
+     }
+    }
+   }
+  }
+ }
+]
