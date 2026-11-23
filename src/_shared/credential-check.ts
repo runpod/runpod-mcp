@@ -16,6 +16,23 @@
 //   - anonymous (no ident) → HTTP 200 with `myself: null`
 //   - valid key            → HTTP 200 with `myself.id`
 //
+// GraphQL is NOT the surface the tools use. An API key can be scoped with
+// GraphQL access = None and still work on every REST v2 call (runpod-mcp#190),
+// so a GraphQL rejection on its own is not proof the credential is dead. When a
+// REST confirmation URL is configured, an `invalid` GraphQL verdict is
+// re-checked with `GET /v2/account`: a 200 there means the key works for the
+// tools (valid), only a REST 401 confirms it dead, and anything else fails
+// open. The extra call happens only on the reject path, so a healthy key pays
+// nothing.
+//
+// A REST 403 there is its own case: the key is live but its scopes leave out
+// `account:read` (for example a key limited to Serverless or to `pods:read`
+// with GraphQL = None). It fails open with cause `rest_forbidden`, which
+// src/http.ts logs under its own label so it is not read as an auth-backend
+// outage. Like every fail-open it is not cached, so such a key pays both probes
+// on every request. Caching it is not safe: this host sits behind Cloudflare,
+// and a WAF block also answers 403 with no relation to the key.
+//
 // NOT yet observed: what a once-valid, since-REVOKED key returns. The assumption
 // is HTTP 401, same as a key that never existed — but if it instead answers
 // `{data: null, errors: [...]}` that lands in the indeterminate branch below and
@@ -34,13 +51,18 @@ import { createHash } from 'node:crypto';
 // never cached — caching one lets a revoked credential skip the 401 for a full
 // TTL, which is the behaviour this module exists to remove.
 export type CredentialVerdict =
-  // accountId is the probe's `myself.id` — the stable account identity behind
-  // the token. Carried so consumers (anonymous analytics) can identify a USER
-  // across key rotations without any additional API call; may be absent when
-  // the check was skipped or failed open.
+  // accountId is the stable account identity behind the token: the GraphQL
+  // `myself.id`, or the REST `Account.id` when REST confirmed a key GraphQL
+  // rejected. Both name the same account (the team owner's in team context;
+  // checked live). Carried so consumers (anonymous analytics, the not-found
+  // limiter) can identify a USER across key rotations without any additional
+  // API call; may be absent when the check was skipped or failed open, or when
+  // the REST body had no usable `id`.
   | { status: 'valid'; accountId?: string }
   | { status: 'invalid'; reason: string }
-  | { status: 'unknown' };
+  // cause is set only when the guess has a known reason that is not an outage
+  // (see the header comment); absent means the auth backend gave no answer.
+  | { status: 'unknown'; cause?: 'rest_forbidden' };
 
 export type CredentialChecker = (token: string) => Promise<CredentialVerdict>;
 
@@ -66,7 +88,7 @@ type AuthProbeFetch = (
   init: {
     method: string;
     headers: Record<string, string>;
-    body: string;
+    body?: string;
     signal?: AbortSignal;
   }
 ) => Promise<AuthProbeResponse>;
@@ -81,6 +103,8 @@ const INVALID_TTL_MS = 30_000;
 // able to hold it open. Without this the request hangs until the platform's own
 // limit (Vercel maxDuration 60s) turns it into a 504 — failing OPEN covers an
 // erroring backend but not a slow one. Mirrors the old backend resolver's probe deadline.
+// The deadline is per probe: a GraphQL rejection is confirmed with a second,
+// sequential REST probe, so the worst case is 2 x REQUEST_TIMEOUT_MS (8 s).
 const REQUEST_TIMEOUT_MS = 4000;
 // Cap so a stream of one-off tokens cannot grow the map without bound: entries
 // expire lazily (only on a repeat lookup of the same token), and an unauthed
@@ -96,6 +120,9 @@ export function createCredentialChecker(deps: {
   // Resolved per call so an env change takes effect without a module reload
   // (matches how the tool runtime resolves its base URLs).
   url: () => string;
+  // REST v2 `GET /v2/account` URL used to confirm a GraphQL rejection before
+  // answering 401 (see the header comment). Unset = the GraphQL verdict stands.
+  confirmUrl?: () => string;
   now?: () => number;
   validTtlMs?: number;
   invalidTtlMs?: number;
@@ -130,7 +157,54 @@ export function createCredentialChecker(deps: {
   }
   const entries = new Map<string, Entry>();
 
+  // A key scoped to REST only is rejected by GraphQL but works for every tool.
+  // Ask the REST surface before turning that into a 401: only a REST 401
+  // confirms the key is dead; a 403 fails open as `rest_forbidden`, and any
+  // other non-200 or a network error is not an answer and fails open.
+  async function confirmWithRest(
+    token: string,
+    graphqlVerdict: CredentialVerdict
+  ): Promise<CredentialVerdict> {
+    if (!deps.confirmUrl) return graphqlVerdict;
+    try {
+      const response = await deps.fetch(deps.confirmUrl(), {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (response.status === 401) {
+        return {
+          status: 'invalid',
+          reason:
+            'The Runpod API rejected the credential on both GraphQL and REST (it may have been revoked or deleted).',
+        };
+      }
+      // Usually a live key without `account:read` (see the header comment).
+      if (response.status === 403) {
+        return { status: 'unknown', cause: 'rest_forbidden' };
+      }
+      if (!response.ok) return { status: 'unknown' };
+      const account = (await response.json().catch(() => null)) as {
+        id?: unknown;
+      } | null;
+      return typeof account?.id === 'string' && account.id
+        ? { status: 'valid', accountId: account.id }
+        : { status: 'valid' };
+    } catch {
+      return { status: 'unknown' };
+    }
+  }
+
   async function fetchVerdict(token: string): Promise<CredentialVerdict> {
+    const verdict = await fetchGraphqlVerdict(token);
+    return verdict.status === 'invalid'
+      ? confirmWithRest(token, verdict)
+      : verdict;
+  }
+
+  async function fetchGraphqlVerdict(
+    token: string
+  ): Promise<CredentialVerdict> {
     try {
       const response = await deps.fetch(deps.url(), {
         method: 'POST',

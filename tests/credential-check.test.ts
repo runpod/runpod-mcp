@@ -21,7 +21,7 @@ interface FetchCall {
   init: {
     method: string;
     headers: Record<string, string>;
-    body: string;
+    body?: string;
     signal?: AbortSignal;
   };
 }
@@ -94,7 +94,7 @@ describe('createCredentialChecker — verdicts (pins observed backend behavior)'
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, 'https://graphql.test/graphql');
     assert.equal(calls[0].init.headers.Authorization, 'Bearer rpa_live');
-    assert.match(calls[0].init.body, /myself \{ id \}/);
+    assert.match(calls[0].init.body ?? '', /myself \{ id \}/);
   });
 
   it('expired/revoked key: HTTP 401 → invalid with an actionable reason', async () => {
@@ -195,6 +195,137 @@ describe('createCredentialChecker — verdicts (pins observed backend behavior)'
       assert.equal(calls.length, 2);
     }
   );
+});
+
+// A key with GraphQL access = None is rejected by the GraphQL probe but works
+// on every REST v2 call the tools make (runpod-mcp#190). The GraphQL rejection
+// must be confirmed against REST before it becomes a 401.
+function confirmHarness(
+  rest: {
+    status?: number;
+    jsonBody?: unknown;
+    reject?: boolean;
+  },
+  graphql: { status?: number; jsonBody?: unknown } = { status: 401 }
+) {
+  const calls: FetchCall[] = [];
+  const handle = createCredentialChecker({
+    fetch: async (url, init) => {
+      calls.push({ url, init });
+      const isRest = url === 'https://rest.test/v2/account';
+      if (isRest && rest.reject) throw new Error('network down');
+      const status = (isRest ? rest.status : graphql.status) ?? 200;
+      const body = isRest ? rest.jsonBody : graphql.jsonBody;
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        json: async () => body ?? {},
+      };
+    },
+    url: () => 'https://graphql.test/graphql',
+    confirmUrl: () => 'https://rest.test/v2/account',
+  });
+  return { check: handle.verify, calls };
+}
+
+describe('createCredentialChecker — REST confirms a GraphQL rejection', () => {
+  it('GraphQL 401 but REST 200 → valid with the REST account id (GraphQL access = None)', async () => {
+    const { check, calls } = confirmHarness({
+      jsonBody: { id: 'user_rest', email: 'a@b.c' },
+    });
+    const verdict = await check('rpa_rest_only');
+    assert.deepEqual(verdict, { status: 'valid', accountId: 'user_rest' });
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].url, 'https://rest.test/v2/account');
+    assert.equal(calls[1].init.method, 'GET');
+    assert.equal(calls[1].init.headers.Authorization, 'Bearer rpa_rest_only');
+    assert.ok(calls[1].init.signal, 'the REST confirmation has no deadline');
+  });
+
+  it('GraphQL myself:null but REST 200 → valid', async () => {
+    const { check } = confirmHarness(
+      { jsonBody: { id: 'user_rest' } },
+      { status: 200, jsonBody: { data: { myself: null } } }
+    );
+    assert.equal((await check('rpa_rest_only')).status, 'valid');
+  });
+
+  it('GraphQL 401 and REST 401 → invalid (the key really is dead)', async () => {
+    const { check } = confirmHarness({ status: 401 });
+    const verdict = await check('rpa_dead');
+    assert.equal(verdict.status, 'invalid');
+    // The reason names both surfaces, so the client can tell this from a
+    // GraphQL-only rejection.
+    assert.match(
+      (verdict as { reason: string }).reason,
+      /both GraphQL and REST.*revoked/
+    );
+  });
+
+  it('GraphQL 401 and REST 403 → fails open as rest_forbidden (key lacks account:read)', async () => {
+    const { check } = confirmHarness({ status: 403 });
+    assert.deepEqual(await check('rpa_no_account_scope'), {
+      status: 'unknown',
+      cause: 'rest_forbidden',
+    });
+  });
+
+  it('GraphQL 401 and REST 5xx/network error → fails open with no reason (outage)', async () => {
+    for (const rest of [{ status: 503 }, { reject: true }]) {
+      const { check } = confirmHarness(rest);
+      assert.deepEqual(
+        await check('rpa_x'),
+        { status: 'unknown' },
+        JSON.stringify(rest)
+      );
+    }
+  });
+
+  it('REST 200 without a usable id → valid with no accountId', async () => {
+    for (const jsonBody of [{}, { id: '' }, { id: 42 }, { id: null }, null]) {
+      const { check } = confirmHarness({ jsonBody });
+      assert.deepEqual(
+        await check('rpa_rest_only'),
+        { status: 'valid' },
+        JSON.stringify(jsonBody)
+      );
+    }
+  });
+
+  it('REST 200 with a body that is not JSON → valid with no accountId', async () => {
+    const handle = createCredentialChecker({
+      fetch: async (url) => {
+        const isRest = url === 'https://rest.test/v2/account';
+        return {
+          ok: isRest,
+          status: isRest ? 200 : 401,
+          json: async () => {
+            if (isRest) throw new SyntaxError('Unexpected token <');
+            return {};
+          },
+        };
+      },
+      url: () => 'https://graphql.test/graphql',
+      confirmUrl: () => 'https://rest.test/v2/account',
+    });
+    assert.deepEqual(await handle.verify('rpa_rest_only'), { status: 'valid' });
+  });
+
+  it('a rest_forbidden verdict is not cached (both probes run again)', async () => {
+    const { check, calls } = confirmHarness({ status: 403 });
+    await check('rpa_no_account_scope');
+    await check('rpa_no_account_scope');
+    assert.equal(calls.length, 4);
+  });
+
+  it('a valid GraphQL verdict makes no REST call', async () => {
+    const { check, calls } = confirmHarness(
+      {},
+      { status: 200, jsonBody: { data: { myself: { id: 'u' } } } }
+    );
+    assert.equal((await check('rpa_live')).status, 'valid');
+    assert.equal(calls.length, 1);
+  });
 });
 
 describe('createCredentialChecker — cache', () => {
@@ -609,6 +740,32 @@ describe('defaultCredentialChecker (the real one, not a stub)', () => {
     assert.equal(typeof defaultCredentialChecker.invalidate, 'function');
     // invalidate on an unknown token must not throw.
     defaultCredentialChecker.invalidate('never-seen-token');
+  });
+
+  it('confirms a GraphQL rejection against the REST host (RUNPOD_API_BASE_URL)', async () => {
+    const seen: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL) => {
+      seen.push(String(url));
+      const rest = String(url).endsWith('/v2/account');
+      return {
+        ok: rest,
+        status: rest ? 200 : 401,
+        json: async () => (rest ? { id: 'user_rest' } : {}),
+      };
+    }) as unknown as typeof globalThis.fetch;
+    const prev = process.env.RUNPOD_API_BASE_URL;
+    try {
+      delete process.env.RUNPOD_API_BASE_URL;
+      const verdict = await defaultCredentialChecker.verify('tok-rest-only');
+      assert.deepEqual(verdict, { status: 'valid', accountId: 'user_rest' });
+      assert.equal(seen[1], 'https://api.runpod.io/v2/account');
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (prev === undefined) delete process.env.RUNPOD_API_BASE_URL;
+      else process.env.RUNPOD_API_BASE_URL = prev;
+      defaultCredentialChecker.invalidate('tok-rest-only');
+    }
   });
 
   it('targets RUNPOD_AUTHED_GRAPHQL_URL, defaulting to the production host', async () => {
@@ -1554,5 +1711,28 @@ describe('an unknown verdict lets the request through', () => {
     // And it is logged distinctly from a real pass, so an auth-backend outage is
     // visible rather than looking like healthy traffic.
     assert.equal(logged, 'fail_open');
+  });
+
+  it('logs rest_forbidden, not fail_open, for a live key without account:read', async () => {
+    let logged: string | undefined;
+    const original = console.log;
+    console.log = (...args: unknown[]) => {
+      if (args[0] === 'credential_check') {
+        logged = (args[1] as { outcome: string }).outcome;
+      }
+    };
+    const { req, res, written } = fakeReqRes({ authorization: 'Bearer rpa_x' });
+    try {
+      await handleMcpRequest(req, res, {
+        verifyCredential: async () => ({
+          status: 'unknown' as const,
+          cause: 'rest_forbidden' as const,
+        }),
+      }).catch(() => {});
+    } finally {
+      console.log = original;
+    }
+    assert.notEqual(written.statusCode, 401);
+    assert.equal(logged, 'rest_forbidden');
   });
 });
