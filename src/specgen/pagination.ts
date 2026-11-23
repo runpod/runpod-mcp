@@ -18,7 +18,8 @@ export const MAX_LIST_LIMIT = 100;
 
 // A page's result, as sent, stays under this many UTF-8 bytes. A token covers
 // at least one byte and a character at most four, so it is also at most this
-// many tokens and characters, and typical JSON is about 4.3 bytes per token.
+// many tokens and characters. Indented result JSON measured 2.8 to 3.9 bytes
+// per token, so a full page is about 6,000 to 8,500 tokens.
 // docs/pagination.md compares it with MCP clients' limits on a tool result.
 export const PAGE_BUDGET_BYTES = 24_000;
 
