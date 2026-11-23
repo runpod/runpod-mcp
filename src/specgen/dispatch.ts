@@ -5,11 +5,14 @@
 import type { RunpodClient } from '@runpod/typescript-api-sdk';
 import type { GeneratedTool } from './generated/tools.gen.js';
 import { restError } from './clients/rest-result.js';
+import { compileListQuery, type ListQuery } from './list-query.js';
 import {
-  cursorError,
+  listCursorError,
   isEmptyValue,
+  listFromApi,
   pageFromApi,
   pageInMemory,
+  queryInMemory,
   apiPageRequest,
   type PageResult,
   type Pagination,
@@ -154,16 +157,72 @@ export async function dispatchGeneratedTool(
       param.explode === false && Array.isArray(value) ? value.join(',') : value;
   }
 
+  // A jmespath expression is checked before any API call.
+  let listQuery: ListQuery | undefined;
+  if (tool.list) {
+    const compiled = compileListQuery(
+      args.jmespath,
+      tool.list.rowSchema,
+      tool.list.rows
+    );
+    if (!compiled.ok) return compiled;
+    listQuery = compiled.query;
+  }
+
   let page: ApiPageRequest | undefined;
   // A list the API returns whole is paged after the fetch; reject a bad
   // cursor before it.
   if (tool.list?.paged === 'memory') {
-    const bad = cursorError(tool.name, args);
+    const bad = listCursorError(tool.name, args, listQuery);
     if (bad) return bad;
   }
   // A list the API pages: our cursor carries the API's cursor and how far
   // into that API page the last page reached, so translate it here (and
   // always send our page size: the API's own default is 1000 on most lists).
+  if (tool.list?.paged === 'api' && listQuery) {
+    const { rows } = tool.list;
+    let body: Record<string, unknown> = {};
+    let status = 200;
+    const listed = await listFromApi(
+      tool.name,
+      args,
+      async (apiPage) => {
+        const { data, error, response } = await callApi(client, tool, {
+          params: {
+            path: pathParams,
+            query: { ...withoutCursor(query), ...apiPage },
+          },
+        });
+        if (!response.ok)
+          return { ...restError(response, error), ok: false as const };
+        body = (data ?? {}) as Record<string, unknown>;
+        status = response.status;
+        // A 200 whose rows key is missing or not an array is a malformed
+        // response, not an empty list: reporting it as zero matches would
+        // read as a confident, complete answer instead of the upstream
+        // problem it actually is (matching how a list held whole already
+        // treats this: pagedList returns the raw body, not an empty page).
+        if (!Array.isArray(body[rows]))
+          return {
+            ok: false as const,
+            status: 502,
+            payload: {
+              error: `The Runpod API's response had no ${rows} array.`,
+              hint: 'Retry the call; if it persists, this is an upstream problem.',
+            },
+          };
+        return {
+          ok: true,
+          rows: body[rows] as unknown[],
+          api: body.pagination as Parameters<typeof pageFromApi>[1],
+        };
+      },
+      (page, pagination) => ({ ...body, [rows]: page, pagination }),
+      tool.list.defaultLimit,
+      listQuery
+    );
+    return listed.ok ? { ok: true, status, payload: listed.payload } : listed;
+  }
   if (tool.list?.paged === 'api') {
     const request = apiPageRequest(tool.name, args, tool.list.defaultLimit);
     if (!request.ok) return request;
@@ -185,15 +244,7 @@ export async function dispatchGeneratedTool(
     };
   const requestBody = sent.body;
 
-  // openapi-fetch is typed per literal path; generated dispatch is generic by
-  // construction, so the client is narrowed to the structural shape of a verb
-  // call rather than asserted to any.
-  type VerbCall = (
-    path: string,
-    init: Record<string, unknown>
-  ) => Promise<{ data?: unknown; error?: unknown; response: Response }>;
-  const verbs = client as unknown as Record<string, VerbCall>;
-  const { data, error, response } = await verbs[tool.method](tool.path, {
+  const { data, error, response } = await callApi(client, tool, {
     params: { path: pathParams, query },
     ...(tool.hasBody && requestBody !== undefined ? { body: requestBody } : {}),
     // openapi-fetch parses a success body as JSON by default, which throws on
@@ -209,7 +260,14 @@ export async function dispatchGeneratedTool(
   if (!response.ok) return restError(response, error);
   const payload = data ?? { status: response.status };
   if (!tool.list) return { ok: true, status: response.status, payload };
-  const listed = pagedList(payload, tool.name, tool.list, args, page);
+  const listed = pagedList(
+    payload,
+    tool.name,
+    tool.list,
+    args,
+    page,
+    listQuery
+  );
   return listed.ok
     ? { ok: true, status: response.status, payload: listed.payload }
     : listed;
@@ -223,8 +281,9 @@ function pagedList(
   name: string,
   list: NonNullable<GeneratedTool['list']>,
   args: Record<string, unknown>,
-  request: ApiPageRequest | undefined
-): PageResult {
+  request: ApiPageRequest | undefined,
+  listQuery?: ListQuery
+): PageResult | ToolResult {
   const body = payload as Record<string, unknown>;
   const rows = body[list.rows];
   if (!Array.isArray(rows)) return { ok: true, payload: body };
@@ -244,8 +303,30 @@ function pagedList(
       request,
       build
     );
-  return pageInMemory(name, rows, args, build, list.defaultLimit);
+  return listQuery
+    ? queryInMemory(name, rows, args, build, list.defaultLimit, listQuery)
+    : pageInMemory(name, rows, args, build, list.defaultLimit);
 }
+
+// openapi-fetch is typed per literal path; generated dispatch is generic by
+// construction, so the client is narrowed to the structural shape of a verb
+// call rather than asserted to any.
+type VerbCall = (
+  path: string,
+  init: Record<string, unknown>
+) => Promise<{ data?: unknown; error?: unknown; response: Response }>;
+const callApi = (
+  client: RunpodClient,
+  tool: GeneratedTool,
+  init: Record<string, unknown>
+) =>
+  (client as unknown as Record<string, VerbCall>)[tool.method](tool.path, init);
+
+const withoutCursor = (query: Record<string, unknown>) => {
+  const rest = { ...query };
+  delete rest.cursor;
+  return rest;
+};
 
 // The request body as dispatch sends it; null when it arrived as a string that
 // is not valid JSON.

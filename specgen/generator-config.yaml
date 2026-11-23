@@ -32,6 +32,13 @@ exclude:
     reason: account signup flow for unauthenticated humans, not an action an
       agent takes on an existing account
 
+# Hand-written list tool -> the spec schema of its rows, for the jmespath
+# field check (src/specgen/list-query.ts). The tool trims rows to a few of
+# these fields and narrows the schema to the same fields.
+listRowSchemas:
+  list-endpoints: Endpoint
+  list-templates: Template
+
 # operationId -> tool name overrides; default is the kebab-cased operationId.
 rename: {}
 

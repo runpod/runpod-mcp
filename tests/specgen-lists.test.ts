@@ -590,11 +590,13 @@ test('the endpoint metrics reads page like every other list', () => {
     'get-endpoint-worker-metrics',
   ]) {
     const tool = generatedTools.find((candidate) => candidate.name === name)!;
+    const { rowSchema, ...list } = tool.list!;
     assert.deepEqual(
-      tool.list,
+      list,
       { rows: 'records', paged: 'api', defaultLimit: 100 },
       name
     );
+    assert.ok(rowSchema.properties, name);
   }
 });
 

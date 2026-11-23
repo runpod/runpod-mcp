@@ -4,6 +4,11 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  jmespath@0.16.0:
+    hash: fa0c06e1171f0fa61a3f4ba36f9bb6653891c004c61e9517e580090347f01a01
+    path: patches/jmespath@0.16.0.patch
+
 importers:
 
   .:
@@ -48,6 +53,9 @@ importers:
       eslint:
         specifier: ^9.33.0
         version: 9.39.1
+      jmespath:
+        specifier: 0.16.0
+        version: 0.16.0(patch_hash=fa0c06e1171f0fa61a3f4ba36f9bb6653891c004c61e9517e580090347f01a01)
       prettier:
         specifier: ^3.6.2
         version: 3.6.2
@@ -1523,6 +1531,10 @@ packages:
 
   jackspeak@3.4.3:
     resolution: {integrity: sha512-OGlZQpz2yfahA/Rd1Y8Cd9SIEsqvXkLVoSw/cgwhnhFMDbsQFeZYoJJ7bIZBS9BcamUW96asq/npPWugM+RQBw==}
+
+  jmespath@0.16.0:
+    resolution: {integrity: sha512-9FzQjJ7MATs1tSpnco1K6ayiYE3figslrXA72G2HQ/n76RzvYlofyi5QM+iX4YRs/pu3yzxlVQSST23+dMDknw==}
+    engines: {node: '>= 0.6.0'}
 
   joycon@3.1.1:
     resolution: {integrity: sha512-34wB/Y7MW7bzjKRjUKTa46I2Z7eV62Rkhva+KkopW7Qvv/OSWBqvkSY7vusOPrNuZcUG3tApvdVgNB8POj3SPw==}
@@ -3834,6 +3846,8 @@ snapshots:
       '@isaacs/cliui': 8.0.2
     optionalDependencies:
       '@pkgjs/parseargs': 0.11.0
+
+  jmespath@0.16.0(patch_hash=fa0c06e1171f0fa61a3f4ba36f9bb6653891c004c61e9517e580090347f01a01): {}
 
   joycon@3.1.1: {}
 

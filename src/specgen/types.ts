@@ -1,6 +1,7 @@
 import type { ToolContext } from './context.js';
 import type { ToolResult } from './dispatch.js';
 import type { ToolAnnotations } from './generated/tools.gen.js';
+import type { RowSchema } from './list-query.js';
 
 export type { ToolAnnotations };
 
@@ -16,6 +17,9 @@ export interface CuratedTool {
    *  the model and no other tool named. Omit when `description` already is. */
   directoryDescription?: string;
   inputSchema: Record<string, unknown>;
+  /** A list that takes `jmespath`: the fields of its rows, as served (after
+   *  any trimming). describe-tool shows them. */
+  rowSchema?: RowSchema;
   /** MCP behavioral hints, required so a new curated tool cannot ship without
    *  them (the generated tools derive theirs from the HTTP method). */
   annotations: ToolAnnotations;

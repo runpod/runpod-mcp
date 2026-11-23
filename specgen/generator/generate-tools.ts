@@ -2,7 +2,11 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { parse } from 'yaml';
-import { generateTools, type GeneratorConfig } from './tools.js';
+import {
+  generateRowSchemas,
+  generateTools,
+  type GeneratorConfig,
+} from './tools.js';
 
 const spec = parse(
   readFileSync('packages/typescript-api-sdk/spec/openapi.yaml', 'utf8')
@@ -10,12 +14,16 @@ const spec = parse(
 const config: GeneratorConfig =
   parse(readFileSync('specgen/generator-config.yaml', 'utf8')) ?? {};
 const tools = generateTools(spec, config);
+const rowSchemas = generateRowSchemas(spec, config);
 
 if (process.argv.includes('--check')) {
-  const { generatedTools } = await import(
+  const { generatedTools, generatedRowSchemas } = await import(
     '../../src/specgen/generated/tools.gen.js'
   );
-  if (!isDeepStrictEqual(tools, generatedTools)) {
+  if (
+    !isDeepStrictEqual(tools, generatedTools) ||
+    !isDeepStrictEqual(rowSchemas, generatedRowSchemas)
+  ) {
     console.error(
       'Generated tools are stale. Run pnpm generate:tools and commit the result.'
     );
@@ -26,6 +34,8 @@ if (process.argv.includes('--check')) {
 }
 
 const header = `// Code generated from packages/typescript-api-sdk/spec/openapi.yaml by specgen/generator/generate-tools.ts; DO NOT EDIT.
+
+import type { RowSchema } from '../list-query.js';
 
 export interface GeneratedToolParam {
   name: string;
@@ -69,6 +79,8 @@ export interface GeneratedTool {
     paged: "api" | "memory";
     /** Default page size when 20 is wrong for this list. */
     defaultLimit?: number;
+    /** The rows' fields, for the jmespath field check. */
+    rowSchema: RowSchema;
   };
   inputSchema: Record<string, unknown>;
 }
@@ -77,7 +89,11 @@ export const generatedTools: GeneratedTool[] = `;
 
 writeFileSync(
   'src/specgen/generated/tools.gen.ts',
-  header + JSON.stringify(tools, null, 2) + ';\n'
+  header +
+    JSON.stringify(tools, null, 2) +
+    ';\n\n// Row schemas of the hand-written lists (generator-config listRowSchemas).\nexport const generatedRowSchemas: Record<string, RowSchema> = ' +
+    JSON.stringify(rowSchemas, null, 2) +
+    ';\n'
 );
 console.log(
   `generated ${tools.length} tools (${Object.keys(config.exclude ?? {}).length} excluded by config)`

@@ -12,7 +12,8 @@ export default defineConfig([
     format: ['cjs', 'esm'],
     dts: true,
     sourcemap: true,
-    noExternal: ['@runpod/typescript-api-sdk'],
+    // jmespath is bundled with its patch (patches/, THIRD_PARTY_NOTICES.txt).
+    noExternal: ['@runpod/typescript-api-sdk', 'jmespath'],
     banner: {
       js: '#!/usr/bin/env node',
     },
@@ -37,7 +38,8 @@ export default defineConfig([
     dts: true,
     sourcemap: true,
     // Bundle the workspace SDK in both entrypoints; it is a build dependency.
-    noExternal: ['@runpod/typescript-api-sdk'],
+    // So is jmespath, bundled with its patch (patches/, THIRD_PARTY_NOTICES.txt).
+    noExternal: ['@runpod/typescript-api-sdk', 'jmespath'],
     define: {
       __PACKAGE_VERSION__: JSON.stringify(version),
     },

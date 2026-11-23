@@ -8,6 +8,7 @@ import {
   listPaginationProperties,
   MAX_LIST_LIMIT,
 } from '#src/specgen/pagination';
+import { listJmespathProperty, type RowSchema } from '#src/specgen/list-query';
 import { titleFromName } from '#src/specgen/titles';
 import { compactDescription, type OperationNameLookup } from './prose.js';
 
@@ -32,6 +33,9 @@ export interface GeneratorConfig {
   /** List operationId -> its default page size, where 20 is wrong for it
    *  (a small catalog agents compare across). Each entry says why. */
   listDefaultLimits?: Record<string, number>;
+  /** Hand-written list tool -> the spec schema of its rows, for the
+   *  `jmespath` field check (src/specgen/list-query.ts). */
+  listRowSchemas?: Record<string, string>;
 }
 
 interface Parameter {
@@ -457,6 +461,151 @@ function schemaProperties(
   );
 }
 
+function resolveRef(schema: unknown, spec: SpecDocument): Schema | undefined {
+  let node = schema as Schema | undefined;
+  for (let hop = 0; typeof node?.$ref === 'string' && hop < 8; hop++)
+    node = spec.components?.schemas?.[
+      pointerName(node.$ref as string, SCHEMA_PREFIX)
+    ] as Schema | undefined;
+  return node;
+}
+
+// A row's shape for the `jmespath` field check (src/specgen/list-query.ts):
+// fields with their type and enum, nested objects and array items, and
+// `open` where any key is allowed (an env map). allOf, anyOf and oneOf merge
+// (mergeRowSchemas); null as a type is dropped (any field can be null).
+export function rowSchema(
+  schema: unknown,
+  spec: SpecDocument,
+  depth = 0
+): RowSchema {
+  const node = resolveRef(schema, spec);
+  if (!node || typeof node !== 'object' || depth > 8) return {};
+  const own: RowSchema = {};
+  const types = ([] as unknown[])
+    .concat(node.type ?? [])
+    .filter((type) => type !== 'null')
+    .map((type) => (type === 'integer' ? 'number' : type));
+  if (types.length === 1) own.type = types[0] as string;
+  if (Array.isArray(node.enum))
+    own.enum = node.enum.filter((value) => value !== null);
+  if (node.items) own.items = rowSchema(node.items, spec, depth + 1);
+  if (node.properties)
+    own.properties = Object.fromEntries(
+      Object.entries(node.properties as Record<string, unknown>).map(
+        ([key, property]) => [key, rowSchema(property, spec, depth + 1)]
+      )
+    );
+  const extra = node.additionalProperties;
+  if (extra !== undefined && extra !== false) own.open = true;
+  // own, unlike a oneOf/anyOf/allOf member, is a wrapper around those
+  // variants rather than one of them: it is dropped when empty (a pure
+  // "oneOf" schema has no sibling constraints of its own), but an actual
+  // empty member stays, since that member allowing any shape is a real
+  // "this field can be anything documented variants don't cover" signal
+  // mergeRowSchemas must see, not a filtered-out non-contributor.
+  const dropNullableRef = (parts: unknown[]) =>
+    parts
+      // {type: 'null'}, the standard "nullable ref" union member, is dropped
+      // the same way a 'null' in this node's own `type` array is: any field
+      // can be null, so it carries no shape information. A member with no
+      // type at all is a different thing (an undocumented catch-all) and
+      // stays, for mergeRowSchemas to treat as "this field can be anything".
+      .filter((part) => resolveRef(part, spec)?.type !== 'null')
+      .map((part) => rowSchema(part, spec, depth + 1));
+  // allOf's parts all hold at once (an intersection: every constraint
+  // combines), unlike anyOf/oneOf's parts, only one of which needs to hold
+  // (a union, mergeRowSchemas' own job): merging allOf the same way as a
+  // union silently dropped a constraint one part gave that another didn't
+  // repeat (a type-only part and an enum-only part together produced only
+  // the type, losing the enum, so a value the enum excludes passed unchecked).
+  const allOfParts = dropNullableRef((node.allOf as unknown[]) ?? []);
+  const variantParts = [
+    ...(allOfParts.length ? [intersectRowSchemas(allOfParts)] : []),
+    ...dropNullableRef([
+      ...((node.anyOf as unknown[]) ?? []),
+      ...((node.oneOf as unknown[]) ?? []),
+    ]),
+  ];
+  const out = mergeRowSchemas(
+    Object.keys(own).length ? [own, ...variantParts] : variantParts
+  );
+  if (out.type === 'object' && !out.properties) out.open = true;
+  if (out.properties || out.open) out.type ??= 'object';
+  return out;
+}
+
+// allOf's parts combined: every constraint applies at once, so an
+// unconstrained ({}) part contributes nothing (the opposite of
+// mergeRowSchemas' union, where one unconstrained variant makes the whole
+// merge unconstrained), a later part's type/enum narrows over an earlier
+// one's, and same-named properties intersect recursively rather than the
+// later one silently replacing the earlier.
+function intersectRowSchemas(parts: RowSchema[]): RowSchema {
+  const out: RowSchema = {};
+  for (const part of parts) {
+    if (part.type) out.type = part.type;
+    if (part.enum)
+      out.enum = out.enum
+        ? out.enum.filter((value) => part.enum!.includes(value))
+        : part.enum;
+    if (part.items)
+      out.items = out.items
+        ? intersectRowSchemas([out.items, part.items])
+        : part.items;
+    if (part.properties) {
+      const merged = { ...out.properties };
+      for (const [name, schema] of Object.entries(part.properties))
+        merged[name] = merged[name]
+          ? intersectRowSchemas([merged[name], schema])
+          : schema;
+      out.properties = merged;
+    }
+    if (part.open) out.open = true;
+  }
+  return out;
+}
+
+// One schema for several variants of a field (allOf, anyOf, oneOf): every
+// variant's fields, merged by name; the union of their enums; a type only
+// when they agree. A value one variant allows is never refused.
+function mergeRowSchemas(variants: RowSchema[]): RowSchema {
+  if (variants.length <= 1) return variants[0] ?? {};
+  // A variant with no type, enum, properties or open flag documents no
+  // constraint at all: the field, and anything nested under it, can be any
+  // shape. An empty schema is already how the field/compare checks read
+  // "no information, allow it" (src/specgen/list-query.ts), so the merge of
+  // "known shape or this" is the same {}, not a type or enum narrowed down
+  // to only the known shape.
+  if (variants.some((v) => Object.keys(v).length === 0)) return {};
+  const out: RowSchema = {};
+  const types = new Set(variants.flatMap((v) => (v.type ? [v.type] : [])));
+  if (types.size === 1) out.type = [...types][0];
+  const constraining = variants.filter((v) => v.type || v.enum);
+  if (constraining.length && constraining.every((v) => v.enum))
+    out.enum = [...new Set(constraining.flatMap((v) => v.enum!))];
+  const items = variants.flatMap((v) => (v.items ? [v.items] : []));
+  if (items.length) out.items = mergeRowSchemas(items);
+  const names = [
+    ...new Set(variants.flatMap((v) => Object.keys(v.properties ?? {}))),
+  ];
+  if (names.length)
+    out.properties = Object.fromEntries(
+      names.map((name) => [
+        name,
+        mergeRowSchemas(
+          variants.flatMap((v) =>
+            v.properties && Object.hasOwn(v.properties, name)
+              ? [v.properties[name]]
+              : []
+          )
+        ),
+      ])
+    );
+  if (variants.some((v) => v.open)) out.open = true;
+  return out;
+}
+
 // Every list operation pages through the shared list contract
 // (src/specgen/pagination.ts): the API's own limit/cursor when it has them,
 // otherwise dispatch pages the response. A list is a GET named list* or one
@@ -518,6 +667,7 @@ function listShape(
     rows: rows[0],
     paged: takesCursor ? 'api' : 'memory',
     ...(defaultLimit === undefined ? {} : { defaultLimit }),
+    rowSchema: rowSchema(properties[rows[0]].items, spec),
   };
 }
 
@@ -587,7 +737,9 @@ function buildTool(
   }
   const list = listShape(method, pathItem, op, spec, params, config);
   if (list)
-    Object.assign(properties, listPaginationProperties(list.defaultLimit));
+    Object.assign(properties, listPaginationProperties(list.defaultLimit), {
+      jmespath: listJmespathProperty,
+    });
   const requestBody =
     op.requestBody &&
     resolveComponent(
@@ -659,6 +811,22 @@ function buildTool(
       ...(Object.keys($defs).length ? { $defs } : {}),
     },
   };
+}
+
+// Row schemas of the hand-written lists (config listRowSchemas).
+export function generateRowSchemas(
+  spec: SpecDocument,
+  config: GeneratorConfig = {}
+): Record<string, RowSchema> {
+  return Object.fromEntries(
+    Object.entries(config.listRowSchemas ?? {}).map(([tool, name]) => {
+      if (!spec.components?.schemas?.[name])
+        throw new Error(
+          `listRowSchemas: ${tool} names a missing schema ${name}`
+        );
+      return [tool, rowSchema({ $ref: SCHEMA_PREFIX + name }, spec)];
+    })
+  );
 }
 
 export function generateTools(

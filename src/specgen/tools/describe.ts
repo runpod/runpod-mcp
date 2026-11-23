@@ -1,6 +1,7 @@
 // Serves any tool's full definition. Tools flagged schemaOnDemand list only
 // their call shape (src/specgen/on-demand.ts); the rest is read from here.
 
+import { rowFields } from '../list-query.js';
 import { DESCRIBE_TOOL_NAME, type ListableTool } from '../on-demand.js';
 import type { CuratedTool } from '../types.js';
 import { ok } from './util.js';
@@ -10,7 +11,7 @@ export function createDescribeTool(served: () => ListableTool[]): CuratedTool {
     name: DESCRIBE_TOOL_NAME,
     title: 'Describe tool',
     description:
-      "Return one tool's full definition: its description, complete argument schema (every field, nested objects, constraints) and annotations. Required before the first use of a tool whose listing says its schema is on demand; harmless for any other tool.",
+      "Return one tool's full definition: its description, complete argument schema (every field, nested objects, constraints) and annotations, and for a list that takes jmespath, its rows' fields (rowFields). Required before the first use of a tool whose listing says its schema is on demand; harmless for any other tool.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -47,7 +48,21 @@ export function createDescribeTool(served: () => ListableTool[]): CuratedTool {
         };
       }
       const { description, inputSchema, annotations } = tool;
-      return ok({ name: tool.name, description, inputSchema, annotations });
+      // A list that takes jmespath: the fields its rows have, to write one.
+      const rows = tool.list?.rowSchema ?? tool.rowSchema;
+      const queryable =
+        rows &&
+        Object.hasOwn(
+          (inputSchema.properties ?? {}) as Record<string, unknown>,
+          'jmespath'
+        );
+      return ok({
+        name: tool.name,
+        description,
+        inputSchema,
+        annotations,
+        ...(queryable ? { rowFields: rowFields(rows) } : {}),
+      });
     },
   };
 }
