@@ -9,8 +9,8 @@ import type { ToolContext } from '../context.js';
 import type { CuratedTool } from '../types.js';
 import {
   listPaginationProperties,
-  serverPageQuery,
-  serverPagination,
+  pageFromApi,
+  apiPageRequest,
 } from '../pagination.js';
 import { readOnly } from './annotations.js';
 
@@ -18,20 +18,21 @@ export const listEndpoints: CuratedTool = {
   name: 'list-endpoints',
   title: 'List endpoints',
   directoryDescription:
-    'List the Serverless endpoints the account owns, trimmed to id, name, image, compute config, worker counts, scaling and data centers; environment variables and request URLs are left out. Returns one page at a time; cursor=nextCursor returns the next page.',
+    'List the Serverless endpoints the account owns, trimmed to id, name, image, compute config, worker counts, scaling and data centers; environment variables and request URLs are left out.',
   annotations: readOnly,
   description:
     'List serverless endpoints owned by the account (trimmed: id, name, image, ' +
     'compute config, worker counts, scaling, data centers per endpoint — env ' +
-    'vars and request URLs are omitted; use get-endpoint for the full object). ' +
-    'Returns a page; pass cursor=nextCursor for more.',
+    'vars and request URLs are omitted; use get-endpoint for the full object).',
   inputSchema: {
     type: 'object',
-    properties: { ...listPaginationProperties },
+    properties: { ...listPaginationProperties() },
   },
   async handler(ctx: ToolContext, args) {
+    const request = apiPageRequest('list-endpoints', args);
+    if (!request.ok) return request;
     const { data, error, response } = await ctx.sdk.GET('/v2/serverless', {
-      params: { query: serverPageQuery(args) },
+      params: { query: request.query },
     });
     if (!response.ok) return restError(response, error);
     if (!data || !Array.isArray(data.endpoints)) {
@@ -54,13 +55,14 @@ export const listEndpoints: CuratedTool = {
       flashboot: endpoint.flashboot,
       createdAt: endpoint.createdAt,
     }));
-    return {
-      ok: true,
-      status: response.status,
-      payload: {
-        items: trimmed,
-        pagination: serverPagination(data.pagination, trimmed.length),
-      },
-    };
+    const listed = pageFromApi(
+      trimmed,
+      data.pagination,
+      request,
+      (endpoints, pagination) => ({ endpoints, pagination })
+    );
+    return listed.ok
+      ? { ok: true, status: response.status, payload: listed.payload }
+      : listed;
   },
 };

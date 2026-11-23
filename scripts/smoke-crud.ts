@@ -83,12 +83,12 @@ async function call(
   return parsed;
 }
 
-// List a tool's FULL result, paging through the MCP cap envelope until
-// `truncated` is false. Critical for leak detection: the list tools cap at 20
-// items by default, so a single capped page would hide a leak (or orphan) that
-// sits beyond index 20 on a busy dev account. Throws if a page errors — the
-// caller treats that as fail-closed (a verify we can't complete is a failure,
-// never a silent "clean").
+// List a tool's FULL result, following pagination.nextCursor until
+// hasNextPage is false (the list contract in src/specgen/pagination.ts).
+// Critical for leak detection: a list returns at most one page per call, so a
+// single page would hide a leak (or orphan) that sits beyond it on a busy dev
+// account. Throws if a page errors — the caller treats that as fail-closed (a
+// verify we can't complete is a failure, never a silent "clean").
 async function listAll(
   client: Client,
   tool: string
@@ -107,19 +107,18 @@ async function listAll(
       break; // bare array (uncapped) — nothing more to page
     }
     const env = payload as {
-      items?: unknown[];
-      pagination?: { truncated?: boolean; nextCursor?: string | null };
+      pagination?: { hasNextPage?: boolean; nextCursor?: string | null };
     };
-    // Curated lists return { items, pagination }; generated lists return the
-    // raw v2 payload keyed by resource ({ registries: [...] }, { templates: [...] }).
-    const list =
-      env.items ??
-      Object.values(payload as Record<string, unknown>).find(Array.isArray);
+    // Every list returns its rows under the resource's key
+    // ({ registries: [...] }, { templates: [...] }) beside `pagination`.
+    const list = Object.values(payload as Record<string, unknown>).find(
+      Array.isArray
+    );
     if (!Array.isArray(list)) {
       throw new Error(`${tool} payload contained no list`);
     }
     all.push(...(list as Array<Record<string, unknown>>));
-    if (env.pagination?.truncated && env.pagination.nextCursor) {
+    if (env.pagination?.hasNextPage && env.pagination.nextCursor) {
       cursor = env.pagination.nextCursor;
       continue;
     }

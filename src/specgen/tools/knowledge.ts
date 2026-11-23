@@ -10,6 +10,7 @@ import {
   type Rule,
 } from '@runpod/plugin-knowledge';
 import type { CuratedTool } from '../types.js';
+import { listPaginationProperties, pageInMemory } from '../pagination.js';
 import { bundledRead } from './annotations.js';
 import { badRequest, ok } from './util.js';
 
@@ -236,6 +237,7 @@ export const listGuides: CuratedTool = {
         description:
           'Only guides linked to this concept id, for example "network-volume".',
       },
+      ...listPaginationProperties(),
     },
     additionalProperties: false,
   },
@@ -253,7 +255,13 @@ export const listGuides: CuratedTool = {
         return terms.some((term) => haystack.includes(term));
       })
       .map(guideSummary);
-    return ok({ ...source, count: guides.length, guides });
+    const listed = pageInMemory(
+      'list-guides',
+      guides,
+      args,
+      (page, pagination) => ({ ...source, guides: page, pagination })
+    );
+    return listed.ok ? ok(listed.payload) : listed;
   },
 };
 

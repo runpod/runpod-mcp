@@ -7,9 +7,15 @@
 
 import type { ToolContext } from '../context.js';
 import type { CuratedTool } from '../types.js';
-import { listPaginationProperties, capList } from '../pagination.js';
+import {
+  cursorError,
+  listPaginationProperties,
+  pageInMemory,
+} from '../pagination.js';
 import { badRequest, ok, runTool } from './util.js';
 import { readOnly } from './annotations.js';
+
+const CAPACITY_DEFAULT_LIMIT = 100;
 
 const CUDA_VERSION_REGEX = /^\d{1,2}\.\d{1,2}$/;
 const MAX_PROBE_VERSIONS = 12;
@@ -61,7 +67,9 @@ interface CapacityQuery {
   secureArg: string;
   includeUnavailable: boolean;
   matchesFilter: (gpu: CapacityGpu) => boolean;
-  pageOpts: { limit: number | undefined; cursor: string | undefined };
+  /** The call's arguments: paging reads limit and cursor, and binds the
+   *  cursor to the rest. */
+  args: Record<string, unknown>;
 }
 
 function parseCapacityArgs(args: Record<string, unknown>): CapacityQuery {
@@ -80,10 +88,7 @@ function parseCapacityArgs(args: Record<string, unknown>): CapacityQuery {
         (term) => id.includes(term) || name.includes(term)
       );
     },
-    pageOpts: {
-      limit: args.limit as number | undefined,
-      cursor: args.cursor as string | undefined,
-    },
+    args,
   };
 }
 
@@ -124,7 +129,9 @@ export const getCapacity: CuratedTool = {
   inputSchema: {
     type: 'object',
     properties: {
-      ...listPaginationProperties,
+      // A small catalog agents compare across ("cheapest GPU in stock"):
+      // the whole list by default; the byte budget still bounds the page.
+      ...listPaginationProperties(CAPACITY_DEFAULT_LIMIT),
       cudaVersions: {
         type: 'array',
         items: { type: 'string', pattern: '^\\d{1,2}\\.\\d{1,2}$' },
@@ -156,7 +163,9 @@ export const getCapacity: CuratedTool = {
       },
     },
   },
-  handler: (ctx, args) =>
+  // A bad cursor is rejected before up to 12 capacity queries run.
+  handler: async (ctx, args) =>
+    cursorError('get-capacity', args) ??
     runTool(() => {
       const query = parseCapacityArgs(args);
       const cudaVersions = args.cudaVersions as string[] | undefined;
@@ -220,7 +229,14 @@ async function matrixMode(ctx: ToolContext, query: CapacityQuery) {
     }),
     query.includeUnavailable
   );
-  return ok(capList(ranked, query.pageOpts));
+  const listed = pageInMemory(
+    'get-capacity',
+    ranked,
+    query.args,
+    (gpus, pagination) => ({ gpus, pagination }),
+    CAPACITY_DEFAULT_LIMIT
+  );
+  return listed.ok ? ok(listed.payload) : listed;
 }
 
 interface ProbeRow {
@@ -326,10 +342,17 @@ async function probeMode(
     }),
     query.includeUnavailable
   );
-  return ok(
-    capList(ranked, query.pageOpts, {
+  const listed = pageInMemory(
+    'get-capacity',
+    ranked,
+    query.args,
+    (gpus, pagination) => ({
       probedCudaVersions: versions,
       ...(Object.keys(probeErrors).length > 0 ? { probeErrors } : {}),
-    })
+      gpus,
+      pagination,
+    }),
+    CAPACITY_DEFAULT_LIMIT
   );
+  return listed.ok ? ok(listed.payload) : listed;
 }

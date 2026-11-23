@@ -144,12 +144,10 @@ descriptions:
     account. Commands can change or delete data in the Pod: run write
     commands only for what the user asked.
   listServerlessBilling: >-
-    Get serverless billing history, split into time buckets. SIZE WARNING: with
-    defaults this emits one record per endpoint PER BUCKET — on an account with
-    many endpoints the response overflows the tool-result limit and becomes
-    unusable. Always pass lastN: 1 (or a bucketSize spanning the whole window)
-    for one record per endpoint, and serverlessId when you need one endpoint.
-    Distinct from pod billing, which covers standalone pods.
+    Get Serverless billing history, split into time buckets: one record per
+    endpoint per bucket. Pass lastN: 1 (or a bucketSize spanning the whole
+    window) for one record per endpoint, and serverlessId for one endpoint.
+    Distinct from Pod billing, which covers standalone Pods.
   createEndpoint: >-
     Create a serverless endpoint. BILLABLE: state the worker's hourly price
     (from the catalog tools) before creating. Worker hardware is one of two
@@ -291,11 +289,10 @@ directoryDescriptions:
     Filters include actor IDs, actions, time range, and text search. The
     account's retention window and plan determine which entries are available.
   listServerlessBilling: >-
-    Get Serverless billing history, split into time buckets. By default the
-    response has one record per endpoint per bucket, which can be very large
-    on accounts with many endpoints; lastN: 1 (or one bucket spanning the
-    whole window) returns one record per endpoint, and serverlessId narrows it
-    to a single endpoint. Pod billing is reported separately.
+    Get Serverless billing history, split into time buckets: one record per
+    endpoint per bucket. lastN: 1 (or one bucket spanning the whole window)
+    returns one record per endpoint, and serverlessId narrows it to a single
+    endpoint. Pod billing is reported separately.
   updateEndpoint: >-
     Partially update a Serverless endpoint (PATCH): only fields present in the
     body change. gpu.pools and gpu.excludedTypes are one selection, so sending
@@ -428,3 +425,19 @@ propertyDescriptions:
     Cannot be sent with a non-empty allowedCudaVersions (an explicit `[]`
     there is fine); clear that explicitly in the same patch if the endpoint
     carries one. Takes effect as workers are replaced.
+
+# List operationId -> default page size, where the shared default of 20 is
+# wrong for it. The small catalogs below are compared across as a whole
+# ("cheapest 48 GB GPU", "which data center has stock"): a missing row gives
+# a wrong answer, and each fits one page. The 24 KB page budget still bounds
+# them if they grow.
+listDefaultLimits:
+  listGpuTypes: 100
+  listCpuTypes: 100
+  listDataCenters: 100
+  # The endpoint metrics are oldest first over a default 24-hour window in
+  # 1-hour buckets (up to 25 records): a default of 20 would drop the most
+  # recent hours, the ones an agent asks about. Records are tiny.
+  getEndpointRequestMetrics: 100
+  getEndpointColdStartMetrics: 100
+  getEndpointWorkerMetrics: 100

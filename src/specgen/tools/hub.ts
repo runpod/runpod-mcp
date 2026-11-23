@@ -4,7 +4,11 @@
 // from the official MCP server (Apache-2.0, runpod/runpod-mcp).
 
 import type { CuratedTool } from '../types.js';
-import { listPaginationProperties, capList } from '../pagination.js';
+import {
+  cursorError,
+  listPaginationProperties,
+  pageInMemory,
+} from '../pagination.js';
 import type { ToolResult } from '../dispatch.js';
 import { badRequest, ok, runTool } from './util.js';
 import { readOnly, write } from './annotations.js';
@@ -207,7 +211,7 @@ export const listHubRepos: CuratedTool = {
   inputSchema: {
     type: 'object',
     properties: {
-      ...listPaginationProperties,
+      ...listPaginationProperties(),
       searchTerm: {
         type: 'string',
         description:
@@ -236,7 +240,9 @@ export const listHubRepos: CuratedTool = {
       },
     },
   },
-  handler: (ctx, args) =>
+  // A bad cursor is rejected before the catalog is fetched.
+  handler: async (ctx, args) =>
+    cursorError('list-hub-repos', args) ??
     runTool(async () => {
       const data = await ctx.graphql.public<ListingsResponse>(
         listingsQuery(args.includeConfig === true)
@@ -316,12 +322,13 @@ export const listHubRepos: CuratedTool = {
           : null,
       }));
 
-      return ok(
-        capList(result, {
-          limit: args.limit as number | undefined,
-          cursor: args.cursor as string | undefined,
-        })
+      const listed = pageInMemory(
+        'list-hub-repos',
+        result,
+        args,
+        (repos, pagination) => ({ repos, pagination })
       );
+      return listed.ok ? ok(listed.payload) : listed;
     }),
 };
 

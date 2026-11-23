@@ -64,7 +64,9 @@ test('the four knowledge tools are listed', async () => {
 test('list-guides filters by kind and read-guide returns the body', async () => {
   const client = await connect();
   const { body } = await call(client, 'list-guides', { kind: 'golden-path' });
-  assert.ok(body.count > 20);
+  // More than one default page of golden paths: the list pages.
+  assert.equal(body.guides.length, 20);
+  assert.equal(body.pagination.hasNextPage, true);
   assert.ok(
     body.guides.every((guide: { kind: string }) => guide.kind === 'golden-path')
   );
@@ -279,12 +281,13 @@ test('lookup-concept lists linked examples and docs, and list-guides filters by 
   const listed = await call(client, 'list-guides', {
     concept: 'network-volume',
     kind: 'golden-path',
+    limit: 100,
   });
   assert.ok(
     listed.body.guides.every((guide: { concepts: string[] }) =>
       guide.concepts.includes('network-volume')
     )
   );
-  assert.ok(listed.body.count >= examples.length);
+  assert.ok(listed.body.guides.length >= examples.length);
   await client.close();
 });
