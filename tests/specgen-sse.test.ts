@@ -336,6 +336,45 @@ test('escape-heavy and oversized-metadata entries still fit the cap', async () =
   }
 });
 
+// fitEntry used to leave non-string fields and `ts` itself unclipped.
+test('a nested non-text field or an oversized ts still fits the cap', async () => {
+  const { fitSnapshot, LOG_SNAPSHOT_MAX_BYTES } = await import(
+    '#src/specgen/clients/sse'
+  );
+  const nestedMetadata = {
+    line: 'ok',
+    ts: 't0',
+    metadata: { blob: 'x'.repeat(40_000) },
+  };
+  const oversizedTs = { line: 'ok', ts: 't'.repeat(40_000) };
+  for (const items of [
+    [nestedMetadata],
+    [nestedMetadata, { line: 'next', ts: 't1' }],
+    [oversizedTs],
+    [oversizedTs, { line: 'next', ts: 't1' }],
+  ]) {
+    const snapshot = fitSnapshot(items, false);
+    assert.equal(snapshot.truncated, true);
+    assert.ok(snapshot.count >= 1);
+    const size = Buffer.byteLength(serializeResult(snapshot));
+    assert.ok(size <= LOG_SNAPSHOT_MAX_BYTES, `${size} bytes`);
+  }
+});
+
+// `[redacted]` can be longer than a short secret it replaces.
+test('fitting accounts for redaction growing short secret env values', async () => {
+  const { fitSnapshot, LOG_SNAPSHOT_MAX_BYTES } = await import(
+    '#src/specgen/clients/sse'
+  );
+  const { redactSecretEnv } = await import('#src/specgen/redact');
+  const env: Record<string, string> = {};
+  for (let i = 0; i < 2_000; i++) env[`API_KEY_${i}`] = 'x';
+  const entry = { line: 'ok', ts: 't0', env };
+  const snapshot = fitSnapshot([entry], false);
+  const size = Buffer.byteLength(serializeResult(redactSecretEnv(snapshot)));
+  assert.ok(size <= LOG_SNAPSHOT_MAX_BYTES, `${size} bytes`);
+});
+
 test('a body that fails after headers is an error, not a partial snapshot', async () => {
   const source = new ReadableStream<Uint8Array>({
     start(controller) {

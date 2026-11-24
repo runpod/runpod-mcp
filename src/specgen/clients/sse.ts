@@ -9,6 +9,7 @@ export type { LogEntry } from '@runpod/typescript-api-sdk';
 // server's reader (Apache-2.0, runpod/runpod-mcp).
 
 import { withRateLimitHint } from '../../_shared/rate-limit.js';
+import { redactSecretEnv } from '../redact.js';
 import { serializeResult } from '../serialize.js';
 import { HttpError, missingKeyError } from './http-error.js';
 import { boundedFetch } from './bounded-fetch.js';
@@ -182,8 +183,9 @@ export async function collectLogSnapshot(
 
 type LogSnapshot = { items: LogEntry[]; count: number; truncated: boolean };
 
+// Measured post-redaction, like pagination.ts's resultBytes: a redacted secret can be longer than the original.
 const serializedLength = (snapshot: LogSnapshot) =>
-  Buffer.byteLength(serializeResult(snapshot));
+  Buffer.byteLength(serializeResult(redactSecretEnv(snapshot)));
 
 // A single entry is clipped to this many characters of text, so no one entry
 // takes most of a snapshot.
@@ -211,22 +213,12 @@ function clipEntry(entry: LogEntry): { entry: LogEntry; clipped: boolean } {
   return { entry: out as LogEntry, clipped };
 }
 
-// Clip one entry until a snapshot holding only it fits maxBytes. The cap is
-// on serialized size, and JSON escaping can grow text sixfold (an ANSI escape
-// byte serializes as \u001b), so a character cap alone cannot guarantee it.
-// Its longest text fields are clipped first; an entry whose `ts` or
-// non-text fields alone overflow is returned as clipped as it can be.
+// Clip one entry until a snapshot holding only it fits maxBytes: longest text field first, then non-text fields, then `ts` as a last resort.
 function fitEntry(entry: LogEntry, maxBytes: number): LogEntry {
   const size = (e: LogEntry) =>
     serializedLength({ items: [e], count: 1, truncated: false });
   const out: Record<string, unknown> = { ...entry };
-  // Any text field but `ts`, which the agent needs to resume.
-  const keys = Object.keys(out)
-    .filter((key) => key !== 'ts' && typeof out[key] === 'string')
-    .sort((a, b) => (out[b] as string).length - (out[a] as string).length);
-  for (const key of keys) {
-    if (size(out as LogEntry) <= maxBytes) break;
-    const text = (entry as Record<string, unknown>)[key] as string;
+  const clipField = (key: string, text: string) => {
     let lo = 0;
     let hi = Math.min(text.length, LOG_ENTRY_MAX_CHARS);
     while (lo < hi) {
@@ -236,7 +228,29 @@ function fitEntry(entry: LogEntry, maxBytes: number): LogEntry {
       else hi = mid - 1;
     }
     out[key] = clipText(text, lo);
+  };
+  // Any text field but `ts`, which the agent needs to resume.
+  const textKeys = Object.keys(out)
+    .filter((key) => key !== 'ts' && typeof out[key] === 'string')
+    .sort((a, b) => (out[b] as string).length - (out[a] as string).length);
+  for (const key of textKeys) {
+    if (size(out as LogEntry) <= maxBytes) break;
+    clipField(key, (entry as Record<string, unknown>)[key] as string);
   }
+  if (size(out as LogEntry) <= maxBytes) return out as LogEntry;
+  // clipText only clips strings, so a non-text field gets a placeholder instead, largest first.
+  const nonTextKeys = Object.keys(out)
+    .filter((key) => key !== 'ts' && typeof out[key] !== 'string')
+    .sort(
+      (a, b) => JSON.stringify(out[b]).length - JSON.stringify(out[a]).length
+    );
+  for (const key of nonTextKeys) {
+    if (size(out as LogEntry) <= maxBytes) break;
+    const chars = JSON.stringify(out[key]).length;
+    out[key] = `[clipped non-text field, ${chars} chars]`;
+  }
+  if (size(out as LogEntry) <= maxBytes) return out as LogEntry;
+  if (typeof out.ts === 'string') clipField('ts', out.ts);
   return out as LogEntry;
 }
 

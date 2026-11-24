@@ -96,5 +96,5 @@ A new generated list needs nothing: the generator treats any GET named `list*`, 
 Paging is one idea: split a sequence of whole units into pages. A list's unit is a row. Text has none until we pick one.
 
 - **READMEs and guides:** the unit would be a line. A page holds whole lines up to the byte budget; the cursor means "after line N". Text that fits returns unchanged.
-- **Logs:** they only grow at the end, so "start at line N, give me M lines" is stable (an offset works here, unlike in a list that grows at the front), as long as old lines are not dropped. The stream's own event id (`Last-Event-ID`) is the key-cursor version. Today the log tools cut a snapshot at 32,000 characters instead.
+- **Logs:** they only grow at the end, so "start at line N, give me M lines" is stable (an offset works here, unlike in a list that grows at the front), as long as old lines are not dropped. The stream's own event id (`Last-Event-ID`) is the key-cursor version. Today the log tools cut a snapshot at 22,500 serialized bytes instead.
 - **Job output and single large objects:** one JSON value has no units. It cannot be paged, only cut with a visible "truncated" note.

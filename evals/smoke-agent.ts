@@ -78,7 +78,7 @@ function runTask(
       '',
       '--no-session-persistence',
       '--allowedTools',
-      'mcp__runpod',
+      `mcp__runpod__${task.tool}`,
       '--output-format',
       'stream-json',
       '--verbose',
@@ -99,6 +99,7 @@ function runTask(
       clearTimeout(timer);
       let usedTool = false;
       let toolError = false;
+      let unexpectedTool = '';
       let answer = '';
       let runFailed = false;
       for (const line of buf.split('\n')) {
@@ -110,8 +111,10 @@ function runTask(
         }
         if (ev.type === 'assistant')
           for (const b of ev.message?.content ?? [])
-            if (b.type === 'tool_use' && String(b.name).includes(task.tool))
-              usedTool = true;
+            if (b.type === 'tool_use') {
+              if (String(b.name).includes(task.tool)) usedTool = true;
+              else if (!unexpectedTool) unexpectedTool = String(b.name);
+            }
         if (ev.type === 'user')
           for (const b of ev.message?.content ?? [])
             if (b.type === 'tool_result' && b.is_error) toolError = true;
@@ -120,19 +123,27 @@ function runTask(
           runFailed = !!ev.is_error || ev.subtype !== 'success';
         }
       }
-      const ok = usedTool && !toolError && !runFailed && answer.length > 0;
+      // --allowedTools already scopes the run to task.tool alone; any other call is a scoping bug.
+      const ok =
+        usedTool &&
+        !toolError &&
+        !unexpectedTool &&
+        !runFailed &&
+        answer.length > 0;
       resolve({
         id: task.id,
         ok,
         why: !usedTool
           ? `never called ${task.tool}`
-          : toolError
-            ? 'a tool call errored'
-            : runFailed
-              ? 'the run itself failed'
-              : !answer
-                ? 'no final answer'
-                : 'ok',
+          : unexpectedTool
+            ? `called unexpected tool ${unexpectedTool}`
+            : toolError
+              ? 'a tool call errored'
+              : runFailed
+                ? 'the run itself failed'
+                : !answer
+                  ? 'no final answer'
+                  : 'ok',
       });
     });
   });
