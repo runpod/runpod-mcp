@@ -217,17 +217,20 @@ function clipEntry(entry: LogEntry): { entry: LogEntry; clipped: boolean } {
 function fitEntry(entry: LogEntry, maxBytes: number): LogEntry {
   const size = (e: LogEntry) =>
     serializedLength({ items: [e], count: 1, truncated: false });
-  const out: Record<string, unknown> = { ...entry };
-  const clipField = (key: string, text: string) => {
+  // Binary-searches the longest prefix of `text` for which `build(prefix)` still fits maxBytes.
+  const clipToFit = (text: string, build: (t: string) => LogEntry): string => {
     let lo = 0;
     let hi = Math.min(text.length, LOG_ENTRY_MAX_CHARS);
     while (lo < hi) {
       const mid = Math.ceil((lo + hi) / 2);
-      if (size({ ...out, [key]: clipText(text, mid) } as LogEntry) <= maxBytes)
-        lo = mid;
+      if (size(build(clipText(text, mid))) <= maxBytes) lo = mid;
       else hi = mid - 1;
     }
-    out[key] = clipText(text, lo);
+    return clipText(text, lo);
+  };
+  const out: Record<string, unknown> = { ...entry };
+  const clipField = (key: string, text: string) => {
+    out[key] = clipToFit(text, (t) => ({ ...out, [key]: t }) as LogEntry);
   };
   // Any text field but `ts`, which the agent needs to resume.
   const textKeys = Object.keys(out)
@@ -251,7 +254,16 @@ function fitEntry(entry: LogEntry, maxBytes: number): LogEntry {
   }
   if (size(out as LogEntry) <= maxBytes) return out as LogEntry;
   if (typeof out.ts === 'string') clipField('ts', out.ts);
-  return out as LogEntry;
+  if (size(out as LogEntry) <= maxBytes) return out as LogEntry;
+  // An oversized field *name* can't be shrunk by clipping its value; drop every field but the original ts.
+  const originalTs = (entry as Record<string, unknown>).ts;
+  if (typeof originalTs !== 'string') return {} as LogEntry;
+  return {
+    ts:
+      size({ ts: originalTs } as LogEntry) <= maxBytes
+        ? originalTs
+        : clipToFit(originalTs, (t) => ({ ts: t }) as LogEntry),
+  } as LogEntry;
 }
 
 const entryTs = (entry: LogEntry | undefined) =>

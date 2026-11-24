@@ -10,7 +10,7 @@ Does a format or wording change (compact vs pretty JSON, an instruction edit, a 
 | Decisions | Does the model pick the right filter, follow a cursor, answer from `total`, recover from a damaged cursor? | GLM-5.3 | `evals/promptfooconfig.decisions.yaml` |
 | Agent smoke | Does a real agent, through the real `claude` CLI, use this server at all? | Claude (any; `haiku` by default) | `evals/smoke-agent.ts` |
 
-Reading and decisions are [promptfoo](https://www.promptfoo.dev/) evals: each test case is a frozen conversation (system, user, the assistant's tool call, and the real tool result exactly as the server sent it) with two variants — compact and pretty — selected by `evals/prompt.cjs`. Grading is two-layer: a deterministic `javascript` assert (does the final answer contain the right numbers/ids, or the right tool call) and an `llm-rubric` judge; both must pass.
+Reading and decisions are [promptfoo](https://www.promptfoo.dev/) evals: each test case is a frozen conversation (system, user, the assistant's tool call, and the real tool result exactly as the server sent it) with two variants — compact and pretty — selected by `evals/prompt.cjs`. A case that grades a final answer is two-layer: a deterministic `javascript` assert and an `llm-rubric` judge; both must pass. Most decision cases grade which tool call was made instead — a tool call is unambiguous, nothing for a rubric to judge — so those use the `javascript` assert alone.
 
 Agent smoke is not a promptfoo eval. It spawns the `claude` CLI against the built server (`dist/stdio.mjs`) on a live account and checks the agent called the right tool, hit no tool error, and produced a real answer — a contract check, not a content grade.
 
@@ -46,7 +46,7 @@ If a rerun shows a *different* task newly failing, or one format losing by a wid
 
 ## Extending the suite
 
-**A new reading or decisions test case**: capture the real conversation (system/user/assistant tool_call/tool result) in both compact and pretty, add it to `evals/tests/catalog-reading.json` or `catalog-decisions.json` with a `javascript` + `llm-rubric` assert pair (copy an existing case's shape), and add any new tool it calls to `evals/tools/catalog-tools.json`.
+**A new reading or decisions test case**: capture the real conversation (system/user/assistant tool_call/tool result) in both compact and pretty, add it to `evals/tests/catalog-reading.json` or `catalog-decisions.json` (copy an existing case's shape — a `javascript` + `llm-rubric` assert pair if it grades a final answer, `javascript` alone if it grades which tool call was made), and add any new tool it calls to `evals/tools/catalog-tools.json`.
 
 **Before scripting a "no filter" or "hand-count" scenario**, check whether a filter actually exists for that field and whether real agents use it. An earlier version of this suite scripted two such tasks for fields that *do* have a matching filter; checked against real multi-model tool-call traces, agents used the filter 94–97% of the time on their own, so the scripted scenario didn't predict anything about real use and was dropped. If there's truly no filter (confirm against the tool's schema), the task is realistic as-is.
 

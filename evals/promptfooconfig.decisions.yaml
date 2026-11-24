@@ -24,6 +24,17 @@ providers:
       # exactly what's being graded.
       tool_choice: auto
 
+defaultTest:
+  options:
+    # The judge for the llm-rubric asserts: the same Runpod Public Endpoint, so one key runs everything.
+    provider:
+      id: openai:chat:glm-5.3
+      config:
+        apiBaseUrl: https://api.runpod.ai/v2/b1dd8hy2hqo1nb/openai/v1
+        apiKeyEnvar: RUNPOD_API_KEY
+        temperature: 0
+        max_tokens: 2000
+
 tests: file://tests/catalog-decisions.json
 
 # Public Endpoints scale out; one request per case at a time would waste that.

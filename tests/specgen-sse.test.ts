@@ -347,11 +347,14 @@ test('a nested non-text field or an oversized ts still fits the cap', async () =
     metadata: { blob: 'x'.repeat(40_000) },
   };
   const oversizedTs = { line: 'ok', ts: 't'.repeat(40_000) };
+  const oversizedKey = { line: 'ok', ts: 't0', ['k'.repeat(30_000)]: 'v' };
   for (const items of [
     [nestedMetadata],
     [nestedMetadata, { line: 'next', ts: 't1' }],
     [oversizedTs],
     [oversizedTs, { line: 'next', ts: 't1' }],
+    [oversizedKey],
+    [oversizedKey, { line: 'next', ts: 't1' }],
   ]) {
     const snapshot = fitSnapshot(items, false);
     assert.equal(snapshot.truncated, true);
@@ -359,6 +362,8 @@ test('a nested non-text field or an oversized ts still fits the cap', async () =
     const size = Buffer.byteLength(serializeResult(snapshot));
     assert.ok(size <= LOG_SNAPSHOT_MAX_BYTES, `${size} bytes`);
   }
+  // A key this big can't be shrunk by clipping its value; ts survives unclipped.
+  assert.equal(fitSnapshot([oversizedKey], false).items[0]?.ts, 't0');
 });
 
 // `[redacted]` can be longer than a short secret it replaces.
