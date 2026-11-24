@@ -1,5 +1,7 @@
 // Code generated from packages/typescript-api-sdk/spec/openapi.yaml by specgen/generator/generate-tools.ts; DO NOT EDIT.
 
+import type { RowSchema } from '../list-query.js';
+
 export interface GeneratedToolParam {
   name: string;
   location: 'path' | 'query';
@@ -42,6 +44,8 @@ export interface GeneratedTool {
     paged: 'api' | 'memory';
     /** Default page size when 20 is wrong for this list. */
     defaultLimit?: number;
+    /** The rows' fields, for the jmespath field check. */
+    rowSchema: RowSchema;
   };
   inputSchema: Record<string, unknown>;
 }
@@ -3415,6 +3419,43 @@ export const generatedTools: GeneratedTool[] = [
       rows: 'records',
       paged: 'api',
       defaultLimit: 100,
+      rowSchema: {
+        type: 'object',
+        properties: {
+          time: {
+            type: 'string',
+          },
+          count: {
+            type: 'number',
+          },
+          durationMs: {
+            type: 'object',
+            properties: {
+              min: {
+                type: 'number',
+              },
+              max: {
+                type: 'number',
+              },
+              total: {
+                type: 'number',
+              },
+              p70: {
+                type: 'number',
+              },
+              p90: {
+                type: 'number',
+              },
+              p95: {
+                type: 'number',
+              },
+              p98: {
+                type: 'number',
+              },
+            },
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -3452,6 +3493,11 @@ export const generatedTools: GeneratedTool[] = [
           default: 100,
           description:
             'Up to this many rows per page, 1-100 (default 100); a page can hold fewer.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
       required: ['id'],
@@ -3510,6 +3556,78 @@ export const generatedTools: GeneratedTool[] = [
       rows: 'records',
       paged: 'api',
       defaultLimit: 100,
+      rowSchema: {
+        type: 'object',
+        properties: {
+          time: {
+            type: 'string',
+          },
+          requests: {
+            type: 'number',
+          },
+          completed: {
+            type: 'number',
+          },
+          failed: {
+            type: 'number',
+          },
+          retries: {
+            type: 'number',
+          },
+          executionTimeMs: {
+            type: 'object',
+            properties: {
+              min: {
+                type: 'number',
+              },
+              max: {
+                type: 'number',
+              },
+              total: {
+                type: 'number',
+              },
+              p70: {
+                type: 'number',
+              },
+              p90: {
+                type: 'number',
+              },
+              p95: {
+                type: 'number',
+              },
+              p98: {
+                type: 'number',
+              },
+            },
+          },
+          delayTimeMs: {
+            type: 'object',
+            properties: {
+              min: {
+                type: 'number',
+              },
+              max: {
+                type: 'number',
+              },
+              total: {
+                type: 'number',
+              },
+              p70: {
+                type: 'number',
+              },
+              p90: {
+                type: 'number',
+              },
+              p95: {
+                type: 'number',
+              },
+              p98: {
+                type: 'number',
+              },
+            },
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -3547,6 +3665,11 @@ export const generatedTools: GeneratedTool[] = [
           default: 100,
           description:
             'Up to this many rows per page, 1-100 (default 100); a page can hold fewer.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
       required: ['id'],
@@ -3605,6 +3728,29 @@ export const generatedTools: GeneratedTool[] = [
       rows: 'records',
       paged: 'api',
       defaultLimit: 100,
+      rowSchema: {
+        type: 'object',
+        properties: {
+          time: {
+            type: 'string',
+          },
+          running: {
+            type: 'number',
+          },
+          idle: {
+            type: 'number',
+          },
+          initializing: {
+            type: 'number',
+          },
+          throttled: {
+            type: 'number',
+          },
+          unhealthy: {
+            type: 'number',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -3642,6 +3788,11 @@ export const generatedTools: GeneratedTool[] = [
           default: 100,
           description:
             'Up to this many rows per page, 1-100 (default 100); a page can hold fewer.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
       required: ['id'],
@@ -4379,6 +4530,32 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'auditLogs',
       paged: 'api',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          actorId: {
+            type: 'string',
+          },
+          email: {
+            type: 'string',
+          },
+          resourceType: {
+            type: 'string',
+          },
+          resourceId: {
+            type: 'string',
+          },
+          action: {
+            type: 'string',
+          },
+          value: {
+            type: 'string',
+          },
+          timestamp: {
+            type: 'string',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -4430,6 +4607,11 @@ export const generatedTools: GeneratedTool[] = [
           description:
             'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
         },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
+        },
       },
     },
   },
@@ -4469,6 +4651,59 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'records',
       paged: 'memory',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          startTime: {
+            type: 'string',
+          },
+          endTime: {
+            type: 'string',
+          },
+          totalAmount: {
+            type: 'number',
+          },
+          podGpuAmount: {
+            type: 'number',
+          },
+          podCpuAmount: {
+            type: 'number',
+          },
+          podDiskAmount: {
+            type: 'number',
+          },
+          serverlessGpuAmount: {
+            type: 'number',
+          },
+          serverlessCpuAmount: {
+            type: 'number',
+          },
+          serverlessDiskAmount: {
+            type: 'number',
+          },
+          serverlessFeeAmount: {
+            type: 'number',
+          },
+          storageStandardAmount: {
+            type: 'number',
+          },
+          storageHighPerformanceAmount: {
+            type: 'number',
+          },
+          endpointAmount: {
+            type: 'number',
+          },
+          clusterGpuAmount: {
+            type: 'number',
+          },
+          clusterDiskAmount: {
+            type: 'number',
+          },
+          clusterNetworkingAmount: {
+            type: 'number',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -4508,6 +4743,11 @@ export const generatedTools: GeneratedTool[] = [
           type: 'string',
           description:
             'pagination.nextCursor from the previous page; omit for the first page.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
       $defs: {
@@ -4561,6 +4801,32 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'records',
       paged: 'memory',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          startTime: {
+            type: 'string',
+          },
+          endTime: {
+            type: 'string',
+          },
+          totalAmount: {
+            type: 'number',
+          },
+          gpuAmount: {
+            type: 'number',
+          },
+          diskAmount: {
+            type: 'number',
+          },
+          networkingAmount: {
+            type: 'number',
+          },
+          clusterId: {
+            type: 'string',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -4605,6 +4871,11 @@ export const generatedTools: GeneratedTool[] = [
           description:
             'pagination.nextCursor from the previous page; omit for the first page.',
         },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
+        },
       },
       $defs: {
         BillingBucketSize: {
@@ -4641,6 +4912,331 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'pods',
       paged: 'memory',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          args: {
+            type: 'string',
+          },
+          cmd: {
+            type: 'array',
+            items: {
+              type: 'string',
+            },
+          },
+          entrypoint: {
+            type: 'array',
+            items: {
+              type: 'string',
+            },
+          },
+          disk: {
+            type: 'number',
+          },
+          env: {
+            type: 'object',
+            open: true,
+          },
+          image: {
+            type: 'string',
+          },
+          ports: {
+            type: 'array',
+            items: {
+              type: 'string',
+            },
+          },
+          registry: {
+            type: 'string',
+          },
+          costCenter: {
+            type: 'object',
+            properties: {
+              id: {
+                type: 'string',
+              },
+              value: {
+                type: 'string',
+              },
+            },
+          },
+          tags: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: {
+                  type: 'string',
+                },
+                key: {
+                  type: 'string',
+                },
+                value: {
+                  type: 'string',
+                },
+              },
+            },
+          },
+          id: {
+            type: 'string',
+          },
+          name: {
+            type: 'string',
+          },
+          status: {
+            type: 'string',
+            enum: [
+              'PROVISIONING',
+              'STARTING',
+              'RUNNING',
+              'EXITED',
+              'ERROR',
+              'TERMINATED',
+            ],
+          },
+          actions: {
+            type: 'array',
+            items: {
+              type: 'string',
+              enum: ['start', 'stop', 'restart', 'terminate'],
+            },
+          },
+          mounts: {
+            type: 'object',
+            properties: {
+              persistent: {
+                type: 'object',
+                properties: {
+                  size: {
+                    type: 'number',
+                  },
+                  path: {
+                    type: 'string',
+                  },
+                },
+              },
+              network: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    volumeId: {
+                      type: 'string',
+                    },
+                    path: {
+                      type: 'string',
+                    },
+                  },
+                },
+              },
+              global: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    volumeId: {
+                      type: 'string',
+                    },
+                    path: {
+                      type: 'string',
+                    },
+                  },
+                },
+              },
+            },
+          },
+          gpu: {
+            type: 'object',
+            properties: {
+              id: {
+                type: 'string',
+              },
+              count: {
+                type: 'number',
+              },
+              vcpuCount: {
+                type: 'number',
+              },
+              memory: {
+                type: 'number',
+              },
+            },
+          },
+          cpu: {
+            type: 'object',
+            properties: {
+              id: {
+                type: 'string',
+              },
+              vcpuCount: {
+                type: 'number',
+              },
+              memory: {
+                type: 'number',
+              },
+            },
+          },
+          cloud: {
+            type: 'string',
+            enum: ['SECURE', 'COMMUNITY'],
+          },
+          dataCenterId: {
+            type: 'string',
+          },
+          cudaVersion: {
+            type: 'string',
+          },
+          ssh: {
+            type: 'object',
+            properties: {
+              proxy: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  port: {
+                    type: 'number',
+                  },
+                  username: {
+                    type: 'string',
+                  },
+                  command: {
+                    type: 'string',
+                  },
+                },
+              },
+              direct: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  port: {
+                    type: 'number',
+                  },
+                  username: {
+                    type: 'string',
+                  },
+                  command: {
+                    type: 'string',
+                  },
+                },
+              },
+            },
+          },
+          cluster: {
+            type: 'object',
+            properties: {
+              id: {
+                type: 'string',
+              },
+              rank: {
+                type: 'number',
+              },
+              role: {
+                type: 'string',
+                enum: [
+                  'SLURM_CONTROLLER',
+                  'SLURM_COMPUTE',
+                  'RAY_HEAD',
+                  'RAY_WORKER',
+                ],
+              },
+              ip: {
+                type: 'string',
+              },
+            },
+          },
+          template: {
+            type: 'string',
+          },
+          cost: {
+            type: 'number',
+          },
+          locked: {
+            type: 'boolean',
+          },
+          globalNetworking: {
+            type: 'object',
+            properties: {
+              enabled: {
+                type: 'boolean',
+              },
+              ip: {
+                type: 'string',
+              },
+              internalDns: {
+                type: 'string',
+              },
+            },
+          },
+          runtime: {
+            type: 'object',
+            properties: {
+              uptime: {
+                type: 'number',
+              },
+              gpus: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    util: {
+                      type: 'number',
+                    },
+                    memoryUtil: {
+                      type: 'number',
+                    },
+                  },
+                },
+              },
+              cpu: {
+                type: 'object',
+                properties: {
+                  util: {
+                    type: 'number',
+                  },
+                },
+              },
+              memory: {
+                type: 'object',
+                properties: {
+                  util: {
+                    type: 'number',
+                  },
+                },
+              },
+              ports: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    private: {
+                      type: 'number',
+                    },
+                    public: {
+                      type: 'number',
+                    },
+                    type: {
+                      type: 'string',
+                    },
+                    ip: {
+                      type: 'string',
+                    },
+                  },
+                },
+              },
+            },
+          },
+          createdAt: {
+            type: 'string',
+          },
+          startedAt: {
+            type: 'string',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -4661,6 +5257,11 @@ export const generatedTools: GeneratedTool[] = [
           type: 'string',
           description:
             'pagination.nextCursor from the previous page; omit for the first page.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
       required: ['id'],
@@ -4694,6 +5295,120 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'clusters',
       paged: 'api',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          costCenter: {
+            type: 'object',
+            properties: {
+              id: {
+                type: 'string',
+              },
+              value: {
+                type: 'string',
+              },
+            },
+          },
+          tags: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: {
+                  type: 'string',
+                },
+                key: {
+                  type: 'string',
+                },
+                value: {
+                  type: 'string',
+                },
+              },
+            },
+          },
+          id: {
+            type: 'string',
+          },
+          name: {
+            type: 'string',
+          },
+          type: {
+            type: 'string',
+            enum: ['APPLICATION', 'TRAINING', 'SLURM', 'RAY'],
+          },
+          compute: {
+            type: 'object',
+            properties: {
+              gpuTypeId: {
+                type: 'string',
+              },
+              gpuCountPerPod: {
+                type: 'number',
+              },
+              podCount: {
+                type: 'number',
+              },
+            },
+          },
+          template: {
+            type: 'string',
+          },
+          dataCenterId: {
+            type: 'string',
+          },
+          pods: {
+            type: 'object',
+            properties: {
+              total: {
+                type: 'number',
+              },
+              byStatus: {
+                type: 'object',
+                open: true,
+              },
+            },
+          },
+          network: {
+            type: 'object',
+            properties: {
+              cidr: {
+                type: 'string',
+              },
+              vxlanId: {
+                type: 'number',
+              },
+              vxlanPort: {
+                type: 'number',
+              },
+            },
+          },
+          primary: {
+            type: 'object',
+            properties: {
+              podId: {
+                type: 'string',
+              },
+              status: {
+                type: 'string',
+                enum: [
+                  'PROVISIONING',
+                  'STARTING',
+                  'RUNNING',
+                  'EXITED',
+                  'ERROR',
+                  'TERMINATED',
+                ],
+              },
+              sshEndpoint: {
+                type: 'string',
+              },
+            },
+          },
+          createdAt: {
+            type: 'string',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -4710,6 +5425,11 @@ export const generatedTools: GeneratedTool[] = [
           default: 20,
           description:
             'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
     },
@@ -4746,6 +5466,18 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'resources',
       paged: 'api',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+          },
+          type: {
+            type: 'string',
+            enum: ['POD', 'CLUSTER', 'SERVERLESS_ENDPOINT', 'NETWORK_VOLUME'],
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -4767,6 +5499,11 @@ export const generatedTools: GeneratedTool[] = [
           default: 20,
           description:
             'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
       required: ['id'],
@@ -4804,6 +5541,17 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'costCenters',
       paged: 'api',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+          },
+          value: {
+            type: 'string',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -4825,6 +5573,11 @@ export const generatedTools: GeneratedTool[] = [
           default: 20,
           description:
             'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
     },
@@ -4864,6 +5617,67 @@ export const generatedTools: GeneratedTool[] = [
       rows: 'cpus',
       paged: 'memory',
       defaultLimit: 100,
+      rowSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+          },
+          name: {
+            type: 'string',
+          },
+          group: {
+            type: 'string',
+          },
+          vcpu: {
+            type: 'object',
+            properties: {
+              min: {
+                type: 'number',
+              },
+              max: {
+                type: 'number',
+              },
+            },
+          },
+          ramGbPerVcpu: {
+            type: 'number',
+          },
+          price: {
+            type: 'object',
+            properties: {
+              securePerVcpu: {
+                type: 'number',
+              },
+              serverlessPerVcpu: {
+                type: 'number',
+              },
+            },
+          },
+          availability: {
+            type: 'string',
+            enum: ['NONE', 'LOW', 'MEDIUM', 'HIGH'],
+          },
+          dataCenters: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: {
+                  type: 'string',
+                },
+                name: {
+                  type: 'string',
+                },
+                availability: {
+                  type: 'string',
+                  enum: ['NONE', 'LOW', 'MEDIUM', 'HIGH'],
+                },
+              },
+            },
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -4904,6 +5718,11 @@ export const generatedTools: GeneratedTool[] = [
           type: 'string',
           description:
             'pagination.nextCursor from the previous page; omit for the first page.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
       $defs: {
@@ -4967,6 +5786,97 @@ export const generatedTools: GeneratedTool[] = [
       rows: 'dataCenters',
       paged: 'memory',
       defaultLimit: 100,
+      rowSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+          },
+          name: {
+            type: 'string',
+          },
+          region: {
+            type: 'string',
+            enum: [
+              'NORTH_AMERICA',
+              'SOUTH_AMERICA',
+              'EUROPE',
+              'ASIA',
+              'MIDDLE_EAST',
+              'AFRICA',
+              'OCEANIA',
+              'ANTARCTICA',
+              'UNKNOWN',
+            ],
+          },
+          globalNetwork: {
+            type: 'boolean',
+          },
+          networkVolumeTypes: {
+            type: 'array',
+            items: {
+              type: 'string',
+              enum: ['STANDARD', 'HIGH_PERFORMANCE'],
+            },
+          },
+          compliance: {
+            type: 'array',
+            items: {
+              type: 'string',
+              enum: [
+                'GDPR',
+                'ISO_IEC_27001',
+                'ISO_14001',
+                'PCI_DSS',
+                'HITRUST',
+                'SOC_1_TYPE_2',
+                'SOC_2_TYPE_2',
+                'SOC_3_TYPE_2',
+                'ITAR',
+                'FISMA_HIGH',
+                'HIPAA',
+                'RENEWABLE',
+              ],
+            },
+          },
+          gpuAvailability: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: {
+                  type: 'string',
+                },
+                name: {
+                  type: 'string',
+                },
+                availability: {
+                  type: 'string',
+                  enum: ['NONE', 'LOW', 'MEDIUM', 'HIGH'],
+                },
+              },
+            },
+          },
+          cpuAvailability: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: {
+                  type: 'string',
+                },
+                name: {
+                  type: 'string',
+                },
+                availability: {
+                  type: 'string',
+                  enum: ['NONE', 'LOW', 'MEDIUM', 'HIGH'],
+                },
+              },
+            },
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -5024,6 +5934,11 @@ export const generatedTools: GeneratedTool[] = [
           type: 'string',
           description:
             'pagination.nextCursor from the previous page; omit for the first page.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
       $defs: {
@@ -5092,6 +6007,38 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'delegations',
       paged: 'memory',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+          },
+          name: {
+            type: 'string',
+          },
+          delegatorUserId: {
+            type: 'string',
+          },
+          awsUser: {
+            type: 'string',
+          },
+          repository: {
+            type: 'string',
+          },
+          tag: {
+            type: 'string',
+          },
+          awsRegion: {
+            type: 'string',
+          },
+          dockerRegistryUri: {
+            type: 'string',
+          },
+          createdAt: {
+            type: 'string',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -5108,6 +6055,11 @@ export const generatedTools: GeneratedTool[] = [
           type: 'string',
           description:
             'pagination.nextCursor from the previous page; omit for the first page.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
     },
@@ -5148,6 +6100,20 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'records',
       paged: 'memory',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          startTime: {
+            type: 'string',
+          },
+          endTime: {
+            type: 'string',
+          },
+          totalAmount: {
+            type: 'number',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -5187,6 +6153,11 @@ export const generatedTools: GeneratedTool[] = [
           type: 'string',
           description:
             'pagination.nextCursor from the previous page; omit for the first page.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
       $defs: {
@@ -5232,6 +6203,51 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'builds',
       paged: 'api',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+          },
+          status: {
+            type: 'string',
+            enum: [
+              'PENDING',
+              'BUILDING',
+              'UPLOADING',
+              'TESTING',
+              'COMPLETED',
+              'FAILED',
+              'CANCELLED',
+              'TEST_FAILED',
+            ],
+          },
+          commitHash: {
+            type: 'string',
+          },
+          commitMessage: {
+            type: 'string',
+          },
+          branch: {
+            type: 'string',
+          },
+          commitDate: {
+            type: 'string',
+          },
+          imageName: {
+            type: 'string',
+          },
+          startedAt: {
+            type: 'string',
+          },
+          completedAt: {
+            type: 'string',
+          },
+          error: {
+            type: 'string',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -5252,6 +6268,11 @@ export const generatedTools: GeneratedTool[] = [
           default: 20,
           description:
             'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
       required: ['id'],
@@ -5289,6 +6310,46 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'releases',
       paged: 'api',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+          },
+          version: {
+            type: 'number',
+          },
+          source: {
+            type: 'string',
+            enum: ['GIT_BUILD', 'MANUAL'],
+          },
+          buildId: {
+            type: 'string',
+          },
+          createdByUserId: {
+            type: 'string',
+          },
+          workerCount: {
+            type: 'number',
+          },
+          createdAt: {
+            type: 'string',
+          },
+          diff: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                field: {
+                  type: 'string',
+                },
+                old: {},
+                new: {},
+              },
+            },
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -5309,6 +6370,11 @@ export const generatedTools: GeneratedTool[] = [
           default: 20,
           description:
             'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
       required: ['id'],
@@ -5338,6 +6404,42 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'workers',
       paged: 'memory',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+          },
+          status: {
+            type: 'string',
+            enum: ['RUNNING', 'IDLE', 'INITIALIZING', 'THROTTLED', 'UNHEALTHY'],
+          },
+          isStale: {
+            type: 'boolean',
+          },
+          version: {
+            type: 'number',
+          },
+          gpuCount: {
+            type: 'number',
+          },
+          image: {
+            type: 'string',
+          },
+          uptimeSeconds: {
+            type: 'number',
+          },
+          gpuTypeId: {
+            type: 'string',
+          },
+          dataCenterId: {
+            type: 'string',
+          },
+          startedAt: {
+            type: 'string',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -5358,6 +6460,11 @@ export const generatedTools: GeneratedTool[] = [
           type: 'string',
           description:
             'pagination.nextCursor from the previous page; omit for the first page.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
       required: ['id'],
@@ -5391,6 +6498,23 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'globalVolumes',
       paged: 'api',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+          },
+          name: {
+            type: 'string',
+          },
+          createdAt: {
+            type: 'string',
+          },
+          createdByUserId: {
+            type: 'string',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -5407,6 +6531,11 @@ export const generatedTools: GeneratedTool[] = [
           default: 20,
           description:
             'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
     },
@@ -5464,6 +6593,100 @@ export const generatedTools: GeneratedTool[] = [
       rows: 'gpus',
       paged: 'memory',
       defaultLimit: 100,
+      rowSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+          },
+          name: {
+            type: 'string',
+          },
+          pool: {
+            type: 'string',
+          },
+          manufacturer: {
+            type: 'string',
+            enum: ['NVIDIA', 'AMD', 'UNKNOWN'],
+          },
+          memory: {
+            type: 'number',
+          },
+          secure: {
+            type: 'boolean',
+          },
+          community: {
+            type: 'boolean',
+          },
+          price: {
+            type: 'object',
+            properties: {
+              secure: {
+                type: 'number',
+              },
+              community: {
+                type: 'number',
+              },
+              serverless: {
+                type: 'number',
+              },
+            },
+          },
+          maxCount: {
+            type: 'object',
+            properties: {
+              secure: {
+                type: 'number',
+              },
+              community: {
+                type: 'number',
+              },
+            },
+          },
+          minVcpuCount: {
+            type: 'number',
+          },
+          minRam: {
+            type: 'number',
+          },
+          availability: {
+            type: 'string',
+            enum: ['NONE', 'LOW', 'MEDIUM', 'HIGH'],
+          },
+          dataCenters: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: {
+                  type: 'string',
+                },
+                name: {
+                  type: 'string',
+                },
+                availability: {
+                  type: 'string',
+                  enum: ['NONE', 'LOW', 'MEDIUM', 'HIGH'],
+                },
+              },
+            },
+          },
+          cudaVersions: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                version: {
+                  type: 'string',
+                },
+                available: {
+                  type: 'boolean',
+                },
+              },
+            },
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -5535,6 +6758,11 @@ export const generatedTools: GeneratedTool[] = [
           description:
             'pagination.nextCursor from the previous page; omit for the first page.',
         },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
+        },
       },
       $defs: {
         CatalogInclude: {
@@ -5597,6 +6825,29 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'records',
       paged: 'memory',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          startTime: {
+            type: 'string',
+          },
+          endTime: {
+            type: 'string',
+          },
+          totalAmount: {
+            type: 'number',
+          },
+          standardAmount: {
+            type: 'number',
+          },
+          highPerformanceAmount: {
+            type: 'number',
+          },
+          networkVolumeId: {
+            type: 'string',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -5641,6 +6892,11 @@ export const generatedTools: GeneratedTool[] = [
           description:
             'pagination.nextCursor from the previous page; omit for the first page.',
         },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
+        },
       },
       $defs: {
         BillingBucketSize: {
@@ -5681,6 +6937,55 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'networkVolumes',
       paged: 'api',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          costCenter: {
+            type: 'object',
+            properties: {
+              id: {
+                type: 'string',
+              },
+              value: {
+                type: 'string',
+              },
+            },
+          },
+          tags: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: {
+                  type: 'string',
+                },
+                key: {
+                  type: 'string',
+                },
+                value: {
+                  type: 'string',
+                },
+              },
+            },
+          },
+          id: {
+            type: 'string',
+          },
+          name: {
+            type: 'string',
+          },
+          size: {
+            type: 'number',
+          },
+          dataCenter: {
+            type: 'string',
+          },
+          type: {
+            type: 'string',
+            enum: ['STANDARD', 'HIGH_PERFORMANCE'],
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -5697,6 +7002,11 @@ export const generatedTools: GeneratedTool[] = [
           default: 20,
           description:
             'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
     },
@@ -5733,6 +7043,17 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'members',
       paged: 'api',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+          },
+          email: {
+            type: 'string',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -5754,6 +7075,11 @@ export const generatedTools: GeneratedTool[] = [
           default: 20,
           description:
             'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
       required: ['id'],
@@ -5791,6 +7117,26 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'groups',
       paged: 'api',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+          },
+          name: {
+            type: 'string',
+          },
+          memberCount: {
+            type: 'number',
+          },
+          createdAt: {
+            type: 'string',
+          },
+          updatedAt: {
+            type: 'string',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -5812,6 +7158,11 @@ export const generatedTools: GeneratedTool[] = [
           default: 20,
           description:
             'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
     },
@@ -5835,6 +7186,38 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'invites',
       paged: 'memory',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+          },
+          email: {
+            type: 'string',
+          },
+          role: {
+            type: 'object',
+            properties: {
+              id: {
+                type: 'string',
+              },
+              type: {
+                type: 'string',
+                enum: ['builtin', 'custom'],
+              },
+              name: {
+                type: 'string',
+              },
+            },
+          },
+          createdAt: {
+            type: 'string',
+          },
+          expiresAt: {
+            type: 'string',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -5851,6 +7234,11 @@ export const generatedTools: GeneratedTool[] = [
           type: 'string',
           description:
             'pagination.nextCursor from the previous page; omit for the first page.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
     },
@@ -5874,6 +7262,33 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'roles',
       paged: 'memory',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+          },
+          name: {
+            type: 'string',
+          },
+          type: {
+            type: 'string',
+            enum: ['builtin', 'custom'],
+          },
+          capabilities: {
+            type: 'array',
+            items: {
+              type: 'string',
+            },
+          },
+          createdAt: {
+            type: 'string',
+          },
+          updatedAt: {
+            type: 'string',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -5890,6 +7305,11 @@ export const generatedTools: GeneratedTool[] = [
           type: 'string',
           description:
             'pagination.nextCursor from the previous page; omit for the first page.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
     },
@@ -5913,6 +7333,46 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'users',
       paged: 'memory',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+          },
+          email: {
+            type: 'string',
+          },
+          role: {
+            type: 'object',
+            properties: {
+              id: {
+                type: 'string',
+              },
+              type: {
+                type: 'string',
+                enum: ['builtin', 'custom'],
+              },
+              name: {
+                type: 'string',
+              },
+            },
+          },
+          groups: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: {
+                  type: 'string',
+                },
+                name: {
+                  type: 'string',
+                },
+              },
+            },
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -5929,6 +7389,11 @@ export const generatedTools: GeneratedTool[] = [
           type: 'string',
           description:
             'pagination.nextCursor from the previous page; omit for the first page.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
     },
@@ -5973,6 +7438,32 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'records',
       paged: 'memory',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          startTime: {
+            type: 'string',
+          },
+          endTime: {
+            type: 'string',
+          },
+          totalAmount: {
+            type: 'number',
+          },
+          gpuAmount: {
+            type: 'number',
+          },
+          cpuAmount: {
+            type: 'number',
+          },
+          diskAmount: {
+            type: 'number',
+          },
+          podId: {
+            type: 'string',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -6016,6 +7507,11 @@ export const generatedTools: GeneratedTool[] = [
           type: 'string',
           description:
             'pagination.nextCursor from the previous page; omit for the first page.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
       $defs: {
@@ -6061,6 +7557,331 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'pods',
       paged: 'api',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          args: {
+            type: 'string',
+          },
+          cmd: {
+            type: 'array',
+            items: {
+              type: 'string',
+            },
+          },
+          entrypoint: {
+            type: 'array',
+            items: {
+              type: 'string',
+            },
+          },
+          disk: {
+            type: 'number',
+          },
+          env: {
+            type: 'object',
+            open: true,
+          },
+          image: {
+            type: 'string',
+          },
+          ports: {
+            type: 'array',
+            items: {
+              type: 'string',
+            },
+          },
+          registry: {
+            type: 'string',
+          },
+          costCenter: {
+            type: 'object',
+            properties: {
+              id: {
+                type: 'string',
+              },
+              value: {
+                type: 'string',
+              },
+            },
+          },
+          tags: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: {
+                  type: 'string',
+                },
+                key: {
+                  type: 'string',
+                },
+                value: {
+                  type: 'string',
+                },
+              },
+            },
+          },
+          id: {
+            type: 'string',
+          },
+          name: {
+            type: 'string',
+          },
+          status: {
+            type: 'string',
+            enum: [
+              'PROVISIONING',
+              'STARTING',
+              'RUNNING',
+              'EXITED',
+              'ERROR',
+              'TERMINATED',
+            ],
+          },
+          actions: {
+            type: 'array',
+            items: {
+              type: 'string',
+              enum: ['start', 'stop', 'restart', 'terminate'],
+            },
+          },
+          mounts: {
+            type: 'object',
+            properties: {
+              persistent: {
+                type: 'object',
+                properties: {
+                  size: {
+                    type: 'number',
+                  },
+                  path: {
+                    type: 'string',
+                  },
+                },
+              },
+              network: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    volumeId: {
+                      type: 'string',
+                    },
+                    path: {
+                      type: 'string',
+                    },
+                  },
+                },
+              },
+              global: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    volumeId: {
+                      type: 'string',
+                    },
+                    path: {
+                      type: 'string',
+                    },
+                  },
+                },
+              },
+            },
+          },
+          gpu: {
+            type: 'object',
+            properties: {
+              id: {
+                type: 'string',
+              },
+              count: {
+                type: 'number',
+              },
+              vcpuCount: {
+                type: 'number',
+              },
+              memory: {
+                type: 'number',
+              },
+            },
+          },
+          cpu: {
+            type: 'object',
+            properties: {
+              id: {
+                type: 'string',
+              },
+              vcpuCount: {
+                type: 'number',
+              },
+              memory: {
+                type: 'number',
+              },
+            },
+          },
+          cloud: {
+            type: 'string',
+            enum: ['SECURE', 'COMMUNITY'],
+          },
+          dataCenterId: {
+            type: 'string',
+          },
+          cudaVersion: {
+            type: 'string',
+          },
+          ssh: {
+            type: 'object',
+            properties: {
+              proxy: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  port: {
+                    type: 'number',
+                  },
+                  username: {
+                    type: 'string',
+                  },
+                  command: {
+                    type: 'string',
+                  },
+                },
+              },
+              direct: {
+                type: 'object',
+                properties: {
+                  host: {
+                    type: 'string',
+                  },
+                  port: {
+                    type: 'number',
+                  },
+                  username: {
+                    type: 'string',
+                  },
+                  command: {
+                    type: 'string',
+                  },
+                },
+              },
+            },
+          },
+          cluster: {
+            type: 'object',
+            properties: {
+              id: {
+                type: 'string',
+              },
+              rank: {
+                type: 'number',
+              },
+              role: {
+                type: 'string',
+                enum: [
+                  'SLURM_CONTROLLER',
+                  'SLURM_COMPUTE',
+                  'RAY_HEAD',
+                  'RAY_WORKER',
+                ],
+              },
+              ip: {
+                type: 'string',
+              },
+            },
+          },
+          template: {
+            type: 'string',
+          },
+          cost: {
+            type: 'number',
+          },
+          locked: {
+            type: 'boolean',
+          },
+          globalNetworking: {
+            type: 'object',
+            properties: {
+              enabled: {
+                type: 'boolean',
+              },
+              ip: {
+                type: 'string',
+              },
+              internalDns: {
+                type: 'string',
+              },
+            },
+          },
+          runtime: {
+            type: 'object',
+            properties: {
+              uptime: {
+                type: 'number',
+              },
+              gpus: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    util: {
+                      type: 'number',
+                    },
+                    memoryUtil: {
+                      type: 'number',
+                    },
+                  },
+                },
+              },
+              cpu: {
+                type: 'object',
+                properties: {
+                  util: {
+                    type: 'number',
+                  },
+                },
+              },
+              memory: {
+                type: 'object',
+                properties: {
+                  util: {
+                    type: 'number',
+                  },
+                },
+              },
+              ports: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    private: {
+                      type: 'number',
+                    },
+                    public: {
+                      type: 'number',
+                    },
+                    type: {
+                      type: 'string',
+                    },
+                    ip: {
+                      type: 'string',
+                    },
+                  },
+                },
+              },
+            },
+          },
+          createdAt: {
+            type: 'string',
+          },
+          startedAt: {
+            type: 'string',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -6083,6 +7904,11 @@ export const generatedTools: GeneratedTool[] = [
           default: 20,
           description:
             'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
     },
@@ -6111,6 +7937,89 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'templates',
       paged: 'memory',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          args: {
+            type: 'string',
+          },
+          cmd: {
+            type: 'array',
+            items: {
+              type: 'string',
+            },
+          },
+          entrypoint: {
+            type: 'array',
+            items: {
+              type: 'string',
+            },
+          },
+          disk: {
+            type: 'number',
+          },
+          env: {
+            type: 'object',
+            open: true,
+          },
+          image: {
+            type: 'string',
+          },
+          ports: {
+            type: 'array',
+            items: {
+              type: 'string',
+            },
+          },
+          registry: {
+            type: 'string',
+          },
+          id: {
+            type: 'string',
+          },
+          name: {
+            type: 'string',
+          },
+          mounts: {
+            type: 'object',
+            properties: {
+              persistent: {
+                type: 'object',
+                properties: {
+                  size: {
+                    type: 'number',
+                  },
+                  path: {
+                    type: 'string',
+                  },
+                },
+              },
+            },
+          },
+          serverless: {
+            type: 'boolean',
+          },
+          public: {
+            type: 'boolean',
+          },
+          category: {
+            type: 'string',
+            enum: ['CPU', 'NVIDIA', 'AMD'],
+          },
+          startSsh: {
+            type: 'boolean',
+          },
+          startJupyter: {
+            type: 'boolean',
+          },
+          allowedCudaVersions: {
+            type: 'array',
+            items: {
+              type: 'string',
+            },
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -6134,6 +8043,11 @@ export const generatedTools: GeneratedTool[] = [
           type: 'string',
           description:
             'pagination.nextCursor from the previous page; omit for the first page.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
     },
@@ -6166,6 +8080,129 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'queuedPods',
       paged: 'api',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+          },
+          status: {
+            type: 'string',
+            enum: ['QUEUED', 'DEPLOYED', 'FAILED', 'EXPIRED', 'CANCELLED'],
+          },
+          podId: {
+            type: 'string',
+          },
+          failureReason: {
+            type: 'string',
+            enum: [
+              'INSUFFICIENT_BALANCE',
+              'SPENDING_LIMIT',
+              'GPU_QUOTA_EXCEEDED',
+              'GPU_CONCURRENCY_EXCEEDED',
+              'ORG_RESTRICTED',
+              'UNKNOWN',
+            ],
+          },
+          name: {
+            type: 'string',
+          },
+          image: {
+            type: 'string',
+          },
+          templateId: {
+            type: 'string',
+          },
+          gpu: {
+            type: 'object',
+            properties: {
+              id: {
+                type: 'string',
+              },
+              count: {
+                type: 'number',
+              },
+            },
+          },
+          cloud: {
+            type: 'string',
+            enum: ['SECURE', 'COMMUNITY'],
+          },
+          dataCenterIds: {
+            type: 'array',
+            items: {
+              type: 'string',
+            },
+          },
+          queue: {
+            type: 'object',
+            properties: {
+              startsAt: {
+                type: 'string',
+              },
+              expiresAt: {
+                type: 'string',
+              },
+              allowedHours: {
+                type: 'object',
+                properties: {
+                  monday: {
+                    type: 'array',
+                    items: {
+                      type: 'number',
+                    },
+                  },
+                  tuesday: {
+                    type: 'array',
+                    items: {
+                      type: 'number',
+                    },
+                  },
+                  wednesday: {
+                    type: 'array',
+                    items: {
+                      type: 'number',
+                    },
+                  },
+                  thursday: {
+                    type: 'array',
+                    items: {
+                      type: 'number',
+                    },
+                  },
+                  friday: {
+                    type: 'array',
+                    items: {
+                      type: 'number',
+                    },
+                  },
+                  saturday: {
+                    type: 'array',
+                    items: {
+                      type: 'number',
+                    },
+                  },
+                  sunday: {
+                    type: 'array',
+                    items: {
+                      type: 'number',
+                    },
+                  },
+                },
+              },
+              notifyEmail: {
+                type: 'string',
+              },
+            },
+          },
+          createdAt: {
+            type: 'string',
+          },
+          resolvedAt: {
+            type: 'string',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -6182,6 +8219,11 @@ export const generatedTools: GeneratedTool[] = [
           default: 20,
           description:
             'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
     },
@@ -6205,6 +8247,17 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'registries',
       paged: 'memory',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+          },
+          name: {
+            type: 'string',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -6221,6 +8274,11 @@ export const generatedTools: GeneratedTool[] = [
           type: 'string',
           description:
             'pagination.nextCursor from the previous page; omit for the first page.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
     },
@@ -6249,6 +8307,26 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'secrets',
       paged: 'memory',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+          },
+          name: {
+            type: 'string',
+          },
+          description: {
+            type: 'string',
+          },
+          createdAt: {
+            type: 'string',
+          },
+          valueLastUpdatedAt: {
+            type: 'string',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -6270,6 +8348,11 @@ export const generatedTools: GeneratedTool[] = [
           type: 'string',
           description:
             'pagination.nextCursor from the previous page; omit for the first page.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
     },
@@ -6316,6 +8399,35 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'records',
       paged: 'memory',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          startTime: {
+            type: 'string',
+          },
+          endTime: {
+            type: 'string',
+          },
+          totalAmount: {
+            type: 'number',
+          },
+          gpuAmount: {
+            type: 'number',
+          },
+          cpuAmount: {
+            type: 'number',
+          },
+          diskAmount: {
+            type: 'number',
+          },
+          feeAmount: {
+            type: 'number',
+          },
+          serverlessId: {
+            type: 'string',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -6359,6 +8471,11 @@ export const generatedTools: GeneratedTool[] = [
           type: 'string',
           description:
             'pagination.nextCursor from the previous page; omit for the first page.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
       $defs: {
@@ -6404,6 +8521,18 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'resources',
       paged: 'api',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+          },
+          type: {
+            type: 'string',
+            enum: ['POD', 'CLUSTER', 'SERVERLESS_ENDPOINT', 'NETWORK_VOLUME'],
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -6425,6 +8554,11 @@ export const generatedTools: GeneratedTool[] = [
           default: 20,
           description:
             'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
       required: ['id'],
@@ -6458,6 +8592,26 @@ export const generatedTools: GeneratedTool[] = [
     list: {
       rows: 'tags',
       paged: 'api',
+      rowSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+          },
+          key: {
+            type: 'string',
+          },
+          value: {
+            type: 'string',
+          },
+          createdAt: {
+            type: 'string',
+          },
+          updatedAt: {
+            type: 'string',
+          },
+        },
+      },
     },
     inputSchema: {
       type: 'object',
@@ -6474,6 +8628,11 @@ export const generatedTools: GeneratedTool[] = [
           default: 20,
           description:
             'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+        jmespath: {
+          type: 'string',
+          description:
+            'JMESPath filter/columns/sort on the rows; fields: describe-tool.',
         },
       },
     },
@@ -8192,3 +10351,332 @@ export const generatedTools: GeneratedTool[] = [
     },
   },
 ];
+
+// Row schemas of the hand-written lists (generator-config listRowSchemas).
+export const generatedRowSchemas: Record<string, RowSchema> = {
+  'list-endpoints': {
+    type: 'object',
+    properties: {
+      args: {
+        type: 'string',
+      },
+      cmd: {
+        type: 'array',
+        items: {
+          type: 'string',
+        },
+      },
+      entrypoint: {
+        type: 'array',
+        items: {
+          type: 'string',
+        },
+      },
+      disk: {
+        type: 'number',
+      },
+      env: {
+        type: 'object',
+        open: true,
+      },
+      image: {
+        type: 'string',
+      },
+      ports: {
+        type: 'array',
+        items: {
+          type: 'string',
+        },
+      },
+      registry: {
+        type: 'string',
+      },
+      costCenter: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+          },
+          value: {
+            type: 'string',
+          },
+        },
+      },
+      tags: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            id: {
+              type: 'string',
+            },
+            key: {
+              type: 'string',
+            },
+            value: {
+              type: 'string',
+            },
+          },
+        },
+      },
+      id: {
+        type: 'string',
+      },
+      name: {
+        type: 'string',
+      },
+      type: {
+        type: 'string',
+        enum: ['QUEUE', 'LOAD_BALANCER'],
+      },
+      requestUrls: {
+        type: 'object',
+        properties: {
+          run: {
+            type: 'string',
+          },
+          runSync: {
+            type: 'string',
+          },
+          status: {
+            type: 'string',
+          },
+          stream: {
+            type: 'string',
+          },
+          cancel: {
+            type: 'string',
+          },
+          retry: {
+            type: 'string',
+          },
+          purgeQueue: {
+            type: 'string',
+          },
+          health: {
+            type: 'string',
+          },
+          base: {
+            type: 'string',
+          },
+        },
+      },
+      gpu: {
+        type: 'object',
+        properties: {
+          pools: {
+            type: 'array',
+            items: {
+              type: 'string',
+            },
+          },
+          excludedTypes: {
+            type: 'array',
+            items: {
+              type: 'string',
+            },
+          },
+          count: {
+            type: 'number',
+          },
+          allowedCudaVersions: {
+            type: 'array',
+            items: {
+              type: 'string',
+            },
+          },
+          minCudaVersion: {
+            type: 'string',
+          },
+        },
+      },
+      cpu: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            id: {
+              type: 'string',
+            },
+            vcpuCount: {
+              type: 'number',
+            },
+            memory: {
+              type: 'number',
+            },
+          },
+        },
+      },
+      workers: {
+        type: 'object',
+        properties: {
+          min: {
+            type: 'number',
+          },
+          max: {
+            type: 'number',
+          },
+          idleTimeout: {
+            type: 'number',
+          },
+          initTimeout: {
+            type: 'number',
+          },
+        },
+      },
+      scaling: {
+        type: 'object',
+        properties: {
+          type: {
+            type: 'string',
+            enum: ['QUEUE_DELAY', 'REQUEST_COUNT'],
+          },
+          queueDelay: {
+            type: 'number',
+          },
+          requestCount: {
+            type: 'number',
+          },
+        },
+      },
+      dataCenterIds: {
+        type: 'array',
+        items: {
+          type: 'string',
+        },
+      },
+      networkVolumes: {
+        type: 'array',
+        items: {
+          type: 'string',
+        },
+      },
+      mounts: {
+        type: 'object',
+        properties: {
+          network: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                volumeId: {
+                  type: 'string',
+                },
+              },
+            },
+          },
+          global: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                volumeId: {
+                  type: 'string',
+                },
+              },
+            },
+          },
+        },
+      },
+      timeout: {
+        type: 'number',
+      },
+      flashboot: {
+        type: 'string',
+        enum: ['OFF', 'FLASHBOOT', 'PRIORITY_FLASHBOOT'],
+      },
+      createdAt: {
+        type: 'string',
+      },
+      userId: {
+        type: 'string',
+      },
+      version: {
+        type: 'number',
+      },
+    },
+  },
+  'list-templates': {
+    type: 'object',
+    properties: {
+      args: {
+        type: 'string',
+      },
+      cmd: {
+        type: 'array',
+        items: {
+          type: 'string',
+        },
+      },
+      entrypoint: {
+        type: 'array',
+        items: {
+          type: 'string',
+        },
+      },
+      disk: {
+        type: 'number',
+      },
+      env: {
+        type: 'object',
+        open: true,
+      },
+      image: {
+        type: 'string',
+      },
+      ports: {
+        type: 'array',
+        items: {
+          type: 'string',
+        },
+      },
+      registry: {
+        type: 'string',
+      },
+      id: {
+        type: 'string',
+      },
+      name: {
+        type: 'string',
+      },
+      mounts: {
+        type: 'object',
+        properties: {
+          persistent: {
+            type: 'object',
+            properties: {
+              size: {
+                type: 'number',
+              },
+              path: {
+                type: 'string',
+              },
+            },
+          },
+        },
+      },
+      serverless: {
+        type: 'boolean',
+      },
+      public: {
+        type: 'boolean',
+      },
+      category: {
+        type: 'string',
+        enum: ['CPU', 'NVIDIA', 'AMD'],
+      },
+      startSsh: {
+        type: 'boolean',
+      },
+      startJupyter: {
+        type: 'boolean',
+      },
+      allowedCudaVersions: {
+        type: 'array',
+        items: {
+          type: 'string',
+        },
+      },
+    },
+  },
+};

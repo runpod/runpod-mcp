@@ -12,9 +12,11 @@ import { dispatchGeneratedTool } from '#src/specgen/dispatch';
 import { generatedTools } from '#src/specgen/generated/tools.gen';
 import { curatedTools, SERVER_INSTRUCTIONS } from '#src/specgen/server';
 import { redactSecretEnv } from '#src/specgen/redact';
+import { serializeResult } from '#src/specgen/serialize';
 import {
   DEFAULT_LIST_LIMIT,
   MAX_LIST_LIMIT,
+  maskCursorBytes,
   PAGE_BUDGET_BYTES,
   pageInMemory,
   type Pagination,
@@ -84,8 +86,7 @@ test('no list description restates or contradicts the paging rules', () => {
 
 // ---------------------------------------------------------------- helpers
 
-const bytes = (value: unknown) =>
-  Buffer.byteLength(JSON.stringify(value, null, 2));
+const bytes = (value: unknown) => Buffer.byteLength(serializeResult(value));
 
 type Row = { id: string; text: string };
 const rows = (count: number, text: (i: number) => string = () => 'x') =>
@@ -216,7 +217,7 @@ test('a page is measured as sent, after secret env values are redacted', () => {
   );
   assert.ok(result.ok);
   const sent = Buffer.byteLength(
-    JSON.stringify(redactSecretEnv(result.payload), null, 2)
+    serializeResult(redactSecretEnv(result.payload))
   );
   assert.ok(sent <= PAGE_BUDGET_BYTES, `sent ${sent} B`);
 });
@@ -589,11 +590,13 @@ test('the endpoint metrics reads page like every other list', () => {
     'get-endpoint-worker-metrics',
   ]) {
     const tool = generatedTools.find((candidate) => candidate.name === name)!;
+    const { rowSchema, ...list } = tool.list!;
     assert.deepEqual(
-      tool.list,
+      list,
       { rows: 'records', paged: 'api', defaultLimit: 100 },
       name
     );
+    assert.ok(rowSchema.properties, name);
   }
 });
 
@@ -653,11 +656,19 @@ test('a cursor cannot set the page size sent to the API', async () => {
   // Re-encode the cursor with an extra page-size field and a valid
   // checksum, as a determined agent could.
   const raw = first.pagination.nextCursor as string;
-  const position = JSON.parse(
-    Buffer.from(raw.slice(3).split('.')[0], 'base64url').toString('utf8')
+  // Opaque: a plain base64 decode shows no readable fields to rebuild.
+  assert.throws(() =>
+    JSON.parse(
+      Buffer.from(raw.slice(3).split('.')[0], 'base64url').toString('utf8')
+    )
   );
-  const body = Buffer.from(
-    JSON.stringify({ ...position, l: 1_000_000 })
+  const position = JSON.parse(
+    maskCursorBytes(
+      Buffer.from(raw.slice(3).split('.')[0], 'base64url')
+    ).toString('utf8')
+  );
+  const body = maskCursorBytes(
+    Buffer.from(JSON.stringify({ ...position, l: 1_000_000 }))
   ).toString('base64url');
   const checksum = createHash('sha256')
     .update(body)
@@ -672,9 +683,9 @@ test('a cursor cannot set the page size sent to the API', async () => {
   // A rebuilt cursor with a negative position or a non-string API cursor is
   // refused before any API call.
   const sign = (fields: Record<string, unknown>) => {
-    const b = Buffer.from(JSON.stringify({ ...position, ...fields })).toString(
-      'base64url'
-    );
+    const b = maskCursorBytes(
+      Buffer.from(JSON.stringify({ ...position, ...fields }))
+    ).toString('base64url');
     return `v1.${b}.${createHash('sha256').update(b).digest('base64url').slice(0, 6)}`;
   };
   for (const fields of [{ s: -5 }, { c: 1 }, { m: 7 }]) {
@@ -745,8 +756,7 @@ test('an empty success from a list answers with its status, not nothing', async 
 test('no page passes 25,000 tokens or 50,000 characters, in any script', async () => {
   const tokenizer = getTokenizer();
   const tokens = (value: unknown) =>
-    tokenizer.encode(JSON.stringify(value, null, 2).normalize('NFKC'), 'all')
-      .length;
+    tokenizer.encode(serializeResult(value).normalize('NFKC'), 'all').length;
   const scripts = {
     'rare CJK': '龘靐齉麤鬱灪爩驫鱻',
     Japanese: '日本語のログ出力です。',
@@ -767,7 +777,7 @@ test('no page passes 25,000 tokens or 50,000 characters, in any script', async (
         ).payload,
       ],
     ] as const) {
-      const text = JSON.stringify(page, null, 2);
+      const text = serializeResult(page);
       assert.ok(
         tokens(page) <= 25_000,
         `${name} ${path}: ${tokens(page)} tokens`

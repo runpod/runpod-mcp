@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  generateRowSchemas,
   generateTools,
   type SpecDocument,
 } from '../specgen/generator/tools.js';
@@ -525,17 +526,291 @@ test('a list operation is paged through the shared list contract', () => {
     }),
     {}
   );
-  assert.deepEqual(tool.list, { rows: 'things', paged: 'api' });
+  assert.deepEqual(tool.list, {
+    rows: 'things',
+    paged: 'api',
+    rowSchema: { type: 'object', open: true },
+  });
   const properties = tool.inputSchema.properties as Record<
     string,
     Record<string, unknown>
   >;
+  assert.equal(properties.jmespath.type, 'string');
   assert.equal(properties.limit.maximum, 100);
   assert.equal(properties.limit.default, 20);
   assert.equal(properties.cursor.type, 'string');
   assert.equal(
     tool.description,
     'List things. Returns things, newest first, cursor-paginated.'
+  );
+});
+
+// The jmespath field check (src/specgen/list-query.ts) reads this shape:
+// refs resolved, allOf/anyOf/oneOf merged, null dropped from types, integer
+// as number, enums kept, free-form maps open.
+test("a list carries its rows' fields for the jmespath check", () => {
+  const spec = listSpec({
+    things: { type: 'array', items: { $ref: '#/components/schemas/Thing' } },
+    pagination: { type: 'object' },
+  });
+  spec.components = {
+    schemas: {
+      Thing: {
+        allOf: [
+          { type: 'object', properties: { id: { type: 'string' } } },
+          {
+            type: 'object',
+            properties: {
+              status: { type: 'string', enum: ['ON', 'OFF', null] },
+              size: { type: ['integer', 'null'] },
+              env: { type: 'object', additionalProperties: { type: 'string' } },
+              gpu: {
+                anyOf: [
+                  { type: 'object', properties: { id: { type: 'string' } } },
+                  {
+                    type: 'object',
+                    properties: { count: { type: 'integer' } },
+                  },
+                ],
+              },
+              tags: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: { key: { type: 'string' } },
+                },
+              },
+            },
+          },
+        ],
+      },
+    },
+  };
+  const [tool] = generateTools(spec, {});
+  assert.deepEqual(tool.list?.rowSchema, {
+    type: 'object',
+    properties: {
+      id: { type: 'string' },
+      status: { type: 'string', enum: ['ON', 'OFF'] },
+      size: { type: 'number' },
+      env: { type: 'object', open: true },
+      gpu: {
+        type: 'object',
+        properties: { id: { type: 'string' }, count: { type: 'number' } },
+      },
+      tags: {
+        type: 'array',
+        items: { type: 'object', properties: { key: { type: 'string' } } },
+      },
+    },
+  });
+});
+
+// A discriminated oneOf (the spec's endpoint scaling) keeps every variant's
+// enum values, and a field the variants type differently goes unchecked:
+// a value one variant allows must never be refused. allOf is the opposite
+// of oneOf/anyOf: its parts all hold at once, so a type-only part and an
+// enum-only part combine into one type-and-enum constraint, not drop to
+// just the type.
+test("a list merges its rows' variants without losing a value", () => {
+  const spec = listSpec({
+    things: { type: 'array', items: { $ref: '#/components/schemas/Thing' } },
+    pagination: { type: 'object' },
+  });
+  spec.components = {
+    schemas: {
+      Thing: {
+        type: 'object',
+        properties: {
+          scaling: {
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  type: { type: 'string', enum: ['QUEUE_DELAY'] },
+                  queueDelay: { type: 'integer' },
+                },
+              },
+              {
+                type: 'object',
+                properties: {
+                  type: { type: 'string', enum: ['REQUEST_COUNT'] },
+                  requestCount: { type: 'integer' },
+                },
+              },
+            ],
+          },
+          value: { anyOf: [{ type: 'string' }, { type: 'number' }] },
+          kind: { allOf: [{ type: 'string' }, { enum: ['a', 'b'] }] },
+        },
+      },
+    },
+  };
+  const [tool] = generateTools(spec, {});
+  assert.deepEqual(tool.list?.rowSchema.properties, {
+    scaling: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', enum: ['QUEUE_DELAY', 'REQUEST_COUNT'] },
+        queueDelay: { type: 'number' },
+        requestCount: { type: 'number' },
+      },
+    },
+    value: {},
+    kind: { type: 'string', enum: ['a', 'b'] },
+  });
+});
+
+// A variant with no type, enum or properties of its own documents no
+// constraint at all ("any other shape, not yet documented"): the field
+// becomes fully open, not narrowed to what the other variants happen to
+// type, since a value the undocumented variant allows must never be refused.
+test('an undocumented union member leaves the field open, not narrowed to the typed member', () => {
+  const spec = listSpec({
+    things: { type: 'array', items: { $ref: '#/components/schemas/Thing' } },
+    pagination: { type: 'object' },
+  });
+  spec.components = {
+    schemas: {
+      Thing: {
+        type: 'object',
+        properties: {
+          scaling: {
+            oneOf: [
+              {
+                type: 'object',
+                properties: { type: { type: 'string', enum: ['QUEUE_DELAY'] } },
+              },
+              { description: 'Any other shape, not yet documented.' },
+            ],
+          },
+        },
+      },
+    },
+  };
+  const [tool] = generateTools(spec, {});
+  assert.deepEqual(tool.list?.rowSchema.properties, { scaling: {} });
+});
+
+// The standard "nullable ref" union (anyOf: [$ref, {type: 'null'}], as the
+// spec writes every nullable object field) is not an undocumented variant:
+// it carries no shape of its own on purpose, and must not make the merge
+// drop the ref's real shape down to {} as if it were a catch-all member.
+test("a nullable ref ({type: 'null'}) keeps the ref's shape, not {}", () => {
+  const spec = listSpec({
+    things: { type: 'array', items: { $ref: '#/components/schemas/Thing' } },
+    pagination: { type: 'object' },
+  });
+  spec.components = {
+    schemas: {
+      Thing: {
+        type: 'object',
+        properties: {
+          proxy: {
+            anyOf: [
+              { $ref: '#/components/schemas/Endpoint' },
+              { type: 'null' },
+            ],
+          },
+        },
+      },
+      Endpoint: {
+        type: 'object',
+        properties: { host: { type: 'string' } },
+      },
+    },
+  };
+  const [tool] = generateTools(spec, {});
+  assert.deepEqual(tool.list?.rowSchema.properties, {
+    proxy: { type: 'object', properties: { host: { type: 'string' } } },
+  });
+});
+
+// A $ref cycle (a buggy or malformed upstream spec, not something this
+// server controls) must not hang generation: resolveRef's hop cap bounds it.
+test('a circular $ref stops row-schema generation instead of hanging', () => {
+  const spec = listSpec({
+    things: { type: 'array', items: { $ref: '#/components/schemas/A' } },
+    pagination: { type: 'object' },
+  });
+  spec.components = {
+    schemas: {
+      A: { $ref: '#/components/schemas/B' },
+      B: { $ref: '#/components/schemas/A' },
+    },
+  };
+  const [tool] = generateTools(spec, {});
+  assert.deepEqual(tool.list?.rowSchema, {});
+});
+
+test("a list's row schema takes items, open maps and types from merged parts", () => {
+  const spec = listSpec({
+    things: { type: 'array', items: { $ref: '#/components/schemas/Thing' } },
+    pagination: { type: 'object' },
+  });
+  spec.components = {
+    schemas: {
+      Thing: {
+        allOf: [
+          // A part with fields and no type of its own.
+          { properties: { id: { type: 'string' } } },
+          {
+            type: 'object',
+            properties: {
+              labels: {
+                allOf: [
+                  { type: 'array' },
+                  { items: { type: 'string', enum: ['a'] } },
+                ],
+              },
+              meta: {
+                allOf: [
+                  { type: 'object' },
+                  { additionalProperties: { type: 'string' } },
+                ],
+              },
+              mixed: {
+                type: 'object',
+                properties: { known: { type: 'string' } },
+                additionalProperties: true,
+              },
+              // Fields from one part, any key from another; no type anywhere.
+              split: {
+                allOf: [
+                  { properties: { a: { type: 'string' } } },
+                  { additionalProperties: true },
+                ],
+              },
+              untyped: { properties: { b: { type: 'number' } } },
+            },
+          },
+        ],
+      },
+    },
+  };
+  const [tool] = generateTools(spec, {});
+  assert.deepEqual(tool.list?.rowSchema, {
+    type: 'object',
+    properties: {
+      id: { type: 'string' },
+      labels: { type: 'array', items: { type: 'string', enum: ['a'] } },
+      meta: { type: 'object', open: true },
+      mixed: {
+        type: 'object',
+        properties: { known: { type: 'string' } },
+        open: true,
+      },
+      split: {
+        type: 'object',
+        properties: { a: { type: 'string' } },
+        open: true,
+      },
+      untyped: { type: 'object', properties: { b: { type: 'number' } } },
+    },
+  });
+  assert.throws(
+    () => generateRowSchemas(spec, { listRowSchemas: { 'list-x': 'Missing' } }),
+    /list-x names a missing schema Missing/
   );
 });
 

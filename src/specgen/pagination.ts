@@ -11,7 +11,9 @@
 // place goes unnoticed. Resume after the marked row if agents hit repeats.
 
 import { createHash } from 'node:crypto';
+import type { ListQuery } from './list-query.js';
 import { redactSecretEnv } from './redact.js';
+import { serializeResult } from './serialize.js';
 
 export const DEFAULT_LIST_LIMIT = 20;
 export const MAX_LIST_LIMIT = 100;
@@ -79,12 +81,17 @@ interface Position {
 
 const CURSOR_PREFIX = 'v1.';
 
+// jmespath is left out: on a list the API pages a cursor is a place in the
+// raw rows, so an agent may add or change the expression and continue from
+// it. Where a cursor is a place in the expression's result (a sort, a list
+// held whole), queryKey puts the expression into the tool part instead.
 const fingerprint = (tool: string, args: Record<string, unknown>): string => {
   const rest = Object.entries(args)
     .filter(
       ([key, value]) =>
         key !== 'limit' &&
         key !== 'cursor' &&
+        key !== 'jmespath' &&
         value !== undefined &&
         !isEmptyValue(value)
     )
@@ -120,10 +127,26 @@ const changedBefore = (
     position > rows.length ||
     markOf(rows[position - 1]) !== mark);
 
+// The cursor's JSON is masked before base64 (not a secret — XOR against a
+// hash of a public string), so a plain decode shows no readable fields:
+// given a readable cursor, agents built their own from the decoded fields
+// instead of copying it (seen with GLM-5.3 on compact results). The checksum
+// and argument fingerprint below catch damage and cross-tool reuse, not a
+// deliberate reconstruction from source — harmless here, since a cursor only
+// ever returns read-only list data the same caller could already request by
+// choosing its own arguments.
+const CURSOR_MASK = createHash('sha256').update('runpod-mcp cursor').digest();
+export const maskCursorBytes = (bytes: Buffer): Buffer =>
+  Buffer.from(
+    bytes.map((byte, i) => byte ^ CURSOR_MASK[i % CURSOR_MASK.length])
+  );
+
 // The position, then a checksum of it: a cursor damaged anywhere (an agent
 // copying a long string wrong) is refused instead of read as another page.
 const encodeCursor = (position: Position): string => {
-  const body = Buffer.from(JSON.stringify(position)).toString('base64url');
+  const body = maskCursorBytes(Buffer.from(JSON.stringify(position))).toString(
+    'base64url'
+  );
   return `${CURSOR_PREFIX}${body}.${hash(body, 6)}`;
 };
 
@@ -134,7 +157,7 @@ const INVALID_CURSOR = {
     code: 'invalid_cursor',
     error:
       'This cursor does not belong to this list call: it is damaged, or the tool or other arguments changed since it was issued.',
-    hint: 'Pass pagination.nextCursor unchanged with the same arguments, or omit cursor to start from the first page.',
+    hint: 'Pass pagination.nextCursor unchanged with the same arguments. After changing an argument this cursor is bound to, call again without cursor to start from the first page.',
   },
 };
 
@@ -150,7 +173,7 @@ function readCursor(
   if (!body || checksum !== hash(body, 6)) return INVALID_CURSOR;
   try {
     const position = JSON.parse(
-      Buffer.from(body, 'base64url').toString('utf8')
+      maskCursorBytes(Buffer.from(body, 'base64url')).toString('utf8')
     ) as Position;
     const count = (n: unknown) =>
       n === undefined || (Number.isInteger(n) && (n as number) >= 0);
@@ -176,9 +199,9 @@ export function cursorError(
 }
 
 // As server.ts sends a result: secret env values redacted (the placeholder
-// can be longer than the value), then indented JSON.
+// can be longer than the value), then serializeResult.
 const resultBytes = (value: unknown): number =>
-  Buffer.byteLength(JSON.stringify(redactSecretEnv(value), null, 2));
+  Buffer.byteLength(serializeResult(redactSecretEnv(value)));
 
 // The most rows from the front of `rows` whose page fits the budget; at
 // least one, so a single oversized row still moves the list on.
@@ -201,6 +224,8 @@ export type Pagination = {
   nextCursor: string | null;
   listChanged?: true;
   note?: string;
+  /** Filtered lists the API pages: raw rows read up to nextCursor. */
+  scanned?: number;
 };
 
 const MORE = 'More results exist. Pass cursor=nextCursor to fetch them.';
@@ -352,4 +377,257 @@ export function pageFromApi<T>(
   };
   const page = candidate.slice(0, fittingRows(candidate, pageOf));
   return { ok: true, payload: pageOf(page) };
+}
+
+// ---- jmespath on lists (src/specgen/list-query.ts, docs/list-queries.md) ----
+
+// At most this many API pages (of 100 rows) are read per call when a list the
+// API pages is filtered: enough to fill a page from a sparse filter, bounded
+// so one call stays a few seconds.
+export const MAX_SCAN_PAGES = 5;
+
+const SCAN_MORE =
+  'More rows remain: call again with cursor=nextCursor and the same jmespath to keep scanning before concluding a match is absent.';
+
+type ApiPagination = { hasNextPage?: boolean; nextCursor?: string | null };
+export type FetchedPage<T> =
+  | { ok: true; rows: T[]; api?: ApiPagination }
+  | { ok: false; status: number; payload: unknown };
+export type FetchPage<T> = (query: {
+  limit: number;
+  cursor?: string;
+}) => Promise<FetchedPage<T>>;
+type Failure = { ok: false; status: number; payload: unknown };
+
+const withNote = (pagination: Pagination, lead: string, extra = {}) => ({
+  ...pagination,
+  ...extra,
+  note: [lead, pagination.note].filter(Boolean).join(' '),
+});
+
+/** One page of a list the API pages, filtered, shaped or sorted by
+ *  `query` when there is one. */
+export async function listFromApi<T>(
+  tool: string,
+  args: Record<string, unknown>,
+  fetchPage: FetchPage<T>,
+  build: Build<unknown>,
+  defaultLimit: number = DEFAULT_LIST_LIMIT,
+  query?: ListQuery
+): Promise<PageResult | Failure> {
+  if (!query) {
+    const request = apiPageRequest(tool, args, defaultLimit);
+    if (!request.ok) return request;
+    const fetched = await fetchPage(request.query);
+    if (!fetched.ok) return fetched;
+    return pageFromApi(fetched.rows, fetched.api, request, build);
+  }
+  return query.mode === 'sorted'
+    ? sortedFromApi(tool, args, fetchPage, build, defaultLimit, query)
+    : scanFromApi(tool, args, fetchPage, build, defaultLimit, query);
+}
+
+// A cursor into an expression's result belongs to that expression.
+const queryKey = (tool: string, args: Record<string, unknown>) =>
+  `${tool} jmespath=${String(args.jmespath)}`;
+
+/** cursorError for a list held whole, with or without a query. */
+export const listCursorError = (
+  tool: string,
+  args: Record<string, unknown>,
+  query?: ListQuery
+) => cursorError(query ? queryKey(tool, args) : tool, args);
+
+/** A list held whole, through `query`: run once on every row, then paged. */
+export function queryInMemory<T>(
+  tool: string,
+  items: T[],
+  args: Record<string, unknown>,
+  build: Build<unknown>,
+  defaultLimit: number = DEFAULT_LIST_LIMIT,
+  query: ListQuery
+): PageResult | Failure {
+  const result = query.run(items);
+  if (!result.ok) return result;
+  const lead = `${result.rows.length} of ${items.length} rows matched.`;
+  return pageInMemory(
+    queryKey(tool, args),
+    result.rows,
+    args,
+    (page, pagination) =>
+      build(
+        page,
+        withNote(
+          pagination,
+          pagination.hasNextPage
+            ? `${lead} Send the same jmespath with cursor=nextCursor.`
+            : lead
+        )
+      ),
+    defaultLimit
+  );
+}
+
+// Sorting needs every row: read the list from its start, at most
+// MAX_SCAN_PAGES API pages, then page the sorted result like a list held
+// whole (an offset cursor; each page reads the list again).
+async function sortedFromApi<T>(
+  tool: string,
+  args: Record<string, unknown>,
+  fetchPage: FetchPage<T>,
+  build: Build<unknown>,
+  defaultLimit: number,
+  query: ListQuery
+): Promise<PageResult | Failure> {
+  const bad = listCursorError(tool, args, query);
+  if (bad) return bad;
+  const all: T[] = [];
+  let cursor: string | undefined;
+  for (let pages = 0; ; pages++) {
+    if (pages === MAX_SCAN_PAGES)
+      return {
+        ok: false,
+        status: 400,
+        payload: {
+          code: 'jmespath_list_too_long',
+          error: `sort_by needs the whole list, and this list has more than ${MAX_SCAN_PAGES * MAX_LIST_LIMIT} rows.`,
+          hint: 'Filter without sort_by and compare the matches yourself, or narrow the list with its other arguments first.',
+        },
+      };
+    const fetched = await fetchPage({
+      limit: MAX_LIST_LIMIT,
+      ...(cursor ? { cursor } : {}),
+    });
+    if (!fetched.ok) return fetched;
+    const { api } = fetched;
+    if (
+      api?.hasNextPage === true &&
+      (!api.nextCursor || api.nextCursor === cursor)
+    )
+      return NO_API_CURSOR;
+    all.push(...fetched.rows);
+    if (!api?.hasNextPage) break;
+    cursor = api.nextCursor as string;
+  }
+  return queryInMemory(tool, all, args, build, defaultLimit, query);
+}
+
+// Row by row: read API pages from the cursor, keep the rows that match, and
+// stop once a page is full or MAX_SCAN_PAGES API pages were read. The cursor
+// always counts raw API rows, so a projection without `id` resumes right.
+async function scanFromApi<T>(
+  tool: string,
+  args: Record<string, unknown>,
+  fetchPage: FetchPage<T>,
+  build: Build<unknown>,
+  defaultLimit: number,
+  query: ListQuery
+): Promise<PageResult | Failure> {
+  const request = apiPageRequest(tool, args, defaultLimit);
+  if (!request.ok) return request;
+  const { limit, q } = request;
+  const fromStart = request.query.cursor === undefined && request.skip === 0;
+  type Match = { out: unknown; page: number; index: number; raw: T };
+  const matches: Match[] = [];
+  // Per API page read: its cursor, the first row read, and its length.
+  const pages: { cursor?: string; from: number; length: number }[] = [];
+  let cursor = request.query.cursor;
+  let from = request.skip;
+  let next: string | null = null;
+  let changed = false;
+  while (pages.length < MAX_SCAN_PAGES) {
+    const fetched = await fetchPage({
+      limit: MAX_LIST_LIMIT,
+      ...(cursor ? { cursor } : {}),
+    });
+    if (!fetched.ok) return fetched;
+    const { rows, api } = fetched;
+    if (
+      api?.hasNextPage === true &&
+      (!api.nextCursor || api.nextCursor === cursor)
+    )
+      return NO_API_CURSOR;
+    if (!pages.length && from > 0)
+      changed = changedBefore(rows, from, request.mark);
+    for (let index = from; index < rows.length; index++) {
+      const matched = query.match(rows[index]);
+      if (!matched.ok) return matched;
+      if (matched.out !== undefined)
+        matches.push({
+          out: matched.out,
+          page: pages.length,
+          index,
+          raw: rows[index],
+        });
+    }
+    pages.push({ cursor, from, length: rows.length });
+    next = api?.hasNextPage ? (api.nextCursor as string) : null;
+    if (matches.length >= limit || next === null) break;
+    cursor = next;
+    from = 0;
+  }
+  const read = (upTo: number, lastIndex?: number) =>
+    pages
+      .slice(0, upTo + 1)
+      .reduce(
+        (sum, page, at) =>
+          sum +
+          Math.max(
+            (at === upTo && lastIndex !== undefined
+              ? lastIndex + 1
+              : page.length) - page.from,
+            0
+          ),
+        0
+      );
+  const pageOf = (page: Match[]) => {
+    // Matches found but not returned: resume right after the last returned
+    // one. Otherwise every row read is done: resume at the API's next page.
+    const last = page[page.length - 1];
+    let position: Position | null = next ? { c: next, q } : null;
+    if (page.length < matches.length) {
+      // The last returned match ended its API page: the next one starts it.
+      const after =
+        last.index + 1 >= pages[last.page].length
+          ? pages[last.page + 1].cursor
+          : undefined;
+      position = after
+        ? { c: after, q }
+        : {
+            ...(pages[last.page].cursor ? { c: pages[last.page].cursor } : {}),
+            s: last.index + 1,
+            m: markOf(last.raw),
+            q,
+          };
+    }
+    const scanned =
+      page.length < matches.length
+        ? read(last.page, last.index)
+        : read(pages.length - 1);
+    const note = [
+      page.length === 0 && position
+        ? `No match in the ${scanned} rows scanned. An empty page is not the end of the list.`
+        : `${page.length} of ${scanned} rows scanned matched.`,
+      changed && CHANGED,
+      position && SCAN_MORE,
+    ]
+      .filter(Boolean)
+      .join(' ');
+    return build(
+      page.map((match) => match.out),
+      {
+        ...pagination(
+          page.length,
+          position,
+          changed,
+          fromStart && next === null ? matches.length : undefined
+        ),
+        scanned,
+        note,
+      }
+    );
+  };
+  const candidate = matches.slice(0, limit);
+  const fitted = fittingRows(candidate, pageOf);
+  return { ok: true, payload: pageOf(candidate.slice(0, fitted)) };
 }

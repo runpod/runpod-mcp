@@ -3,3 +3,5 @@ packages:
   - packages/*
 allowBuilds:
   esbuild: true
+patchedDependencies:
+  jmespath@0.16.0: patches/jmespath@0.16.0.patch
