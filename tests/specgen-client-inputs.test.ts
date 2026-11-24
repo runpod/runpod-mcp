@@ -60,7 +60,11 @@ test('a Markdown success body is returned as text, not parsed as JSON', async ()
         headers: { 'content-type': 'text/markdown; charset=utf-8' },
       }),
   });
-  for (const name of ['get-template-readme', 'get-public-template-readme']) {
+  for (const name of [
+    'get-template-readme',
+    'get-public-template-readme',
+    'get-catalog-repo-readme',
+  ]) {
     const tool = generatedTools.find((tool) => tool.name === name)!;
     assert.equal(tool.textResponse, true);
     const result = await dispatchGeneratedTool(sdk, tool, { id: 'tpl_abc' });
@@ -75,6 +79,7 @@ test('only non-JSON success bodies are flagged as text', () => {
     .map((tool) => tool.name)
     .sort();
   assert.deepEqual(flagged, [
+    'get-catalog-repo-readme',
     'get-public-template-readme',
     'get-template-readme',
   ]);

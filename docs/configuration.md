@@ -18,7 +18,7 @@ ALP (Agent Learning Protocol) tools — `report_feedback` / `save_to_journal` / 
 
 `search-docs` searches the Runpod docs, curated support knowledge, blog and site through the runpod-assistant knowledge index. The hosted server lists it when it holds the index's service key (`KNOWLEDGE_SEARCH_URL` + `RUNPOD_ASSISTANT_API_KEY`) and searches in-process. Local stdio calls the hosted `POST /api/search` with your own API key, so the npm package never holds the service key. Capacity rejections from the index (503, 429) are retried server-side with jittered backoff.
 
-To develop against a non-production API, pair the runtime override with the matching spec: `SPEC_URL=... pnpm spec:pull && pnpm generate` (see `specgen/README.md`).
+To develop against a non-production API, pair the runtime override with the matching spec: pull it in runpod/js-sdk (`SPEC_URL=... pnpm spec:pull`), then run `RUNPOD_SPEC_PATH=<that file> pnpm generate` here (see `specgen/README.md`).
 
 ## Hiding a concept rule
 
@@ -28,7 +28,7 @@ To develop against a non-production API, pair the runtime override with the matc
 
 Every tool call is checked against the tool's full input schema, the same schema `tools/list` advertises (or, for a tool that lists only its call shape, the one `describe-tool` returns). That covers types, enums, ranges and nested fields, not just the top-level required and unknown arguments the server always rejects. `MCP_SCHEMA_VALIDATION` decides what happens to a call that fails the check. It defaults to `shadow`: the call goes out unchanged, and the server logs a `schema_violation` line carrying the tool name and, for each failure, the schema keyword and schema location, never argument values. `enforce` rejects the call before any request is built, with an `invalid_arguments` error that lists each field's path, the problem, and the allowed values for an enum. `off` skips the check.
 
-Shadow is the default because the vendored OpenAPI spec can be stricter than the live API, and a call the API accepts must not be blocked by this server. Read the `schema_violation` lines before switching to `enforce`. A violation on a call that succeeded upstream points at a spec mismatch, to fix in `packages/typescript-api-sdk/scripts/fix_spec.py`. A `null` sent for an optional argument, at any depth, counts as omitted, as do the empty optional query parameters the server already drops. Formats are not checked here; the API checks them. The ALP write tools, which never return an error by design, are not checked.
+Shadow is the default because the vendored OpenAPI spec can be stricter than the live API, and a call the API accepts must not be blocked by this server. Read the `schema_violation` lines before switching to `enforce`. A violation on a call that succeeded upstream points at a spec mismatch, to fix in the spec patch layer in runpod/js-sdk (`packages/typescript-api-sdk/scripts/fix_spec.py`). The fix reaches this server when it moves to the SDK release that contains it and regenerates the tools. A `null` sent for an optional argument, at any depth, counts as omitted, as do the empty optional query parameters the server already drops. Formats are not checked here; the API checks them. The ALP write tools, which never return an error by design, are not checked.
 
 ## Serverless endpoint types and autoscaling
 
