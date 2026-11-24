@@ -1,4 +1,4 @@
-// Code generated from specgen/spec/openapi.yaml by specgen/generator/generate-tools.ts; DO NOT EDIT.
+// Code generated from @runpod/typescript-api-sdk/spec/openapi.yaml by specgen/generator/generate-tools.ts; DO NOT EDIT.
 
 export interface GeneratedToolParam {
   name: string;
@@ -3098,6 +3098,104 @@ export const generatedTools: GeneratedTool[] = [
     },
   },
   {
+    name: 'get-catalog-repo',
+    title: 'Get catalog repo',
+    operationId: 'getCatalogRepo',
+    description:
+      'Get a Hub repo. Returns one repo with its listed release, including the GPUs, disk and environment variables the release deploys with. Read the README at `GET /v2/catalog/repos/{id}/readme`.',
+    method: 'GET',
+    path: '/v2/catalog/repos/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Repo ID, as returned by `list-catalog-repos`.',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'get-catalog-repo-readme',
+    title: 'Get catalog repo readme',
+    operationId: 'getCatalogRepoReadme',
+    description:
+      "Get a Hub repo README. Returns the README of the repo's listed release as raw Markdown. Returns `404` when the repo does not exist or its release has no README.",
+    method: 'GET',
+    path: '/v2/catalog/repos/{id}/readme',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    textResponse: true,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Repo ID, as returned by `list-catalog-repos`.',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'get-catalog-template',
+    title: 'Get catalog template',
+    operationId: 'getCatalogTemplate',
+    description:
+      "Get a public template. Returns one public template. This covers every public template, including ones the list leaves out: your own, and ones below the list's quality bar. For a versioned line, `versions` lists every version with its tags. The top-level fields are the requested tag's when you ask by tag ID, and the first current tag's when you ask by line ID. A line ID resolves only while the line has a current tag; its published tags resolve regardless, with `currentVersion` null when nothing is current.",
+    method: 'GET',
+    path: '/v2/catalog/templates/{id}',
+    params: [
+      {
+        name: 'id',
+        location: 'path',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description:
+            "A template ID from `list-public-templates`, a versioned line's ID, or any of its tags' IDs.",
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
     name: 'get-cluster',
     title: 'Get cluster',
     operationId: 'getCluster',
@@ -3731,6 +3829,14 @@ export const generatedTools: GeneratedTool[] = [
         name: 'minCudaVersion',
         location: 'query',
       },
+      {
+        name: 'minVcpuCountPerGpu',
+        location: 'query',
+      },
+      {
+        name: 'minRamPerGpu',
+        location: 'query',
+      },
     ],
     hasBody: false,
     annotations: {
@@ -3798,6 +3904,20 @@ export const generatedTools: GeneratedTool[] = [
           pattern: '^\\d+(\\.\\d+)?$',
           description:
             'Lowest acceptable CUDA version to scope availability and lowest-price calculations to, compared numerically.',
+        },
+        minVcpuCountPerGpu: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 4096,
+          description:
+            "Minimum host vCPUs per GPU for availability filtering, multiplied by `count` to match pod create's placement. Requires include=AVAILABILITY.",
+        },
+        minRamPerGpu: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 65536,
+          description:
+            "Minimum host system RAM (GB) per GPU for availability filtering, multiplied by `count` to match pod create's placement. This is host RAM, not the GPU VRAM in `memory`. Requires include=AVAILABILITY.",
         },
       },
       required: ['id'],
@@ -4088,7 +4208,7 @@ export const generatedTools: GeneratedTool[] = [
     title: 'Get public template readme',
     operationId: 'getPublicTemplateReadme',
     description:
-      'Get a public template README. Returns the README of a public catalog template as raw Markdown. Only public templates are served. Returns `404` when the template does not exist, is not public, or has no README. Use `GET /v2/templates/{id}/readme` for your private templates.',
+      "Get a public template README. Returns the README of a public catalog template as raw Markdown. `id` is a template ID, a versioned tag's ID or a versioned line's `versionedTemplateId`. A line returns its own README, or its current tag's when it has none. Only public templates are served. Returns `404` when the template does not exist, is not public, or has no README. Use `GET /v2/templates/{id}/readme` for your private templates.",
     method: 'GET',
     path: '/v2/catalog/templates/{id}/readme',
     params: [
@@ -4517,6 +4637,174 @@ export const generatedTools: GeneratedTool[] = [
           default: 'day',
           description: 'Length of each billing time bucket.',
           examples: ['day'],
+        },
+      },
+    },
+  },
+  {
+    name: 'list-catalog-repos',
+    title: 'List catalog repos',
+    operationId: 'listCatalogRepos',
+    description:
+      'List Hub repos. Returns Hub repos: GitHub repositories Runpod builds into images you can deploy. Open one with `GET /v2/catalog/repos/{id}` for its listed release and deploy defaults. Without `search`, repos are ordered most deployed first.',
+    method: 'GET',
+    path: '/v2/catalog/repos',
+    params: [
+      {
+        name: 'search',
+        location: 'query',
+      },
+      {
+        name: 'product',
+        location: 'query',
+        explode: false,
+      },
+      {
+        name: 'minReliability',
+        location: 'query',
+      },
+      {
+        name: 'category',
+        location: 'query',
+      },
+      {
+        name: 'tags',
+        location: 'query',
+        explode: false,
+      },
+      {
+        name: 'source',
+        location: 'query',
+      },
+      {
+        name: 'owner',
+        location: 'query',
+      },
+      {
+        name: 'orderBy',
+        location: 'query',
+      },
+      {
+        name: 'orderDirection',
+        location: 'query',
+      },
+      {
+        name: 'cursor',
+        location: 'query',
+      },
+      {
+        name: 'limit',
+        location: 'query',
+      },
+    ],
+    hasBody: false,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    list: {
+      rows: 'repos',
+      paged: 'api',
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        search: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 200,
+          description:
+            'Search text, matched case-insensitively. Every word must match.',
+        },
+        product: {
+          type: 'array',
+          items: {
+            $ref: '#/$defs/HubProduct',
+          },
+          description:
+            'Only return items that deploy to one of these products. Comma-separated.',
+        },
+        minReliability: {
+          type: 'number',
+          format: 'double',
+          minimum: 0,
+          maximum: 1,
+          description:
+            'Only return items whose `health.reliability` is at least this value. Unscored items are excluded when this is set.',
+        },
+        category: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 100,
+          description:
+            'Only return items in this category, matched exactly and case-insensitively.',
+        },
+        tags: {
+          type: 'array',
+          items: {
+            type: 'string',
+            minLength: 1,
+          },
+          description:
+            'Only return items carrying every one of these tags, matched exactly and case-insensitively. Comma-separated.',
+        },
+        source: {
+          type: 'string',
+          enum: ['official', 'community'],
+          description:
+            '`official` returns repos Runpod publishes (see `official` on the repo). `community` returns the rest. Omit for all.',
+        },
+        owner: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 100,
+          description:
+            'Only return repos from this GitHub owner, matched exactly and case-insensitively.',
+        },
+        orderBy: {
+          $ref: '#/$defs/CatalogOrderBy',
+          description:
+            'Defaults to `RELEVANCE` when `search` is set and `POPULAR` otherwise. `RELEVANCE` without `search` is rejected.',
+          type: 'string',
+        },
+        orderDirection: {
+          $ref: '#/$defs/CatalogOrderDirection',
+          description:
+            'Sort direction. Defaults to `ASC` for `orderBy=NAME` and `DESC` otherwise.',
+          type: 'string',
+        },
+        cursor: {
+          type: 'string',
+          description:
+            'pagination.nextCursor from the previous page; omit for the first page.',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          default: 20,
+          description:
+            'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
+        },
+      },
+      $defs: {
+        CatalogOrderBy: {
+          type: 'string',
+          description:
+            '`RELEVANCE` orders by search match and is only valid with `search`.',
+          enum: ['RELEVANCE', 'POPULAR', 'UPDATED', 'HEALTH', 'NAME'],
+        },
+        CatalogOrderDirection: {
+          type: 'string',
+          description: 'Sort direction.',
+          enum: ['ASC', 'DESC'],
+        },
+        HubProduct: {
+          type: 'string',
+          description: 'Where a catalog item deploys.',
+          enum: ['POD', 'SERVERLESS'],
         },
       },
     },
@@ -5452,6 +5740,14 @@ export const generatedTools: GeneratedTool[] = [
         name: 'minCudaVersion',
         location: 'query',
       },
+      {
+        name: 'minVcpuCountPerGpu',
+        location: 'query',
+      },
+      {
+        name: 'minRamPerGpu',
+        location: 'query',
+      },
     ],
     hasBody: false,
     annotations: {
@@ -5521,6 +5817,20 @@ export const generatedTools: GeneratedTool[] = [
           pattern: '^\\d+(\\.\\d+)?$',
           description:
             'Lowest acceptable CUDA version to scope availability and lowest-price calculations to, compared numerically.',
+        },
+        minVcpuCountPerGpu: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 4096,
+          description:
+            "Minimum host vCPUs per GPU for availability filtering, multiplied by `count` to match pod create's placement. Requires include=AVAILABILITY.",
+        },
+        minRamPerGpu: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 65536,
+          description:
+            "Minimum host system RAM (GB) per GPU for availability filtering, multiplied by `count` to match pod create's placement. This is host RAM, not the GPU VRAM in `memory`. Requires include=AVAILABILITY.",
         },
         limit: {
           type: 'integer',
@@ -6092,12 +6402,49 @@ export const generatedTools: GeneratedTool[] = [
     title: 'List public templates',
     operationId: 'listPublicTemplates',
     description:
-      "List public templates. Returns the public template catalog. `source` selects which slice: `official` (the default) is Runpod-curated templates, `verified` is community templates Runpod has verified, and `community` is everything else other users have shared publicly. Both pod and serverless templates appear — use each entry's `serverless` flag to tell them apart. `registry` is always null for templates you don't own. Your own templates (public or private) are managed under `/v2/templates`; fetch any individual template — catalog or owned — via `/v2/templates/{id}`. At most 100 templates are returned.",
+      "List public templates. Returns the public template catalog. `source` selects which slice: `official` (the default) is Runpod-curated templates, `verified` is community templates Runpod has verified, and `community` is everything else other users have shared publicly. Both pod and serverless templates appear — use each entry's `serverless` flag to tell them apart. `registry` is always null for templates you don't own. Your own templates (public or private) are managed under `/v2/templates`; fetch any individual template — catalog or owned — via `/v2/templates/{id}`. A versioned template line appears as its current tags: each is a deployable template of its own. Without `search`, templates are ordered most deployed first: by the number of unique users who deployed them.",
     method: 'GET',
     path: '/v2/catalog/templates',
     params: [
       {
         name: 'source',
+        location: 'query',
+      },
+      {
+        name: 'search',
+        location: 'query',
+      },
+      {
+        name: 'type',
+        location: 'query',
+      },
+      {
+        name: 'product',
+        location: 'query',
+        explode: false,
+      },
+      {
+        name: 'minReliability',
+        location: 'query',
+      },
+      {
+        name: 'category',
+        location: 'query',
+      },
+      {
+        name: 'orderBy',
+        location: 'query',
+      },
+      {
+        name: 'orderDirection',
+        location: 'query',
+      },
+      {
+        name: 'cursor',
+        location: 'query',
+      },
+      {
+        name: 'limit',
         location: 'query',
       },
     ],
@@ -6110,7 +6457,7 @@ export const generatedTools: GeneratedTool[] = [
     },
     list: {
       rows: 'templates',
-      paged: 'memory',
+      paged: 'api',
     },
     inputSchema: {
       type: 'object',
@@ -6122,6 +6469,57 @@ export const generatedTools: GeneratedTool[] = [
           description:
             'Which slice of the catalog to return: `official` for Runpod-curated templates (default), `verified` for Runpod-verified community templates, or `community` for all other publicly shared templates.',
         },
+        search: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 200,
+          description:
+            'Search text, matched case-insensitively. Every word must match.',
+        },
+        type: {
+          $ref: '#/$defs/CatalogTemplateType',
+          description:
+            'Only return standalone (`SINGLE`) or versioned (`VERSIONED`) templates. Omit for both.',
+          type: 'string',
+        },
+        product: {
+          type: 'array',
+          items: {
+            $ref: '#/$defs/HubProduct',
+          },
+          description:
+            'Only return items that deploy to one of these products. Comma-separated.',
+        },
+        minReliability: {
+          type: 'number',
+          format: 'double',
+          minimum: 0,
+          maximum: 1,
+          description:
+            'Only return items whose `health.reliability` is at least this value. Unscored items are excluded when this is set.',
+        },
+        category: {
+          $ref: '#/$defs/TemplateCategory',
+          description: 'Only return templates in this category.',
+          type: 'string',
+        },
+        orderBy: {
+          $ref: '#/$defs/CatalogOrderBy',
+          description:
+            'Defaults to `RELEVANCE` when `search` is set and `POPULAR` otherwise. `RELEVANCE` without `search` is rejected.',
+          type: 'string',
+        },
+        orderDirection: {
+          $ref: '#/$defs/CatalogOrderDirection',
+          description:
+            'Sort direction. Defaults to `ASC` for `orderBy=NAME` and `DESC` otherwise.',
+          type: 'string',
+        },
+        cursor: {
+          type: 'string',
+          description:
+            'pagination.nextCursor from the previous page; omit for the first page.',
+        },
         limit: {
           type: 'integer',
           minimum: 1,
@@ -6130,10 +6528,35 @@ export const generatedTools: GeneratedTool[] = [
           description:
             'Up to this many rows per page, 1-100 (default 20); a page can hold fewer.',
         },
-        cursor: {
+      },
+      $defs: {
+        CatalogOrderBy: {
           type: 'string',
           description:
-            'pagination.nextCursor from the previous page; omit for the first page.',
+            '`RELEVANCE` orders by search match and is only valid with `search`.',
+          enum: ['RELEVANCE', 'POPULAR', 'UPDATED', 'HEALTH', 'NAME'],
+        },
+        CatalogOrderDirection: {
+          type: 'string',
+          description: 'Sort direction.',
+          enum: ['ASC', 'DESC'],
+        },
+        CatalogTemplateType: {
+          type: 'string',
+          description:
+            "`SINGLE` is a standalone template. `VERSIONED` is a tag of a versioned template line; the list shows each line's current tags.",
+          enum: ['SINGLE', 'VERSIONED'],
+        },
+        HubProduct: {
+          type: 'string',
+          description: 'Where a catalog item deploys.',
+          enum: ['POD', 'SERVERLESS'],
+        },
+        TemplateCategory: {
+          type: 'string',
+          description:
+            'Controls how the template is grouped and filtered in the Runpod console. It does not affect hardware selection, scheduling, or billing. `CPU` — CPU-only workloads. `NVIDIA` — NVIDIA GPU workloads. `AMD` — AMD GPU workloads',
+          enum: ['CPU', 'NVIDIA', 'AMD'],
         },
       },
     },

@@ -378,7 +378,14 @@ test('generation freshness check rejects stale schemas and config without writin
 // the same amount, so each keeps the headroom it had before (about 239 and
 // 27 tokens): the gate fails at the same margin, and this change does not
 // use up the room the next tool change needs.
-const GENERATED_SURFACE_TOKEN_BUDGET = 28_275;
+// 2026-11-24, the MCP takes its spec from @runpod/typescript-api-sdk 0.10.0
+// (production on 2026-11-24): get-catalog-template, list-catalog-repos,
+// get-catalog-repo and get-catalog-repo-readme are new, list-public-templates
+// gains search, filters and paging, and the GPU type tools gain
+// minVcpuCountPerGpu and minRamPerGpu. The four catalog skill operations are
+// excluded (list-guides and read-guide serve the same skills). Generated
+// 28,036 to 30,006 tokens (+1,970); the budget keeps its 239 tokens of headroom.
+const GENERATED_SURFACE_TOKEN_BUDGET = 30_245;
 const CURATED_SURFACE_TOKEN_BUDGET = 7_175;
 // No one argument description may crowd the surface. The cap was 400 B; the
 // longest description on 2026-11-20 is 94 tokens (377 B, templateId on

@@ -1,11 +1,24 @@
-# Controls the spec-to-tools generation. Every operation in
-# specgen/spec/openapi.yaml
+# Controls the spec-to-tools generation. Every operation in the spec that
+# @runpod/typescript-api-sdk ships (specgen/generator/spec-path.ts)
 # becomes a tool unless excluded here; the parity test enforces exactly that.
 
 # The generator rejects exclusions whose operationId is absent from the spec.
 # replacedBy identifies the curated replacement in src/specgen/tools/; once
 # the server is wired, tests/specgen-gates.test.ts checks replacement registration.
 exclude:
+  listCatalogSkills:
+    replacedBy: list-guides
+    reason: skills are the official plugin's playbooks, already served by
+      list-guides and read-guide; a second copy would cost tokens every session
+  getCatalogSkill:
+    replacedBy: list-guides
+    reason: skill metadata; list-guides and read-guide serve the same skills
+  getCatalogSkillReadme:
+    replacedBy: read-guide
+    reason: the skill text; read-guide serves the same skills
+  getCatalogSkillVariant:
+    replacedBy: read-guide
+    reason: a skill variant's steps; read-guide serves the same skills
   listEndpoints:
     replacedBy: list-endpoints
     reason: trimmed, paginated output — full endpoint objects carry env maps

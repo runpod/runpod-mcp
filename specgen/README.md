@@ -12,9 +12,6 @@ resources. The only intended difference is wait budgets: 45 s hosted
 ## Layout
 
 ```
-specgen/spec/openapi.yaml       v2 OpenAPI document. SDK 0.8.0 ships no spec;
-                                from SDK 0.9.0 the generator uses the copy in
-                                node_modules/@runpod/typescript-api-sdk/spec/
 specgen/generator-config.yaml   exclusions / renames / description overrides
 specgen/generator/              the generator (pnpm generate:tools)
 src/specgen/generated/          machine-written output — never hand-edited
