@@ -128,13 +128,13 @@ components:
                 title: Bad Request
                 status: 400
                 detail: request could not be processed
-    TemplateReadme:
+    Readme:
       headers:
         RateLimit:
           $ref: '#/components/headers/RateLimit'
         RateLimit-Policy:
           $ref: '#/components/headers/RateLimit-Policy'
-      description: The template's README, as Markdown.
+      description: The README, as Markdown.
       content:
         text/markdown; charset=utf-8:
           schema:
@@ -275,6 +275,24 @@ components:
                 title: Too Many Requests
                 status: 429
                 detail: rate limit exceeded for the minute window
+    SkillVariant:
+      headers:
+        RateLimit:
+          $ref: '#/components/headers/RateLimit'
+        RateLimit-Policy:
+          $ref: '#/components/headers/RateLimit-Policy'
+      description: The variant's steps, as Markdown.
+      content:
+        text/markdown; charset=utf-8:
+          schema:
+            type: string
+          examples:
+            variant:
+              summary: Successful response
+              value: |
+                # Prebuilt image
+
+                1. Create a pod from the ComfyUI template.
   headers:
     RateLimit:
       description: Live quota state for the caller, per the IETF ratelimit-headers draft.
@@ -380,6 +398,75 @@ components:
         minimum: 1
         maximum: 1000
       example: 50
+    CatalogSearchQuery:
+      name: search
+      in: query
+      required: false
+      description: Search text, matched case-insensitively. Every word must match. A skill matches on
+        its name, description and tags; a repo also on its GitHub owner and name; a template on its name
+        and image, and a versioned template's tag also on its line's name and description. Enables `orderBy=RELEVANCE`,
+        which becomes the default order.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 200
+      example: comfyui
+    CatalogProducts:
+      name: product
+      in: query
+      required: false
+      description: Only return items that deploy to one of these products. Comma-separated.
+      style: form
+      explode: false
+      schema:
+        type: array
+        items:
+          $ref: '#/components/schemas/HubProduct'
+      example: [SERVERLESS]
+    CatalogMinReliability:
+      name: minReliability
+      in: query
+      required: false
+      description: Only return items whose `health.reliability` is at least this value. Unscored items
+        are excluded when this is set.
+      schema:
+        type: number
+        format: double
+        minimum: 0
+        maximum: 1
+      example: 0.9
+    CatalogOrderDirection:
+      name: orderDirection
+      in: query
+      required: false
+      description: Sort direction. Defaults to `ASC` for `orderBy=NAME` and `DESC` otherwise.
+      schema:
+        $ref: '#/components/schemas/CatalogOrderDirection'
+      example: DESC
+    CatalogCategory:
+      name: category
+      in: query
+      required: false
+      description: Only return items in this category, matched exactly and case-insensitively.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 100
+      example: image
+    CatalogTags:
+      name: tags
+      in: query
+      required: false
+      description: Only return items carrying every one of these tags, matched exactly and case-insensitively.
+        Comma-separated.
+      style: form
+      explode: false
+      schema:
+        type: array
+        items:
+          type: string
+          minLength: 1
+      example: [comfyui, image]
     PaginationLimitBuilds:
       name: limit
       in: query
@@ -592,6 +679,29 @@ components:
         type: string
         pattern: ^\d+(\.\d+)?$
       example: '12.1'
+    MinVcpuCountPerGpuFilter:
+      name: minVcpuCountPerGpu
+      in: query
+      required: false
+      description: Minimum host vCPUs per GPU for availability filtering, multiplied by `count` to match
+        pod create's placement. Requires include=AVAILABILITY (400 otherwise).
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 4096
+      example: 8
+    MinRamPerGpuFilter:
+      name: minRamPerGpu
+      in: query
+      required: false
+      description: Minimum host system RAM (GB) per GPU for availability filtering, multiplied by `count`
+        to match pod create's placement. This is host RAM, not the GPU VRAM in `memory`. Requires include=AVAILABILITY
+        (400 otherwise).
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 65536
+      example: 100
     CpuProductFilter:
       name: product
       in: query
@@ -4112,8 +4222,7 @@ components:
     TemplateList:
       type: object
       description: >
-        A bare list of templates. `GET /v2/catalog/templates` returns it as-is (the catalog is a capped,
-        curated set); `GET /v2/templates` composes it with the pagination block via ListTemplatesResponse.
+        A bare list of templates. `GET /v2/templates` composes it with the pagination block via ListTemplatesResponse.
       required: [templates]
       properties:
         templates:
@@ -4599,6 +4708,675 @@ components:
         required whenever availability is requested.
       x-enum-varnames: [ProductPod, ProductCluster, ProductServerless]
       enum: [POD, CLUSTER, SERVERLESS]
+    CatalogOrderDirection:
+      type: string
+      description: Sort direction.
+      enum: [ASC, DESC]
+      x-enum-varnames: [CatalogOrderDirectionAsc, CatalogOrderDirectionDesc]
+    HubProduct:
+      type: string
+      description: Where a catalog item deploys.
+      enum: [POD, SERVERLESS]
+      x-enum-varnames: [HubProductPod, HubProductServerless]
+    CatalogOrderBy:
+      type: string
+      description: '`RELEVANCE` orders by search match and is only valid with `search`. `POPULAR` orders
+        by deploys (repos) or deployers (templates), `UPDATED` by `updatedAt`, `HEALTH` by `health.reliability`
+        (unscored items last in either direction) and `NAME` by `name`. Ties break on `id`.'
+      enum: [RELEVANCE, POPULAR, UPDATED, HEALTH, NAME]
+      x-enum-varnames:
+        - CatalogOrderByRelevance
+        - CatalogOrderByPopular
+        - CatalogOrderByUpdated
+        - CatalogOrderByHealth
+        - CatalogOrderByName
+    CatalogTemplateType:
+      type: string
+      description: '`SINGLE` is a standalone template. `VERSIONED` is a tag of a versioned template line;
+        the list shows each line''s current tags.'
+      enum: [SINGLE, VERSIONED]
+      x-enum-varnames:
+        - CatalogTemplateTypeSingle
+        - CatalogTemplateTypeVersioned
+    CatalogTemplate:
+      description: A public template. Every `id` is deployable and resolves at `GET /v2/templates/{id}`.
+      allOf:
+        - $ref: '#/components/schemas/Template'
+        - $ref: '#/components/schemas/CatalogTemplateHubFields'
+    ListCatalogTemplatesResponse:
+      type: object
+      required: [templates, pagination]
+      properties:
+        templates:
+          type: array
+          items:
+            $ref: '#/components/schemas/CatalogTemplate'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+    CatalogSkillMcpSupport:
+      type: string
+      description: 'Whether an agent with only the Runpod MCP server can finish the skill: `FULL`, `PARTIAL`,
+        or `NONE`.'
+      enum: [FULL, PARTIAL, NONE]
+      x-enum-varnames:
+        - CatalogSkillMcpSupportFull
+        - CatalogSkillMcpSupportPartial
+        - CatalogSkillMcpSupportNone
+    CatalogSkillOrderBy:
+      type: string
+      description: '`RELEVANCE` orders by search match and is only valid with `search`; `UPDATED` by `updatedAt`;
+        `NAME` by `name`. Ties break on `id`.'
+      enum: [RELEVANCE, UPDATED, NAME]
+      x-enum-varnames:
+        - CatalogSkillOrderByRelevance
+        - CatalogSkillOrderByUpdated
+        - CatalogSkillOrderByName
+    CatalogSkill:
+      type: object
+      description: 'A skill: a step-by-step guide, published by Runpod, that an agent follows to set up
+        a workload. Read its README at `GET /v2/catalog/skills/{id}/readme`.'
+      required:
+        - id
+        - name
+        - description
+        - tags
+        - mcpSupport
+        - official
+        - sourceUrl
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          description: Stable skill identifier.
+          examples: [02-comfyui-pod]
+        name:
+          type: string
+          examples: [ComfyUI server on a pod]
+        description:
+          type: string
+          examples:
+            - Provisions a GPU pod, gets ComfyUI running with a checkpoint and the default text-to-image
+              workflow, and returns a proxy URL for the web UI.
+        tags:
+          type: array
+          description: Lowercase kebab-case labels.
+          items:
+            type: string
+          examples: [[comfyui, image-generation, pod]]
+        mcpSupport:
+          description: Null when the skill doesn't say.
+          anyOf:
+            - $ref: '#/components/schemas/CatalogSkillMcpSupport'
+            - type: 'null'
+        official:
+          type: boolean
+          description: Whether Runpod publishes it. Always true for skills.
+          examples: [true]
+        sourceUrl:
+          type: string
+          format: uri
+          description: Raw GitHub URL of the skill's README.
+          examples:
+            - https://raw.githubusercontent.com/runpod/runpod-plugins-official/main/plugins/runpod/skills/runpod/golden-paths/02-comfyui-pod/README.md
+        createdAt:
+          type: string
+          format: date-time
+          examples: ['2026-07-14T21:20:11Z']
+        updatedAt:
+          type: string
+          format: date-time
+          examples: ['2026-10-13T14:51:26Z']
+    CatalogSkillVariant:
+      type: object
+      description: One way to follow a skill, such as using a prebuilt image or building your own. Read
+        it at `GET /v2/catalog/skills/{id}/variants/{variantId}`.
+      required: [id, name, description, default, sourceUrl]
+      properties:
+        id:
+          type: string
+          examples: [variant-b-prebuilt]
+        name:
+          type: string
+          examples: [Prebuilt official image]
+        description:
+          type: [string, 'null']
+          examples:
+            - Deploy Runpod's official ComfyUI image. Least effort, most reliable.
+        default:
+          type: boolean
+          description: Whether this is the skill's default variant. At most one variant per skill is the
+            default.
+          examples: [true]
+        sourceUrl:
+          type: string
+          format: uri
+          description: Raw GitHub URL of the variant.
+          examples:
+            - https://raw.githubusercontent.com/runpod/runpod-plugins-official/main/plugins/runpod/skills/runpod/golden-paths/02-comfyui-pod/variant-b-prebuilt.md
+    CatalogSkillLink:
+      type: object
+      description: A skill or reference document the skill relies on.
+      required: [name, url]
+      properties:
+        name:
+          type: string
+          examples: [Storage]
+        url:
+          type: string
+          format: uri
+          description: Raw GitHub URL of the skill or reference document.
+          examples:
+            - https://raw.githubusercontent.com/runpod/runpod-plugins-official/main/plugins/runpod/skills/runpod-usage/reference/storage.md
+    CatalogSkillDetail:
+      description: A skill with its variants.
+      allOf:
+        - $ref: '#/components/schemas/CatalogSkill'
+        - type: object
+          required: [variants, supplementalSkills]
+          properties:
+            variants:
+              type: array
+              items:
+                $ref: '#/components/schemas/CatalogSkillVariant'
+            supplementalSkills:
+              type: array
+              items:
+                $ref: '#/components/schemas/CatalogSkillLink'
+    ListCatalogSkillsResponse:
+      type: object
+      required: [skills, pagination]
+      properties:
+        skills:
+          type: array
+          items:
+            $ref: '#/components/schemas/CatalogSkill'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+    ReliabilityTier:
+      type: string
+      description: '`UNVERIFIED` while `reliability` is null. Otherwise `UNSTABLE` below Runpod''s cutoff
+        for the object''s kind and `VERIFIED` at or above it. Set your own bar with `minReliability`.'
+      enum: [VERIFIED, UNVERIFIED, UNSTABLE]
+      x-enum-varnames:
+        - ReliabilityTierVerified
+        - ReliabilityTierUnverified
+        - ReliabilityTierUnstable
+    HubHealth:
+      type: object
+      description: How reliably a catalog item deploys.
+      required: [tier, reliability, computedAt]
+      properties:
+        tier:
+          $ref: '#/components/schemas/ReliabilityTier'
+        reliability:
+          type: [number, 'null']
+          format: double
+          minimum: 0
+          maximum: 1
+          description: Share of recent deploys that reached a healthy state; 0.9 means 90%. Null until
+            there is enough deploy history to score.
+          examples: [0.97]
+        computedAt:
+          type: [string, 'null']
+          format: date-time
+          description: When `reliability` was last computed. Null when never scored.
+          examples: ['2026-11-04T06:00:00Z']
+    HubGpuCompatibility:
+      type: object
+      description: The GPUs and CUDA versions a catalog item declares. Empty lists mean it declares none.
+      required:
+        - recommendedGpuTypeIds
+        - incompatibleGpuTypeIds
+        - minVramInGb
+        - allowedCudaVersions
+        - minCudaVersion
+      properties:
+        recommendedGpuTypeIds:
+          type: array
+          description: GPU type IDs, as in `GET /v2/catalog/gpus`.
+          items:
+            type: string
+          examples: [[NVIDIA GeForce RTX 4090, NVIDIA L4]]
+        incompatibleGpuTypeIds:
+          type: array
+          description: GPU type IDs, as in `GET /v2/catalog/gpus`.
+          items:
+            type: string
+          examples: [[]]
+        minVramInGb:
+          type: [integer, 'null']
+          description: Null when it declares none. Repos never declare one.
+          examples: [24]
+        allowedCudaVersions:
+          type: array
+          items:
+            type: string
+          examples: [['12.8', '12.9']]
+        minCudaVersion:
+          type: [string, 'null']
+          description: The lowest CUDA version it runs on, applied when `allowedCudaVersions` is empty.
+            Null when it declares none. Templates never declare one.
+          examples: ['12.4']
+    CatalogRepository:
+      type: object
+      description: The GitHub repository a Hub repo is built from.
+      required: [owner, name, url, ownerAvatarUrl]
+      properties:
+        owner:
+          type: string
+          examples: [runpod-workers]
+        name:
+          type: string
+          examples: [worker-comfyui]
+        url:
+          type: string
+          format: uri
+          examples: ['https://github.com/runpod-workers/worker-comfyui']
+        ownerAvatarUrl:
+          type: [string, 'null']
+          format: uri
+          examples: ['https://avatars.githubusercontent.com/u/123456?v=4']
+    CatalogRepoStats:
+      type: object
+      required: [deploys, stars, views]
+      properties:
+        deploys:
+          type: integer
+          examples: [41210]
+        stars:
+          type: integer
+          description: GitHub stars.
+          examples: [812]
+        views:
+          type: integer
+          description: Hub page views.
+          examples: [190455]
+    CatalogRepoReleaseSummary:
+      type: object
+      description: The release the Hub lists for a repo.
+      required: [id, tag, releasedAt, image, deployable]
+      properties:
+        id:
+          type: string
+          description: Hub release ID.
+          examples: [cm8a1b2c3000108l4d5e6f7g8]
+        tag:
+          type: string
+          description: Git tag.
+          examples: [v5.4.1]
+        releasedAt:
+          type: string
+          format: date-time
+          examples: ['2026-10-28T00:00:00Z']
+        image:
+          type: [string, 'null']
+          description: The built image. Null while the build is still running.
+          examples: ['runpod/worker-comfyui:5.4.1-base']
+        deployable:
+          type: boolean
+          description: Whether the release has a built image to deploy.
+          examples: [true]
+    CatalogRepo:
+      type: object
+      description: 'A Hub repo: a GitHub repository Runpod builds into a deployable image. Read its README
+        at `GET /v2/catalog/repos/{id}/readme`.'
+      required:
+        - id
+        - name
+        - description
+        - products
+        - category
+        - tags
+        - official
+        - repository
+        - health
+        - stats
+        - latestRelease
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          examples: [cm862p99s000008ilegk86af6]
+        name:
+          type: string
+          examples: [ComfyUI]
+        description:
+          type: string
+          description: Empty when the repo has none.
+          examples: [ComfyUI as a serverless API.]
+        products:
+          type: array
+          items:
+            $ref: '#/components/schemas/HubProduct'
+          examples: [[SERVERLESS]]
+        category:
+          type: [string, 'null']
+          examples: [image]
+        tags:
+          type: array
+          items:
+            type: string
+          examples: [[comfyui]]
+        official:
+          type: boolean
+          description: 'Whether Runpod publishes it: true for repos owned by the `runpod-workers` GitHub
+            organization.'
+          examples: [true]
+        repository:
+          $ref: '#/components/schemas/CatalogRepository'
+        health:
+          $ref: '#/components/schemas/HubHealth'
+        stats:
+          $ref: '#/components/schemas/CatalogRepoStats'
+        latestRelease:
+          description: Null until a release is listed.
+          anyOf:
+            - $ref: '#/components/schemas/CatalogRepoReleaseSummary'
+            - type: 'null'
+        createdAt:
+          type: string
+          format: date-time
+          examples: ['2025-03-01T00:00:00Z']
+        updatedAt:
+          type: string
+          format: date-time
+          description: When the listed release was published.
+          examples: ['2026-10-28T00:00:00Z']
+    CatalogEnvInput:
+      type: object
+      description: An environment variable the repo reads, with its default.
+      required: [key, default, description, required]
+      properties:
+        key:
+          type: string
+          examples: [MODEL_NAME]
+        default:
+          type: [string, 'null']
+          description: The default value as a string. Null when there is none.
+          examples: [Tongyi-MAI/Z-Image-Turbo]
+        description:
+          type: [string, 'null']
+          examples: [Hugging Face model to load.]
+        required:
+          type: boolean
+          description: Whether the repo needs a value for this variable.
+          examples: [true]
+    CatalogRepoDeployDefaults:
+      type: object
+      description: How the release deploys by default, from its `hub.json`.
+      required:
+        - computeType
+        - endpointType
+        - cpu
+        - gpuTypeIds
+        - gpuCount
+        - containerDiskInGb
+        - gpuCompatibility
+        - volume
+        - env
+      properties:
+        computeType:
+          type: string
+          enum: [GPU, CPU]
+          x-enum-varnames: [CatalogRepoComputeTypeGpu, CatalogRepoComputeTypeCpu]
+          examples: [GPU]
+        endpointType:
+          description: The endpoint `type` to create when deploying as a serverless endpoint.
+          $ref: '#/components/schemas/EndpointType'
+        cpu:
+          description: The CPU flavor and vCPU count when `computeType` is `CPU`. A release that names
+            no flavor gets `cpu3g`, and one that names no vCPU count gets 4. Null for GPU.
+          anyOf:
+            - $ref: '#/components/schemas/BaseCpuConfig'
+            - type: 'null'
+        gpuTypeIds:
+          type: array
+          description: GPU type IDs the release deploys to, as in `GET /v2/catalog/gpus`. Empty when it
+            doesn't pin any.
+          items:
+            type: string
+          examples: [[NVIDIA GeForce RTX 4090, NVIDIA L4]]
+        gpuCount:
+          type: integer
+          examples: [1]
+        containerDiskInGb:
+          type: [integer, 'null']
+          description: Null when the release doesn't set one.
+          examples: [20]
+        gpuCompatibility:
+          $ref: '#/components/schemas/HubGpuCompatibility'
+        volume:
+          description: The volume the release asks for. Null when it asks for none.
+          anyOf:
+            - $ref: '#/components/schemas/CatalogRepoVolume'
+            - type: 'null'
+        env:
+          type: array
+          items:
+            $ref: '#/components/schemas/CatalogEnvInput'
+    CatalogRepoVolume:
+      type: object
+      description: A volume a release asks to have attached at deploy.
+      required: [required, types]
+      properties:
+        required:
+          type: boolean
+          description: Whether the deploy needs the volume, rather than only offering one.
+          examples: [true]
+        types:
+          type: array
+          description: The volume types it accepts. Never empty.
+          items:
+            $ref: '#/components/schemas/CatalogVolumeType'
+          examples: [[GLOBAL, NETWORK]]
+    CatalogVolumeType:
+      type: string
+      description: A kind of volume a deploy can attach.
+      enum: [GLOBAL, NETWORK]
+      x-enum-varnames: [CatalogVolumeTypeGlobal, CatalogVolumeTypeNetwork]
+      examples: [GLOBAL]
+    CatalogRepoRelease:
+      description: The listed release, with its notes and deploy defaults.
+      allOf:
+        - $ref: '#/components/schemas/CatalogRepoReleaseSummary'
+        - type: object
+          required: [name, notes, deploy]
+          properties:
+            name:
+              type: string
+              examples: [v5.4.1]
+            notes:
+              type: string
+              description: The release notes. Empty when there are none.
+              examples: [Adds Flux.2 support.]
+            deploy:
+              $ref: '#/components/schemas/CatalogRepoDeployDefaults'
+    CatalogRepoDetail:
+      description: A repo with its license and listed release.
+      allOf:
+        - $ref: '#/components/schemas/CatalogRepo'
+        - type: object
+          required: [license, latestRelease]
+          properties:
+            license:
+              type: [string, 'null']
+              examples: [MIT]
+            latestRelease:
+              anyOf:
+                - $ref: '#/components/schemas/CatalogRepoRelease'
+                - type: 'null'
+    ListCatalogReposResponse:
+      type: object
+      required: [repos, pagination]
+      properties:
+        repos:
+          type: array
+          items:
+            $ref: '#/components/schemas/CatalogRepo'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+    CatalogTemplateHubFields:
+      type: object
+      description: 'The Hub fields of a catalog template. A `VERSIONED` item is one tag of a versioned
+        line: `id`, `name`, `image` and the container fields are the tag''s, as `GET /v2/templates/{id}`
+        returns them, and `versionedTemplateId` names the line.'
+      required:
+        - type
+        - versionedTemplateId
+        - currentVersion
+        - official
+        - verified
+        - products
+        - health
+        - gpuCompatibility
+        - stats
+        - createdAt
+        - updatedAt
+      properties:
+        type:
+          $ref: '#/components/schemas/CatalogTemplateType'
+        versionedTemplateId:
+          type: [string, 'null']
+          description: The versioned line this tag belongs to. Null for `SINGLE`.
+          examples: [cmv9r2rer000vbcnlha8hwf9c]
+        currentVersion:
+          type: [string, 'null']
+          description: The line's current version. Null for `SINGLE`, and for a tag whose line has no
+            current version.
+          examples: [2.7.1]
+        official:
+          type: boolean
+          description: Whether Runpod publishes the template.
+          examples: [true]
+        verified:
+          type: boolean
+          description: Whether Runpod has verified this community template.
+          examples: [false]
+        products:
+          type: array
+          items:
+            $ref: '#/components/schemas/HubProduct'
+          examples: [[POD]]
+        health:
+          $ref: '#/components/schemas/HubHealth'
+        gpuCompatibility:
+          $ref: '#/components/schemas/HubGpuCompatibility'
+        stats:
+          $ref: '#/components/schemas/CatalogTemplateStats'
+        createdAt:
+          type: string
+          format: date-time
+          examples: ['2026-10-15T16:25:38Z']
+        updatedAt:
+          type: string
+          format: date-time
+          description: When the template's content was last edited.
+          examples: ['2026-10-30T18:19:02Z']
+    CatalogTemplateStats:
+      type: object
+      description: Unique users who deployed the template, refreshed periodically. For a `VERSIONED` item,
+        the sum over every tag in its line.
+      required: [deployers, deployersLast30Days]
+      properties:
+        deployers:
+          type: integer
+          description: All time.
+          examples: [1840]
+        deployersLast30Days:
+          type: integer
+          examples: [211]
+    CatalogTemplateChannel:
+      type: string
+      description: The release channel a version holds.
+      enum: [CURRENT, BETA, ALPHA]
+      x-enum-varnames:
+        - CatalogTemplateChannelCurrent
+        - CatalogTemplateChannelBeta
+        - CatalogTemplateChannelAlpha
+    CatalogTemplateTagChannel:
+      type: string
+      description: The channel a tag holds. `DEPRECATED` once superseded.
+      enum: [CURRENT, BETA, ALPHA, DEPRECATED]
+      x-enum-varnames:
+        - CatalogTemplateTagChannelCurrent
+        - CatalogTemplateTagChannelBeta
+        - CatalogTemplateTagChannelAlpha
+        - CatalogTemplateTagChannelDeprecated
+    CatalogTemplateTag:
+      type: object
+      description: One deployable image of a version.
+      required: [templateId, name, image, channel]
+      properties:
+        templateId:
+          type: string
+          description: Deploy with this; it resolves at `GET /v2/templates/{id}`.
+          examples: [opvzatg7kb]
+        name:
+          type: string
+          examples: [ROCm 6.4.4 · Ubuntu 24.04 · 1.6.0-2.7.1]
+        image:
+          type: string
+          examples: ['runpod/rocm:1.6.0-rocm644-ubuntu2404-py312-pytorch271']
+        channel:
+          oneOf:
+            - $ref: '#/components/schemas/CatalogTemplateTagChannel'
+            - type: 'null'
+    CatalogTemplateVersion:
+      type: object
+      required:
+        - id
+        - version
+        - name
+        - changelog
+        - channel
+        - deprecatedAt
+        - createdAt
+        - tags
+      properties:
+        id:
+          type: string
+          examples: [cmv9r2to100diufgzw2zvmr30]
+        version:
+          type: string
+          examples: [2.7.1]
+        name:
+          type: string
+          examples: [ROCm]
+        changelog:
+          type: string
+          description: Empty when there is none.
+          examples: ['Template 1.6.0: ROCm 6.4.4 and PyTorch 2.7.1.']
+        channel:
+          description: Null once a newer version takes the channel.
+          oneOf:
+            - $ref: '#/components/schemas/CatalogTemplateChannel'
+            - type: 'null'
+        deprecatedAt:
+          type: [string, 'null']
+          format: date-time
+          examples: [null]
+        createdAt:
+          type: string
+          format: date-time
+          examples: ['2026-10-15T16:25:39Z']
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/CatalogTemplateTag'
+    CatalogTemplateDetail:
+      allOf:
+        - $ref: '#/components/schemas/CatalogTemplate'
+        - type: object
+          required: [versions]
+          properties:
+            versions:
+              type: array
+              description: A versioned line's versions, newest first, deprecated ones included. Empty
+                for `SINGLE`.
+              items:
+                $ref: '#/components/schemas/CatalogTemplateVersion'
     CpuProduct:
       type: string
       description: CPU catalog product availability context. Availability is product-specific, so this
@@ -11358,7 +12136,7 @@ paths:
       tags: [Templates]
       responses:
         '200':
-          $ref: '#/components/responses/TemplateReadme'
+          $ref: '#/components/responses/Readme'
         '401':
           $ref: '#/components/responses/UnauthorizedError'
         '403':
@@ -12475,6 +13253,8 @@ paths:
         - $ref: '#/components/parameters/CountryCodesFilter'
         - $ref: '#/components/parameters/CudaVersionsFilter'
         - $ref: '#/components/parameters/MinCudaVersionFilter'
+        - $ref: '#/components/parameters/MinVcpuCountPerGpuFilter'
+        - $ref: '#/components/parameters/MinRamPerGpuFilter'
       responses:
         '200':
           headers:
@@ -12555,6 +13335,8 @@ paths:
         - $ref: '#/components/parameters/CountryCodesFilter'
         - $ref: '#/components/parameters/CudaVersionsFilter'
         - $ref: '#/components/parameters/MinCudaVersionFilter'
+        - $ref: '#/components/parameters/MinVcpuCountPerGpuFilter'
+        - $ref: '#/components/parameters/MinRamPerGpuFilter'
       responses:
         '200':
           headers:
@@ -12955,7 +13737,7 @@ paths:
       summary: List public templates
       x-mint:
         metadata:
-          description: List Runpod public templates by official, verified, or community source and inspect
+          description: Search Runpod public templates by official, verified, or community source and inspect
             reusable Pod and Serverless configurations.
       description: |
         Returns the public template catalog. `source` selects which slice:
@@ -12967,9 +13749,11 @@ paths:
         templates (public or private) are managed under `/v2/templates`; fetch
         any individual template — catalog or owned — via `/v2/templates/{id}`.
 
-        At most 100 templates are returned. Cursor pagination is not yet
-        supported here; `pagination` is always the exhausted marker
-        (`nextCursor: null`, `hasNextPage: false`).
+        A versioned template line appears as its current tags: each is a
+        deployable template of its own.
+
+        Without `search`, templates are ordered most deployed first: by the number
+        of unique users who deployed them.
       tags: [Catalog]
       parameters:
         - name: source
@@ -12985,6 +13769,35 @@ paths:
             Runpod-verified community templates, or `community` for all other
             publicly shared templates.
           example: official
+        - $ref: '#/components/parameters/CatalogSearchQuery'
+        - name: type
+          in: query
+          required: false
+          description: Only return standalone (`SINGLE`) or versioned (`VERSIONED`) templates. Omit for
+            both.
+          schema:
+            $ref: '#/components/schemas/CatalogTemplateType'
+          example: VERSIONED
+        - $ref: '#/components/parameters/CatalogProducts'
+        - $ref: '#/components/parameters/CatalogMinReliability'
+        - name: category
+          in: query
+          required: false
+          description: Only return templates in this category.
+          schema:
+            $ref: '#/components/schemas/TemplateCategory'
+          example: NVIDIA
+        - name: orderBy
+          in: query
+          required: false
+          description: Defaults to `RELEVANCE` when `search` is set and `POPULAR` otherwise. `RELEVANCE`
+            without `search` is rejected with 400.
+          schema:
+            $ref: '#/components/schemas/CatalogOrderBy'
+          example: POPULAR
+        - $ref: '#/components/parameters/CatalogOrderDirection'
+        - $ref: '#/components/parameters/PaginationCursor'
+        - $ref: '#/components/parameters/PaginationLimit'
       responses:
         '200':
           headers:
@@ -12996,7 +13809,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TemplateList'
+                $ref: '#/components/schemas/ListCatalogTemplatesResponse'
               examples:
                 templates:
                   summary: Successful response
@@ -13017,13 +13830,40 @@ paths:
                         startSsh: true
                         startJupyter: true
                         allowedCudaVersions: []
+                        type: SINGLE
+                        versionedTemplateId: null
+                        currentVersion: null
+                        official: true
+                        verified: false
+                        products: [POD]
+                        health:
+                          tier: VERIFIED
+                          reliability: 0.99
+                          computedAt: '2026-11-04T06:00:00Z'
+                        gpuCompatibility:
+                          recommendedGpuTypeIds: []
+                          incompatibleGpuTypeIds: []
+                          minVramInGb: null
+                          allowedCudaVersions: []
+                          minCudaVersion: null
+                        stats:
+                          deployers: 1840
+                          deployersLast30Days: 211
+                        createdAt: '2025-06-02T00:00:00Z'
+                        updatedAt: '2025-07-10T00:00:00Z'
                     pagination:
                       nextCursor: null
                       hasNextPage: false
+        '400':
+          $ref: '#/components/responses/BadRequestError'
         '401':
           $ref: '#/components/responses/UnauthorizedError'
         '403':
           $ref: '#/components/responses/ForbiddenError'
+        '413':
+          $ref: '#/components/responses/ResponseTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
         '429':
           $ref: '#/components/responses/TooManyRequestsError'
         default:
@@ -13055,13 +13895,678 @@ paths:
             instructions.
       description: |
         Returns the README of a public catalog template as raw Markdown.
-        Only public templates are served. Returns `404` when the template does
-        not exist, is not public, or has no README. Use
-        `GET /v2/templates/{id}/readme` for your private templates.
+        `id` is a template ID, a versioned tag's ID or a versioned line's
+        `versionedTemplateId`. A line returns its own README, or its current
+        tag's when it has none. Only public templates are served. Returns
+        `404` when the template does not exist, is not public, or has no
+        README. Use `GET /v2/templates/{id}/readme` for your private
+        templates.
       tags: [Catalog]
       responses:
         '200':
-          $ref: '#/components/responses/TemplateReadme'
+          $ref: '#/components/responses/Readme'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/catalog/templates/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: A template ID from `GET /v2/catalog/templates`, a versioned line's ID, or any of
+          its tags' IDs.
+        schema:
+          type: string
+        example: opvzatg7kb
+    get:
+      operationId: getCatalogTemplate
+      x-runpod-scope: catalog:read
+      summary: Get a public template
+      x-mint:
+        metadata:
+          description: Retrieve a Runpod public template with its health, deploy stats and, for a versioned
+            line, every version and tag.
+      description: |
+        Returns one public template. This covers every public template,
+        including ones the list leaves out: your own, and ones below the
+        list's quality bar.
+
+        For a versioned line, `versions` lists every version with its tags.
+        The top-level fields are the requested tag's when you ask by tag ID,
+        and the first current tag's when you ask by line ID. A line ID
+        resolves only while the line has a current tag; its published tags
+        resolve regardless, with `currentVersion` null when nothing is
+        current.
+      tags: [Catalog]
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogTemplateDetail'
+              examples:
+                versioned:
+                  summary: A versioned template line
+                  value:
+                    id: opvzatg7kb
+                    name: ROCm
+                    image: runpod/rocm:1.6.0-rocm644-ubuntu2404-py312-pytorch271
+                    args: ''
+                    disk: 50
+                    mounts: {}
+                    ports: [8888/http, 22/tcp]
+                    env: {}
+                    registry: null
+                    serverless: false
+                    public: true
+                    category: AMD
+                    startSsh: true
+                    startJupyter: true
+                    allowedCudaVersions: []
+                    type: VERSIONED
+                    versionedTemplateId: cmv9r2rer000vbcnlha8hwf9c
+                    currentVersion: 2.7.1
+                    official: true
+                    verified: false
+                    products: [POD]
+                    health:
+                      tier: VERIFIED
+                      reliability: 0.99
+                      computedAt: '2026-11-04T06:00:00Z'
+                    gpuCompatibility:
+                      recommendedGpuTypeIds: []
+                      incompatibleGpuTypeIds: []
+                      minVramInGb: null
+                      allowedCudaVersions: []
+                      minCudaVersion: null
+                    stats:
+                      deployers: 1840
+                      deployersLast30Days: 211
+                    createdAt: '2026-10-15T16:25:38Z'
+                    updatedAt: '2026-10-30T18:19:02Z'
+                    versions:
+                      - id: cmv9r2to100diufgzw2zvmr30
+                        version: 2.7.1
+                        name: ROCm
+                        changelog: 'Template 1.6.0: ROCm 6.4.4 and PyTorch 2.7.1.'
+                        channel: CURRENT
+                        deprecatedAt: null
+                        createdAt: '2026-10-15T16:25:39Z'
+                        tags:
+                          - templateId: opvzatg7kb
+                            name: ROCm 6.4.4 · Ubuntu 24.04 · 1.6.0-2.7.1
+                            image: runpod/rocm:1.6.0-rocm644-ubuntu2404-py312-pytorch271
+                            channel: CURRENT
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/catalog/skills:
+    get:
+      operationId: listCatalogSkills
+      x-runpod-scope: catalog:read
+      x-runpod-strict-query: true
+      summary: List skills
+      x-mint:
+        metadata:
+          description: 'Search Runpod skills: step-by-step guides an agent follows to set up a workload
+            on Runpod, such as ComfyUI on a pod.'
+      description: |
+        Returns skills: step-by-step guides, published by Runpod, that an
+        agent follows to set up a workload. Each skill has a README and one
+        or more variants; open one with `GET /v2/catalog/skills/{id}`.
+
+        Without `search`, skills are ordered most recently updated first.
+        `minReliability`, `product` and `category` don't apply to skills and
+        are rejected with 422, as is any other undeclared parameter.
+      tags: [Catalog]
+      parameters:
+        - $ref: '#/components/parameters/CatalogSearchQuery'
+        - $ref: '#/components/parameters/CatalogTags'
+        - name: mcpSupport
+          in: query
+          required: false
+          description: Only return skills with one of these MCP support levels. Comma-separated. Skills
+            that don't state one are excluded when this is set.
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/CatalogSkillMcpSupport'
+          example: [FULL, PARTIAL]
+        - name: orderBy
+          in: query
+          required: false
+          description: Defaults to `RELEVANCE` when `search` is set and `UPDATED` otherwise. `RELEVANCE`
+            without `search` is rejected with 400.
+          schema:
+            $ref: '#/components/schemas/CatalogSkillOrderBy'
+          example: UPDATED
+        - $ref: '#/components/parameters/CatalogOrderDirection'
+        - $ref: '#/components/parameters/PaginationCursor'
+        - $ref: '#/components/parameters/PaginationLimit'
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListCatalogSkillsResponse'
+              examples:
+                skills:
+                  summary: Successful response
+                  value:
+                    skills:
+                      - id: 02-comfyui-pod
+                        name: ComfyUI server on a pod
+                        description: Provisions a GPU pod, gets ComfyUI running with a checkpoint and
+                          the default text-to-image workflow, and returns a proxy URL for the web UI.
+                        tags: [comfyui, image-generation, pod]
+                        mcpSupport: PARTIAL
+                        official: true
+                        sourceUrl: https://raw.githubusercontent.com/runpod/runpod-plugins-official/main/plugins/runpod/skills/runpod/golden-paths/02-comfyui-pod/README.md
+                        createdAt: '2026-07-14T21:20:11Z'
+                        updatedAt: '2026-10-13T14:51:26Z'
+                    pagination:
+                      nextCursor: null
+                      hasNextPage: false
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '413':
+          $ref: '#/components/responses/ResponseTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/catalog/skills/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Skill ID, as returned by `GET /v2/catalog/skills`.
+        schema:
+          type: string
+        example: 02-comfyui-pod
+    get:
+      operationId: getCatalogSkill
+      x-runpod-scope: catalog:read
+      summary: Get a skill
+      x-mint:
+        metadata:
+          description: Retrieve a Runpod skill with its variants, the default marked, and the skills it
+            relies on.
+      description: |
+        Returns one skill with its variants. Read the README at
+        `GET /v2/catalog/skills/{id}/readme` and a variant at
+        `GET /v2/catalog/skills/{id}/variants/{variantId}`.
+      tags: [Catalog]
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogSkillDetail'
+              examples:
+                skill:
+                  summary: Successful response
+                  value:
+                    id: 02-comfyui-pod
+                    name: ComfyUI server on a pod
+                    description: Provisions a GPU pod, gets ComfyUI running with a checkpoint and the
+                      default text-to-image workflow, and returns a proxy URL for the web UI.
+                    tags: [comfyui, image-generation, pod]
+                    mcpSupport: PARTIAL
+                    official: true
+                    sourceUrl: https://raw.githubusercontent.com/runpod/runpod-plugins-official/main/plugins/runpod/skills/runpod/golden-paths/02-comfyui-pod/README.md
+                    createdAt: '2026-07-14T21:20:11Z'
+                    updatedAt: '2026-10-13T14:51:26Z'
+                    variants:
+                      - id: variant-a-from-scratch
+                        name: From scratch
+                        description: Install ComfyUI yourself on a PyTorch template. Pick this for custom
+                          versions or nodes.
+                        default: false
+                        sourceUrl: https://raw.githubusercontent.com/runpod/runpod-plugins-official/main/plugins/runpod/skills/runpod/golden-paths/02-comfyui-pod/variant-a-from-scratch.md
+                      - id: variant-b-prebuilt
+                        name: Prebuilt official image
+                        description: Deploy Runpod's official ComfyUI image. Least effort, most reliable.
+                        default: true
+                        sourceUrl: https://raw.githubusercontent.com/runpod/runpod-plugins-official/main/plugins/runpod/skills/runpod/golden-paths/02-comfyui-pod/variant-b-prebuilt.md
+                    supplementalSkills:
+                      - name: Storage
+                        url: https://raw.githubusercontent.com/runpod/runpod-plugins-official/main/plugins/runpod/skills/runpod-usage/reference/storage.md
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/catalog/skills/{id}/readme:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Skill ID, as returned by `GET /v2/catalog/skills`.
+        schema:
+          type: string
+        example: 02-comfyui-pod
+    get:
+      operationId: getCatalogSkillReadme
+      x-runpod-scope: catalog:read
+      summary: Get a skill README
+      x-mint:
+        metadata:
+          description: Retrieve the Markdown README of a Runpod skill for an agent to follow.
+      description: |
+        Returns the skill's README as raw Markdown. Returns `404` when the
+        skill does not exist or its README has not been synced yet.
+      tags: [Catalog]
+      responses:
+        '200':
+          $ref: '#/components/responses/Readme'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/catalog/skills/{id}/variants/{variantId}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Skill ID, as returned by `GET /v2/catalog/skills`.
+        schema:
+          type: string
+        example: 02-comfyui-pod
+      - name: variantId
+        in: path
+        required: true
+        description: Variant ID, as returned by `GET /v2/catalog/skills/{id}`.
+        schema:
+          type: string
+        example: variant-b-prebuilt
+    get:
+      operationId: getCatalogSkillVariant
+      x-runpod-scope: catalog:read
+      summary: Get a skill variant
+      x-mint:
+        metadata:
+          description: Retrieve one variant of a Runpod skill as Markdown.
+      description: |
+        Returns one variant of a skill as raw Markdown. Returns `404` when
+        the skill or variant does not exist or the variant has not been
+        synced yet.
+      tags: [Catalog]
+      responses:
+        '200':
+          $ref: '#/components/responses/SkillVariant'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/catalog/repos:
+    get:
+      operationId: listCatalogRepos
+      x-runpod-scope: catalog:read
+      x-runpod-strict-query: true
+      summary: List Hub repos
+      x-mint:
+        metadata:
+          description: 'Search Runpod Hub repos: GitHub repositories Runpod builds into deployable images,
+            with reliability scores and deploy counts.'
+      description: |
+        Returns Hub repos: GitHub repositories Runpod builds into images you
+        can deploy. Open one with `GET /v2/catalog/repos/{id}` for its listed
+        release and deploy defaults.
+
+        Without `search`, repos are ordered most deployed first.
+      tags: [Catalog]
+      parameters:
+        - $ref: '#/components/parameters/CatalogSearchQuery'
+        - $ref: '#/components/parameters/CatalogProducts'
+        - $ref: '#/components/parameters/CatalogMinReliability'
+        - $ref: '#/components/parameters/CatalogCategory'
+        - $ref: '#/components/parameters/CatalogTags'
+        - name: source
+          in: query
+          required: false
+          description: '`official` returns repos Runpod publishes (see `official` on the repo). `community`
+            returns the rest. Omit for all.'
+          schema:
+            type: string
+            enum: [official, community]
+            x-enum-varnames:
+              - CatalogRepoSourceOfficial
+              - CatalogRepoSourceCommunity
+          example: official
+        - name: owner
+          in: query
+          required: false
+          description: Only return repos from this GitHub owner, matched exactly and case-insensitively.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+          example: runpod-workers
+        - name: orderBy
+          in: query
+          required: false
+          description: Defaults to `RELEVANCE` when `search` is set and `POPULAR` otherwise. `RELEVANCE`
+            without `search` is rejected with 400.
+          schema:
+            $ref: '#/components/schemas/CatalogOrderBy'
+          example: POPULAR
+        - $ref: '#/components/parameters/CatalogOrderDirection'
+        - $ref: '#/components/parameters/PaginationCursor'
+        - $ref: '#/components/parameters/PaginationLimit'
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListCatalogReposResponse'
+              examples:
+                repos:
+                  summary: Successful response
+                  value:
+                    repos:
+                      - id: cm862p99s000008ilegk86af6
+                        name: ComfyUI
+                        description: ComfyUI as a serverless API.
+                        products: [SERVERLESS]
+                        category: image
+                        tags: [comfyui]
+                        official: true
+                        repository:
+                          owner: runpod-workers
+                          name: worker-comfyui
+                          url: https://github.com/runpod-workers/worker-comfyui
+                          ownerAvatarUrl: https://avatars.githubusercontent.com/u/123456?v=4
+                        health:
+                          tier: VERIFIED
+                          reliability: 0.97
+                          computedAt: '2026-11-04T06:00:00Z'
+                        stats:
+                          deploys: 41210
+                          stars: 812
+                          views: 190455
+                        latestRelease:
+                          id: cm8a1b2c3000108l4d5e6f7g8
+                          tag: v5.4.1
+                          releasedAt: '2026-10-28T00:00:00Z'
+                          image: runpod/worker-comfyui:5.4.1-base
+                          deployable: true
+                        createdAt: '2025-03-01T00:00:00Z'
+                        updatedAt: '2026-10-28T00:00:00Z'
+                    pagination:
+                      nextCursor: null
+                      hasNextPage: false
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '413':
+          $ref: '#/components/responses/ResponseTooLargeError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntityError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/catalog/repos/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Repo ID, as returned by `GET /v2/catalog/repos`.
+        schema:
+          type: string
+        example: cm862p99s000008ilegk86af6
+    get:
+      operationId: getCatalogRepo
+      x-runpod-scope: catalog:read
+      summary: Get a Hub repo
+      x-mint:
+        metadata:
+          description: Retrieve a Runpod Hub repo with its listed release and the defaults it deploys
+            with.
+      description: |
+        Returns one repo with its listed release, including the GPUs, disk
+        and environment variables the release deploys with. Read the README
+        at `GET /v2/catalog/repos/{id}/readme`.
+      tags: [Catalog]
+      responses:
+        '200':
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogRepoDetail'
+              examples:
+                repo:
+                  summary: Successful response
+                  value:
+                    id: cm862p99s000008ilegk86af6
+                    name: ComfyUI
+                    description: ComfyUI as a serverless API.
+                    products: [SERVERLESS]
+                    category: image
+                    tags: [comfyui]
+                    official: true
+                    repository:
+                      owner: runpod-workers
+                      name: worker-comfyui
+                      url: https://github.com/runpod-workers/worker-comfyui
+                      ownerAvatarUrl: https://avatars.githubusercontent.com/u/123456?v=4
+                    health:
+                      tier: VERIFIED
+                      reliability: 0.97
+                      computedAt: '2026-11-04T06:00:00Z'
+                    stats:
+                      deploys: 41210
+                      stars: 812
+                      views: 190455
+                    license: MIT
+                    latestRelease:
+                      id: cm8a1b2c3000108l4d5e6f7g8
+                      tag: v5.4.1
+                      releasedAt: '2026-10-28T00:00:00Z'
+                      image: runpod/worker-comfyui:5.4.1-base
+                      deployable: true
+                      name: v5.4.1
+                      notes: Adds Flux.2 support.
+                      deploy:
+                        computeType: GPU
+                        endpointType: QUEUE
+                        cpu: null
+                        gpuTypeIds: [NVIDIA GeForce RTX 4090, NVIDIA L4]
+                        gpuCount: 1
+                        containerDiskInGb: 20
+                        gpuCompatibility:
+                          recommendedGpuTypeIds: [NVIDIA GeForce RTX 4090, NVIDIA L4]
+                          incompatibleGpuTypeIds: []
+                          minVramInGb: null
+                          allowedCudaVersions: ['12.8', '12.9']
+                          minCudaVersion: null
+                        volume: null
+                        env:
+                          - key: COMFY_LOG_LEVEL
+                            default: DEBUG
+                            description: Log level for ComfyUI.
+                            required: false
+                    createdAt: '2025-03-01T00:00:00Z'
+                    updatedAt: '2026-10-28T00:00:00Z'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        default:
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+            RateLimit-Policy:
+              $ref: '#/components/headers/RateLimit-Policy'
+          description: Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/catalog/repos/{id}/readme:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Repo ID, as returned by `GET /v2/catalog/repos`.
+        schema:
+          type: string
+        example: cm862p99s000008ilegk86af6
+    get:
+      operationId: getCatalogRepoReadme
+      x-runpod-scope: catalog:read
+      summary: Get a Hub repo README
+      x-mint:
+        metadata:
+          description: Retrieve the Markdown README of a Runpod Hub repo's listed release.
+      description: |
+        Returns the README of the repo's listed release as raw Markdown.
+        Returns `404` when the repo does not exist or its release has no
+        README.
+      tags: [Catalog]
+      responses:
+        '200':
+          $ref: '#/components/responses/Readme'
         '401':
           $ref: '#/components/responses/UnauthorizedError'
         '403':

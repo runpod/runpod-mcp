@@ -1898,9 +1898,11 @@ export interface paths {
          *     templates (public or private) are managed under `/v2/templates`; fetch
          *     any individual template — catalog or owned — via `/v2/templates/{id}`.
          *
-         *     At most 100 templates are returned. Cursor pagination is not yet
-         *     supported here; `pagination` is always the exhausted marker
-         *     (`nextCursor: null`, `hasNextPage: false`).
+         *     A versioned template line appears as its current tags: each is a
+         *     deployable template of its own.
+         *
+         *     Without `search`, templates are ordered most deployed first: by the number
+         *     of unique users who deployed them.
          */
         get: operations["listPublicTemplates"];
         put?: never;
@@ -1924,11 +1926,243 @@ export interface paths {
         /**
          * Get a public template README
          * @description Returns the README of a public catalog template as raw Markdown.
-         *     Only public templates are served. Returns `404` when the template does
-         *     not exist, is not public, or has no README. Use
-         *     `GET /v2/templates/{id}/readme` for your private templates.
+         *     `id` is a template ID, a versioned tag's ID or a versioned line's
+         *     `versionedTemplateId`. A line returns its own README, or its current
+         *     tag's when it has none. Only public templates are served. Returns
+         *     `404` when the template does not exist, is not public, or has no
+         *     README. Use `GET /v2/templates/{id}/readme` for your private
+         *     templates.
          */
         get: operations["getPublicTemplateReadme"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/catalog/templates/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description A template ID from `GET /v2/catalog/templates`, a versioned line's ID, or any of its tags' IDs.
+                 * @example opvzatg7kb
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get a public template
+         * @description Returns one public template. This covers every public template,
+         *     including ones the list leaves out: your own, and ones below the
+         *     list's quality bar.
+         *
+         *     For a versioned line, `versions` lists every version with its tags.
+         *     The top-level fields are the requested tag's when you ask by tag ID,
+         *     and the first current tag's when you ask by line ID. A line ID
+         *     resolves only while the line has a current tag; its published tags
+         *     resolve regardless, with `currentVersion` null when nothing is
+         *     current.
+         */
+        get: operations["getCatalogTemplate"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/catalog/skills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List skills
+         * @description Returns skills: step-by-step guides, published by Runpod, that an
+         *     agent follows to set up a workload. Each skill has a README and one
+         *     or more variants; open one with `GET /v2/catalog/skills/{id}`.
+         *
+         *     Without `search`, skills are ordered most recently updated first.
+         *     `minReliability`, `product` and `category` don't apply to skills and
+         *     are rejected with 422, as is any other undeclared parameter.
+         */
+        get: operations["listCatalogSkills"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/catalog/skills/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Skill ID, as returned by `GET /v2/catalog/skills`.
+                 * @example 02-comfyui-pod
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get a skill
+         * @description Returns one skill with its variants. Read the README at
+         *     `GET /v2/catalog/skills/{id}/readme` and a variant at
+         *     `GET /v2/catalog/skills/{id}/variants/{variantId}`.
+         */
+        get: operations["getCatalogSkill"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/catalog/skills/{id}/readme": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Skill ID, as returned by `GET /v2/catalog/skills`.
+                 * @example 02-comfyui-pod
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get a skill README
+         * @description Returns the skill's README as raw Markdown. Returns `404` when the
+         *     skill does not exist or its README has not been synced yet.
+         */
+        get: operations["getCatalogSkillReadme"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/catalog/skills/{id}/variants/{variantId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Skill ID, as returned by `GET /v2/catalog/skills`.
+                 * @example 02-comfyui-pod
+                 */
+                id: string;
+                /**
+                 * @description Variant ID, as returned by `GET /v2/catalog/skills/{id}`.
+                 * @example variant-b-prebuilt
+                 */
+                variantId: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get a skill variant
+         * @description Returns one variant of a skill as raw Markdown. Returns `404` when
+         *     the skill or variant does not exist or the variant has not been
+         *     synced yet.
+         */
+        get: operations["getCatalogSkillVariant"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/catalog/repos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Hub repos
+         * @description Returns Hub repos: GitHub repositories Runpod builds into images you
+         *     can deploy. Open one with `GET /v2/catalog/repos/{id}` for its listed
+         *     release and deploy defaults.
+         *
+         *     Without `search`, repos are ordered most deployed first.
+         */
+        get: operations["listCatalogRepos"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/catalog/repos/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Repo ID, as returned by `GET /v2/catalog/repos`.
+                 * @example cm862p99s000008ilegk86af6
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get a Hub repo
+         * @description Returns one repo with its listed release, including the GPUs, disk
+         *     and environment variables the release deploys with. Read the README
+         *     at `GET /v2/catalog/repos/{id}/readme`.
+         */
+        get: operations["getCatalogRepo"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/catalog/repos/{id}/readme": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Repo ID, as returned by `GET /v2/catalog/repos`.
+                 * @example cm862p99s000008ilegk86af6
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Get a Hub repo README
+         * @description Returns the README of the repo's listed release as raw Markdown.
+         *     Returns `404` when the repo does not exist or its release has no
+         *     README.
+         */
+        get: operations["getCatalogRepoReadme"];
         put?: never;
         post?: never;
         delete?: never;
@@ -5027,7 +5261,7 @@ export interface components {
             /** @description Provision SSH access at container startup (`PUBLIC_KEY` env injection). See the create-time field for details. */
             startSsh?: boolean;
         };
-        /** @description A bare list of templates. `GET /v2/catalog/templates` returns it as-is (the catalog is a capped, curated set); `GET /v2/templates` composes it with the pagination block via ListTemplatesResponse. */
+        /** @description A bare list of templates. `GET /v2/templates` composes it with the pagination block via ListTemplatesResponse. */
         TemplateList: {
             templates: components["schemas"]["Template"][];
         };
@@ -5390,6 +5624,484 @@ export interface components {
          * @enum {string}
          */
         Product: "POD" | "CLUSTER" | "SERVERLESS";
+        /**
+         * @description Sort direction.
+         * @enum {string}
+         */
+        CatalogOrderDirection: "ASC" | "DESC";
+        /**
+         * @description Where a catalog item deploys.
+         * @enum {string}
+         */
+        HubProduct: "POD" | "SERVERLESS";
+        /**
+         * @description `RELEVANCE` orders by search match and is only valid with `search`. `POPULAR` orders by deploys (repos) or deployers (templates), `UPDATED` by `updatedAt`, `HEALTH` by `health.reliability` (unscored items last in either direction) and `NAME` by `name`. Ties break on `id`.
+         * @enum {string}
+         */
+        CatalogOrderBy: "RELEVANCE" | "POPULAR" | "UPDATED" | "HEALTH" | "NAME";
+        /**
+         * @description `SINGLE` is a standalone template. `VERSIONED` is a tag of a versioned template line; the list shows each line's current tags.
+         * @enum {string}
+         */
+        CatalogTemplateType: "SINGLE" | "VERSIONED";
+        /** @description A public template. Every `id` is deployable and resolves at `GET /v2/templates/{id}`. */
+        CatalogTemplate: components["schemas"]["Template"] & components["schemas"]["CatalogTemplateHubFields"];
+        ListCatalogTemplatesResponse: {
+            templates: components["schemas"]["CatalogTemplate"][];
+            pagination: components["schemas"]["Pagination"];
+        };
+        /**
+         * @description Whether an agent with only the Runpod MCP server can finish the skill: `FULL`, `PARTIAL`, or `NONE`.
+         * @enum {string}
+         */
+        CatalogSkillMcpSupport: "FULL" | "PARTIAL" | "NONE";
+        /**
+         * @description `RELEVANCE` orders by search match and is only valid with `search`; `UPDATED` by `updatedAt`; `NAME` by `name`. Ties break on `id`.
+         * @enum {string}
+         */
+        CatalogSkillOrderBy: "RELEVANCE" | "UPDATED" | "NAME";
+        /** @description A skill: a step-by-step guide, published by Runpod, that an agent follows to set up a workload. Read its README at `GET /v2/catalog/skills/{id}/readme`. */
+        CatalogSkill: {
+            /**
+             * @description Stable skill identifier.
+             * @example 02-comfyui-pod
+             */
+            id: string;
+            /** @example ComfyUI server on a pod */
+            name: string;
+            /** @example Provisions a GPU pod, gets ComfyUI running with a checkpoint and the default text-to-image workflow, and returns a proxy URL for the web UI. */
+            description: string;
+            /**
+             * @description Lowercase kebab-case labels.
+             * @example [
+             *       "comfyui",
+             *       "image-generation",
+             *       "pod"
+             *     ]
+             */
+            tags: string[];
+            /** @description Null when the skill doesn't say. */
+            mcpSupport: components["schemas"]["CatalogSkillMcpSupport"] | null;
+            /**
+             * @description Whether Runpod publishes it. Always true for skills.
+             * @example true
+             */
+            official: boolean;
+            /**
+             * Format: uri
+             * @description Raw GitHub URL of the skill's README.
+             * @example https://raw.githubusercontent.com/runpod/runpod-plugins-official/main/plugins/runpod/skills/runpod/golden-paths/02-comfyui-pod/README.md
+             */
+            sourceUrl: string;
+            /**
+             * Format: date-time
+             * @example 2026-07-14T21:20:11Z
+             */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @example 2026-10-13T14:51:26Z
+             */
+            updatedAt: string;
+        };
+        /** @description One way to follow a skill, such as using a prebuilt image or building your own. Read it at `GET /v2/catalog/skills/{id}/variants/{variantId}`. */
+        CatalogSkillVariant: {
+            /** @example variant-b-prebuilt */
+            id: string;
+            /** @example Prebuilt official image */
+            name: string;
+            /** @example Deploy Runpod's official ComfyUI image. Least effort, most reliable. */
+            description: string | null;
+            /**
+             * @description Whether this is the skill's default variant. At most one variant per skill is the default.
+             * @example true
+             */
+            default: boolean;
+            /**
+             * Format: uri
+             * @description Raw GitHub URL of the variant.
+             * @example https://raw.githubusercontent.com/runpod/runpod-plugins-official/main/plugins/runpod/skills/runpod/golden-paths/02-comfyui-pod/variant-b-prebuilt.md
+             */
+            sourceUrl: string;
+        };
+        /** @description A skill or reference document the skill relies on. */
+        CatalogSkillLink: {
+            /** @example Storage */
+            name: string;
+            /**
+             * Format: uri
+             * @description Raw GitHub URL of the skill or reference document.
+             * @example https://raw.githubusercontent.com/runpod/runpod-plugins-official/main/plugins/runpod/skills/runpod-usage/reference/storage.md
+             */
+            url: string;
+        };
+        /** @description A skill with its variants. */
+        CatalogSkillDetail: components["schemas"]["CatalogSkill"] & {
+            variants: components["schemas"]["CatalogSkillVariant"][];
+            supplementalSkills: components["schemas"]["CatalogSkillLink"][];
+        };
+        ListCatalogSkillsResponse: {
+            skills: components["schemas"]["CatalogSkill"][];
+            pagination: components["schemas"]["Pagination"];
+        };
+        /**
+         * @description `UNVERIFIED` while `reliability` is null. Otherwise `UNSTABLE` below Runpod's cutoff for the object's kind and `VERIFIED` at or above it. Set your own bar with `minReliability`.
+         * @enum {string}
+         */
+        ReliabilityTier: "VERIFIED" | "UNVERIFIED" | "UNSTABLE";
+        /** @description How reliably a catalog item deploys. */
+        HubHealth: {
+            tier: components["schemas"]["ReliabilityTier"];
+            /**
+             * Format: double
+             * @description Share of recent deploys that reached a healthy state; 0.9 means 90%. Null until there is enough deploy history to score.
+             * @example 0.97
+             */
+            reliability: number | null;
+            /**
+             * Format: date-time
+             * @description When `reliability` was last computed. Null when never scored.
+             * @example 2026-11-04T06:00:00Z
+             */
+            computedAt: string | null;
+        };
+        /** @description The GPUs and CUDA versions a catalog item declares. Empty lists mean it declares none. */
+        HubGpuCompatibility: {
+            /**
+             * @description GPU type IDs, as in `GET /v2/catalog/gpus`.
+             * @example [
+             *       "NVIDIA GeForce RTX 4090",
+             *       "NVIDIA L4"
+             *     ]
+             */
+            recommendedGpuTypeIds: string[];
+            /**
+             * @description GPU type IDs, as in `GET /v2/catalog/gpus`.
+             * @example []
+             */
+            incompatibleGpuTypeIds: string[];
+            /**
+             * @description Null when it declares none. Repos never declare one.
+             * @example 24
+             */
+            minVramInGb: number | null;
+            /**
+             * @example [
+             *       "12.8",
+             *       "12.9"
+             *     ]
+             */
+            allowedCudaVersions: string[];
+            /**
+             * @description The lowest CUDA version it runs on, applied when `allowedCudaVersions` is empty. Null when it declares none. Templates never declare one.
+             * @example 12.4
+             */
+            minCudaVersion: string | null;
+        };
+        /** @description The GitHub repository a Hub repo is built from. */
+        CatalogRepository: {
+            /** @example runpod-workers */
+            owner: string;
+            /** @example worker-comfyui */
+            name: string;
+            /**
+             * Format: uri
+             * @example https://github.com/runpod-workers/worker-comfyui
+             */
+            url: string;
+            /**
+             * Format: uri
+             * @example https://avatars.githubusercontent.com/u/123456?v=4
+             */
+            ownerAvatarUrl: string | null;
+        };
+        CatalogRepoStats: {
+            /** @example 41210 */
+            deploys: number;
+            /**
+             * @description GitHub stars.
+             * @example 812
+             */
+            stars: number;
+            /**
+             * @description Hub page views.
+             * @example 190455
+             */
+            views: number;
+        };
+        /** @description The release the Hub lists for a repo. */
+        CatalogRepoReleaseSummary: {
+            /**
+             * @description Hub release ID.
+             * @example cm8a1b2c3000108l4d5e6f7g8
+             */
+            id: string;
+            /**
+             * @description Git tag.
+             * @example v5.4.1
+             */
+            tag: string;
+            /**
+             * Format: date-time
+             * @example 2026-10-28T00:00:00Z
+             */
+            releasedAt: string;
+            /**
+             * @description The built image. Null while the build is still running.
+             * @example runpod/worker-comfyui:5.4.1-base
+             */
+            image: string | null;
+            /**
+             * @description Whether the release has a built image to deploy.
+             * @example true
+             */
+            deployable: boolean;
+        };
+        /** @description A Hub repo: a GitHub repository Runpod builds into a deployable image. Read its README at `GET /v2/catalog/repos/{id}/readme`. */
+        CatalogRepo: {
+            /** @example cm862p99s000008ilegk86af6 */
+            id: string;
+            /** @example ComfyUI */
+            name: string;
+            /**
+             * @description Empty when the repo has none.
+             * @example ComfyUI as a serverless API.
+             */
+            description: string;
+            /**
+             * @example [
+             *       "SERVERLESS"
+             *     ]
+             */
+            products: components["schemas"]["HubProduct"][];
+            /** @example image */
+            category: string | null;
+            /**
+             * @example [
+             *       "comfyui"
+             *     ]
+             */
+            tags: string[];
+            /**
+             * @description Whether Runpod publishes it: true for repos owned by the `runpod-workers` GitHub organization.
+             * @example true
+             */
+            official: boolean;
+            repository: components["schemas"]["CatalogRepository"];
+            health: components["schemas"]["HubHealth"];
+            stats: components["schemas"]["CatalogRepoStats"];
+            /** @description Null until a release is listed. */
+            latestRelease: components["schemas"]["CatalogRepoReleaseSummary"] | null;
+            /**
+             * Format: date-time
+             * @example 2025-03-01T00:00:00Z
+             */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description When the listed release was published.
+             * @example 2026-10-28T00:00:00Z
+             */
+            updatedAt: string;
+        };
+        /** @description An environment variable the repo reads, with its default. */
+        CatalogEnvInput: {
+            /** @example MODEL_NAME */
+            key: string;
+            /**
+             * @description The default value as a string. Null when there is none.
+             * @example Tongyi-MAI/Z-Image-Turbo
+             */
+            default: string | null;
+            /** @example Hugging Face model to load. */
+            description: string | null;
+            /**
+             * @description Whether the repo needs a value for this variable.
+             * @example true
+             */
+            required: boolean;
+        };
+        /** @description How the release deploys by default, from its `hub.json`. */
+        CatalogRepoDeployDefaults: {
+            /**
+             * @example GPU
+             * @enum {string}
+             */
+            computeType: "GPU" | "CPU";
+            /** @description The endpoint `type` to create when deploying as a serverless endpoint. */
+            endpointType: components["schemas"]["EndpointType"];
+            /** @description The CPU flavor and vCPU count when `computeType` is `CPU`. A release that names no flavor gets `cpu3g`, and one that names no vCPU count gets 4. Null for GPU. */
+            cpu: components["schemas"]["BaseCpuConfig"] | null;
+            /**
+             * @description GPU type IDs the release deploys to, as in `GET /v2/catalog/gpus`. Empty when it doesn't pin any.
+             * @example [
+             *       "NVIDIA GeForce RTX 4090",
+             *       "NVIDIA L4"
+             *     ]
+             */
+            gpuTypeIds: string[];
+            /** @example 1 */
+            gpuCount: number;
+            /**
+             * @description Null when the release doesn't set one.
+             * @example 20
+             */
+            containerDiskInGb: number | null;
+            gpuCompatibility: components["schemas"]["HubGpuCompatibility"];
+            /** @description The volume the release asks for. Null when it asks for none. */
+            volume: components["schemas"]["CatalogRepoVolume"] | null;
+            env: components["schemas"]["CatalogEnvInput"][];
+        };
+        /** @description A volume a release asks to have attached at deploy. */
+        CatalogRepoVolume: {
+            /**
+             * @description Whether the deploy needs the volume, rather than only offering one.
+             * @example true
+             */
+            required: boolean;
+            /**
+             * @description The volume types it accepts. Never empty.
+             * @example [
+             *       "GLOBAL",
+             *       "NETWORK"
+             *     ]
+             */
+            types: components["schemas"]["CatalogVolumeType"][];
+        };
+        /**
+         * @description A kind of volume a deploy can attach.
+         * @example GLOBAL
+         * @enum {string}
+         */
+        CatalogVolumeType: "GLOBAL" | "NETWORK";
+        /** @description The listed release, with its notes and deploy defaults. */
+        CatalogRepoRelease: components["schemas"]["CatalogRepoReleaseSummary"] & {
+            /** @example v5.4.1 */
+            name: string;
+            /**
+             * @description The release notes. Empty when there are none.
+             * @example Adds Flux.2 support.
+             */
+            notes: string;
+            deploy: components["schemas"]["CatalogRepoDeployDefaults"];
+        };
+        /** @description A repo with its license and listed release. */
+        CatalogRepoDetail: components["schemas"]["CatalogRepo"] & {
+            /** @example MIT */
+            license: string | null;
+            latestRelease: components["schemas"]["CatalogRepoRelease"] | null;
+        };
+        ListCatalogReposResponse: {
+            repos: components["schemas"]["CatalogRepo"][];
+            pagination: components["schemas"]["Pagination"];
+        };
+        /** @description The Hub fields of a catalog template. A `VERSIONED` item is one tag of a versioned line: `id`, `name`, `image` and the container fields are the tag's, as `GET /v2/templates/{id}` returns them, and `versionedTemplateId` names the line. */
+        CatalogTemplateHubFields: {
+            type: components["schemas"]["CatalogTemplateType"];
+            /**
+             * @description The versioned line this tag belongs to. Null for `SINGLE`.
+             * @example cmv9r2rer000vbcnlha8hwf9c
+             */
+            versionedTemplateId: string | null;
+            /**
+             * @description The line's current version. Null for `SINGLE`, and for a tag whose line has no current version.
+             * @example 2.7.1
+             */
+            currentVersion: string | null;
+            /**
+             * @description Whether Runpod publishes the template.
+             * @example true
+             */
+            official: boolean;
+            /**
+             * @description Whether Runpod has verified this community template.
+             * @example false
+             */
+            verified: boolean;
+            /**
+             * @example [
+             *       "POD"
+             *     ]
+             */
+            products: components["schemas"]["HubProduct"][];
+            health: components["schemas"]["HubHealth"];
+            gpuCompatibility: components["schemas"]["HubGpuCompatibility"];
+            stats: components["schemas"]["CatalogTemplateStats"];
+            /**
+             * Format: date-time
+             * @example 2026-10-15T16:25:38Z
+             */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description When the template's content was last edited.
+             * @example 2026-10-30T18:19:02Z
+             */
+            updatedAt: string;
+        };
+        /** @description Unique users who deployed the template, refreshed periodically. For a `VERSIONED` item, the sum over every tag in its line. */
+        CatalogTemplateStats: {
+            /**
+             * @description All time.
+             * @example 1840
+             */
+            deployers: number;
+            /** @example 211 */
+            deployersLast30Days: number;
+        };
+        /**
+         * @description The release channel a version holds.
+         * @enum {string}
+         */
+        CatalogTemplateChannel: "CURRENT" | "BETA" | "ALPHA";
+        /**
+         * @description The channel a tag holds. `DEPRECATED` once superseded.
+         * @enum {string}
+         */
+        CatalogTemplateTagChannel: "CURRENT" | "BETA" | "ALPHA" | "DEPRECATED";
+        /** @description One deployable image of a version. */
+        CatalogTemplateTag: {
+            /**
+             * @description Deploy with this; it resolves at `GET /v2/templates/{id}`.
+             * @example opvzatg7kb
+             */
+            templateId: string;
+            /** @example ROCm 6.4.4 · Ubuntu 24.04 · 1.6.0-2.7.1 */
+            name: string;
+            /** @example runpod/rocm:1.6.0-rocm644-ubuntu2404-py312-pytorch271 */
+            image: string;
+            channel: components["schemas"]["CatalogTemplateTagChannel"] | null;
+        };
+        CatalogTemplateVersion: {
+            /** @example cmv9r2to100diufgzw2zvmr30 */
+            id: string;
+            /** @example 2.7.1 */
+            version: string;
+            /** @example ROCm */
+            name: string;
+            /**
+             * @description Empty when there is none.
+             * @example Template 1.6.0: ROCm 6.4.4 and PyTorch 2.7.1.
+             */
+            changelog: string;
+            /** @description Null once a newer version takes the channel. */
+            channel: components["schemas"]["CatalogTemplateChannel"] | null;
+            /**
+             * Format: date-time
+             * @example null
+             */
+            deprecatedAt: string | null;
+            /**
+             * Format: date-time
+             * @example 2026-10-15T16:25:39Z
+             */
+            createdAt: string;
+            tags: components["schemas"]["CatalogTemplateTag"][];
+        };
+        CatalogTemplateDetail: components["schemas"]["CatalogTemplate"] & {
+            /** @description A versioned line's versions, newest first, deprecated ones included. Empty for `SINGLE`. */
+            versions: components["schemas"]["CatalogTemplateVersion"][];
+        };
         /**
          * @description CPU catalog product availability context. Availability is product-specific, so this is required whenever availability is requested.
          * @enum {string}
@@ -6179,8 +6891,8 @@ export interface components {
                 "application/problem+json": components["schemas"]["ErrorResponse"];
             };
         };
-        /** @description The template's README, as Markdown. */
-        TemplateReadme: {
+        /** @description The README, as Markdown. */
+        Readme: {
             headers: {
                 RateLimit: components["headers"]["RateLimit"];
                 "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
@@ -6276,6 +6988,17 @@ export interface components {
                 "application/problem+json": components["schemas"]["ErrorResponse"];
             };
         };
+        /** @description The variant's steps, as Markdown. */
+        SkillVariant: {
+            headers: {
+                RateLimit: components["headers"]["RateLimit"];
+                "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                [name: string]: unknown;
+            };
+            content: {
+                "text/markdown; charset=utf-8": string;
+            };
+        };
     };
     parameters: {
         /**
@@ -6317,6 +7040,41 @@ export interface components {
          * @example 50
          */
         PaginationLimit: number;
+        /**
+         * @description Search text, matched case-insensitively. Every word must match. A skill matches on its name, description and tags; a repo also on its GitHub owner and name; a template on its name and image, and a versioned template's tag also on its line's name and description. Enables `orderBy=RELEVANCE`, which becomes the default order.
+         * @example comfyui
+         */
+        CatalogSearchQuery: string;
+        /**
+         * @description Only return items that deploy to one of these products. Comma-separated.
+         * @example [
+         *       "SERVERLESS"
+         *     ]
+         */
+        CatalogProducts: components["schemas"]["HubProduct"][];
+        /**
+         * @description Only return items whose `health.reliability` is at least this value. Unscored items are excluded when this is set.
+         * @example 0.9
+         */
+        CatalogMinReliability: number;
+        /**
+         * @description Sort direction. Defaults to `ASC` for `orderBy=NAME` and `DESC` otherwise.
+         * @example DESC
+         */
+        CatalogOrderDirection: components["schemas"]["CatalogOrderDirection"];
+        /**
+         * @description Only return items in this category, matched exactly and case-insensitively.
+         * @example image
+         */
+        CatalogCategory: string;
+        /**
+         * @description Only return items carrying every one of these tags, matched exactly and case-insensitively. Comma-separated.
+         * @example [
+         *       "comfyui",
+         *       "image"
+         *     ]
+         */
+        CatalogTags: string[];
         /**
          * @description Page size, 1–100. Defaults to 100 when omitted.
          * @example 50
@@ -6422,6 +7180,16 @@ export interface components {
          * @example 12.1
          */
         MinCudaVersionFilter: string;
+        /**
+         * @description Minimum host vCPUs per GPU for availability filtering, multiplied by `count` to match pod create's placement. Requires include=AVAILABILITY (400 otherwise).
+         * @example 8
+         */
+        MinVcpuCountPerGpuFilter: number;
+        /**
+         * @description Minimum host system RAM (GB) per GPU for availability filtering, multiplied by `count` to match pod create's placement. This is host RAM, not the GPU VRAM in `memory`. Requires include=AVAILABILITY (400 otherwise).
+         * @example 100
+         */
+        MinRamPerGpuFilter: number;
         /** @description Comma-separated availability product contexts. Supported values for CPUs: POD, SERVERLESS. Required with include=AVAILABILITY, and valid only with it (400 either way). There is no default: availability differs by product. */
         CpuProductFilter: components["schemas"]["CpuProduct"][];
         /**
@@ -10027,7 +10795,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            200: components["responses"]["TemplateReadme"];
+            200: components["responses"]["Readme"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
@@ -10916,6 +11684,16 @@ export interface operations {
                  * @example 12.1
                  */
                 minCudaVersion?: components["parameters"]["MinCudaVersionFilter"];
+                /**
+                 * @description Minimum host vCPUs per GPU for availability filtering, multiplied by `count` to match pod create's placement. Requires include=AVAILABILITY (400 otherwise).
+                 * @example 8
+                 */
+                minVcpuCountPerGpu?: components["parameters"]["MinVcpuCountPerGpuFilter"];
+                /**
+                 * @description Minimum host system RAM (GB) per GPU for availability filtering, multiplied by `count` to match pod create's placement. This is host RAM, not the GPU VRAM in `memory`. Requires include=AVAILABILITY (400 otherwise).
+                 * @example 100
+                 */
+                minRamPerGpu?: components["parameters"]["MinRamPerGpuFilter"];
             };
             header?: never;
             path?: never;
@@ -10996,6 +11774,16 @@ export interface operations {
                  * @example 12.1
                  */
                 minCudaVersion?: components["parameters"]["MinCudaVersionFilter"];
+                /**
+                 * @description Minimum host vCPUs per GPU for availability filtering, multiplied by `count` to match pod create's placement. Requires include=AVAILABILITY (400 otherwise).
+                 * @example 8
+                 */
+                minVcpuCountPerGpu?: components["parameters"]["MinVcpuCountPerGpuFilter"];
+                /**
+                 * @description Minimum host system RAM (GB) per GPU for availability filtering, multiplied by `count` to match pod create's placement. This is host RAM, not the GPU VRAM in `memory`. Requires include=AVAILABILITY (400 otherwise).
+                 * @example 100
+                 */
+                minRamPerGpu?: components["parameters"]["MinRamPerGpuFilter"];
             };
             header?: never;
             path: {
@@ -11244,6 +12032,53 @@ export interface operations {
                  * @example official
                  */
                 source?: "official" | "verified" | "community";
+                /**
+                 * @description Search text, matched case-insensitively. Every word must match. A skill matches on its name, description and tags; a repo also on its GitHub owner and name; a template on its name and image, and a versioned template's tag also on its line's name and description. Enables `orderBy=RELEVANCE`, which becomes the default order.
+                 * @example comfyui
+                 */
+                search?: components["parameters"]["CatalogSearchQuery"];
+                /**
+                 * @description Only return standalone (`SINGLE`) or versioned (`VERSIONED`) templates. Omit for both.
+                 * @example VERSIONED
+                 */
+                type?: components["schemas"]["CatalogTemplateType"];
+                /**
+                 * @description Only return items that deploy to one of these products. Comma-separated.
+                 * @example [
+                 *       "SERVERLESS"
+                 *     ]
+                 */
+                product?: components["parameters"]["CatalogProducts"];
+                /**
+                 * @description Only return items whose `health.reliability` is at least this value. Unscored items are excluded when this is set.
+                 * @example 0.9
+                 */
+                minReliability?: components["parameters"]["CatalogMinReliability"];
+                /**
+                 * @description Only return templates in this category.
+                 * @example NVIDIA
+                 */
+                category?: components["schemas"]["TemplateCategory"];
+                /**
+                 * @description Defaults to `RELEVANCE` when `search` is set and `POPULAR` otherwise. `RELEVANCE` without `search` is rejected with 400.
+                 * @example POPULAR
+                 */
+                orderBy?: components["schemas"]["CatalogOrderBy"];
+                /**
+                 * @description Sort direction. Defaults to `ASC` for `orderBy=NAME` and `DESC` otherwise.
+                 * @example DESC
+                 */
+                orderDirection?: components["parameters"]["CatalogOrderDirection"];
+                /**
+                 * @description Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected with 422.
+                 * @example Y3JlYXRlZEF0PTE3NDg3ODA0MDA
+                 */
+                cursor?: components["parameters"]["PaginationCursor"];
+                /**
+                 * @description Page size, 1–1000. Defaults to 1000 when omitted.
+                 * @example 50
+                 */
+                limit?: components["parameters"]["PaginationLimit"];
             };
             header?: never;
             path?: never;
@@ -11259,11 +12094,14 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TemplateList"];
+                    "application/json": components["schemas"]["ListCatalogTemplatesResponse"];
                 };
             };
+            400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["ResponseTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
             429: components["responses"]["TooManyRequestsError"];
             /** @description Error */
             default: {
@@ -11290,7 +12128,421 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            200: components["responses"]["TemplateReadme"];
+            200: components["responses"]["Readme"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getCatalogTemplate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description A template ID from `GET /v2/catalog/templates`, a versioned line's ID, or any of its tags' IDs.
+                 * @example opvzatg7kb
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogTemplateDetail"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    listCatalogSkills: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Search text, matched case-insensitively. Every word must match. A skill matches on its name, description and tags; a repo also on its GitHub owner and name; a template on its name and image, and a versioned template's tag also on its line's name and description. Enables `orderBy=RELEVANCE`, which becomes the default order.
+                 * @example comfyui
+                 */
+                search?: components["parameters"]["CatalogSearchQuery"];
+                /**
+                 * @description Only return items carrying every one of these tags, matched exactly and case-insensitively. Comma-separated.
+                 * @example [
+                 *       "comfyui",
+                 *       "image"
+                 *     ]
+                 */
+                tags?: components["parameters"]["CatalogTags"];
+                /**
+                 * @description Only return skills with one of these MCP support levels. Comma-separated. Skills that don't state one are excluded when this is set.
+                 * @example [
+                 *       "FULL",
+                 *       "PARTIAL"
+                 *     ]
+                 */
+                mcpSupport?: components["schemas"]["CatalogSkillMcpSupport"][];
+                /**
+                 * @description Defaults to `RELEVANCE` when `search` is set and `UPDATED` otherwise. `RELEVANCE` without `search` is rejected with 400.
+                 * @example UPDATED
+                 */
+                orderBy?: components["schemas"]["CatalogSkillOrderBy"];
+                /**
+                 * @description Sort direction. Defaults to `ASC` for `orderBy=NAME` and `DESC` otherwise.
+                 * @example DESC
+                 */
+                orderDirection?: components["parameters"]["CatalogOrderDirection"];
+                /**
+                 * @description Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected with 422.
+                 * @example Y3JlYXRlZEF0PTE3NDg3ODA0MDA
+                 */
+                cursor?: components["parameters"]["PaginationCursor"];
+                /**
+                 * @description Page size, 1–1000. Defaults to 1000 when omitted.
+                 * @example 50
+                 */
+                limit?: components["parameters"]["PaginationLimit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListCatalogSkillsResponse"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["ResponseTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getCatalogSkill: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Skill ID, as returned by `GET /v2/catalog/skills`.
+                 * @example 02-comfyui-pod
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogSkillDetail"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getCatalogSkillReadme: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Skill ID, as returned by `GET /v2/catalog/skills`.
+                 * @example 02-comfyui-pod
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["Readme"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getCatalogSkillVariant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Skill ID, as returned by `GET /v2/catalog/skills`.
+                 * @example 02-comfyui-pod
+                 */
+                id: string;
+                /**
+                 * @description Variant ID, as returned by `GET /v2/catalog/skills/{id}`.
+                 * @example variant-b-prebuilt
+                 */
+                variantId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["SkillVariant"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    listCatalogRepos: {
+        parameters: {
+            query?: {
+                /**
+                 * @description Search text, matched case-insensitively. Every word must match. A skill matches on its name, description and tags; a repo also on its GitHub owner and name; a template on its name and image, and a versioned template's tag also on its line's name and description. Enables `orderBy=RELEVANCE`, which becomes the default order.
+                 * @example comfyui
+                 */
+                search?: components["parameters"]["CatalogSearchQuery"];
+                /**
+                 * @description Only return items that deploy to one of these products. Comma-separated.
+                 * @example [
+                 *       "SERVERLESS"
+                 *     ]
+                 */
+                product?: components["parameters"]["CatalogProducts"];
+                /**
+                 * @description Only return items whose `health.reliability` is at least this value. Unscored items are excluded when this is set.
+                 * @example 0.9
+                 */
+                minReliability?: components["parameters"]["CatalogMinReliability"];
+                /**
+                 * @description Only return items in this category, matched exactly and case-insensitively.
+                 * @example image
+                 */
+                category?: components["parameters"]["CatalogCategory"];
+                /**
+                 * @description Only return items carrying every one of these tags, matched exactly and case-insensitively. Comma-separated.
+                 * @example [
+                 *       "comfyui",
+                 *       "image"
+                 *     ]
+                 */
+                tags?: components["parameters"]["CatalogTags"];
+                /**
+                 * @description `official` returns repos Runpod publishes (see `official` on the repo). `community` returns the rest. Omit for all.
+                 * @example official
+                 */
+                source?: "official" | "community";
+                /**
+                 * @description Only return repos from this GitHub owner, matched exactly and case-insensitively.
+                 * @example runpod-workers
+                 */
+                owner?: string;
+                /**
+                 * @description Defaults to `RELEVANCE` when `search` is set and `POPULAR` otherwise. `RELEVANCE` without `search` is rejected with 400.
+                 * @example POPULAR
+                 */
+                orderBy?: components["schemas"]["CatalogOrderBy"];
+                /**
+                 * @description Sort direction. Defaults to `ASC` for `orderBy=NAME` and `DESC` otherwise.
+                 * @example DESC
+                 */
+                orderDirection?: components["parameters"]["CatalogOrderDirection"];
+                /**
+                 * @description Opaque resume cursor — pass the previous response's `pagination.nextCursor` through verbatim; omit for the first page. A cursor is only valid for the operation and parameters that issued it; a malformed or foreign cursor is rejected with 422.
+                 * @example Y3JlYXRlZEF0PTE3NDg3ODA0MDA
+                 */
+                cursor?: components["parameters"]["PaginationCursor"];
+                /**
+                 * @description Page size, 1–1000. Defaults to 1000 when omitted.
+                 * @example 50
+                 */
+                limit?: components["parameters"]["PaginationLimit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListCatalogReposResponse"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            413: components["responses"]["ResponseTooLargeError"];
+            422: components["responses"]["UnprocessableEntityError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getCatalogRepo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Repo ID, as returned by `GET /v2/catalog/repos`.
+                 * @example cm862p99s000008ilegk86af6
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogRepoDetail"];
+                };
+            };
+            401: components["responses"]["UnauthorizedError"];
+            403: components["responses"]["ForbiddenError"];
+            404: components["responses"]["NotFoundError"];
+            429: components["responses"]["TooManyRequestsError"];
+            /** @description Error */
+            default: {
+                headers: {
+                    RateLimit: components["headers"]["RateLimit"];
+                    "RateLimit-Policy": components["headers"]["RateLimit-Policy"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getCatalogRepoReadme: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /**
+                 * @description Repo ID, as returned by `GET /v2/catalog/repos`.
+                 * @example cm862p99s000008ilegk86af6
+                 */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["Readme"];
             401: components["responses"]["UnauthorizedError"];
             403: components["responses"]["ForbiddenError"];
             404: components["responses"]["NotFoundError"];
