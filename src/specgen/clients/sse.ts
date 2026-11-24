@@ -9,6 +9,8 @@ export type { LogEntry } from '@runpod/typescript-api-sdk';
 // server's reader (Apache-2.0, runpod/runpod-mcp).
 
 import { withRateLimitHint } from '../../_shared/rate-limit.js';
+import { redactSecretEnv } from '../redact.js';
+import { serializeResult } from '../serialize.js';
 import { HttpError, missingKeyError } from './http-error.js';
 import { boundedFetch } from './bounded-fetch.js';
 
@@ -18,11 +20,17 @@ export const LOG_STREAM_MAX_BYTES = 256 * 1024;
 // commonly take 2-3 s; when one deadline covered both, a maxWaitMs of 2000
 // failed as "did not respond" instead of returning a snapshot.
 export const LOG_STREAM_CONNECT_TIMEOUT_MS = 10_000;
-// Ceiling on the snapshot as the server serializes it (pretty-printed JSON).
+// Ceiling on the snapshot measured in UTF-8 bytes, as sent (serializeResult,
+// src/specgen/serialize.ts — compact by default, indented under
+// MCP_PRETTY_RESPONSES=true): a byte-level token always covers at least one
+// byte, so this bounds tokens too, whatever the script (docs/size-limits.md).
+// About 22,500 bytes: the 25,000-token client limit (Claude Code), less 10%
+// headroom.
 // MCP clients cap tool output — Claude Code at 25,000 tokens by default, which
-// a 56,178-character log snapshot exceeded — and an over-cap result is lost
-// to the agent, so the snapshot is cut to fit with `truncated: true` instead.
-export const LOG_SNAPSHOT_MAX_CHARS = 32_000;
+// a 56,178-character log snapshot exceeded — and an over-cap result is moved
+// out of the conversation into a file the agent must open to read, instead of
+// seeing it inline, so the snapshot is cut to fit with `truncated: true`.
+export const LOG_SNAPSHOT_MAX_BYTES = 22_500;
 
 export type SseReader = (
   url: string,
@@ -175,8 +183,9 @@ export async function collectLogSnapshot(
 
 type LogSnapshot = { items: LogEntry[]; count: number; truncated: boolean };
 
+// Measured post-redaction, like pagination.ts's resultBytes: a redacted secret can be longer than the original.
 const serializedLength = (snapshot: LogSnapshot) =>
-  JSON.stringify(snapshot, null, 2).length;
+  Buffer.byteLength(serializeResult(redactSecretEnv(snapshot)));
 
 // A single entry is clipped to this many characters of text, so no one entry
 // takes most of a snapshot.
@@ -204,39 +213,63 @@ function clipEntry(entry: LogEntry): { entry: LogEntry; clipped: boolean } {
   return { entry: out as LogEntry, clipped };
 }
 
-// Clip one entry until a snapshot holding only it fits maxChars. The cap is
-// on serialized size, and JSON escaping can grow text sixfold (an ANSI escape
-// byte serializes as \u001b), so a character cap alone cannot guarantee it.
-// Its longest text fields are clipped first; an entry whose `ts` or
-// non-text fields alone overflow is returned as clipped as it can be.
-function fitEntry(entry: LogEntry, maxChars: number): LogEntry {
+// Clip one entry until a snapshot holding only it fits maxBytes: longest text field first, then non-text fields, then `ts` as a last resort.
+function fitEntry(entry: LogEntry, maxBytes: number): LogEntry {
   const size = (e: LogEntry) =>
     serializedLength({ items: [e], count: 1, truncated: false });
-  const out: Record<string, unknown> = { ...entry };
-  // Any text field but `ts`, which the agent needs to resume.
-  const keys = Object.keys(out)
-    .filter((key) => key !== 'ts' && typeof out[key] === 'string')
-    .sort((a, b) => (out[b] as string).length - (out[a] as string).length);
-  for (const key of keys) {
-    if (size(out as LogEntry) <= maxChars) break;
-    const text = (entry as Record<string, unknown>)[key] as string;
+  // Binary-searches the longest prefix of `text` for which `build(prefix)` still fits maxBytes.
+  const clipToFit = (text: string, build: (t: string) => LogEntry): string => {
     let lo = 0;
     let hi = Math.min(text.length, LOG_ENTRY_MAX_CHARS);
     while (lo < hi) {
       const mid = Math.ceil((lo + hi) / 2);
-      if (size({ ...out, [key]: clipText(text, mid) } as LogEntry) <= maxChars)
-        lo = mid;
+      if (size(build(clipText(text, mid))) <= maxBytes) lo = mid;
       else hi = mid - 1;
     }
-    out[key] = clipText(text, lo);
+    return clipText(text, lo);
+  };
+  const out: Record<string, unknown> = { ...entry };
+  const clipField = (key: string, text: string) => {
+    out[key] = clipToFit(text, (t) => ({ ...out, [key]: t }) as LogEntry);
+  };
+  // Any text field but `ts`, which the agent needs to resume.
+  const textKeys = Object.keys(out)
+    .filter((key) => key !== 'ts' && typeof out[key] === 'string')
+    .sort((a, b) => (out[b] as string).length - (out[a] as string).length);
+  for (const key of textKeys) {
+    if (size(out as LogEntry) <= maxBytes) break;
+    clipField(key, (entry as Record<string, unknown>)[key] as string);
   }
-  return out as LogEntry;
+  if (size(out as LogEntry) <= maxBytes) return out as LogEntry;
+  // clipText only clips strings, so a non-text field gets a placeholder instead, largest first.
+  const nonTextKeys = Object.keys(out)
+    .filter((key) => key !== 'ts' && typeof out[key] !== 'string')
+    .sort(
+      (a, b) => JSON.stringify(out[b]).length - JSON.stringify(out[a]).length
+    );
+  for (const key of nonTextKeys) {
+    if (size(out as LogEntry) <= maxBytes) break;
+    const chars = JSON.stringify(out[key]).length;
+    out[key] = `[clipped non-text field, ${chars} chars]`;
+  }
+  if (size(out as LogEntry) <= maxBytes) return out as LogEntry;
+  if (typeof out.ts === 'string') clipField('ts', out.ts);
+  if (size(out as LogEntry) <= maxBytes) return out as LogEntry;
+  // An oversized field *name* can't be shrunk by clipping its value; drop every field but the original ts.
+  const originalTs = (entry as Record<string, unknown>).ts;
+  if (typeof originalTs !== 'string') return {} as LogEntry;
+  return {
+    ts:
+      size({ ts: originalTs } as LogEntry) <= maxBytes
+        ? originalTs
+        : clipToFit(originalTs, (t) => ({ ts: t }) as LogEntry),
+  } as LogEntry;
 }
 
 const entryTs = (entry: LogEntry | undefined) =>
   (entry as { ts?: unknown } | undefined)?.ts;
 
-// Fit the snapshot under maxChars, keeping leading lines. The upstream `since`
+// Fit the snapshot under maxBytes, keeping leading lines. The upstream `since`
 // cursor is exclusive (the host drops lines at or before it) and is a bare
 // timestamp, while system log lines share whole-second ones, so a cut is
 // moved back to a timestamp boundary when the kept part spans more than one:
@@ -246,7 +279,7 @@ const entryTs = (entry: LogEntry | undefined) =>
 export function fitSnapshot(
   items: LogEntry[],
   truncated: boolean,
-  maxChars: number = LOG_SNAPSHOT_MAX_CHARS
+  maxBytes: number = LOG_SNAPSHOT_MAX_BYTES
 ): LogSnapshot {
   let cut = truncated;
   const entries = items.map((item) => {
@@ -260,16 +293,16 @@ export function fitSnapshot(
     truncated: isCut,
   });
   const whole = snapshot(entries.length, cut);
-  if (entries.length === 0 || serializedLength(whole) <= maxChars) return whole;
-  if (serializedLength(snapshot(1, true)) > maxChars) {
-    entries[0] = fitEntry(items[0]!, maxChars);
+  if (entries.length === 0 || serializedLength(whole) <= maxBytes) return whole;
+  if (serializedLength(snapshot(1, true)) > maxBytes) {
+    entries[0] = fitEntry(items[0]!, maxBytes);
     if (entries.length === 1) return snapshot(1, true);
   }
   let lo = 1;
   let hi = entries.length - 1;
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);
-    if (serializedLength(snapshot(mid, true)) <= maxChars) lo = mid;
+    if (serializedLength(snapshot(mid, true)) <= maxBytes) lo = mid;
     else hi = mid - 1;
   }
   // entries[lo] is the first omitted entry. Back off while it shares a

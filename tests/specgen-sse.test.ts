@@ -7,6 +7,7 @@ import {
   createSseReader,
   type SseReader,
 } from '#src/specgen/clients/sse';
+import { serializeResult } from '#src/specgen/serialize';
 
 const frame = (line: string) =>
   `id: 1\ndata: ${JSON.stringify({ source: 'container', line, ts: 't' })}\n\n`;
@@ -185,14 +186,14 @@ test('a snapshot over the size cap keeps the leading lines that fit', async () =
   assert.equal(cut.count, cut.items.length);
   assert.ok(cut.count > 1 && cut.count < 500);
   assert.equal(cut.items[0]?.line, 'step 0');
-  assert.ok(JSON.stringify(cut, null, 2).length <= 5_000);
+  assert.ok(Buffer.byteLength(serializeResult(cut)) <= 5_000);
   // The cut is maximal: one more line would not fit.
   const oneMore = {
     items: items.slice(0, cut.count + 1),
     count: cut.count + 1,
     truncated: true,
   };
-  assert.ok(JSON.stringify(oneMore, null, 2).length > 5_000);
+  assert.ok(Buffer.byteLength(serializeResult(oneMore)) > 5_000);
 
   const whole = fitSnapshot(items.slice(0, 3), false, 5_000);
   assert.equal(whole.truncated, false);
@@ -218,11 +219,11 @@ test('a cut never splits lines that share a timestamp', async () => {
   const oneRun = items.map((item) => ({ ...item, ts: '2026-11-05T23:56:55Z' }));
   const forced = fitSnapshot(oneRun, false, 5_000);
   assert.ok(forced.count > 0);
-  assert.ok(JSON.stringify(forced, null, 2).length <= 5_000);
+  assert.ok(Buffer.byteLength(serializeResult(forced)) <= 5_000);
 });
 
 test('an oversized line is clipped so the snapshot still fits', async () => {
-  const { fitSnapshot, LOG_SNAPSHOT_MAX_CHARS } = await import(
+  const { fitSnapshot, LOG_SNAPSHOT_MAX_BYTES } = await import(
     '#src/specgen/clients/sse'
   );
   for (const items of [
@@ -238,7 +239,7 @@ test('an oversized line is clipped so the snapshot still fits', async () => {
     assert.equal(snapshot.items[0]?.ts, 't0');
     assert.match(String(snapshot.items[0]?.line), /\[clipped 44000 chars\]$/);
     assert.ok(
-      JSON.stringify(snapshot, null, 2).length <= LOG_SNAPSHOT_MAX_CHARS
+      Buffer.byteLength(serializeResult(snapshot)) <= LOG_SNAPSHOT_MAX_BYTES
     );
   }
 });
@@ -312,7 +313,7 @@ test('the read window is not shortened by slow headers', async () => {
 // characters. A character cap alone let ANSI-colored output past the
 // serialized ceiling.
 test('escape-heavy and oversized-metadata entries still fit the cap', async () => {
-  const { fitSnapshot, LOG_SNAPSHOT_MAX_CHARS } = await import(
+  const { fitSnapshot, LOG_SNAPSHOT_MAX_BYTES } = await import(
     '#src/specgen/clients/sse'
   );
   const ansi = '\x1b[31mX\x1b[0m'.repeat(2_000);
@@ -330,9 +331,53 @@ test('escape-heavy and oversized-metadata entries still fit the cap', async () =
     assert.equal(snapshot.truncated, true);
     assert.ok(snapshot.count >= 1);
     assert.equal(snapshot.items[0]?.ts, 't0');
-    const size = JSON.stringify(snapshot, null, 2).length;
-    assert.ok(size <= LOG_SNAPSHOT_MAX_CHARS, `${size} chars`);
+    const size = Buffer.byteLength(serializeResult(snapshot));
+    assert.ok(size <= LOG_SNAPSHOT_MAX_BYTES, `${size} bytes`);
   }
+});
+
+// fitEntry used to leave non-string fields and `ts` itself unclipped.
+test('a nested non-text field or an oversized ts still fits the cap', async () => {
+  const { fitSnapshot, LOG_SNAPSHOT_MAX_BYTES } = await import(
+    '#src/specgen/clients/sse'
+  );
+  const nestedMetadata = {
+    line: 'ok',
+    ts: 't0',
+    metadata: { blob: 'x'.repeat(40_000) },
+  };
+  const oversizedTs = { line: 'ok', ts: 't'.repeat(40_000) };
+  const oversizedKey = { line: 'ok', ts: 't0', ['k'.repeat(30_000)]: 'v' };
+  for (const items of [
+    [nestedMetadata],
+    [nestedMetadata, { line: 'next', ts: 't1' }],
+    [oversizedTs],
+    [oversizedTs, { line: 'next', ts: 't1' }],
+    [oversizedKey],
+    [oversizedKey, { line: 'next', ts: 't1' }],
+  ]) {
+    const snapshot = fitSnapshot(items, false);
+    assert.equal(snapshot.truncated, true);
+    assert.ok(snapshot.count >= 1);
+    const size = Buffer.byteLength(serializeResult(snapshot));
+    assert.ok(size <= LOG_SNAPSHOT_MAX_BYTES, `${size} bytes`);
+  }
+  // A key this big can't be shrunk by clipping its value; ts survives unclipped.
+  assert.equal(fitSnapshot([oversizedKey], false).items[0]?.ts, 't0');
+});
+
+// `[redacted]` can be longer than a short secret it replaces.
+test('fitting accounts for redaction growing short secret env values', async () => {
+  const { fitSnapshot, LOG_SNAPSHOT_MAX_BYTES } = await import(
+    '#src/specgen/clients/sse'
+  );
+  const { redactSecretEnv } = await import('#src/specgen/redact');
+  const env: Record<string, string> = {};
+  for (let i = 0; i < 2_000; i++) env[`API_KEY_${i}`] = 'x';
+  const entry = { line: 'ok', ts: 't0', env };
+  const snapshot = fitSnapshot([entry], false);
+  const size = Buffer.byteLength(serializeResult(redactSecretEnv(snapshot)));
+  assert.ok(size <= LOG_SNAPSHOT_MAX_BYTES, `${size} bytes`);
 });
 
 test('a body that fails after headers is an error, not a partial snapshot', async () => {

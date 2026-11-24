@@ -1,0 +1,41 @@
+# Do models read compact JSON tool results as well as indented ones?
+# Same questions, same real tool results (captured from this server), two
+# formats. Run with: pnpm dlx promptfoo@latest eval -c evals/promptfooconfig.yaml
+# --repeat 10 -o evals/out/catalog-reading-result.json
+# For the decisions suite (does the agent pick the filter, follow the
+# cursor...), see promptfooconfig.decisions.yaml instead.
+description: Compact vs pretty tool results (catalog reading)
+
+prompts:
+  - id: file://prompt.cjs:compact
+    label: compact
+  - id: file://prompt.cjs:pretty
+    label: pretty
+
+providers:
+  - id: openai:chat:glm-5.3
+    label: glm-5.3
+    config:
+      apiBaseUrl: https://api.runpod.ai/v2/b1dd8hy2hqo1nb/openai/v1
+      apiKeyEnvar: RUNPOD_API_KEY
+      temperature: 0
+      max_tokens: 4000
+      tools: file://tools/catalog-tools.json
+      tool_choice: none
+
+defaultTest:
+  options:
+    # The judge: the same Runpod Public Endpoint, so one key runs everything.
+    provider:
+      id: openai:chat:glm-5.3
+      config:
+        apiBaseUrl: https://api.runpod.ai/v2/b1dd8hy2hqo1nb/openai/v1
+        apiKeyEnvar: RUNPOD_API_KEY
+        temperature: 0
+        max_tokens: 2000
+
+tests: file://tests/catalog-reading.json
+
+# Public Endpoints scale out; one request per case at a time would waste that.
+evaluateOptions:
+  maxConcurrency: 20

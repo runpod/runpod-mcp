@@ -12,6 +12,7 @@
 
 import { createHash } from 'node:crypto';
 import { redactSecretEnv } from './redact.js';
+import { serializeResult } from './serialize.js';
 
 export const DEFAULT_LIST_LIMIT = 20;
 export const MAX_LIST_LIMIT = 100;
@@ -120,10 +121,26 @@ const changedBefore = (
     position > rows.length ||
     markOf(rows[position - 1]) !== mark);
 
+// The cursor's JSON is masked before base64 (not a secret — XOR against a
+// hash of a public string), so a plain decode shows no readable fields:
+// given a readable cursor, agents built their own from the decoded fields
+// instead of copying it (seen with GLM-5.3 on compact results). The checksum
+// and argument fingerprint below catch damage and cross-tool reuse, not a
+// deliberate reconstruction from source — harmless here, since a cursor only
+// ever returns read-only list data the same caller could already request by
+// choosing its own arguments.
+const CURSOR_MASK = createHash('sha256').update('runpod-mcp cursor').digest();
+export const maskCursorBytes = (bytes: Buffer): Buffer =>
+  Buffer.from(
+    bytes.map((byte, i) => byte ^ CURSOR_MASK[i % CURSOR_MASK.length])
+  );
+
 // The position, then a checksum of it: a cursor damaged anywhere (an agent
 // copying a long string wrong) is refused instead of read as another page.
 const encodeCursor = (position: Position): string => {
-  const body = Buffer.from(JSON.stringify(position)).toString('base64url');
+  const body = maskCursorBytes(Buffer.from(JSON.stringify(position))).toString(
+    'base64url'
+  );
   return `${CURSOR_PREFIX}${body}.${hash(body, 6)}`;
 };
 
@@ -150,7 +167,7 @@ function readCursor(
   if (!body || checksum !== hash(body, 6)) return INVALID_CURSOR;
   try {
     const position = JSON.parse(
-      Buffer.from(body, 'base64url').toString('utf8')
+      maskCursorBytes(Buffer.from(body, 'base64url')).toString('utf8')
     ) as Position;
     const count = (n: unknown) =>
       n === undefined || (Number.isInteger(n) && (n as number) >= 0);
@@ -176,9 +193,9 @@ export function cursorError(
 }
 
 // As server.ts sends a result: secret env values redacted (the placeholder
-// can be longer than the value), then indented JSON.
+// can be longer than the value), then serializeResult.
 const resultBytes = (value: unknown): number =>
-  Buffer.byteLength(JSON.stringify(redactSecretEnv(value), null, 2));
+  Buffer.byteLength(serializeResult(redactSecretEnv(value)));
 
 // The most rows from the front of `rows` whose page fits the budget; at
 // least one, so a single oversized row still moves the list on.
